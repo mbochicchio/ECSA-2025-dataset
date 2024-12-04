@@ -1,0 +1,5 @@
+I have the following Java classes. Do you see any architectural smell? These are the only classes in my project. I am looking for these architectural smells: Hub-like dependency, Cyclic dependency, God component, Unstable dependency, Cyclic hierarchy, Deep hierarchy, Wide hierarchy.
+
+Do not explain what is an architectural smell or how to remove it, just say if you see some or not. You don't need to specify which classes are involved in the architectural smell.
+
+<Java code>
