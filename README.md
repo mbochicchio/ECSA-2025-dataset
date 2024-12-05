@@ -42,3 +42,11 @@ Do not explain what an architectural smell is or how to remove it, just say if y
 
 <Java code>
 ```
+
+## Projects
+
+To obtain the code involved in the smells, the following projects were analyzed with Arcan:
+
+- **Insert the final list of analyzed projects** 
+
+
