@@ -1,5 +1,0 @@
-I have the following Java classes. Do you see any hub-like architectural smell? These are the only classes in my project.
-
-Do not explain what is an architectural smell or how to remove it, just say if you see some or not. You don't need to specify which class is the hub-like class.
-
-<Java code>
