@@ -1,0 +1,2856 @@
+package com.getcapacitor;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.webkit.ValueCallback;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContract;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.pm.PackageInfoCompat;
+import androidx.fragment.app.Fragment;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import com.getcapacitor.android.R;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.cordova.MockCordovaInterfaceImpl;
+import com.getcapacitor.cordova.MockCordovaWebViewImpl;
+import com.getcapacitor.util.HostMask;
+import com.getcapacitor.util.InternalUtils;
+import com.getcapacitor.util.PermissionHelper;
+import com.getcapacitor.util.WebColor;
+import java.io.File;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.apache.cordova.ConfigXmlParser;
+import org.apache.cordova.CordovaPreferences;
+import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.PluginEntry;
+import org.apache.cordova.PluginManager;
+import org.json.JSONException;
+/**
+ * The Bridge class is the main engine of Capacitor. It manages
+ * loading and communicating with all Plugins,
+ * proxying Native events to Plugins, executing Plugin methods,
+ * communicating with the WebView, and a whole lot more.
+ *
+ * Generally, you'll not use Bridge directly, instead, extend from BridgeActivity
+ * to get a WebView instance and proxy native events automatically.
+ *
+ * If you want to use this Bridge in an existing Android app, please
+ * see the source for BridgeActivity for the methods you'll need to
+ * pass through to Bridge:
+ * <a href="https://github.com/ionic-team/capacitor/blob/HEAD/android/capacitor/src/main/java/com/getcapacitor/BridgeActivity.java">
+ *   BridgeActivity.java</a>
+ */
+public class Bridge {
+    private static final String PERMISSION_PREFS_NAME = "PluginPermStates";
+    private static final String BUNDLE_LAST_PLUGIN_ID_KEY = "capacitorLastActivityPluginId";
+    private static final String BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY = "capacitorLastActivityPluginMethod";
+    private static final String BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY = "capacitorLastPluginCallOptions";
+    private static final String BUNDLE_PLUGIN_CALL_BUNDLE_KEY = "capacitorLastPluginCallBundle";
+    private static final String LAST_BINARY_VERSION_CODE = "lastBinaryVersionCode";
+    private static final String LAST_BINARY_VERSION_NAME = "lastBinaryVersionName";
+    private static final String MINIMUM_ANDROID_WEBVIEW_ERROR = "System WebView is not supported";
+    // The name of the directory we use to look for index.html and the rest of our web assets
+    public static final String DEFAULT_WEB_ASSET_DIR = "public";
+    public static final String CAPACITOR_HTTP_SCHEME = "http";
+    public static final String CAPACITOR_HTTPS_SCHEME = "https";
+    public static final String CAPACITOR_FILE_START = "/_capacitor_file_";
+    public static final String CAPACITOR_CONTENT_START = "/_capacitor_content_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_START = "/_capacitor_http_interceptor_";
+    /** @deprecated CAPACITOR_HTTPS_INTERCEPTOR_START is no longer required. All proxied requests are handled via CAPACITOR_HTTP_INTERCEPTOR_START instead */
+    @Deprecated
+    public static final String CAPACITOR_HTTPS_INTERCEPTOR_START = "/_capacitor_https_interceptor_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_URL_PARAM = "u";
+    public static final int DEFAULT_ANDROID_WEBVIEW_VERSION = 60;
+    public static final int MINIMUM_ANDROID_WEBVIEW_VERSION = 55;
+    public static final int DEFAULT_HUAWEI_WEBVIEW_VERSION = 10;
+    public static final int MINIMUM_HUAWEI_WEBVIEW_VERSION = 10;
+    // Loaded Capacitor config
+    private CapConfig config;
+    // A reference to the main activity for the app
+    private final AppCompatActivity context;
+    // A reference to the containing Fragment if used
+    private final Fragment fragment;
+    private WebViewLocalServer localServer;
+    private String localUrl;
+    private String appUrl;
+    private String appUrlConfig;
+    private HostMask appAllowNavigationMask;
+    private Set<String> allowedOriginRules = new HashSet<String>();
+    private ArrayList<String> authorities = new ArrayList<>();
+    // A reference to the main WebView for the app
+    private final WebView webView;
+    public final MockCordovaInterfaceImpl cordovaInterface;
+    private CordovaWebView cordovaWebView;
+    private CordovaPreferences preferences;
+    private BridgeWebViewClient webViewClient;
+    private App app;
+    // Our MessageHandler for sending and receiving data to the WebView
+    private final MessageHandler msgHandler;
+    // The ThreadHandler for executing plugin calls
+    private final HandlerThread handlerThread = new HandlerThread("CapacitorPlugins");
+    // Our Handler for posting plugin calls. Created from the ThreadHandler
+    private Handler taskHandler = null;
+    private final List<Class<? extends Plugin>> initialPlugins;
+    private final List<Plugin> pluginInstances;
+    // A map of Plugin Id's to PluginHandle's
+    private Map<String, PluginHandle> plugins = new HashMap<>();
+    // Stored plugin calls that we're keeping around to call again someday
+    private Map<String, PluginCall> savedCalls = new HashMap<>();
+    // The call IDs of saved plugin calls with associated plugin id for handling permissions
+    private Map<String, LinkedList<String>> savedPermissionCallIds = new HashMap<>();
+    // Store a plugin that started a new activity, in case we need to resume
+    // the app and return that data back
+    private PluginCall pluginCallForLastActivity;
+    // Any URI that was passed to the app on start
+    private Uri intentUri;
+    // A list of listeners that trigger when webView events occur
+    private List<WebViewListener> webViewListeners = new ArrayList<>();
+    // An interface to manipulate route resolving
+    private RouteProcessor routeProcessor;
+    // A pre-determined path to load the bridge
+    private ServerPath serverPath;
+    /**
+     * Create the Bridge with a reference to the main {@link Activity} for the
+     * app, and a reference to the {@link WebView} our app will use.
+     * @param context
+     * @param webView
+     * @deprecated Use {@link Bridge.Builder} to create Bridge instances
+     */
+    @Deprecated
+    public Bridge(
+        AppCompatActivity context,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this(context, null, null, webView, initialPlugins, new ArrayList<>(), cordovaInterface, pluginManager, preferences, config);
+    }
+    private Bridge(
+        AppCompatActivity context,
+        ServerPath serverPath,
+        Fragment fragment,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        List<Plugin> pluginInstances,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this.app = new App();
+        this.serverPath = serverPath;
+        this.context = context;
+        this.fragment = fragment;
+        this.webView = webView;
+        this.webViewClient = new BridgeWebViewClient(this);
+        this.initialPlugins = initialPlugins;
+        this.pluginInstances = pluginInstances;
+        this.cordovaInterface = cordovaInterface;
+        this.preferences = preferences;
+        // Start our plugin execution threads and handlers
+        handlerThread.start();
+        taskHandler = new Handler(handlerThread.getLooper());
+        this.config = config != null ? config : CapConfig.loadDefault(getActivity());
+        Logger.init(this.config);
+        // Initialize web view and message handler for it
+        this.initWebView();
+        this.setAllowedOriginRules();
+        this.msgHandler = new MessageHandler(this, webView, pluginManager);
+        // Grab any intent info that our app was launched with
+        Intent intent = context.getIntent();
+        this.intentUri = intent.getData();
+        // Register our core plugins
+        this.registerAllPlugins();
+        this.loadWebView();
+    }
+    private void setAllowedOriginRules() {
+        String[] appAllowNavigationConfig = this.config.getAllowNavigation();
+        String authority = this.getHost();
+        String scheme = this.getScheme();
+        allowedOriginRules.add(scheme + "://" + authority);
+        if (this.getServerUrl() != null) {
+            allowedOriginRules.add(this.getServerUrl());
+        }
+        if (appAllowNavigationConfig != null) {
+            for (String allowNavigation : appAllowNavigationConfig) {
+                if (!allowNavigation.startsWith("http")) {
+                    allowedOriginRules.add("https://" + allowNavigation);
+                } else {
+                    allowedOriginRules.add(allowNavigation);
+                }
+            }
+            authorities.addAll(Arrays.asList(appAllowNavigationConfig));
+        }
+        this.appAllowNavigationMask = HostMask.Parser.parse(appAllowNavigationConfig);
+    }
+    public App getApp() {
+        return app;
+    }
+    private void loadWebView() {
+        final boolean html5mode = this.config.isHTML5Mode();
+        // Start the local web server
+        JSInjector injector = getJSInjector();
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            String allowedOrigin = Uri.parse(appUrl).buildUpon().path(null).fragment(null).clearQuery().build().toString();
+            try {
+                WebViewCompat.addDocumentStartJavaScript(webView, injector.getScriptString(), Collections.singleton(allowedOrigin));
+                injector = null;
+            } catch (IllegalArgumentException ex) {
+                Logger.warn("Invalid url, using fallback");
+            }
+        }
+        localServer = new WebViewLocalServer(context, this, injector, authorities, html5mode);
+        localServer.hostAssets(DEFAULT_WEB_ASSET_DIR);
+        Logger.debug("Loading app at " + appUrl);
+        webView.setWebChromeClient(new BridgeWebChromeClient(this));
+        webView.setWebViewClient(this.webViewClient);
+        if (!isDeployDisabled() && !isNewBinary()) {
+            SharedPreferences prefs = getContext()
+                .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+            String path = prefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, null);
+            if (path != null && !path.isEmpty() && new File(path).exists()) {
+                setServerBasePath(path);
+            }
+        }
+        if (!this.isMinimumWebViewInstalled()) {
+            String errorUrl = this.getErrorUrl();
+            if (errorUrl != null) {
+                webView.loadUrl(errorUrl);
+                return;
+            } else {
+                Logger.error(MINIMUM_ANDROID_WEBVIEW_ERROR);
+            }
+        }
+        // If serverPath configured, start server based on provided path
+        if (serverPath != null) {
+            if (serverPath.getType() == ServerPath.PathType.ASSET_PATH) {
+                setServerAssetPath(serverPath.getPath());
+            } else {
+                setServerBasePath(serverPath.getPath());
+            }
+        } else {
+            // Get to work
+            webView.loadUrl(appUrl);
+        }
+    }
+    @SuppressLint("WebViewApiAvailability")
+    public boolean isMinimumWebViewInstalled() {
+        PackageManager pm = getContext().getPackageManager();
+        // Check getCurrentWebViewPackage() directly if above Android 8
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PackageInfo info = WebView.getCurrentWebViewPackage();
+            Pattern pattern = Pattern.compile("(\\d+)");
+            Matcher matcher = pattern.matcher(info.versionName);
+            if (matcher.find()) {
+                String majorVersionStr = matcher.group(0);
+                int majorVersion = Integer.parseInt(majorVersionStr);
+                if (info.packageName.equals("com.huawei.webview")) {
+                    return majorVersion >= config.getMinHuaweiWebViewVersion();
+                }
+                return majorVersion >= config.getMinWebViewVersion();
+            } else {
+                return false;
+            }
+        }
+        // Otherwise manually check WebView versions
+        try {
+            String webViewPackage = "com.google.android.webview";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                webViewPackage = "com.android.chrome";
+            }
+            PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackage);
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.google.android.webview'" + ex.toString());
+        }
+        try {
+            PackageInfo info = InternalUtils.getPackageInfo(pm, "com.android.webview");
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.android.webview'" + ex.toString());
+        }
+        final int amazonFireMajorWebViewVersion = extractWebViewMajorVersion(pm, "com.amazon.webview.chromium");
+        if (amazonFireMajorWebViewVersion >= config.getMinWebViewVersion()) {
+            return true;
+        }
+        // Could not detect any webview, return false
+        return false;
+    }
+    private int extractWebViewMajorVersion(final PackageManager pm, final String webViewPackageName) {
+        try {
+            final PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackageName);
+            final String majorVersionStr = info.versionName.split("\\.")[0];
+            final int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion;
+        } catch (Exception ex) {
+            Logger.warn(String.format("Unable to get package info for '%s' with err '%s'", webViewPackageName, ex));
+        }
+        return 0;
+    }
+    public boolean launchIntent(Uri url) {
+        /*
+         * Give plugins the chance to handle the url
+         */
+        for (Map.Entry<String, PluginHandle> entry : plugins.entrySet()) {
+            Plugin plugin = entry.getValue().getInstance();
+            if (plugin != null) {
+                Boolean shouldOverrideLoad = plugin.shouldOverrideLoad(url);
+                if (shouldOverrideLoad != null) {
+                    return shouldOverrideLoad;
+                }
+            }
+        }
+        if (url.getScheme().equals("data") || url.getScheme().equals("blob")) {
+            return false;
+        }
+        Uri appUri = Uri.parse(appUrl);
+        if (
+            !(appUri.getHost().equals(url.getHost()) && url.getScheme().equals(appUri.getScheme())) &&
+            !appAllowNavigationMask.matches(url.getHost())
+        ) {
+            try {
+                Intent openIntent = new Intent(Intent.ACTION_VIEW, url);
+                getContext().startActivity(openIntent);
+            } catch (ActivityNotFoundException e) {
+                // TODO - trigger an event
+            }
+            return true;
+        }
+        return false;
+    }
+    private boolean isNewBinary() {
+        String versionCode = "";
+        String versionName = "";
+        SharedPreferences prefs = getContext()
+            .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+        String lastVersionCode = prefs.getString(LAST_BINARY_VERSION_CODE, null);
+        String lastVersionName = prefs.getString(LAST_BINARY_VERSION_NAME, null);
+        try {
+            PackageManager pm = getContext().getPackageManager();
+            PackageInfo pInfo = InternalUtils.getPackageInfo(pm, getContext().getPackageName());
+            versionCode = Integer.toString((int) PackageInfoCompat.getLongVersionCode(pInfo));
+            versionName = pInfo.versionName;
+        } catch (Exception ex) {
+            Logger.error("Unable to get package info", ex);
+        }
+        if (!versionCode.equals(lastVersionCode) || !versionName.equals(lastVersionName)) {
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(LAST_BINARY_VERSION_CODE, versionCode);
+            editor.putString(LAST_BINARY_VERSION_NAME, versionName);
+            editor.putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
+            editor.apply();
+            return true;
+        }
+        return false;
+    }
+    public boolean isDeployDisabled() {
+        return preferences.getBoolean("DisableDeploy", false);
+    }
+    public boolean shouldKeepRunning() {
+        return preferences.getBoolean("KeepRunning", true);
+    }
+    public void handleAppUrlLoadError(Exception ex) {
+        if (ex instanceof SocketTimeoutException) {
+            Logger.error(
+                "Unable to load app. Ensure the server is running at " +
+                appUrl +
+                ", or modify the " +
+                "appUrl setting in capacitor.config.json (make sure to npx cap copy after to commit changes).",
+                ex
+            );
+        }
+    }
+    public boolean isDevMode() {
+        return (getActivity().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+    protected void setCordovaWebView(CordovaWebView cordovaWebView) {
+        this.cordovaWebView = cordovaWebView;
+    }
+    /**
+     * Get the Context for the App
+     * @return
+     */
+    public Context getContext() {
+        return this.context;
+    }
+    /**
+     * Get the activity for the app
+     * @return
+     */
+    public AppCompatActivity getActivity() {
+        return this.context;
+    }
+    /**
+     * Get the fragment for the app, if applicable. This will likely be null unless Capacitor
+     * is being used embedded in a Native Android app.
+     *
+     * @return The fragment containing the Capacitor WebView.
+     */
+    public Fragment getFragment() {
+        return this.fragment;
+    }
+    /**
+     * Get the core WebView under Capacitor's control
+     * @return
+     */
+    public WebView getWebView() {
+        return this.webView;
+    }
+    /**
+     * Get the URI that was used to launch the app (if any)
+     * @return
+     */
+    public Uri getIntentUri() {
+        return intentUri;
+    }
+    /**
+     * Get scheme that is used to serve content
+     * @return
+     */
+    public String getScheme() {
+        return this.config.getAndroidScheme();
+    }
+    /**
+     * Get host name that is used to serve content
+     * @return
+     */
+    public String getHost() {
+        return this.config.getHostname();
+    }
+    /**
+     * Get the server url that is used to serve content
+     * @return
+     */
+    public String getServerUrl() {
+        return this.config.getServerUrl();
+    }
+    public String getErrorUrl() {
+        String errorPath = this.config.getErrorPath();
+        if (errorPath != null && !errorPath.trim().isEmpty()) {
+            String authority = this.getHost();
+            String scheme = this.getScheme();
+            String localUrl = scheme + "://" + authority;
+            return localUrl + "/" + errorPath;
+        }
+        return null;
+    }
+    public String getAppUrl() {
+        return appUrl;
+    }
+    public CapConfig getConfig() {
+        return this.config;
+    }
+    public void reset() {
+        savedCalls = new HashMap<>();
+    }
+    /**
+     * Initialize the WebView, setting required flags
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void initWebView() {
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setGeolocationEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        if (this.config.isMixedContentAllowed()) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        String appendUserAgent = this.config.getAppendedUserAgentString();
+        if (appendUserAgent != null) {
+            String defaultUserAgent = settings.getUserAgentString();
+            settings.setUserAgentString(defaultUserAgent + " " + appendUserAgent);
+        }
+        String overrideUserAgent = this.config.getOverriddenUserAgentString();
+        if (overrideUserAgent != null) {
+            settings.setUserAgentString(overrideUserAgent);
+        }
+        String backgroundColor = this.config.getBackgroundColor();
+        try {
+            if (backgroundColor != null) {
+                webView.setBackgroundColor(WebColor.parseColor(backgroundColor));
+            }
+        } catch (IllegalArgumentException ex) {
+            Logger.debug("WebView background color not applied");
+        }
+        settings.setDisplayZoomControls(false);
+        settings.setBuiltInZoomControls(this.config.isZoomableWebView());
+        if (config.isInitialFocus()) {
+            webView.requestFocusFromTouch();
+        }
+        WebView.setWebContentsDebuggingEnabled(this.config.isWebContentsDebuggingEnabled());
+        appUrlConfig = this.getServerUrl();
+        String authority = this.getHost();
+        authorities.add(authority);
+        String scheme = this.getScheme();
+        localUrl = scheme + "://" + authority;
+        if (appUrlConfig != null) {
+            try {
+                URL appUrlObject = new URL(appUrlConfig);
+                authorities.add(appUrlObject.getAuthority());
+            } catch (Exception ex) {
+                Logger.error("Provided server url is invalid: " + ex.getMessage());
+                return;
+            }
+            localUrl = appUrlConfig;
+            appUrl = appUrlConfig;
+        } else {
+            appUrl = localUrl;
+            // custom URL schemes requires path ending with /
+            if (!scheme.equals(Bridge.CAPACITOR_HTTP_SCHEME) && !scheme.equals(CAPACITOR_HTTPS_SCHEME)) {
+                appUrl += "/";
+            }
+        }
+        String appUrlPath = this.config.getStartPath();
+        if (appUrlPath != null && !appUrlPath.trim().isEmpty()) {
+            appUrl += appUrlPath;
+        }
+    }
+    /**
+     * Register our core Plugin APIs
+     */
+    private void registerAllPlugins() {
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorCookies.class);
+        this.registerPlugin(com.getcapacitor.plugin.WebView.class);
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorHttp.class);
+        for (Class<? extends Plugin> pluginClass : this.initialPlugins) {
+            this.registerPlugin(pluginClass);
+        }
+        for (Plugin plugin : pluginInstances) {
+            registerPluginInstance(plugin);
+        }
+    }
+    /**
+     * Register additional plugins
+     * @param pluginClasses the plugins to register
+     */
+    public void registerPlugins(Class<? extends Plugin>[] pluginClasses) {
+        for (Class<? extends Plugin> plugin : pluginClasses) {
+            this.registerPlugin(plugin);
+        }
+    }
+    public void registerPluginInstances(Plugin[] pluginInstances) {
+        for (Plugin plugin : pluginInstances) {
+            this.registerPluginInstance(plugin);
+        }
+    }
+    @SuppressWarnings("deprecation")
+    private String getLegacyPluginName(Class<? extends Plugin> pluginClass) {
+        NativePlugin legacyPluginAnnotation = pluginClass.getAnnotation(NativePlugin.class);
+        if (legacyPluginAnnotation == null) {
+            Logger.error("Plugin doesn't have the @CapacitorPlugin annotation. Please add it");
+            return null;
+        }
+        return legacyPluginAnnotation.name();
+    }
+    /**
+     * Register a plugin class
+     * @param pluginClass a class inheriting from Plugin
+     */
+    public void registerPlugin(Class<? extends Plugin> pluginClass) {
+        String pluginId = pluginId(pluginClass);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, pluginClass));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(pluginClass);
+        } catch (PluginLoadException ex) {
+            logPluginLoadException(pluginClass, ex);
+        }
+    }
+    public void registerPluginInstance(Plugin plugin) {
+        Class<? extends Plugin> clazz = plugin.getClass();
+        String pluginId = pluginId(clazz);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, plugin));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(clazz);
+        }
+    }
+    private String pluginId(Class<? extends Plugin> clazz) {
+        String pluginName = pluginName(clazz);
+        String pluginId = clazz.getSimpleName();
+        if (pluginName == null) return null;
+        if (!pluginName.equals("")) {
+            pluginId = pluginName;
+        }
+        Logger.debug("Registering plugin instance: " + pluginId);
+        return pluginId;
+    }
+    private String pluginName(Class<? extends Plugin> clazz) {
+        String pluginName;
+        CapacitorPlugin pluginAnnotation = clazz.getAnnotation(CapacitorPlugin.class);
+        if (pluginAnnotation == null) {
+            pluginName = this.getLegacyPluginName(clazz);
+        } else {
+            pluginName = pluginAnnotation.name();
+        }
+        return pluginName;
+    }
+    private void logInvalidPluginException(Class<? extends Plugin> clazz) {
+        Logger.error(
+            "NativePlugin " +
+            clazz.getName() +
+            " is invalid. Ensure the @CapacitorPlugin annotation exists on the plugin class and" +
+            " the class extends Plugin"
+        );
+    }
+    private void logPluginLoadException(Class<? extends Plugin> clazz, Exception ex) {
+        Logger.error("NativePlugin " + clazz.getName() + " failed to load", ex);
+    }
+    public PluginHandle getPlugin(String pluginId) {
+        return this.plugins.get(pluginId);
+    }
+    /**
+     * Find the plugin handle that responds to the given request code. This will
+     * fire after certain Android OS intent results/permission checks/etc.
+     * @param requestCode
+     * @return
+     */
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public PluginHandle getPluginWithRequestCode(int requestCode) {
+        for (PluginHandle handle : this.plugins.values()) {
+            int[] requestCodes;
+            CapacitorPlugin pluginAnnotation = handle.getPluginAnnotation();
+            if (pluginAnnotation == null) {
+                // Check for legacy plugin annotation, @NativePlugin
+                NativePlugin legacyPluginAnnotation = handle.getLegacyPluginAnnotation();
+                if (legacyPluginAnnotation == null) {
+                    continue;
+                }
+                if (legacyPluginAnnotation.permissionRequestCode() == requestCode) {
+                    return handle;
+                }
+                requestCodes = legacyPluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            } else {
+                requestCodes = pluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    /**
+     * Call a method on a plugin.
+     * @param pluginId the plugin id to use to lookup the plugin handle
+     * @param methodName the name of the method to call
+     * @param call the call object to pass to the method
+     */
+    public void callPluginMethod(String pluginId, final String methodName, final PluginCall call) {
+        try {
+            final PluginHandle plugin = this.getPlugin(pluginId);
+            if (plugin == null) {
+                Logger.error("unable to find plugin : " + pluginId);
+                call.errorCallback("unable to find plugin : " + pluginId);
+                return;
+            }
+            if (Logger.shouldLog()) {
+                Logger.verbose(
+                    "callback: " +
+                    call.getCallbackId() +
+                    ", pluginId: " +
+                    plugin.getId() +
+                    ", methodName: " +
+                    methodName +
+                    ", methodData: " +
+                    call.getData().toString()
+                );
+            }
+            Runnable currentThreadTask = () -> {
+                try {
+                    plugin.invoke(methodName, call);
+                    if (call.isKeptAlive()) {
+                        saveCall(call);
+                    }
+                } catch (PluginLoadException | InvalidPluginMethodException ex) {
+                    Logger.error("Unable to execute plugin method", ex);
+                } catch (Exception ex) {
+                    Logger.error("Serious error executing plugin", ex);
+                    throw new RuntimeException(ex);
+                }
+            };
+            taskHandler.post(currentThreadTask);
+        } catch (Exception ex) {
+            Logger.error(Logger.tags("callPluginMethod"), "error : " + ex, null);
+            call.errorCallback(ex.toString());
+        }
+    }
+    /**
+     * Evaluate JavaScript in the web view. This method
+     * executes on the main thread automatically.
+     * @param js the JS to execute
+     * @param callback an optional ValueCallback that will synchronously receive a value
+     *                 after calling the JS
+     */
+    public void eval(final String js, final ValueCallback<String> callback) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(() -> webView.evaluateJavascript(js, callback));
+    }
+    public void logToJs(final String message, final String level) {
+        eval("window.Capacitor.logJs(\"" + message + "\", \"" + level + "\")", null);
+    }
+    public void logToJs(final String message) {
+        logToJs(message, "log");
+    }
+    public void triggerJSEvent(final String eventName, final String target) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\")", s -> {});
+    }
+    public void triggerJSEvent(final String eventName, final String target, final String data) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\", " + data + ")", s -> {});
+    }
+    public void triggerWindowJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "window");
+    }
+    public void triggerWindowJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "window", data);
+    }
+    public void triggerDocumentJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "document");
+    }
+    public void triggerDocumentJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "document", data);
+    }
+    public void execute(Runnable runnable) {
+        taskHandler.post(runnable);
+    }
+    public void executeOnMainThread(Runnable runnable) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(runnable);
+    }
+    /**
+     * Retain a call between plugin invocations
+     * @param call
+     */
+    public void saveCall(PluginCall call) {
+        this.savedCalls.put(call.getCallbackId(), call);
+    }
+    /**
+     * Get a retained plugin call
+     * @param callbackId the callbackId to use to lookup the call with
+     * @return the stored call
+     */
+    public PluginCall getSavedCall(String callbackId) {
+        if (callbackId == null) {
+            return null;
+        }
+        return this.savedCalls.get(callbackId);
+    }
+    PluginCall getPluginCallForLastActivity() {
+        PluginCall pluginCallForLastActivity = this.pluginCallForLastActivity;
+        this.pluginCallForLastActivity = null;
+        return pluginCallForLastActivity;
+    }
+    void setPluginCallForLastActivity(PluginCall pluginCallForLastActivity) {
+        this.pluginCallForLastActivity = pluginCallForLastActivity;
+    }
+    /**
+     * Release a retained call
+     * @param call a call to release
+     */
+    public void releaseCall(PluginCall call) {
+        releaseCall(call.getCallbackId());
+    }
+    /**
+     * Release a retained call by its ID
+     * @param callbackId an ID of a callback to release
+     */
+    public void releaseCall(String callbackId) {
+        this.savedCalls.remove(callbackId);
+    }
+    /**
+     * Removes the earliest saved call prior to a permissions request for a given plugin and
+     * returns it.
+     *
+     * @return The saved plugin call
+     */
+    protected PluginCall getPermissionCall(String pluginId) {
+        LinkedList<String> permissionCallIds = this.savedPermissionCallIds.get(pluginId);
+        String savedCallId = null;
+        if (permissionCallIds != null) {
+            savedCallId = permissionCallIds.poll();
+        }
+        return getSavedCall(savedCallId);
+    }
+    /**
+     * Save a call to be retrieved after requesting permissions. Calls are saved in order.
+     *
+     * @param call The plugin call to save.
+     */
+    protected void savePermissionCall(PluginCall call) {
+        if (call != null) {
+            if (!savedPermissionCallIds.containsKey(call.getPluginId())) {
+                savedPermissionCallIds.put(call.getPluginId(), new LinkedList<>());
+            }
+            savedPermissionCallIds.get(call.getPluginId()).add(call.getCallbackId());
+            saveCall(call);
+        }
+    }
+    /**
+     * Register an Activity Result Launcher to the containing Fragment or Activity.
+     *
+     * @param contract A contract specifying that an activity can be called with an input of
+     *                 type I and produce an output of type O.
+     * @param callback The callback run on Activity Result.
+     * @return A registered Activity Result Launcher.
+     */
+    public <I, O> ActivityResultLauncher<I> registerForActivityResult(
+        @NonNull final ActivityResultContract<I, O> contract,
+        @NonNull final ActivityResultCallback<O> callback
+    ) {
+        if (fragment != null) {
+            return fragment.registerForActivityResult(contract, callback);
+        } else {
+            return context.registerForActivityResult(contract, callback);
+        }
+    }
+    /**
+     * Build the JSInjector that will be used to inject JS into files served to the app,
+     * to ensure that Capacitor's JS and the JS for all the plugins is loaded each time.
+     */
+    private JSInjector getJSInjector() {
+        try {
+            String globalJS = JSExport.getGlobalJS(context, config.isLoggingEnabled(), isDevMode());
+            String bridgeJS = JSExport.getBridgeJS(context);
+            String pluginJS = JSExport.getPluginJS(plugins.values());
+            String cordovaJS = JSExport.getCordovaJS(context);
+            String cordovaPluginsJS = JSExport.getCordovaPluginJS(context);
+            String cordovaPluginsFileJS = JSExport.getCordovaPluginsFileJS(context);
+            String localUrlJS = "window.WEBVIEW_SERVER_URL = '" + localUrl + "';";
+            return new JSInjector(globalJS, bridgeJS, pluginJS, cordovaJS, cordovaPluginsJS, cordovaPluginsFileJS, localUrlJS);
+        } catch (Exception ex) {
+            Logger.error("Unable to export Capacitor JS. App will not function!", ex);
+        }
+        return null;
+    }
+    /**
+     * Restore any saved bundle state data
+     * @param savedInstanceState
+     */
+    public void restoreInstanceState(Bundle savedInstanceState) {
+        String lastPluginId = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_ID_KEY);
+        String lastPluginCallMethod = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY);
+        String lastOptionsJson = savedInstanceState.getString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY);
+        if (lastPluginId != null) {
+            // If we have JSON blob saved, create a new plugin call with the original options
+            if (lastOptionsJson != null) {
+                try {
+                    JSObject options = new JSObject(lastOptionsJson);
+                    pluginCallForLastActivity = new PluginCall(
+                        msgHandler,
+                        lastPluginId,
+                        PluginCall.CALLBACK_ID_DANGLING,
+                        lastPluginCallMethod,
+                        options
+                    );
+                } catch (JSONException ex) {
+                    Logger.error("Unable to restore plugin call, unable to parse persisted JSON object", ex);
+                }
+            }
+            // Let the plugin restore any state it needs
+            Bundle bundleData = savedInstanceState.getBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY);
+            PluginHandle lastPlugin = getPlugin(lastPluginId);
+            if (bundleData != null && lastPlugin != null) {
+                lastPlugin.getInstance().restoreState(bundleData);
+            } else {
+                Logger.error("Unable to restore last plugin call");
+            }
+        }
+    }
+    public void saveInstanceState(Bundle outState) {
+        Logger.debug("Saving instance state!");
+        // If there was a last PluginCall for a started activity, we need to
+        // persist it so we can load it again in case our app gets terminated
+        if (pluginCallForLastActivity != null) {
+            PluginCall call = pluginCallForLastActivity;
+            PluginHandle handle = getPlugin(call.getPluginId());
+            if (handle != null) {
+                Bundle bundle = handle.getInstance().saveInstanceState();
+                if (bundle != null) {
+                    outState.putString(BUNDLE_LAST_PLUGIN_ID_KEY, call.getPluginId());
+                    outState.putString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY, call.getMethodName());
+                    outState.putString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY, call.getData().toString());
+                    outState.putBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY, bundle);
+                } else {
+                    Logger.error("Couldn't save last " + call.getPluginId() + "'s Plugin " + call.getMethodName() + " call");
+                }
+            }
+        }
+    }
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public void startActivityForPluginWithResult(PluginCall call, Intent intent, int requestCode) {
+        Logger.debug("Starting activity for result");
+        pluginCallForLastActivity = call;
+        getActivity().startActivityForResult(intent, requestCode);
+    }
+    /**
+     * Check for legacy Capacitor or Cordova plugins that may have registered to handle a permission
+     * request, and handle them if so. If not handled, false is returned.
+     *
+     * @param requestCode the code that was requested
+     * @param permissions the permissions requested
+     * @param grantResults the set of granted/denied permissions
+     * @return true if permission code was handled by a plugin explicitly, false if not
+     */
+    @SuppressWarnings("deprecation")
+    boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null) {
+            boolean permissionHandled = false;
+            Logger.debug("Unable to find a Capacitor plugin to handle permission requestCode, trying Cordova plugins " + requestCode);
+            try {
+                permissionHandled = cordovaInterface.handlePermissionResult(requestCode, permissions, grantResults);
+            } catch (JSONException e) {
+                Logger.debug("Error on Cordova plugin permissions request " + e.getMessage());
+            }
+            return permissionHandled;
+        }
+        // Call deprecated method if using deprecated NativePlugin annotation
+        if (plugin.getPluginAnnotation() == null) {
+            plugin.getInstance().handleRequestPermissionsResult(requestCode, permissions, grantResults);
+            return true;
+        }
+        return false;
+    }
+    /**
+     * Saves permission states and rejects if permissions were not correctly defined in
+     * the AndroidManifest.xml file.
+     *
+     * @param plugin
+     * @param savedCall
+     * @param permissions
+     * @return true if permissions were saved and defined correctly, false if not
+     */
+    protected boolean validatePermissions(Plugin plugin, PluginCall savedCall, Map<String, Boolean> permissions) {
+        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+        for (Map.Entry<String, Boolean> permission : permissions.entrySet()) {
+            String permString = permission.getKey();
+            boolean isGranted = permission.getValue();
+            if (isGranted) {
+                // Permission granted. If previously denied, remove cached state
+                String state = prefs.getString(permString, null);
+                if (state != null) {
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.remove(permString);
+                    editor.apply();
+                }
+            } else {
+                SharedPreferences.Editor editor = prefs.edit();
+                if (ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permString)) {
+                    // Permission denied, can prompt again with rationale
+                    editor.putString(permString, PermissionState.PROMPT_WITH_RATIONALE.toString());
+                } else {
+                    // Permission denied permanently, store this state for future reference
+                    editor.putString(permString, PermissionState.DENIED.toString());
+                }
+                editor.apply();
+            }
+        }
+        String[] permStrings = permissions.keySet().toArray(new String[0]);
+        if (!PermissionHelper.hasDefinedPermissions(getContext(), permStrings)) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("Missing the following permissions in AndroidManifest.xml:\n");
+            String[] missing = PermissionHelper.getUndefinedPermissions(getContext(), permStrings);
+            for (String perm : missing) {
+                builder.append(perm + "\n");
+            }
+            savedCall.reject(builder.toString());
+            return false;
+        }
+        return true;
+    }
+    /**
+     * Helper to check all permissions and see the current states of each permission.
+     *
+     * @since 3.0.0
+     * @return A mapping of permission aliases to the associated granted status.
+     */
+    protected Map<String, PermissionState> getPermissionStates(Plugin plugin) {
+        Map<String, PermissionState> permissionsResults = new HashMap<>();
+        CapacitorPlugin annotation = plugin.getPluginHandle().getPluginAnnotation();
+        for (Permission perm : annotation.permissions()) {
+            // If a permission is defined with no permission constants, return GRANTED for it.
+            // Otherwise, get its true state.
+            if (perm.strings().length == 0 || (perm.strings().length == 1 && perm.strings()[0].isEmpty())) {
+                String key = perm.alias();
+                if (!key.isEmpty()) {
+                    PermissionState existingResult = permissionsResults.get(key);
+                    // auto set permission state to GRANTED if the alias is empty.
+                    if (existingResult == null) {
+                        permissionsResults.put(key, PermissionState.GRANTED);
+                    }
+                }
+            } else {
+                for (String permString : perm.strings()) {
+                    String key = perm.alias().isEmpty() ? permString : perm.alias();
+                    PermissionState permissionStatus;
+                    if (ActivityCompat.checkSelfPermission(this.getContext(), permString) == PackageManager.PERMISSION_GRANTED) {
+                        permissionStatus = PermissionState.GRANTED;
+                    } else {
+                        permissionStatus = PermissionState.PROMPT;
+                        // Check if there is a cached permission state for the "Never ask again" state
+                        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+                        String state = prefs.getString(permString, null);
+                        if (state != null) {
+                            permissionStatus = PermissionState.byState(state);
+                        }
+                    }
+                    PermissionState existingResult = permissionsResults.get(key);
+                    // multiple permissions with the same alias must all be true, otherwise all false.
+                    if (existingResult == null || existingResult == PermissionState.GRANTED) {
+                        permissionsResults.put(key, permissionStatus);
+                    }
+                }
+            }
+        }
+        return permissionsResults;
+    }
+    /**
+     * Handle an activity result and pass it to a plugin that has indicated it wants to
+     * handle the result.
+     * @param requestCode
+     * @param resultCode
+     * @param data
+     */
+    @SuppressWarnings("deprecation")
+    boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null || plugin.getInstance() == null) {
+            Logger.debug("Unable to find a Capacitor plugin to handle requestCode, trying Cordova plugins " + requestCode);
+            return cordovaInterface.onActivityResult(requestCode, resultCode, data);
+        }
+        // deprecated, to be removed
+        PluginCall lastCall = plugin.getInstance().getSavedCall();
+        // If we don't have a saved last call (because our app was killed and restarted, for example),
+        // Then we should see if we have any saved plugin call information and generate a new,
+        // "dangling" plugin call (a plugin call that doesn't have a corresponding web callback)
+        // and then send that to the plugin
+        if (lastCall == null && pluginCallForLastActivity != null) {
+            plugin.getInstance().saveCall(pluginCallForLastActivity);
+        }
+        plugin.getInstance().handleOnActivityResult(requestCode, resultCode, data);
+        // Clear the plugin call we may have re-hydrated on app launch
+        pluginCallForLastActivity = null;
+        return true;
+    }
+    /**
+     * Handle an onNewIntent lifecycle event and notify the plugins
+     * @param intent
+     */
+    public void onNewIntent(Intent intent) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnNewIntent(intent);
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.onNewIntent(intent);
+        }
+    }
+    /**
+     * Handle an onConfigurationChanged event and notify the plugins
+     * @param newConfig
+     */
+    public void onConfigurationChanged(Configuration newConfig) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnConfigurationChanged(newConfig);
+        }
+    }
+    /**
+     * Handle onRestart lifecycle event and notify the plugins
+     */
+    public void onRestart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnRestart();
+        }
+    }
+    /**
+     * Handle onStart lifecycle event and notify the plugins
+     */
+    public void onStart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStart();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStart();
+        }
+    }
+    /**
+     * Handle onResume lifecycle event and notify the plugins
+     */
+    public void onResume() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnResume();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleResume(this.shouldKeepRunning());
+        }
+    }
+    /**
+     * Handle onPause lifecycle event and notify the plugins
+     */
+    public void onPause() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnPause();
+        }
+        if (cordovaWebView != null) {
+            boolean keepRunning = this.shouldKeepRunning() || cordovaInterface.getActivityResultCallback() != null;
+            cordovaWebView.handlePause(keepRunning);
+        }
+    }
+    /**
+     * Handle onStop lifecycle event and notify the plugins
+     */
+    public void onStop() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStop();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStop();
+        }
+    }
+    /**
+     * Handle onDestroy lifecycle event and notify the plugins
+     */
+    public void onDestroy() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnDestroy();
+        }
+        handlerThread.quitSafely();
+        if (cordovaWebView != null) {
+            cordovaWebView.handleDestroy();
+        }
+    }
+    /**
+     * Handle onDetachedFromWindow lifecycle event
+     */
+    public void onDetachedFromWindow() {
+        webView.removeAllViews();
+        webView.destroy();
+    }
+    public String getServerBasePath() {
+        return this.localServer.getBasePath();
+    }
+    /**
+     * Tell the local server to load files from the given
+     * file path instead of the assets path.
+     * @param path
+     */
+    public void setServerBasePath(String path) {
+        localServer.hostFiles(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    /**
+     * Tell the local server to load files from the given
+     * asset path.
+     * @param path
+     */
+    public void setServerAssetPath(String path) {
+        localServer.hostAssets(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    /**
+     * Reload the WebView
+     */
+    public void reload() {
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    public String getLocalUrl() {
+        return localUrl;
+    }
+    public WebViewLocalServer getLocalServer() {
+        return localServer;
+    }
+    public HostMask getAppAllowNavigationMask() {
+        return appAllowNavigationMask;
+    }
+    public Set<String> getAllowedOriginRules() {
+        return allowedOriginRules;
+    }
+    public BridgeWebViewClient getWebViewClient() {
+        return this.webViewClient;
+    }
+    public void setWebViewClient(BridgeWebViewClient client) {
+        this.webViewClient = client;
+        webView.setWebViewClient(client);
+    }
+    List<WebViewListener> getWebViewListeners() {
+        return webViewListeners;
+    }
+    void setWebViewListeners(List<WebViewListener> webViewListeners) {
+        this.webViewListeners = webViewListeners;
+    }
+    RouteProcessor getRouteProcessor() {
+        return routeProcessor;
+    }
+    void setRouteProcessor(RouteProcessor routeProcessor) {
+        this.routeProcessor = routeProcessor;
+    }
+    ServerPath getServerPath() {
+        return serverPath;
+    }
+    /**
+     * Add a listener that the WebViewClient can trigger on certain events.
+     * @param webViewListener A {@link WebViewListener} to add.
+     */
+    public void addWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.add(webViewListener);
+    }
+    /**
+     * Remove a listener that the WebViewClient triggers on certain events.
+     * @param webViewListener A {@link WebViewListener} to remove.
+     */
+    public void removeWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.remove(webViewListener);
+    }
+    public static class Builder {
+        private Bundle instanceState = null;
+        private CapConfig config = null;
+        private List<Class<? extends Plugin>> plugins = new ArrayList<>();
+        private List<Plugin> pluginInstances = new ArrayList<>();
+        private AppCompatActivity activity;
+        private Fragment fragment;
+        private RouteProcessor routeProcessor;
+        private final List<WebViewListener> webViewListeners = new ArrayList<>();
+        private ServerPath serverPath;
+        public Builder(AppCompatActivity activity) {
+            this.activity = activity;
+        }
+        public Builder(Fragment fragment) {
+            this.activity = (AppCompatActivity) fragment.getActivity();
+            this.fragment = fragment;
+        }
+        public Builder setInstanceState(Bundle instanceState) {
+            this.instanceState = instanceState;
+            return this;
+        }
+        public Builder setConfig(CapConfig config) {
+            this.config = config;
+            return this;
+        }
+        public Builder setPlugins(List<Class<? extends Plugin>> plugins) {
+            this.plugins = plugins;
+            return this;
+        }
+        public Builder addPlugin(Class<? extends Plugin> plugin) {
+            this.plugins.add(plugin);
+            return this;
+        }
+        public Builder addPlugins(List<Class<? extends Plugin>> plugins) {
+            for (Class<? extends Plugin> cls : plugins) {
+                this.addPlugin(cls);
+            }
+            return this;
+        }
+        public Builder addPluginInstance(Plugin plugin) {
+            this.pluginInstances.add(plugin);
+            return this;
+        }
+        public Builder addPluginInstances(List<Plugin> plugins) {
+            this.pluginInstances.addAll(plugins);
+            return this;
+        }
+        public Builder addWebViewListener(WebViewListener webViewListener) {
+            webViewListeners.add(webViewListener);
+            return this;
+        }
+        public Builder addWebViewListeners(List<WebViewListener> webViewListeners) {
+            for (WebViewListener listener : webViewListeners) {
+                this.addWebViewListener(listener);
+            }
+            return this;
+        }
+        public Builder setRouteProcessor(RouteProcessor routeProcessor) {
+            this.routeProcessor = routeProcessor;
+            return this;
+        }
+        public Builder setServerPath(ServerPath serverPath) {
+            this.serverPath = serverPath;
+            return this;
+        }
+        public Bridge create() {
+            // Cordova initialization
+            ConfigXmlParser parser = new ConfigXmlParser();
+            parser.parse(activity.getApplicationContext());
+            CordovaPreferences preferences = parser.getPreferences();
+            preferences.setPreferencesBundle(activity.getIntent().getExtras());
+            List<PluginEntry> pluginEntries = parser.getPluginEntries();
+            MockCordovaInterfaceImpl cordovaInterface = new MockCordovaInterfaceImpl(activity);
+            if (instanceState != null) {
+                cordovaInterface.restoreInstanceState(instanceState);
+            }
+            WebView webView = this.fragment != null ? fragment.getView().findViewById(R.id.webview) : activity.findViewById(R.id.webview);
+            MockCordovaWebViewImpl mockWebView = new MockCordovaWebViewImpl(activity.getApplicationContext());
+            mockWebView.init(cordovaInterface, pluginEntries, preferences, webView);
+            PluginManager pluginManager = mockWebView.getPluginManager();
+            cordovaInterface.onCordovaInit(pluginManager);
+            // Bridge initialization
+            Bridge bridge = new Bridge(
+                activity,
+                serverPath,
+                fragment,
+                webView,
+                plugins,
+                pluginInstances,
+                cordovaInterface,
+                pluginManager,
+                preferences,
+                config
+            );
+            if (webView instanceof CapacitorWebView) {
+                CapacitorWebView capacitorWebView = (CapacitorWebView) webView;
+                capacitorWebView.setBridge(bridge);
+            }
+            bridge.setCordovaWebView(mockWebView);
+            bridge.setWebViewListeners(webViewListeners);
+            bridge.setRouteProcessor(routeProcessor);
+            if (instanceState != null) {
+                bridge.restoreInstanceState(instanceState);
+            }
+            return bridge;
+        }
+    }
+}
+package com.getcapacitor;
+import static com.getcapacitor.Bridge.CAPACITOR_HTTPS_SCHEME;
+import static com.getcapacitor.Bridge.DEFAULT_ANDROID_WEBVIEW_VERSION;
+import static com.getcapacitor.Bridge.DEFAULT_HUAWEI_WEBVIEW_VERSION;
+import static com.getcapacitor.Bridge.MINIMUM_ANDROID_WEBVIEW_VERSION;
+import static com.getcapacitor.Bridge.MINIMUM_HUAWEI_WEBVIEW_VERSION;
+import static com.getcapacitor.FileUtils.readFileFromAssets;
+import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.res.AssetManager;
+import androidx.annotation.Nullable;
+import com.getcapacitor.util.JSONUtils;
+import java.io.File;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import org.json.JSONException;
+import org.json.JSONObject;
+/**
+ * Represents the configuration options for Capacitor
+ */
+public class CapConfig {
+    private static final String LOG_BEHAVIOR_NONE = "none";
+    private static final String LOG_BEHAVIOR_DEBUG = "debug";
+    private static final String LOG_BEHAVIOR_PRODUCTION = "production";
+    // Server Config
+    private boolean html5mode = true;
+    private String serverUrl;
+    private String hostname = "localhost";
+    private String androidScheme = CAPACITOR_HTTPS_SCHEME;
+    private String[] allowNavigation;
+    // Android Config
+    private String overriddenUserAgentString;
+    private String appendedUserAgentString;
+    private String backgroundColor;
+    private boolean allowMixedContent = false;
+    private boolean captureInput = false;
+    private boolean webContentsDebuggingEnabled = false;
+    private boolean loggingEnabled = true;
+    private boolean initialFocus = true;
+    private boolean useLegacyBridge = false;
+    private int minWebViewVersion = DEFAULT_ANDROID_WEBVIEW_VERSION;
+    private int minHuaweiWebViewVersion = DEFAULT_HUAWEI_WEBVIEW_VERSION;
+    private String errorPath;
+    private boolean zoomableWebView = false;
+    // Embedded
+    private String startPath;
+    // Plugins
+    private Map<String, PluginConfig> pluginsConfiguration = null;
+    // Config Object JSON (legacy)
+    private JSONObject configJSON = new JSONObject();
+    /**
+     * Constructs an empty config file.
+     */
+    private CapConfig() {}
+    /**
+     * Get an instance of the Config file object.
+     * @deprecated use {@link #loadDefault(Context)} to load an instance of the Config object
+     * from the capacitor.config.json file, or use the {@link CapConfig.Builder} to construct
+     * a CapConfig for embedded use.
+     *
+     * @param assetManager The AssetManager used to load the config file
+     * @param config JSON describing a configuration to use
+     */
+    @Deprecated
+    public CapConfig(AssetManager assetManager, JSONObject config) {
+        if (config != null) {
+            this.configJSON = config;
+        } else {
+            // Load the capacitor.config.json
+            loadConfigFromAssets(assetManager, null);
+        }
+        deserializeConfig(null);
+    }
+    /**
+     * Constructs a Capacitor Configuration from config.json file.
+     *
+     * @param context The context.
+     * @return A loaded config file, if successful.
+     */
+    public static CapConfig loadDefault(Context context) {
+        CapConfig config = new CapConfig();
+        if (context == null) {
+            Logger.error("Capacitor Config could not be created from file. Context must not be null.");
+            return config;
+        }
+        config.loadConfigFromAssets(context.getAssets(), null);
+        config.deserializeConfig(context);
+        return config;
+    }
+    /**
+     * Constructs a Capacitor Configuration from config.json file within the app assets.
+     *
+     * @param context The context.
+     * @param path A path relative to the root assets directory.
+     * @return A loaded config file, if successful.
+     */
+    public static CapConfig loadFromAssets(Context context, String path) {
+        CapConfig config = new CapConfig();
+        if (context == null) {
+            Logger.error("Capacitor Config could not be created from file. Context must not be null.");
+            return config;
+        }
+        config.loadConfigFromAssets(context.getAssets(), path);
+        config.deserializeConfig(context);
+        return config;
+    }
+    /**
+     * Constructs a Capacitor Configuration from config.json file within the app file-space.
+     *
+     * @param context The context.
+     * @param path A path relative to the root of the app file-space.
+     * @return A loaded config file, if successful.
+     */
+    public static CapConfig loadFromFile(Context context, String path) {
+        CapConfig config = new CapConfig();
+        if (context == null) {
+            Logger.error("Capacitor Config could not be created from file. Context must not be null.");
+            return config;
+        }
+        config.loadConfigFromFile(path);
+        config.deserializeConfig(context);
+        return config;
+    }
+    /**
+     * Constructs a Capacitor Configuration using ConfigBuilder.
+     *
+     * @param builder A config builder initialized with values
+     */
+    private CapConfig(Builder builder) {
+        // Server Config
+        this.html5mode = builder.html5mode;
+        this.serverUrl = builder.serverUrl;
+        this.hostname = builder.hostname;
+        if (this.validateScheme(builder.androidScheme)) {
+            this.androidScheme = builder.androidScheme;
+        }
+        this.allowNavigation = builder.allowNavigation;
+        // Android Config
+        this.overriddenUserAgentString = builder.overriddenUserAgentString;
+        this.appendedUserAgentString = builder.appendedUserAgentString;
+        this.backgroundColor = builder.backgroundColor;
+        this.allowMixedContent = builder.allowMixedContent;
+        this.captureInput = builder.captureInput;
+        this.webContentsDebuggingEnabled = builder.webContentsDebuggingEnabled;
+        this.loggingEnabled = builder.loggingEnabled;
+        this.initialFocus = builder.initialFocus;
+        this.useLegacyBridge = builder.useLegacyBridge;
+        this.minWebViewVersion = builder.minWebViewVersion;
+        this.minHuaweiWebViewVersion = builder.minHuaweiWebViewVersion;
+        this.errorPath = builder.errorPath;
+        this.zoomableWebView = builder.zoomableWebView;
+        // Embedded
+        this.startPath = builder.startPath;
+        // Plugins Config
+        this.pluginsConfiguration = builder.pluginsConfiguration;
+    }
+    /**
+     * Loads a Capacitor Configuration JSON file into a Capacitor Configuration object.
+     * An optional path string can be provided to look for the config in a subdirectory path.
+     */
+    private void loadConfigFromAssets(AssetManager assetManager, String path) {
+        if (path == null) {
+            path = "";
+        } else {
+            // Add slash at the end to form a proper file path if going deeper in assets dir
+            if (path.charAt(path.length() - 1) != '/') {
+                path = path + "/";
+            }
+        }
+        try {
+            String jsonString = readFileFromAssets(assetManager, path + "capacitor.config.json");
+            configJSON = new JSONObject(jsonString);
+        } catch (IOException ex) {
+            Logger.error("Unable to load capacitor.config.json. Run npx cap copy first", ex);
+        } catch (JSONException ex) {
+            Logger.error("Unable to parse capacitor.config.json. Make sure it's valid json", ex);
+        }
+    }
+    /**
+     * Loads a Capacitor Configuration JSON file into a Capacitor Configuration object.
+     * An optional path string can be provided to look for the config in a subdirectory path.
+     */
+    private void loadConfigFromFile(String path) {
+        if (path == null) {
+            path = "";
+        } else {
+            // Add slash at the end to form a proper file path if going deeper in assets dir
+            if (path.charAt(path.length() - 1) != '/') {
+                path = path + "/";
+            }
+        }
+        try {
+            File configFile = new File(path + "capacitor.config.json");
+            String jsonString = FileUtils.readFileFromDisk(configFile);
+            configJSON = new JSONObject(jsonString);
+        } catch (JSONException ex) {
+            Logger.error("Unable to parse capacitor.config.json. Make sure it's valid json", ex);
+        } catch (IOException ex) {
+            Logger.error("Unable to load capacitor.config.json.", ex);
+        }
+    }
+    /**
+     * Deserializes the config from JSON into a Capacitor Configuration object.
+     */
+    private void deserializeConfig(@Nullable Context context) {
+        boolean isDebug = context != null && (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        // Server
+        html5mode = JSONUtils.getBoolean(configJSON, "server.html5mode", html5mode);
+        serverUrl = JSONUtils.getString(configJSON, "server.url", null);
+        hostname = JSONUtils.getString(configJSON, "server.hostname", hostname);
+        errorPath = JSONUtils.getString(configJSON, "server.errorPath", null);
+        String configSchema = JSONUtils.getString(configJSON, "server.androidScheme", androidScheme);
+        if (this.validateScheme(configSchema)) {
+            androidScheme = configSchema;
+        }
+        allowNavigation = JSONUtils.getArray(configJSON, "server.allowNavigation", null);
+        // Android
+        overriddenUserAgentString = JSONUtils.getString(
+            configJSON,
+            "android.overrideUserAgent",
+            JSONUtils.getString(configJSON, "overrideUserAgent", null)
+        );
+        appendedUserAgentString = JSONUtils.getString(
+            configJSON,
+            "android.appendUserAgent",
+            JSONUtils.getString(configJSON, "appendUserAgent", null)
+        );
+        backgroundColor = JSONUtils.getString(
+            configJSON,
+            "android.backgroundColor",
+            JSONUtils.getString(configJSON, "backgroundColor", null)
+        );
+        allowMixedContent = JSONUtils.getBoolean(
+            configJSON,
+            "android.allowMixedContent",
+            JSONUtils.getBoolean(configJSON, "allowMixedContent", allowMixedContent)
+        );
+        minWebViewVersion = JSONUtils.getInt(configJSON, "android.minWebViewVersion", DEFAULT_ANDROID_WEBVIEW_VERSION);
+        minHuaweiWebViewVersion = JSONUtils.getInt(configJSON, "android.minHuaweiWebViewVersion", DEFAULT_HUAWEI_WEBVIEW_VERSION);
+        captureInput = JSONUtils.getBoolean(configJSON, "android.captureInput", captureInput);
+        useLegacyBridge = JSONUtils.getBoolean(configJSON, "android.useLegacyBridge", useLegacyBridge);
+        webContentsDebuggingEnabled = JSONUtils.getBoolean(configJSON, "android.webContentsDebuggingEnabled", isDebug);
+        zoomableWebView = JSONUtils.getBoolean(configJSON, "android.zoomEnabled", JSONUtils.getBoolean(configJSON, "zoomEnabled", false));
+        String logBehavior = JSONUtils.getString(
+            configJSON,
+            "android.loggingBehavior",
+            JSONUtils.getString(configJSON, "loggingBehavior", LOG_BEHAVIOR_DEBUG)
+        );
+        switch (logBehavior.toLowerCase(Locale.ROOT)) {
+            case LOG_BEHAVIOR_PRODUCTION:
+                loggingEnabled = true;
+                break;
+            case LOG_BEHAVIOR_NONE:
+                loggingEnabled = false;
+                break;
+            default: // LOG_BEHAVIOR_DEBUG
+                loggingEnabled = isDebug;
+        }
+        initialFocus = JSONUtils.getBoolean(configJSON, "android.initialFocus", initialFocus);
+        // Plugins
+        pluginsConfiguration = deserializePluginsConfig(JSONUtils.getObject(configJSON, "plugins"));
+    }
+    private boolean validateScheme(String scheme) {
+        List<String> invalidSchemes = Arrays.asList("file", "ftp", "ftps", "ws", "wss", "about", "blob", "data");
+        if (invalidSchemes.contains(scheme)) {
+            Logger.warn(scheme + " is not an allowed scheme.  Defaulting to https.");
+            return false;
+        }
+        // Non-http(s) schemes are not allowed to modify the URL path as of Android Webview 117
+        if (!scheme.equals("http") && !scheme.equals("https")) {
+            Logger.warn(
+                "Using a non-standard scheme: " + scheme + " for Android. This is known to cause issues as of Android Webview 117."
+            );
+        }
+        return true;
+    }
+    public boolean isHTML5Mode() {
+        return html5mode;
+    }
+    public String getServerUrl() {
+        return serverUrl;
+    }
+    public String getErrorPath() {
+        return errorPath;
+    }
+    public String getHostname() {
+        return hostname;
+    }
+    public String getStartPath() {
+        return startPath;
+    }
+    public String getAndroidScheme() {
+        return androidScheme;
+    }
+    public String[] getAllowNavigation() {
+        return allowNavigation;
+    }
+    public String getOverriddenUserAgentString() {
+        return overriddenUserAgentString;
+    }
+    public String getAppendedUserAgentString() {
+        return appendedUserAgentString;
+    }
+    public String getBackgroundColor() {
+        return backgroundColor;
+    }
+    public boolean isMixedContentAllowed() {
+        return allowMixedContent;
+    }
+    public boolean isInputCaptured() {
+        return captureInput;
+    }
+    public boolean isWebContentsDebuggingEnabled() {
+        return webContentsDebuggingEnabled;
+    }
+    public boolean isZoomableWebView() {
+        return zoomableWebView;
+    }
+    public boolean isLoggingEnabled() {
+        return loggingEnabled;
+    }
+    public boolean isInitialFocus() {
+        return initialFocus;
+    }
+    public boolean isUsingLegacyBridge() {
+        return useLegacyBridge;
+    }
+    public int getMinWebViewVersion() {
+        if (minWebViewVersion < MINIMUM_ANDROID_WEBVIEW_VERSION) {
+            Logger.warn("Specified minimum webview version is too low, defaulting to " + MINIMUM_ANDROID_WEBVIEW_VERSION);
+            return MINIMUM_ANDROID_WEBVIEW_VERSION;
+        }
+        return minWebViewVersion;
+    }
+    public int getMinHuaweiWebViewVersion() {
+        if (minHuaweiWebViewVersion < MINIMUM_HUAWEI_WEBVIEW_VERSION) {
+            Logger.warn("Specified minimum Huawei webview version is too low, defaulting to " + MINIMUM_HUAWEI_WEBVIEW_VERSION);
+            return MINIMUM_HUAWEI_WEBVIEW_VERSION;
+        }
+        return minHuaweiWebViewVersion;
+    }
+    public PluginConfig getPluginConfiguration(String pluginId) {
+        PluginConfig pluginConfig = pluginsConfiguration.get(pluginId);
+        if (pluginConfig == null) {
+            pluginConfig = new PluginConfig(new JSONObject());
+        }
+        return pluginConfig;
+    }
+    /**
+     * Get a JSON object value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getObject(String)}  to access plugin config values.
+     * For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @return The value from the config, if exists. Null if not
+     */
+    @Deprecated
+    public JSONObject getObject(String key) {
+        try {
+            return configJSON.getJSONObject(key);
+        } catch (Exception ex) {}
+        return null;
+    }
+    /**
+     * Get a string value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getString(String, String)} to access plugin config
+     * values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @return The value from the config, if exists. Null if not
+     */
+    @Deprecated
+    public String getString(String key) {
+        return JSONUtils.getString(configJSON, key, null);
+    }
+    /**
+     * Get a string value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getString(String, String)} to access plugin config
+     * values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    @Deprecated
+    public String getString(String key, String defaultValue) {
+        return JSONUtils.getString(configJSON, key, defaultValue);
+    }
+    /**
+     * Get a boolean value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getBoolean(String, boolean)} to access plugin config
+     * values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    @Deprecated
+    public boolean getBoolean(String key, boolean defaultValue) {
+        return JSONUtils.getBoolean(configJSON, key, defaultValue);
+    }
+    /**
+     * Get an integer value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getInt(String, int)}  to access the plugin config
+     * values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    @Deprecated
+    public int getInt(String key, int defaultValue) {
+        return JSONUtils.getInt(configJSON, key, defaultValue);
+    }
+    /**
+     * Get a string array value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getArray(String)}  to access the plugin config
+     * values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @return The value from the config, if exists. Null if not
+     */
+    @Deprecated
+    public String[] getArray(String key) {
+        return JSONUtils.getArray(configJSON, key, null);
+    }
+    /**
+     * Get a string array value from the Capacitor config.
+     * @deprecated use {@link PluginConfig#getArray(String, String[])}  to access the plugin
+     * config values. For main Capacitor config values, use the appropriate getter.
+     *
+     * @param key A key to fetch from the config
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    @Deprecated
+    public String[] getArray(String key, String[] defaultValue) {
+        return JSONUtils.getArray(configJSON, key, defaultValue);
+    }
+    private static Map<String, PluginConfig> deserializePluginsConfig(JSONObject pluginsConfig) {
+        Map<String, PluginConfig> pluginsMap = new HashMap<>();
+        // return an empty map if there is no pluginsConfig json
+        if (pluginsConfig == null) {
+            return pluginsMap;
+        }
+        Iterator<String> pluginIds = pluginsConfig.keys();
+        while (pluginIds.hasNext()) {
+            String pluginId = pluginIds.next();
+            JSONObject value = null;
+            try {
+                value = pluginsConfig.getJSONObject(pluginId);
+                PluginConfig pluginConfig = new PluginConfig(value);
+                pluginsMap.put(pluginId, pluginConfig);
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+        return pluginsMap;
+    }
+    /**
+     * Builds a Capacitor Configuration in code
+     */
+    public static class Builder {
+        private Context context;
+        // Server Config Values
+        private boolean html5mode = true;
+        private String serverUrl;
+        private String errorPath;
+        private String hostname = "localhost";
+        private String androidScheme = CAPACITOR_HTTPS_SCHEME;
+        private String[] allowNavigation;
+        // Android Config Values
+        private String overriddenUserAgentString;
+        private String appendedUserAgentString;
+        private String backgroundColor;
+        private boolean allowMixedContent = false;
+        private boolean captureInput = false;
+        private Boolean webContentsDebuggingEnabled = null;
+        private boolean loggingEnabled = true;
+        private boolean initialFocus = false;
+        private boolean useLegacyBridge = false;
+        private int minWebViewVersion = DEFAULT_ANDROID_WEBVIEW_VERSION;
+        private int minHuaweiWebViewVersion = DEFAULT_HUAWEI_WEBVIEW_VERSION;
+        private boolean zoomableWebView = false;
+        // Embedded
+        private String startPath = null;
+        // Plugins Config Object
+        private Map<String, PluginConfig> pluginsConfiguration = new HashMap<>();
+        /**
+         * Constructs a new CapConfig Builder.
+         *
+         * @param context The context
+         */
+        public Builder(Context context) {
+            this.context = context;
+        }
+        /**
+         * Builds a Capacitor Config from the builder.
+         *
+         * @return A new Capacitor Config
+         */
+        public CapConfig create() {
+            if (webContentsDebuggingEnabled == null) {
+                webContentsDebuggingEnabled = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+            }
+            return new CapConfig(this);
+        }
+        public Builder setPluginsConfiguration(JSONObject pluginsConfiguration) {
+            this.pluginsConfiguration = deserializePluginsConfig(pluginsConfiguration);
+            return this;
+        }
+        public Builder setHTML5mode(boolean html5mode) {
+            this.html5mode = html5mode;
+            return this;
+        }
+        public Builder setServerUrl(String serverUrl) {
+            this.serverUrl = serverUrl;
+            return this;
+        }
+        public Builder setErrorPath(String errorPath) {
+            this.errorPath = errorPath;
+            return this;
+        }
+        public Builder setHostname(String hostname) {
+            this.hostname = hostname;
+            return this;
+        }
+        public Builder setStartPath(String path) {
+            this.startPath = path;
+            return this;
+        }
+        public Builder setAndroidScheme(String androidScheme) {
+            this.androidScheme = androidScheme;
+            return this;
+        }
+        public Builder setAllowNavigation(String[] allowNavigation) {
+            this.allowNavigation = allowNavigation;
+            return this;
+        }
+        public Builder setOverriddenUserAgentString(String overriddenUserAgentString) {
+            this.overriddenUserAgentString = overriddenUserAgentString;
+            return this;
+        }
+        public Builder setAppendedUserAgentString(String appendedUserAgentString) {
+            this.appendedUserAgentString = appendedUserAgentString;
+            return this;
+        }
+        public Builder setBackgroundColor(String backgroundColor) {
+            this.backgroundColor = backgroundColor;
+            return this;
+        }
+        public Builder setAllowMixedContent(boolean allowMixedContent) {
+            this.allowMixedContent = allowMixedContent;
+            return this;
+        }
+        public Builder setCaptureInput(boolean captureInput) {
+            this.captureInput = captureInput;
+            return this;
+        }
+        public Builder setUseLegacyBridge(boolean useLegacyBridge) {
+            this.useLegacyBridge = useLegacyBridge;
+            return this;
+        }
+        public Builder setWebContentsDebuggingEnabled(boolean webContentsDebuggingEnabled) {
+            this.webContentsDebuggingEnabled = webContentsDebuggingEnabled;
+            return this;
+        }
+        public Builder setZoomableWebView(boolean zoomableWebView) {
+            this.zoomableWebView = zoomableWebView;
+            return this;
+        }
+        public Builder setLoggingEnabled(boolean enabled) {
+            this.loggingEnabled = enabled;
+            return this;
+        }
+        public Builder setInitialFocus(boolean focus) {
+            this.initialFocus = focus;
+            return this;
+        }
+    }
+}
+package com.getcapacitor;
+import com.getcapacitor.util.JSONUtils;
+import org.json.JSONObject;
+/**
+ * Represents the configuration options for plugins used by Capacitor
+ */
+public class PluginConfig {
+    /**
+     * The object containing plugin config values.
+     */
+    private final JSONObject config;
+    /**
+     * Constructs a PluginsConfig with the provided JSONObject value.
+     *
+     * @param config A plugin configuration expressed as a JSON Object
+     */
+    PluginConfig(JSONObject config) {
+        this.config = config;
+    }
+    /**
+     * Get a string value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @return The value from the config, if exists. Null if not
+     */
+    public String getString(String configKey) {
+        return getString(configKey, null);
+    }
+    /**
+     * Get a string value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    public String getString(String configKey, String defaultValue) {
+        return JSONUtils.getString(config, configKey, defaultValue);
+    }
+    /**
+     * Get a boolean value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    public boolean getBoolean(String configKey, boolean defaultValue) {
+        return JSONUtils.getBoolean(config, configKey, defaultValue);
+    }
+    /**
+     * Get an integer value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    public int getInt(String configKey, int defaultValue) {
+        return JSONUtils.getInt(config, configKey, defaultValue);
+    }
+    /**
+     * Get a string array value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @return The value from the config, if exists. Null if not
+     */
+    public String[] getArray(String configKey) {
+        return getArray(configKey, null);
+    }
+    /**
+     * Get a string array value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @param defaultValue A default value to return if the key does not exist in the config
+     * @return The value from the config, if key exists. Default value returned if not
+     */
+    public String[] getArray(String configKey, String[] defaultValue) {
+        return JSONUtils.getArray(config, configKey, defaultValue);
+    }
+    /**
+     * Get a JSON object value for a plugin in the Capacitor config.
+     *
+     * @param configKey The key of the value to retrieve
+     * @return The value from the config, if exists. Null if not
+     */
+    public JSONObject getObject(String configKey) {
+        return JSONUtils.getObject(config, configKey);
+    }
+    /**
+     * Check if the PluginConfig is empty.
+     *
+     * @return true if the plugin config has no entries
+     */
+    public boolean isEmpty() {
+        return config.length() == 0;
+    }
+    /**
+     * Gets the JSON Object containing the config of the the provided plugin ID.
+     *
+     * @return The config for that plugin
+     */
+    public JSONObject getConfigJSON() {
+        return config;
+    }
+}
+package com.getcapacitor;
+import android.text.TextUtils;
+import android.util.Log;
+public class Logger {
+    public static final String LOG_TAG_CORE = "Capacitor";
+    public static CapConfig config;
+    private static Logger instance;
+    private static Logger getInstance() {
+        if (instance == null) {
+            instance = new Logger();
+        }
+        return instance;
+    }
+    public static void init(CapConfig config) {
+        Logger.getInstance().loadConfig(config);
+    }
+    private void loadConfig(CapConfig config) {
+        Logger.config = config;
+    }
+    public static String tags(String... subtags) {
+        if (subtags != null && subtags.length > 0) {
+            return LOG_TAG_CORE + "/" + TextUtils.join("/", subtags);
+        }
+        return LOG_TAG_CORE;
+    }
+    public static void verbose(String message) {
+        verbose(LOG_TAG_CORE, message);
+    }
+    public static void verbose(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.v(tag, message);
+    }
+    public static void debug(String message) {
+        debug(LOG_TAG_CORE, message);
+    }
+    public static void debug(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.d(tag, message);
+    }
+    public static void info(String message) {
+        info(LOG_TAG_CORE, message);
+    }
+    public static void info(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.i(tag, message);
+    }
+    public static void warn(String message) {
+        warn(LOG_TAG_CORE, message);
+    }
+    public static void warn(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.w(tag, message);
+    }
+    public static void error(String message) {
+        error(LOG_TAG_CORE, message, null);
+    }
+    public static void error(String message, Throwable e) {
+        error(LOG_TAG_CORE, message, e);
+    }
+    public static void error(String tag, String message, Throwable e) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.e(tag, message, e);
+    }
+    public static boolean shouldLog() {
+        return config == null || config.isLoggingEnabled();
+    }
+}
+package com.getcapacitor;
+import android.content.Context;
+import android.content.res.TypedArray;
+import android.os.Bundle;
+import android.util.AttributeSet;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.fragment.app.Fragment;
+import com.getcapacitor.android.R;
+import java.util.ArrayList;
+import java.util.List;
+/**
+ * A simple {@link Fragment} subclass.
+ * Use the {@link BridgeFragment#newInstance} factory method to
+ * create an instance of this fragment.
+ */
+public class BridgeFragment extends Fragment {
+    private static final String ARG_START_DIR = "startDir";
+    protected Bridge bridge;
+    protected boolean keepRunning = true;
+    private final List<Class<? extends Plugin>> initialPlugins = new ArrayList<>();
+    private CapConfig config = null;
+    private final List<WebViewListener> webViewListeners = new ArrayList<>();
+    public BridgeFragment() {
+        // Required empty public constructor
+    }
+    /**
+     * Use this factory method to create a new instance of
+     * this fragment using the provided parameters.
+     *
+     * @param startDir the directory to serve content from
+     * @return A new instance of fragment BridgeFragment.
+     */
+    public static BridgeFragment newInstance(String startDir) {
+        BridgeFragment fragment = new BridgeFragment();
+        Bundle args = new Bundle();
+        args.putString(ARG_START_DIR, startDir);
+        fragment.setArguments(args);
+        return fragment;
+    }
+    public void addPlugin(Class<? extends Plugin> plugin) {
+        this.initialPlugins.add(plugin);
+    }
+    public void setConfig(CapConfig config) {
+        this.config = config;
+    }
+    public Bridge getBridge() {
+        return bridge;
+    }
+    public void addWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.add(webViewListener);
+    }
+    /**
+     * Load the WebView and create the Bridge
+     */
+    protected void load(Bundle savedInstanceState) {
+        Logger.debug("Loading Bridge with BridgeFragment");
+        Bundle args = getArguments();
+        String startDir = null;
+        if (args != null) {
+            startDir = getArguments().getString(ARG_START_DIR);
+        }
+        bridge = new Bridge.Builder(this)
+            .setInstanceState(savedInstanceState)
+            .setPlugins(initialPlugins)
+            .setConfig(config)
+            .addWebViewListeners(webViewListeners)
+            .create();
+        if (startDir != null) {
+            bridge.setServerAssetPath(startDir);
+        }
+        this.keepRunning = bridge.shouldKeepRunning();
+    }
+    @Override
+    public void onInflate(Context context, AttributeSet attrs, Bundle savedInstanceState) {
+        super.onInflate(context, attrs, savedInstanceState);
+        TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.bridge_fragment);
+        CharSequence c = a.getString(R.styleable.bridge_fragment_start_dir);
+        if (c != null) {
+            String startDir = c.toString();
+            Bundle args = new Bundle();
+            args.putString(ARG_START_DIR, startDir);
+            setArguments(args);
+        }
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+    }
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        // Inflate the layout for this fragment
+        return inflater.inflate(R.layout.fragment_bridge, container, false);
+    }
+    @Override
+    public void onViewCreated(View view, Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        this.load(savedInstanceState);
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (this.bridge != null) {
+            this.bridge.onDestroy();
+        }
+    }
+}
+/**
+ * Portions adopted from react-native-image-crop-picker
+ *
+ * MIT License
+ * Copyright (c) 2017 Ivan Pusic
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+package com.getcapacitor;
+import android.content.ContentUris;
+import android.content.Context;
+import android.content.res.AssetManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Environment;
+import android.provider.DocumentsContract;
+import android.provider.MediaStore;
+import android.provider.OpenableColumns;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+/**
+ * Common File utilities, such as resolve content URIs and
+ * creating portable web paths from low-level files
+ */
+public class FileUtils {
+    private static String CapacitorFileScheme = Bridge.CAPACITOR_FILE_START;
+    public enum Type {
+        IMAGE("image");
+        private String type;
+        Type(String type) {
+            this.type = type;
+        }
+    }
+    public static String getPortablePath(Context c, String host, Uri u) {
+        String path = getFileUrlForUri(c, u);
+        if (path.startsWith("file://")) {
+            path = path.replace("file://", "");
+        }
+        return host + Bridge.CAPACITOR_FILE_START + path;
+    }
+    public static String getFileUrlForUri(final Context context, final Uri uri) {
+        // DocumentProvider
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            // ExternalStorageProvider
+            if (isExternalStorageDocument(uri)) {
+                final String docId = DocumentsContract.getDocumentId(uri);
+                final String[] split = docId.split(":");
+                final String type = split[0];
+                if ("primary".equalsIgnoreCase(type)) {
+                    return legacyPrimaryPath(split[1]);
+                } else {
+                    final int splitIndex = docId.indexOf(':', 1);
+                    final String tag = docId.substring(0, splitIndex);
+                    final String path = docId.substring(splitIndex + 1);
+                    String nonPrimaryVolume = getPathToNonPrimaryVolume(context, tag);
+                    if (nonPrimaryVolume != null) {
+                        String result = nonPrimaryVolume + "/" + path;
+                        File file = new File(result);
+                        if (file.exists() && file.canRead()) {
+                            return result;
+                        }
+                        return null;
+                    }
+                }
+            }
+            // DownloadsProvider
+            else if (isDownloadsDocument(uri)) {
+                final String id = DocumentsContract.getDocumentId(uri);
+                final Uri contentUri = ContentUris.withAppendedId(Uri.parse("content://downloads/public_downloads"), Long.valueOf(id));
+                return getDataColumn(context, contentUri, null, null);
+            }
+            // MediaProvider
+            else if (isMediaDocument(uri)) {
+                final String docId = DocumentsContract.getDocumentId(uri);
+                final String[] split = docId.split(":");
+                final String type = split[0];
+                Uri contentUri = null;
+                if ("image".equals(type)) {
+                    contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                } else if ("video".equals(type)) {
+                    contentUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                } else if ("audio".equals(type)) {
+                    contentUri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+                }
+                final String selection = "_id=?";
+                final String[] selectionArgs = new String[] { split[1] };
+                return getDataColumn(context, contentUri, selection, selectionArgs);
+            }
+        }
+        // MediaStore (and general)
+        else if ("content".equalsIgnoreCase(uri.getScheme())) {
+            // Return the remote address
+            if (isGooglePhotosUri(uri)) return uri.getLastPathSegment();
+            return getDataColumn(context, uri, null, null);
+        }
+        // File
+        else if ("file".equalsIgnoreCase(uri.getScheme())) {
+            return uri.getPath();
+        }
+        return null;
+    }
+    @SuppressWarnings("deprecation")
+    private static String legacyPrimaryPath(String pathPart) {
+        return Environment.getExternalStorageDirectory() + "/" + pathPart;
+    }
+    /**
+     * Read a plaintext file from the assets directory.
+     *
+     * @param assetManager Used to open the file.
+     * @param fileName The path of the file to read.
+     * @return The contents of the file path.
+     * @throws IOException Thrown if any issues reading the provided file path.
+     */
+    static String readFileFromAssets(AssetManager assetManager, String fileName) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(assetManager.open(fileName)))) {
+            StringBuilder buffer = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                buffer.append(line).append("\n");
+            }
+            return buffer.toString();
+        }
+    }
+    /**
+     * Read a plaintext file from within the app disk space.
+     *
+     * @param file The file to read.
+     * @return The contents of the file path.
+     * @throws IOException Thrown if any issues reading the provided file path.
+     */
+    static String readFileFromDisk(File file) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            StringBuilder buffer = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                buffer.append(line).append("\n");
+            }
+            return buffer.toString();
+        }
+    }
+    /**
+     * Get the value of the data column for this Uri. This is useful for
+     * MediaStore Uris, and other file-based ContentProviders.
+     *
+     * @param context The context.
+     * @param uri The Uri to query.
+     * @param selection (Optional) Filter used in the query.
+     * @param selectionArgs (Optional) Selection arguments used in the query.
+     * @return The value of the _data column, which is typically a file path.
+     */
+    private static String getDataColumn(Context context, Uri uri, String selection, String[] selectionArgs) {
+        String path = null;
+        Cursor cursor = null;
+        final String column = "_data";
+        final String[] projection = { column };
+        try {
+            cursor = context.getContentResolver().query(uri, projection, selection, selectionArgs, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                final int index = cursor.getColumnIndexOrThrow(column);
+                path = cursor.getString(index);
+            }
+        } catch (IllegalArgumentException ex) {
+            return getCopyFilePath(uri, context);
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        if (path == null) {
+            return getCopyFilePath(uri, context);
+        }
+        return path;
+    }
+    private static String getCopyFilePath(Uri uri, Context context) {
+        Cursor cursor = context.getContentResolver().query(uri, null, null, null, null);
+        int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+        cursor.moveToFirst();
+        String name = (cursor.getString(nameIndex));
+        File file = new File(context.getFilesDir(), name);
+        try {
+            InputStream inputStream = context.getContentResolver().openInputStream(uri);
+            FileOutputStream outputStream = new FileOutputStream(file);
+            int read = 0;
+            int maxBufferSize = 1024 * 1024;
+            int bufferSize = Math.min(inputStream.available(), maxBufferSize);
+            final byte[] buffers = new byte[bufferSize];
+            while ((read = inputStream.read(buffers)) != -1) {
+                outputStream.write(buffers, 0, read);
+            }
+            inputStream.close();
+            outputStream.close();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+        return file.getPath();
+    }
+    /**
+     * @param uri The Uri to check.
+     * @return Whether the Uri authority is ExternalStorageProvider.
+     */
+    private static boolean isExternalStorageDocument(Uri uri) {
+        return "com.android.externalstorage.documents".equals(uri.getAuthority());
+    }
+    /**
+     * @param uri The Uri to check.
+     * @return Whether the Uri authority is DownloadsProvider.
+     */
+    private static boolean isDownloadsDocument(Uri uri) {
+        return "com.android.providers.downloads.documents".equals(uri.getAuthority());
+    }
+    /**
+     * @param uri The Uri to check.
+     * @return Whether the Uri authority is MediaProvider.
+     */
+    private static boolean isMediaDocument(Uri uri) {
+        return "com.android.providers.media.documents".equals(uri.getAuthority());
+    }
+    /**
+     * @param uri The Uri to check.
+     * @return Whether the Uri authority is Google Photos.
+     */
+    private static boolean isGooglePhotosUri(Uri uri) {
+        return "com.google.android.apps.photos.content".equals(uri.getAuthority());
+    }
+    private static String getPathToNonPrimaryVolume(Context context, String tag) {
+        File[] volumes = context.getExternalCacheDirs();
+        if (volumes != null) {
+            for (File volume : volumes) {
+                if (volume != null) {
+                    String path = volume.getAbsolutePath();
+                    if (path != null) {
+                        int index = path.indexOf(tag);
+                        if (index != -1) {
+                            return path.substring(0, index) + tag;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+}
+package com.getcapacitor;
+import android.content.Context;
+import android.util.AttributeSet;
+import android.view.KeyEvent;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.webkit.WebView;
+public class CapacitorWebView extends WebView {
+    private BaseInputConnection capInputConnection;
+    private Bridge bridge;
+    public CapacitorWebView(Context context, AttributeSet attrs) {
+        super(context, attrs);
+    }
+    public void setBridge(Bridge bridge) {
+        this.bridge = bridge;
+    }
+    @Override
+    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        CapConfig config;
+        if (bridge != null) {
+            config = bridge.getConfig();
+        } else {
+            config = CapConfig.loadDefault(getContext());
+        }
+        boolean captureInput = config.isInputCaptured();
+        if (captureInput) {
+            if (capInputConnection == null) {
+                capInputConnection = new BaseInputConnection(this, false);
+            }
+            return capInputConnection;
+        }
+        return super.onCreateInputConnection(outAttrs);
+    }
+    @Override
+    @SuppressWarnings("deprecation")
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_MULTIPLE) {
+            evaluateJavascript("document.activeElement.value = document.activeElement.value + '" + event.getCharacters() + "';", null);
+            return false;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+}
+package com.getcapacitor;
+import android.content.Intent;
+import android.content.res.Configuration;
+import android.os.Bundle;
+import androidx.appcompat.app.AppCompatActivity;
+import com.getcapacitor.android.R;
+import java.util.ArrayList;
+import java.util.List;
+public class BridgeActivity extends AppCompatActivity {
+    protected Bridge bridge;
+    protected boolean keepRunning = true;
+    protected CapConfig config;
+    protected int activityDepth = 0;
+    protected List<Class<? extends Plugin>> initialPlugins = new ArrayList<>();
+    protected final Bridge.Builder bridgeBuilder = new Bridge.Builder(this);
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        bridgeBuilder.setInstanceState(savedInstanceState);
+        getApplication().setTheme(R.style.AppTheme_NoActionBar);
+        setTheme(R.style.AppTheme_NoActionBar);
+        try {
+            setContentView(R.layout.bridge_layout_main);
+        } catch (Exception ex) {
+            setContentView(R.layout.no_webview);
+            return;
+        }
+        PluginManager loader = new PluginManager(getAssets());
+        try {
+            bridgeBuilder.addPlugins(loader.loadPluginClasses());
+        } catch (PluginLoadException ex) {
+            Logger.error("Error loading plugins.", ex);
+        }
+        this.load();
+    }
+    protected void load() {
+        Logger.debug("Starting BridgeActivity");
+        bridge = bridgeBuilder.addPlugins(initialPlugins).setConfig(config).create();
+        this.keepRunning = bridge.shouldKeepRunning();
+        this.onNewIntent(getIntent());
+    }
+    public void registerPlugin(Class<? extends Plugin> plugin) {
+        bridgeBuilder.addPlugin(plugin);
+    }
+    public void registerPlugins(List<Class<? extends Plugin>> plugins) {
+        bridgeBuilder.addPlugins(plugins);
+    }
+    public Bridge getBridge() {
+        return this.bridge;
+    }
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        bridge.saveInstanceState(outState);
+    }
+    @Override
+    public void onStart() {
+        super.onStart();
+        activityDepth++;
+        if (this.bridge != null) {
+            this.bridge.onStart();
+            Logger.debug("App started");
+        }
+    }
+    @Override
+    public void onRestart() {
+        super.onRestart();
+        this.bridge.onRestart();
+        Logger.debug("App restarted");
+    }
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (bridge != null) {
+            bridge.getApp().fireStatusChange(true);
+            this.bridge.onResume();
+            Logger.debug("App resumed");
+        }
+    }
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (bridge != null) {
+            this.bridge.onPause();
+            Logger.debug("App paused");
+        }
+    }
+    @Override
+    public void onStop() {
+        super.onStop();
+        if (bridge != null) {
+            activityDepth = Math.max(0, activityDepth - 1);
+            if (activityDepth == 0) {
+                bridge.getApp().fireStatusChange(false);
+            }
+            this.bridge.onStop();
+            Logger.debug("App stopped");
+        }
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (this.bridge != null) {
+            this.bridge.onDestroy();
+            Logger.debug("App destroyed");
+        }
+    }
+    @Override
+    public void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        this.bridge.onDetachedFromWindow();
+    }
+    /**
+     * Handles permission request results.
+     *
+     * Capacitor is backwards compatible such that plugins using legacy permission request codes
+     * may coexist with plugins using the AndroidX Activity v1.2 permission callback flow introduced
+     * in Capacitor 3.0.
+     *
+     * In this method, plugins are checked first for ownership of the legacy permission request code.
+     * If the {@link Bridge#onRequestPermissionsResult(int, String[], int[])} method indicates it has
+     * handled the permission, then the permission callback will be considered complete. Otherwise,
+     * the permission will be handled using the AndroidX Activity flow.
+     *
+     * @param requestCode the request code associated with the permission request
+     * @param permissions the Android permission strings requested
+     * @param grantResults the status result of the permission request
+     */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (this.bridge == null) {
+            return;
+        }
+        if (!bridge.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        }
+    }
+    /**
+     * Handles activity results.
+     *
+     * Capacitor is backwards compatible such that plugins using legacy activity result codes
+     * may coexist with plugins using the AndroidX Activity v1.2 activity callback flow introduced
+     * in Capacitor 3.0.
+     *
+     * In this method, plugins are checked first for ownership of the legacy request code. If the
+     * {@link Bridge#onActivityResult(int, int, Intent)} method indicates it has handled the activity
+     * result, then the callback will be considered complete. Otherwise, the result will be handled
+     * using the AndroidX Activiy flow.
+     *
+     * @param requestCode the request code associated with the activity result
+     * @param resultCode the result code
+     * @param data any data included with the activity result
+     */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (this.bridge == null) {
+            return;
+        }
+        if (!bridge.onActivityResult(requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data);
+        }
+    }
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (this.bridge == null || intent == null) {
+            return;
+        }
+        this.bridge.onNewIntent(intent);
+    }
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (this.bridge == null) {
+            return;
+        }
+        this.bridge.onConfigurationChanged(newConfig);
+    }
+}
+package com.getcapacitor;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import org.apache.cordova.PluginManager;
+/**
+ * MessageHandler handles messages from the WebView, dispatching them
+ * to plugins.
+ */
+public class MessageHandler {
+    private Bridge bridge;
+    private WebView webView;
+    private PluginManager cordovaPluginManager;
+    private JavaScriptReplyProxy javaScriptReplyProxy;
+    public MessageHandler(Bridge bridge, WebView webView, PluginManager cordovaPluginManager) {
+        this.bridge = bridge;
+        this.webView = webView;
+        this.cordovaPluginManager = cordovaPluginManager;
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
+            WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                if (isMainFrame) {
+                    postMessage(message.getData());
+                    javaScriptReplyProxy = replyProxy;
+                } else {
+                    Logger.warn("Plugin execution is allowed in Main Frame only");
+                }
+            };
+            try {
+                WebViewCompat.addWebMessageListener(webView, "androidBridge", bridge.getAllowedOriginRules(), capListener);
+            } catch (Exception ex) {
+                webView.addJavascriptInterface(this, "androidBridge");
+            }
+        } else {
+            webView.addJavascriptInterface(this, "androidBridge");
+        }
+    }
+    /**
+     * The main message handler that will be called from JavaScript
+     * to send a message to the native bridge.
+     * @param jsonStr
+     */
+    @JavascriptInterface
+    @SuppressWarnings("unused")
+    public void postMessage(String jsonStr) {
+        try {
+            JSObject postData = new JSObject(jsonStr);
+            String type = postData.getString("type");
+            boolean typeIsNotNull = type != null;
+            boolean isCordovaPlugin = typeIsNotNull && type.equals("cordova");
+            boolean isJavaScriptError = typeIsNotNull && type.equals("js.error");
+            String callbackId = postData.getString("callbackId");
+            if (isCordovaPlugin) {
+                String service = postData.getString("service");
+                String action = postData.getString("action");
+                String actionArgs = postData.getString("actionArgs");
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Cordova plugin): callbackId: " +
+                    callbackId +
+                    ", service: " +
+                    service +
+                    ", action: " +
+                    action +
+                    ", actionArgs: " +
+                    actionArgs
+                );
+                this.callCordovaPluginMethod(callbackId, service, action, actionArgs);
+            } else if (isJavaScriptError) {
+                Logger.error("JavaScript Error: " + jsonStr);
+            } else {
+                String pluginId = postData.getString("pluginId");
+                String methodName = postData.getString("methodName");
+                JSObject methodData = postData.getJSObject("options", new JSObject());
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Capacitor plugin): callbackId: " + callbackId + ", pluginId: " + pluginId + ", methodName: " + methodName
+                );
+                this.callPluginMethod(callbackId, pluginId, methodName, methodData);
+            }
+        } catch (Exception ex) {
+            Logger.error("Post message error:", ex);
+        }
+    }
+    public void sendResponseMessage(PluginCall call, PluginResult successResult, PluginResult errorResult) {
+        try {
+            PluginResult data = new PluginResult();
+            data.put("save", call.isKeptAlive());
+            data.put("callbackId", call.getCallbackId());
+            data.put("pluginId", call.getPluginId());
+            data.put("methodName", call.getMethodName());
+            boolean pluginResultInError = errorResult != null;
+            if (pluginResultInError) {
+                data.put("success", false);
+                data.put("error", errorResult);
+                Logger.debug("Sending plugin error: " + data.toString());
+            } else {
+                data.put("success", true);
+                if (successResult != null) {
+                    data.put("data", successResult);
+                }
+            }
+            boolean isValidCallbackId = !call.getCallbackId().equals(PluginCall.CALLBACK_ID_DANGLING);
+            if (isValidCallbackId) {
+                if (bridge.getConfig().isUsingLegacyBridge()) {
+                    legacySendResponseMessage(data);
+                } else if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && javaScriptReplyProxy != null) {
+                    javaScriptReplyProxy.postMessage(data.toString());
+                } else {
+                    legacySendResponseMessage(data);
+                }
+            } else {
+                bridge.getApp().fireRestoredResult(data);
+            }
+        } catch (Exception ex) {
+            Logger.error("sendResponseMessage: error: " + ex);
+        }
+        if (!call.isKeptAlive()) {
+            call.release(bridge);
+        }
+    }
+    private void legacySendResponseMessage(PluginResult data) {
+        final String runScript = "window.Capacitor.fromNative(" + data.toString() + ")";
+        final WebView webView = this.webView;
+        webView.post(() -> webView.evaluateJavascript(runScript, null));
+    }
+    private void callPluginMethod(String callbackId, String pluginId, String methodName, JSObject methodData) {
+        PluginCall call = new PluginCall(this, pluginId, callbackId, methodName, methodData);
+        bridge.callPluginMethod(pluginId, methodName, call);
+    }
+    private void callCordovaPluginMethod(String callbackId, String service, String action, String actionArgs) {
+        bridge.execute(() -> {
+            cordovaPluginManager.exec(service, action, callbackId, actionArgs);
+        });
+    }
+}

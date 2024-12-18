@@ -1,0 +1,1022 @@
+package jscover.instrument;
+import com.google.javascript.jscomp.CompilerOptions;
+import jscover.ConfigurationCommon;
+import jscover.util.IoUtils;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.BDDMockito.given;
+@RunWith(MockitoJUnitRunner.class)
+public class InstrumenterIntegrationTest {
+    @Mock private ConfigurationCommon config;
+    private IoUtils ioUtils = IoUtils.getInstance();
+    private SourceProcessor instrumenter;
+    @Before
+    public void setUp() {
+        given(config.getECMAVersion()).willReturn(CompilerOptions.LanguageMode.ECMASCRIPT_NEXT);
+        given(config.isIncludeBranch()).willReturn(true);
+        given(config.isIncludeFunction()).willReturn(true);
+    }
+    @Test
+    public void shouldInstrumentForFileSystem() {
+        String fileName = "test-simple.js";
+        String source = ioUtils.loadFromClassPath("/" + fileName);
+        instrumenter = new SourceProcessor(config, fileName, source);
+        String instrumentedSource = instrumenter.processSourceForFileSystem();
+        String expectedSource = ioUtils.loadFromClassPath("/test-instrumented-file-system.js");
+        assertEquals(expectedSource.replaceAll("\r\n","\n"), instrumentedSource.replaceAll("\r\n","\n"));
+    }
+    @Test
+    public void shouldInstrumentForServer() {
+        String fileName = "test-simple.js";
+        String source = ioUtils.loadFromClassPath("/" + fileName);
+        instrumenter = new SourceProcessor(config, fileName, source);
+        String instrumentedSource = instrumenter.processSourceForServer();
+        String expectedSource = ioUtils.loadFromClassPath("/test-instrumented-server.js");
+        assertEquals(expectedSource.replaceAll("\r\n","\n"), instrumentedSource.replaceAll("\r\n","\n"));
+    }
+}
+package jscover.instrument;
+import com.google.javascript.jscomp.*;
+import com.google.javascript.rhino.Node;
+import jscover.ConfigurationCommon;
+import jscover.util.IoUtils;
+import java.util.List;
+import java.util.SortedSet;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import static com.google.javascript.jscomp.parsing.Config.JsDocParsing.INCLUDE_DESCRIPTIONS_WITH_WHITESPACE;
+import static java.lang.String.format;
+class SourceProcessor {
+    private static final Logger logger = Logger.getLogger(SourceProcessor.class.getName());
+    private static final String initLine = "  _$jscoverage['%s'].lineData[%d] = 0;\n";
+    private static final String initFunction = "  _$jscoverage['%s'].functionData[%d] = 0;\n";
+    private static final String ignoreJS = "\nif (!(%s)) {\n  _$jscoverage['%s'].conditionals[%d] = %d;\n}";
+    private String uri;
+    private String source;
+    private CommentsHandler commentsHandler = new CommentsHandler();
+    private ParseTreeInstrumenter instrumenter;
+    private BranchInstrumentor branchInstrumentor;
+    private CompilerOptions options;
+    private IoUtils ioUtils = IoUtils.getInstance();
+    private boolean includeBranchCoverage;
+    private boolean includeFunctionCoverage;
+    private boolean localStorage;
+    private boolean isolateBrowser;
+    public SourceProcessor(ConfigurationCommon config, String uri, String source) {
+        this.uri = uri;
+        this.source = source;
+        this.instrumenter = new ParseTreeInstrumenter(uri, config.isIncludeFunction(), commentsHandler);
+        this.branchInstrumentor = new BranchInstrumentor(uri, config.isDetectCoalesce(), commentsHandler);
+        this.options = configureCompilerOption(config.getECMAVersion());
+        this.includeBranchCoverage = config.isIncludeBranch();
+        this.includeFunctionCoverage = config.isIncludeFunction();
+        this.localStorage = config.isLocalStorage();
+        this.isolateBrowser = config.isolateBrowser();
+    }
+    public static CompilerOptions configureCompilerOption(CompilerOptions.LanguageMode ecmaVersion) {
+        CompilerOptions options = new CompilerOptions();
+        options.setLanguageIn(ecmaVersion);
+        options.setPreferSingleQuotes(true);
+        options.setPrettyPrint(true);
+        options.setPreserveDetailedSourceInfo(true);
+        options.setStrictModeInput(false);
+        options.setContinueAfterErrors(true);
+        options.setParseJsDocDocumentation(INCLUDE_DESCRIPTIONS_WITH_WHITESPACE);
+        options.setRemoveUnreachableCode(false);
+        return options;
+    }
+    ParseTreeInstrumenter getInstrumenter() {
+        return instrumenter;
+    }
+    BranchInstrumentor getBranchInstrumentor() {
+        return branchInstrumentor;
+    }
+    public String processSourceForServer() {
+        String reportJS = ioUtils.loadFromClassPath("/report.js");
+        return reportJS + processSource();
+    }
+    public String processSourceForFileSystem() {
+        return processSource();
+    }
+    protected String processSource() {
+        String headerJS = getIsolateBrowserJS() + ioUtils.loadFromClassPath("/header.js");
+        String localStorageJS = localStorage ? ioUtils.loadFromClassPath("/jscoverage-localstorage.js") : "";
+        String commonJS = ioUtils.loadFromClassPath("/jscoverage-common.js");
+        String branchJS = ioUtils.loadFromClassPath("/jscoverage-branch.js");
+        return branchJS + commonJS + localStorageJS + headerJS + processSourceWithoutHeader(uri, source);
+    }
+    private String getIsolateBrowserJS() {
+        return "var jsCover_isolateBrowser = " + (isolateBrowser ? "true" : "false") + ";\n";
+    }
+    protected String processSourceWithoutHeader() {
+        return processSourceWithoutHeader(uri, source);
+    }
+    protected String processSourceWithoutHeader(String sourceURI, String source) {
+        String instrumentedSource = instrumentSource(sourceURI, source);
+        String jsLineInitialization = getJsLineInitialization(uri, instrumenter.getValidLines());
+        if (commentsHandler.getJsCoverageIgnoreComments().size() > 0)
+            jsLineInitialization += format("_$jscoverage['%s'].conditionals = [];\n", uri);
+        if (includeFunctionCoverage)
+            jsLineInitialization += getJsFunctionInitialization(uri, instrumenter.getNumFunctions());
+        if (includeBranchCoverage)
+            jsLineInitialization += branchInstrumentor.getJsLineInitialization();
+        String jsConditionals = getJsConditionals(uri, commentsHandler.getJsCoverageIgnoreComments());
+        return jsLineInitialization + instrumentedSource + jsConditionals;
+    }
+    protected String instrumentSource() {
+        return instrumentSource(uri, source);
+    }
+    protected String instrumentSource(String source) {
+        return instrumentSource(uri, source);
+    }
+    protected String instrumentSource(String sourceURI, String source) {
+        SourceFile sourceFile = SourceFile.fromCode(sourceURI, source);
+        ErrorManager errorManager = new LoggerErrorManager(logger);
+        com.google.javascript.jscomp.Compiler compiler = new com.google.javascript.jscomp.Compiler(errorManager);
+        compiler.initOptions(options);
+        Node jsRoot = compiler.parse(sourceFile);
+        commentsHandler.processComments(compiler.getComments(sourceURI));
+        NodeWalker nodeWalker = new NodeWalker();
+        nodeWalker.visit(jsRoot, instrumenter);
+        if (includeBranchCoverage) {
+            instrumentBranch(jsRoot, nodeWalker, branchInstrumentor);
+        }
+        return new CodePrinter.Builder(jsRoot).setCompilerOptions(options).build();
+    }
+    static void instrumentBranch(Node jsRoot, NodeWalker nodeWalker, BranchInstrumentor branchInstrumentor) {
+        branchInstrumentor.setAstRoot(jsRoot);
+        int parses = 0;
+        while (++parses <= 1000000) {
+            logger.log(Level.FINEST, "Condition parse number {0}", parses);
+            int conditions = branchInstrumentor.getFunctionWrapperCount();
+            nodeWalker.visitAndExitOnAstChange(jsRoot, branchInstrumentor);
+            if (conditions == branchInstrumentor.getFunctionWrapperCount()) {
+                logger.log(Level.FINE, "No branchInstrumentor condition changes after parse {0}", parses);
+                break;
+            }
+        }
+    }
+    protected String getJsLineInitialization(String fileName, SortedSet<Integer> validLines) {
+        fileName = fileName.replace("\\", "\\\\").replace("'", "\\'");
+        StringBuilder sb = new StringBuilder(format("if (! _$jscoverage['%s']) {\n", fileName));
+        sb.append(format("  _$jscoverage['%s'] = {};\n", fileName));
+        sb.append(format("  _$jscoverage['%s'].lineData = [];\n", fileName));
+        for (Integer line : validLines) {
+            sb.append(format(initLine, fileName, line));
+        }
+        sb.append("}\n");
+        return sb.toString();
+    }
+    protected String getJsFunctionInitialization(String fileName, int numFunction) {
+        fileName = fileName.replace("\\", "\\\\").replace("'", "\\'");
+        StringBuilder sb = new StringBuilder(format("if (! _$jscoverage['%s'].functionData) {\n", fileName));
+        sb.append(format("  _$jscoverage['%s'].functionData = [];\n", fileName));
+        for (int i = 0; i < numFunction; ++i) {
+            sb.append(format(initFunction, fileName, i));
+        }
+        sb.append("}\n");
+        return sb.toString();
+    }
+    private String getJsConditionals(String fileName, List<JSCoverageIgnoreComment> ignores) {
+        fileName = fileName.replace("\\", "\\\\").replace("'", "\\'");
+        StringBuilder sb = new StringBuilder();
+        for (JSCoverageIgnoreComment ignore : ignores) {
+            sb.append(format(ignoreJS, ignore.getCondition(), fileName, ignore.getStart(), ignore.getEnd()));
+        }
+        return sb.toString();
+    }
+}
+package jscover;
+import com.google.javascript.jscomp.CompilerOptions;
+import jscover.util.IoUtils;
+import jscover.util.PatternMatcher;
+import jscover.util.PatternMatcherRegEx;
+import jscover.util.PatternMatcherString;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.regex.PatternSyntaxException;
+import static java.lang.String.format;
+import static java.util.logging.Level.SEVERE;
+import static jscover.Main.HELP_PREFIX1;
+import static jscover.Main.HELP_PREFIX2;
+public class ConfigurationCommon extends Configuration {
+    private static final Logger logger = Logger.getLogger(ConfigurationCommon.class.getName());
+    public static final String ONLY_INSTRUMENT_REG_PREFIX = "--only-instrument-reg=";
+    public static final String NO_INSTRUMENT_PREFIX = "--no-instrument=";
+    public static final String NO_INSTRUMENT_REG_PREFIX = "--no-instrument-reg=";
+    public static final String INCLUDE_UNLOADED_JS_PREFIX = "--include-unloaded-js";
+    public static final String JS_VERSION_PREFIX = "--js-version=";
+    public static final String NO_BRANCH_PREFIX = "--no-branch";
+    public static final String DETECT_COALESCE_PREFIX = "--detect-coalesce";
+    public static final String NO_FUNCTION_PREFIX = "--no-function";
+    public static final String LOCAL_STORAGE_PREFIX = "--local-storage";
+    public static final String ISOLATE_BROWSER_PREFIX = "--isolate-browser";
+    public static final String LOG_LEVEL = "--log=";
+    protected boolean showHelp;
+    protected boolean invalid;
+    protected boolean includeBranch = true;
+    protected boolean detectCoalesce;
+    protected boolean includeFunction = true;
+    protected boolean localStorage;
+    protected boolean isolateBrowser;
+    protected final List<PatternMatcher> patternMatchers = new ArrayList<>();
+    private boolean includeUnloadedJS;
+    protected CompilerOptions.LanguageMode ECMAVersion = CompilerOptions.LanguageMode.ECMASCRIPT_NEXT;
+    protected boolean defaultSkip;
+    protected IoUtils ioUtils = IoUtils.getInstance();
+    protected Level logLevel = SEVERE;
+    public void setIncludeBranch(boolean includeBranch) {
+        this.includeBranch = includeBranch;
+    }
+    public void setDetectCoalesce(boolean detectCoalesce) {
+        this.detectCoalesce = detectCoalesce;
+    }
+    public void setIncludeFunction(boolean includeFunction) {
+        this.includeFunction = includeFunction;
+    }
+    public void setLocalStorage(boolean localStorage) {
+        this.localStorage = localStorage;
+    }
+    public void setIncludeUnloadedJS(boolean includeUnloadedJS) {
+        this.includeUnloadedJS = includeUnloadedJS;
+    }
+    public void setIsolateBrowser(boolean isolateBrowser) {
+        this.isolateBrowser = isolateBrowser;
+    }
+    public void setECMAVersion(CompilerOptions.LanguageMode ECMAVersion) {
+        this.ECMAVersion = ECMAVersion;
+    }
+    public Boolean showHelp() {
+        return showHelp;
+    }
+    public boolean isInvalid() {
+        return invalid;
+    }
+    public boolean isIncludeUnloadedJS() {
+        return includeUnloadedJS;
+    }
+    public boolean isIncludeBranch() {
+        return includeBranch;
+    }
+    public boolean isDetectCoalesce() {
+        return detectCoalesce;
+    }
+    public boolean isIncludeFunction() {
+        return includeFunction;
+    }
+    public boolean isLocalStorage() {
+        return localStorage;
+    }
+    public boolean isolateBrowser() {
+        return isolateBrowser;
+    }
+    public CompilerOptions.LanguageMode getECMAVersion() {
+        return ECMAVersion;
+    }
+    public Level getLogLevel() {
+        return logLevel;
+    }
+    public boolean skipInstrumentation(String uri) {
+        for (PatternMatcher patternMatcher : patternMatchers) {
+            Boolean instrumentIt = patternMatcher.matches(uri);
+            if (instrumentIt != null) {
+                logger.log(Level.FINEST, "Matched URI ''{0}'' Pattern ''{1}'' Skip {2}", new Object[]{uri, patternMatcher, instrumentIt});
+                return instrumentIt;
+            }
+        }
+        return defaultSkip;
+    }
+    protected void setInvalid(String message) {
+        System.err.println(message);
+        showHelp = true;
+        invalid = true;
+    }
+    public void addNoInstrument(String arg) {
+        String uri = arg.substring(NO_INSTRUMENT_PREFIX.length());
+        if (uri.startsWith("/"))
+            uri = uri.substring(1);
+        patternMatchers.add(new PatternMatcherString(uri));
+    }
+    public void addOnlyInstrumentReg(String arg) {
+        String patternString = arg.substring(ONLY_INSTRUMENT_REG_PREFIX.length());
+        if (patternString.startsWith("/"))
+            patternString = patternString.substring(1);
+        defaultSkip = true;
+        try {
+            patternMatchers.add(PatternMatcherRegEx.getIncludePatternMatcher(patternString));
+        } catch (PatternSyntaxException e) {
+            setInvalid(format("Invalid pattern '%s'", patternString));
+            e.printStackTrace(System.err);
+        }
+    }
+    public void addNoInstrumentReg(String arg) {
+        String patternString = arg.substring(NO_INSTRUMENT_REG_PREFIX.length());
+        if (patternString.startsWith("/"))
+            patternString = patternString.substring(1);
+        try {
+            patternMatchers.add(PatternMatcherRegEx.getExcludePatternMatcher(patternString));
+        } catch (PatternSyntaxException e) {
+            e.printStackTrace(System.err);
+            setInvalid(format("Invalid pattern '%s'", patternString));
+        }
+    }
+    protected boolean parseArg(String arg) {
+        if (arg.equals(HELP_PREFIX1) || arg.equals(HELP_PREFIX2)) {
+            showHelp = true;
+        } else if (arg.equals(NO_BRANCH_PREFIX)) {
+            includeBranch = false;
+        } else if (arg.equals(NO_FUNCTION_PREFIX)) {
+            includeFunction = false;
+        } else if (arg.equals(DETECT_COALESCE_PREFIX)) {
+            detectCoalesce = true;
+        } else if (arg.equals(INCLUDE_UNLOADED_JS_PREFIX)) {
+            includeUnloadedJS = true;
+        } else if (arg.equals(LOCAL_STORAGE_PREFIX)) {
+            if (isolateBrowser)
+                throw new IllegalArgumentException("Cannot combine '" + LOCAL_STORAGE_PREFIX + "' and '" + ISOLATE_BROWSER_PREFIX + "'.");
+            localStorage = true;
+        } else if (arg.equals(ISOLATE_BROWSER_PREFIX)) {
+            if (localStorage)
+                throw new IllegalArgumentException("Cannot combine '" + LOCAL_STORAGE_PREFIX + "' and '" + ISOLATE_BROWSER_PREFIX + "'.");
+            isolateBrowser = true;
+        } else if (arg.startsWith(NO_INSTRUMENT_PREFIX)) {
+            addNoInstrument(arg);
+        } else if (arg.startsWith(NO_INSTRUMENT_REG_PREFIX)) {
+            addNoInstrumentReg(arg);
+        } else if (arg.startsWith(ONLY_INSTRUMENT_REG_PREFIX)) {
+            addOnlyInstrumentReg(arg);
+        } else if (arg.startsWith(JS_VERSION_PREFIX)) {
+            ECMAVersion = CompilerOptions.LanguageMode.valueOf(arg.substring(JS_VERSION_PREFIX.length()));
+        } else if (arg.startsWith(LOG_LEVEL)) {
+            logLevel = Level.parse(arg.substring(LOG_LEVEL.length()));
+        } else {
+            return false;
+        }
+        return true;
+    }
+}
+package jscover.instrument;
+import com.google.javascript.jscomp.parsing.parser.trees.Comment;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Set;
+public class CommentsHandler {
+    static final String EXCL_LINE = "
+    static final String EXCL_START = "
+    static final String EXCL_STOP = "
+    static final String EXCL_BR_LINE = "
+    static final String EXCL_BR_START = "
+    static final String EXCL_BR_STOP = "
+    private Set<Integer> ignoreLines = new HashSet<>();
+    private LinkedList<CommentRange> ignoreLineRanges = new LinkedList<>();
+    private Set<Integer> ignoreBranches = new HashSet<>();
+    private LinkedList<CommentRange> ignoreBranchRanges = new LinkedList<>();
+    private LinkedList<JSCoverageIgnoreComment> jsCoverageIgnoreComments = new LinkedList<>();
+    public List<JSCoverageIgnoreComment> getJsCoverageIgnoreComments() {
+        return jsCoverageIgnoreComments;
+    }
+    public void processComments(List<Comment> comments) {
+        for (Comment comment : comments) {
+            String value = comment.value;
+            if (startWith(value, JSCoverageIgnoreComment.IGNORE_START)) {
+                if (value.trim().length() > JSCoverageIgnoreComment.IGNORE_START.length()) {
+                    jsCoverageIgnoreComments.add(new JSCoverageIgnoreComment(value.substring(JSCoverageIgnoreComment.IGNORE_START.length() + 1), getLineno(comment)));
+                }
+            } else if (startWith(value, EXCL_LINE)) {
+                ignoreLines.add(getLineno(comment));
+            } else if (startWith(value, EXCL_START)) {
+                ignoreLineRanges.add(new CommentRange(getLineno(comment)));
+            } else if (startWith(value, EXCL_STOP)) {
+                ignoreLineRanges.getLast().setEnd(getLineno(comment));
+            } else if (startWith(value, EXCL_BR_LINE)) {
+                ignoreBranches.add(getLineno(comment));
+            } else if (startWith(value, EXCL_BR_START)) {
+                ignoreBranchRanges.add(new CommentRange(getLineno(comment)));
+            } else if (startWith(value, EXCL_BR_STOP)) {
+                ignoreBranchRanges.getLast().setEnd(getLineno(comment));
+            } else if (startWith(value, JSCoverageIgnoreComment.IGNORE_END)) {
+                jsCoverageIgnoreComments.getLast().setEnd(getLineno(comment));
+            }
+        }
+    }
+    private Integer getLineno(Comment comment) {
+        return comment.location.start.line + 1;
+    }
+    private boolean startWith(String comment, String ignoreEnd) {
+        return comment.startsWith(ignoreEnd);
+    }
+    public boolean ignoreLine(int line) {
+        if (ignoreLines.contains(line))
+            return true;
+        for (CommentRange range : ignoreLineRanges) {
+            if (range.inRange(line))
+                return true;
+        }
+        return false;
+    }
+    public boolean ignoreBranch(int line) {
+        if (ignoreBranches.contains(line))
+            return true;
+        for (CommentRange range : ignoreBranchRanges) {
+            if (range.inRange(line))
+                return true;
+        }
+        return false;
+    }
+}
+package jscover.instrument;
+import com.google.javascript.rhino.IR;
+import com.google.javascript.rhino.Node;
+import java.util.SortedMap;
+import java.util.SortedSet;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import static java.lang.String.format;
+public class BranchInstrumentor implements NodeVisitor {
+    private static final String initBranchLine = "  _$jscoverage['%s'].branchData['%d'] = [];\n";
+    private static final String initBranchCondition = "  _$jscoverage['%s'].branchData['%d'][%d] = new BranchData();\n";
+    private static int functionId = 1;
+    private BranchStatementBuilder branchStatementBuilder = new BranchStatementBuilder();
+    private BranchHelper branchHelper = BranchHelper.getInstance();
+    private String uri;
+    private boolean detectCoalesce;
+    private CommentsHandler commentsHandler;
+    private Node astRoot;
+    private SortedMap<Integer, SortedSet<Integer>> lineConditionMap = new TreeMap<>();
+    private int functionWrapperCount = 0;
+    public BranchInstrumentor(String uri, boolean detectCoalesce, CommentsHandler commentsHandler) {
+        this.uri = uri;
+        this.detectCoalesce = detectCoalesce;
+        this.commentsHandler = commentsHandler;
+    }
+    public SortedMap<Integer, SortedSet<Integer>> getLineConditionMap() {
+        return lineConditionMap;
+    }
+    public void setAstRoot(Node astRoot) {
+        this.astRoot = astRoot;
+    }
+    private boolean replaceWithFunction(Node node) {
+        Node parent = node.getParent();
+        if (isInstrumented(node) || isInstrumented(parent)) {
+            return false;
+        }
+        Integer conditionId = 1;
+        SortedSet<Integer> conditions = lineConditionMap.get(node.getLineno());
+        if (conditions == null) {
+            conditions = new TreeSet<>();
+            lineConditionMap.put(node.getLineno(), conditions);
+        } else {
+            conditionId = conditions.last() + 1;
+        }
+        conditions.add(conditionId);
+        Node functionNode = branchStatementBuilder.buildBranchRecordingFunction(uri, functionId++, node.getLineno(), conditionId);
+        astRoot.addChildToFront(functionNode);
+        Node conditionArrayDeclaration = branchStatementBuilder.buildLineAndConditionInitialisation(uri
+                , node.getLineno(), conditionId, getLinePosition(node), node.getLength());
+        astRoot.addChildToFront(conditionArrayDeclaration);
+        Node functionCall = IR.call(IR.name(functionNode.getFirstChild().getString()), node.cloneTree());
+        functionCall.setChangeTime(-1);
+        functionWrapperCount++;
+        node.replaceWith(functionCall);
+        return true;
+    }
+    private boolean isInstrumented(Node node) {
+        return node.isCall() && node.getChangeTime() < 0;
+    }
+    public boolean visit(Node node) {
+        if (node.getLineno() > 0 && !commentsHandler.ignoreBranch(node.getLineno())
+                && branchHelper.isBoolean(node) && !(detectCoalesce && branchHelper.isCoalesce(node))) {
+            return replaceWithFunction(node);
+        }
+        return false;
+    }
+    public int getLinePosition(Node node) {
+        return node.getCharno();
+    }
+    protected String getJsLineInitialization() {
+        String fileName = uri.replace("\\", "\\\\").replace("'", "\\'");
+        StringBuilder sb = new StringBuilder(format("if (! _$jscoverage['%s'].branchData) {\n", fileName));
+        sb.append(format("  _$jscoverage['%s'].branchData = {};\n", fileName));
+        for (Integer line : lineConditionMap.keySet()) {
+            sb.append(format(initBranchLine, fileName, line));
+            for (Integer condition : lineConditionMap.get(line))
+                sb.append(format(initBranchCondition, fileName, line, condition));
+        }
+        sb.append("}\n");
+        return sb.toString();
+    }
+    public int getFunctionWrapperCount() {
+        return functionWrapperCount;
+    }
+}
+package jscover.instrument;
+import com.google.javascript.jscomp.CodePrinter;
+import com.google.javascript.jscomp.CompilerOptions;
+import com.google.javascript.rhino.Node;
+import jscover.ConfigurationCommon;
+import jscover.util.IoUtils;
+import org.junit.AfterClass;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+import java.io.File;
+import java.io.FilenameFilter;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.BDDMockito.given;
+@RunWith(MockitoJUnitRunner.class)
+public class InstrumentAndHighlightRegressionTest {
+    private static Set<String> tested = new HashSet<>();
+    private static Map<String, String> allTests = new HashMap<>();
+    private IoUtils ioUtils = IoUtils.getInstance();
+    private CompilerOptions options = new CompilerOptions();
+    @Mock private ConfigurationCommon config;
+    @Before
+    public void setUp() {
+        given(config.getECMAVersion()).willReturn(CompilerOptions.LanguageMode.ECMASCRIPT_NEXT);
+        given(config.isIncludeBranch()).willReturn(false);
+        given(config.isIncludeFunction()).willReturn(true);
+        options.setPreferSingleQuotes(true);
+        options.setPrettyPrint(true);
+        options.setLanguage(CompilerOptions.LanguageMode.ECMASCRIPT_NEXT);
+    }
+    @AfterClass
+    public static void afterClass() {
+        for (String testName : allTests.keySet()) {
+            if (!tested.contains(testName)) {
+                System.out.println(allTests.get(testName) + " " + testName);
+            }
+        }
+    }
+    @Test
+    public void shouldInstrumentArray() {
+        testFile("javascript-array-comprehension.js");
+    }
+    @Test
+    public void shouldInstrumentAssign() {
+        testFile("javascript-assign.js");
+    }
+    @Test
+    public void shouldInstrumentColon() {
+        testFile("javascript-colon.js");
+    }
+    @Test
+    public void shouldInstrumentComma() {
+        testFile("javascript-comma.js");
+    }
+    @Test
+    public void shouldInstrumentConst() {
+        testFile("javascript-const.js");
+    }
+    @Test
+    public void shouldInstrumentCr() {
+        testFile("javascript-cr.js");
+    }
+    @Test
+    public void shouldInstrumentCrLf() {
+        testFile("javascript-crlf.js");
+    }
+    @Test
+    public void shouldInstrumentDec() {
+        testFile("javascript-dec.js");
+    }
+    @Test
+    public void shouldInstrumentDebugger() {
+        testFile("javascript-debugger.js");
+    }
+    @Test
+    public void shouldInstrumentDelete() {
+        testFile("javascript-delete.js");
+    }
+    @Test
+    public void shouldInstrumentDestructuring() {
+        testFile("javascript-destructuring.js");
+    }
+    @Test
+    public void shouldInstrumentDo() {
+        testFile("javascript-do.js");
+    }
+    @Test
+    public void shouldInstrumentDot() {
+        testFile("javascript-dot.js");
+    }
+    @Test
+    public void shouldInstrumentEmpty() {
+        testFile("javascript-empty.js");
+    }
+    @Test
+    public void shouldInstrumentFor() {
+        testFile("javascript-for.js");
+    }
+    @Test
+    public void shouldInstrumentForEach() {
+        testFile("javascript-foreach.js");
+    }
+    @Test
+    public void shouldInstrumentFunction() {
+        testFile("javascript-function.js");
+    }
+    @Test
+    public void shouldInstrumentFunctionChain() {
+        testFile("javascript-function-chain.js");
+    }
+    @Test
+    public void shouldInstrumentGenerator() {
+        testFile("javascript-generator.js");
+    }
+    @Test
+    public void shouldInstrumentGeneratorExpression() {
+        testFile("javascript-generator-expression.js");
+    }
+    @Test
+    public void shouldInstrumentGetterSetter() {
+        testFile("javascript-getter-setter.js");
+    }
+    @Test
+    public void shouldInstrumentHook() {
+        testFile("javascript-hook.js");
+    }
+    @Test
+    public void shouldInstrumentIf() {
+        testFile("javascript-if.js");
+    }
+    @Test
+    public void shouldInstrumentIn() {
+        testFile("javascript-in.js");
+    }
+    @Test
+    public void shouldInstrumentInc() {
+        testFile("javascript-inc.js");
+    }
+    @Test
+    @Ignore("This is handled by JVM 'file.encoding' system property")
+    public void shouldInstrumentISO_8859_1() {
+        testFile("javascript-iso-8859-1.js");
+    }
+    @Test
+    public void shouldInstrumentJSONObject() {
+        testFile("javascript-json-object.js");
+    }
+    @Test
+    @Ignore("Deprecated SpiderMonkey-specific")
+    public void shouldInstrumentLambda() {
+        testFile("javascript-lambda.js");
+    }
+    @Test
+    public void shouldInstrumentLet() {
+        testFile("javascript-let.js");
+    }
+    @Test
+    public void shouldInstrumentLineFeed() {
+        testFile("javascript-lf.js");
+    }
+    @Test
+    public void shouldInstrumentNew() {
+        testFile("javascript-new.js");
+    }
+    @Test
+    public void shouldInstrumentNumber() {
+        testFile("javascript-number.js");
+    }
+    @Test
+    public void shouldInstrumentObject() {
+        testFile("javascript-object.js");
+    }
+    @Test
+    public void shouldInstrumentOp() {
+        testFile("javascript-op.js");
+    }
+    @Test
+    public void shouldInstrumentPrimary() {
+        testFile("javascript-primary.js");
+    }
+    @Test
+    public void shouldInstrumentRb() {
+        testFile("javascript-rb.js");
+    }
+    @Test
+    public void shouldInstrumentRc() {
+        testFile("javascript-rc.js");
+    }
+    @Test
+    public void shouldInstrumentRp() {
+        testFile("javascript-rp.js");
+    }
+    @Test
+    public void shouldInstrumentSpecialCharacters() {
+        testFile("javascript-special-characters.js");
+    }
+    @Test
+    public void shouldInstrumentString() {
+        testFile("javascript-string.js");
+    }
+    @Test
+    public void shouldInstrumentSwitch() {
+        testFile("javascript-switch.js");
+    }
+    @Test
+    public void shouldInstrumentThrow() {
+        testFile("javascript-throw.js");
+    }
+    @Test
+    public void shouldInstrumentTry() {
+        testFile("javascript-try.js");
+    }
+    @Test
+    public void shouldInstrumentUnaryOp() {
+        testFile("javascript-unaryop.js");
+    }
+    @Test
+    public void shouldInstrumentVar() {
+        testFile("javascript-var.js");
+    }
+    @Test
+    public void shouldInstrumentWhile() {
+        testFile("javascript-while.js");
+    }
+    @Test
+    public void shouldInstrumentWith() {
+        testFile("javascript-with.js");
+    }
+    @Test
+    public void shouldTestTheRest() {
+        File testDir = new File("src/test-integration/resources/data/javascript");
+        FilenameFilter filter = (file, name) -> name.endsWith(".js");
+        for (String jsFile : testDir.list(filter)) {
+            testFileWithoutStopping(jsFile);
+        }
+    }
+    @Test
+    public void shouldInstrumentIgnoreSimple() {
+        testFile("javascript-ignore", "ignore-simple.js");
+    }
+    @Test
+    @Ignore
+    public void shouldInstrumentIgnore() {
+        testFile("javascript-ignore", "ignore.js");
+    }
+    private void testFile(String fileName) {
+        testFile("javascript", fileName);
+    }
+    private void testFile(String dir, String fileName) {
+        testFile(dir, fileName, true);
+    }
+    private void testFile(String dir, String fileName, boolean recordTest) {
+        if (recordTest)
+            tested.add(fileName);
+        String source = ioUtils.loadFromClassPath("/data/" + dir + "/" + fileName);
+        SourceProcessor instrumenter = new SourceProcessor(config, fileName, source);
+        String instrumentedSource = instrumenter.processSourceWithoutHeader();
+        String instrumentedSourceParsed = new CodePrinter.Builder(parse(instrumentedSource)).setCompilerOptions(options).build();
+        String expectedSource = ioUtils.loadFromClassPath("/data/" + dir + ".expected/" + fileName);
+        String expectedSourceParsed = new CodePrinter.Builder(parse(expectedSource)).setCompilerOptions(options).build();
+        assertEquals(expectedSourceParsed, instrumentedSourceParsed);
+    }
+    private void testFileWithoutStopping(String fileName) {
+        System.out.print("Test " + fileName + " ");
+        try {
+            testFile("javascript", fileName, false);
+            allTests.put(fileName, "* passed\t");
+        } catch (AssertionError e) {
+            allTests.put(fileName, "  failed\t");
+        } catch (Throwable t) {
+            allTests.put(fileName, "  errored\t");
+        }
+    }
+    private Node parse(String source) {
+        return TestHelper.parse(source);
+    }
+}
+package jscover.instrument;
+import jscover.ConfigurationCommon;
+import jscover.server.UriNotFound;
+import jscover.util.IoUtils;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.util.logging.Logger;
+import static java.util.logging.Level.INFO;
+public class InstrumenterService {
+    private static final Logger logger = Logger.getLogger(InstrumenterService.class.getName());
+    private IoUtils ioUtils = IoUtils.getInstance();
+    public String instrumentJSForWebServer(ConfigurationCommon config, File srcFile, String uri) {
+        logger.log(INFO, "Instrumenting {0}", uri);
+        try {
+            String source = ioUtils.toString(new FileInputStream(srcFile));
+            SourceProcessor sourceProcessor = new SourceProcessor(config, uri, source);
+            return sourceProcessor.processSourceForServer();
+        } catch (FileNotFoundException e) {
+            throw new UriNotFound("Couldn't find "+uri, e);
+        }
+    }
+    public String instrumentJSForProxyServer(ConfigurationCommon config, String source, String uri) {
+        logger.log(INFO, "Instrumenting {0}", uri);
+        SourceProcessor sourceProcessor = new SourceProcessor(config, uri, source);
+        return sourceProcessor.processSourceForServer();
+    }
+    public void instrumentJSForFileSystem(ConfigurationCommon config, File srcFile, File dest, String uri) {
+        logger.log(INFO, "Instrumenting {0}", uri);
+        String source = ioUtils.loadFromFileSystem(srcFile);
+        SourceProcessor sourceProcessor = new SourceProcessor(config, "/" + uri, source);
+        String jsInstrumented = sourceProcessor.processSourceForFileSystem();
+        ioUtils.copy(jsInstrumented, dest);
+    }
+}
+package jscover.instrument;
+import com.google.javascript.rhino.Node;
+public class NodeWalker {
+    public void visit(Node n, NodeVisitor callback) {
+          callback.visit(n);
+        for (Node cursor = n.getFirstChild(); cursor != null; cursor = cursor.getNext()) {
+            visit(cursor, callback);
+        }
+    }
+    public void visitAndExitOnAstChange(Node n, NodeVisitor callback) {
+        if (callback.visit(n))
+            return;
+        for (Node cursor = n.getFirstChild(); cursor != null; cursor = cursor.getNext())
+            visitAndExitOnAstChange(cursor, callback);
+    }
+}
+package jscover.instrument;
+import jscover.ConfigurationCommon;
+import jscover.report.ScriptCoverageCount;
+import jscover.util.FileScanner;
+import jscover.util.IoUtils;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Logger;
+import static java.lang.String.format;
+import static java.util.logging.Level.*;
+public class UnloadedSourceProcessor {
+    private static final Logger logger = Logger.getLogger(UnloadedSourceProcessor.class.getName());
+    private ConfigurationCommon config;
+    private IoUtils ioUtils = IoUtils.getInstance();
+    private FileScanner fileScanner;
+    private File scanPath;
+    public UnloadedSourceProcessor(ConfigurationCommon config, File scanPath) {
+        this.scanPath = scanPath;
+        fileScanner = new FileScanner(config, scanPath);
+        this.config = config;
+    }
+    public List<ScriptCoverageCount> getEmptyCoverageData(Set<String> urisAlreadyProcessed) {
+        List<ScriptCoverageCount> scripts = new ArrayList<>();
+        for (File file: fileScanner.getFiles(urisAlreadyProcessed)) {
+            getEmptyCoverageData(scripts, file);
+        }
+        return scripts;
+    }
+    public void getEmptyCoverageData(List<ScriptCoverageCount> scripts, File file) {
+        String uri = ioUtils.getRelativePath(file, scanPath);
+        logger.log(FINE, "Adding empty coverage for file: ''{0}'' URI: ''{1}''", new Object[]{file, uri});
+        try {
+            String source = ioUtils.loadFromFileSystem(file);
+            SourceProcessor sourceProcessor = new SourceProcessor(config, uri, source);
+            sourceProcessor.instrumentSource();
+            ScriptCoverageCount script = new ScriptCoverageCount("/"+uri, new ArrayList<>(
+                    sourceProcessor.getInstrumenter().getValidLines()),
+                    sourceProcessor.getInstrumenter().getNumFunctions(),
+                    sourceProcessor.getBranchInstrumentor().getLineConditionMap());
+            scripts.add(script);
+        } catch (RuntimeException t) {
+            logger.log(SEVERE, format("Problem parsing %s", uri), t);
+        }
+    }
+}
+package jscover.instrument;
+import com.google.javascript.rhino.Node;
+import java.util.SortedSet;
+import java.util.logging.Logger;
+import static java.lang.String.format;
+import static java.util.logging.Level.SEVERE;
+class ParseTreeInstrumenter implements NodeVisitor {
+    private static Logger logger = Logger.getLogger(ParseTreeInstrumenter.class.getName());
+    private String fileName;
+    private NodeProcessor nodeProcessor;
+    public ParseTreeInstrumenter(String uri, boolean includeFunctionCoverage, CommentsHandler commentsHandler) {
+        this.fileName = uri;
+        this.nodeProcessor = new NodeProcessor(uri, includeFunctionCoverage, commentsHandler);
+    }
+    public SortedSet<Integer> getValidLines() {
+        return nodeProcessor.getValidLines();
+    }
+    public int getNumFunctions() {
+    	return nodeProcessor.getNumFunctions();
+    }
+    public boolean visit(Node node) {
+        try {
+            return nodeProcessor.processNode(node);
+        } catch (RuntimeException t) {
+            logger.log(SEVERE, format("Error on line %s of %s", node.getLineno(), fileName), t);
+            return true;
+        }
+    }
+}
+package jscover.instrument;
+import com.google.javascript.jscomp.CompilerOptions;
+import jscover.ConfigurationCommon;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+import org.mozilla.javascript.*;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.core.Is.is;
+import static org.mockito.BDDMockito.given;
+@RunWith(MockitoJUnitRunner.class)
+public class InMemoryCoverageTest extends ScriptableObject {
+    private @Mock ConfigurationCommon config;
+    private static CompilerEnvirons compilerEnv = new CompilerEnvirons();
+    static {
+        compilerEnv.setLanguageVersion(Context.VERSION_1_8);
+        compilerEnv.setStrictMode(false);
+    }
+    private SourceProcessor processor;
+    @Before
+    public void setUp() {
+        given(config.getECMAVersion()).willReturn(CompilerOptions.LanguageMode.ECMASCRIPT_NEXT);
+        given(config.isIncludeBranch()).willReturn(true);
+        given(config.isIncludeFunction()).willReturn(true);
+    }
+    @Test
+    public void shouldExecuteJS() {
+        Context cx = Context.enter();
+        Scriptable scope = cx.initStandardObjects();
+        String source = "function isNegative(x) {\n  if (x>=0)\n    return false;\n  else\n    return true;\n}; isNegative(12);";
+        Object result = cx.evaluateString(scope, source, "inMemory.js", 1, null);
+        assertThat(result, is(false));
+    }
+    @Test
+    public void shouldExecuteInstrumentedJS() {
+        Context cx = Context.enter();
+        Scriptable scope = cx.initStandardObjects();
+        String source = "function isNegative(x) {\n  if (x>=0)\n    return false;\n  else\n    return true;\n}; isNegative(12);";
+        processor = new SourceProcessor(config, "inMemory.js", source);
+        String instrumentedJS = processor.processSource();
+        Object expected = cx.evaluateString(scope, source, "inMemory.js", 1, null);
+        Object actual = cx.evaluateString(scope, instrumentedJS, "inMemory.js", 1, null);
+        assertThat(actual, equalTo(expected));
+    }
+    @Test
+    @Ignore
+    public void shouldPrintLineCoverage() {
+        Context cx = Context.enter();
+        Scriptable scope = cx.initStandardObjects();
+        String source =
+                "function isNegative(x) {\n" +
+                        "  if (x>=0)\n" +
+                        "    return false;\n" +
+                        "  else\n" +
+                        "    return true;\n" +
+                        "};\n" +
+                        "isNegative(12);";
+        processor = new SourceProcessor(config, "inMemory.js", source);
+        String instrumentedJS = processor.processSource();
+        instrumentedJS += "_$jscoverage;";
+        NativeObject coverage = (NativeObject)cx.evaluateString(scope, instrumentedJS, "inMemory.js", 1, null);
+        for (Object o : coverage.getIds()) {
+            System.out.println("o = " + o + " " + o.getClass().getName());
+            NativeArray array = (NativeArray)coverage.get(o);
+            for (int i=0; i< array.size(); i++) {
+                System.out.println(i + " " + array.get(i));
+            }
+        }
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 0, null);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 1, 1.0);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 2, 1.0);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 3, 1.0);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 4, null);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 5, 0.0);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 6, 1.0);
+        verifyLineCount((NativeArray)coverage.get("inMemory.js"), 7, 1.0);
+    }
+    private void verifyLineCount(NativeArray array, Integer line, Double count) {
+        if (count == null)
+            assertThat(array.get(line), nullValue());
+        else
+            assertThat(array.get(line), equalTo(count));
+    }
+    @Override
+    public String getClassName() {
+        return this.getClass().getName();
+    }
+}

@@ -1,0 +1,4326 @@
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Assignees;
+import com.jcabi.github.Branch;
+import com.jcabi.github.Branches;
+import com.jcabi.github.Collaborators;
+import com.jcabi.github.Contents;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.DeployKeys;
+import com.jcabi.github.Forks;
+import com.jcabi.github.Git;
+import com.jcabi.github.Github;
+import com.jcabi.github.Hooks;
+import com.jcabi.github.IssueEvents;
+import com.jcabi.github.Issues;
+import com.jcabi.github.Labels;
+import com.jcabi.github.Language;
+import com.jcabi.github.Milestones;
+import com.jcabi.github.Notifications;
+import com.jcabi.github.Pulls;
+import com.jcabi.github.Releases;
+import com.jcabi.github.Repo;
+import com.jcabi.github.RepoCommits;
+import com.jcabi.github.RtLanguage;
+import com.jcabi.github.Stargazers;
+import com.jcabi.github.Stars;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Mock Github repo.
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @checkstyle ClassDataAbstractionCouplingCheck (500 lines)
+ * @checkstyle ClassFanOutComplexity (500 lines)
+ * @todo #1061 Fix code to avoid CouplingBetweenObjects
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = {"storage", "self", "coords"})
+@SuppressWarnings
+    (
+        {
+            "PMD.TooManyMethods",
+            "PMD.ExcessiveImports",
+            "PMD.CouplingBetweenObjects"
+        }
+    )
+final class MkRepo implements Repo {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Repo coordinates.
+     */
+    private final transient Coordinates coords;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @param repo Repo name
+     */
+    MkRepo(
+        final MkStorage stg,
+        final String login,
+        final Coordinates repo
+    ) {
+        this.storage = stg;
+        this.self = login;
+        this.coords = repo;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Coordinates coordinates() {
+        return this.coords;
+    }
+    @Override
+    public Issues issues() {
+        try {
+            return new MkIssues(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Milestones milestones() {
+        try {
+            return new MkMilestones(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Pulls pulls() {
+        try {
+            return new MkPulls(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Hooks hooks() {
+        try {
+            return new MkHooks(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public IssueEvents issueEvents() {
+        try {
+            return new MkIssueEvents(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Labels labels() {
+        try {
+            return new MkLabels(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Assignees assignees() {
+        return new MkAssignees(this.storage, this.self, this.coords);
+    }
+    @Override
+    public Releases releases() {
+        try {
+            return new MkReleases(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Forks forks() {
+        try {
+            return new MkForks(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Collaborators collaborators() {
+        try {
+            return new MkCollaborators(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public DeployKeys keys() {
+        try {
+            return new MkDeployKeys(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Contents contents() {
+        try {
+            return new MkContents(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    @Override
+    public RepoCommits commits() {
+        try {
+            return new MkRepoCommits(
+                this.storage, this.self, this.coordinates()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Branches branches() {
+        try {
+            return new MkBranches(
+                this.storage, this.self, this.coordinates()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Git git() {
+        try {
+            return new MkGit(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Stars stars() {
+        try {
+            return new MkStars(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Notifications notifications() {
+        return new MkNotifications(
+            this.storage,
+            this.xpath().concat("/notifications/notification")
+        );
+    }
+    @Override
+    public Iterable<Language> languages() {
+        final List<Language> languages = new ArrayList<>(0);
+        final int java = 999;
+        languages.add(new RtLanguage("Java", java));
+        final int php = 888;
+        languages.add(new RtLanguage("PHP", php));
+        final int ruby = 777;
+        languages.add(new RtLanguage("Ruby", ruby));
+        return languages;
+    }
+    @Override
+    public Branch defaultBranch() {
+        return new MkBranch(
+            this.storage,
+            this.self,
+            this.coords,
+            "master",
+            ""
+        );
+    }
+    @Override
+    public Stargazers stargazers() {
+        throw new UnsupportedOperationException(
+            String.format(
+                "%s.stargazers() not yet implemented",
+                this.getClass().getSimpleName()
+            )
+        );
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    @Override
+    public int compareTo(final Repo repo) {
+        return this.coords.compareTo(repo.coordinates());
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return String.format(
+            "/github/repos/repo[@coords='%s']",
+            this.coords
+        );
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.http.Request;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+/**
+ * Github client, starting point to the entire library.
+ *
+ * <p>This is how you start communicating with Github API:
+ *
+ * <pre> Github github = new RtGithub(oauthKey);
+ * Repo repo = github.repos().get(
+ *     new Coordinates.Simple("jcabi/jcabi-github")
+ * );
+ * Issues issues = repo.issues();
+ * Issue issue = issues.post("issue title", "issue body");</pre>
+ *
+ * <p>It is strongly recommended to use
+ * {@link com.jcabi.http.wire.RetryWire} to avoid
+ * accidental I/O exceptions:
+ *
+ * <pre> Github github = new RtGithub(
+ *   new RtGithub(oauthKey)
+ *     .entry()
+ *     .through(RetryWire.class)
+ * );</pre>
+ *
+ * <p>The interfaces in this packages are trying to cover as much
+ * as possible of Github API. However, there are parts of API that are
+ * rarely used and making Java classes for them is not an effective
+ * idea. That's why {@code Github} class has {@link #entry()} method,
+ * which returns an entry point to the RESTful API. For example, you
+ * want to use
+ * <a href="https://developer.github.com/v3/search/#search-repositories">"Search
+ * Repositories"</a> feature of Github:
+ *
+ * <pre> Github github = new RtGithub(oauthKey);
+ * int found = github.entry()
+ *   .uri().path("/search/repositories").back()
+ *   .method(Request.GET)
+ *   .fetch()
+ *   .as(JsonResponse.class)
+ *   .getJsonObject()
+ *   .getNumber("total_count")
+ *   .intValue();</pre>
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.1
+ */
+@Immutable
+@SuppressWarnings("PMD.TooManyMethods")
+public interface Github {
+    /**
+     * RESTful request, an entry point to the Github API.
+     * @return Request
+     */
+    Request entry();
+    /**
+     * Get repositories.
+     * @return Repositories
+     */
+    Repos repos();
+    /**
+     * Get Gists API entry point.
+     * @return Gists API entry point
+     */
+    Gists gists();
+    /**
+     * Get Users API entry point.
+     * @return Users API entry point
+     * @since 0.4
+     */
+    Users users();
+    /**
+     * Get Organizations API entry point.
+     * @return Organizations API entry point
+     * @since 0.24
+     */
+    Organizations organizations();
+    /**
+     * Get Markdown API entry point.
+     * @return Markdown API entry point
+     * @since 0.6
+     */
+    Markdown markdown();
+    /**
+     * Rate limit API entry point.
+     * @return Rate limit API
+     * @since 0.6
+     */
+    Limits limits();
+    /**
+     * Search API entry point.
+     * @return Search API
+     * @since 0.8
+     */
+    Search search();
+    /**
+     * Get gitignores.
+     * @return Gitignotes API
+     * @see <a href="https://developer.github.com/v3/gitignore/">Gitignore API</a>
+     * @since 0.8
+     */
+    Gitignores gitignores();
+    /**
+     * Get meta information.
+     * @return JSON with meta
+     * @throws IOException If there is any I/O problem
+     * @see <a href="https://developer.github.com/v3/meta/">Meta API</a>
+     * @since 0.6
+     */
+    JsonObject meta() throws IOException;
+    /**
+     * Get emojis.
+     * @return JSON with emojis
+     * @throws IOException If there is any I/O problem
+     * @see <a href="https://developer.github.com/v3/emojis/">Emojis API</a>
+     * @since 0.6
+     */
+    JsonObject emojis() throws IOException;
+    /**
+     * Time in Github JSON.
+     * @see <a href="https://developer.github.com/v3/#schema">Schema</a>
+     * @since 0.2
+     */
+    @Immutable
+    @EqualsAndHashCode(of = { "msec" })
+    final class Time {
+        /**
+         * Pattern to present day in ISO-8601.
+         */
+        public static final String FORMAT_ISO = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+        /**
+         * The time zone we're in.
+         */
+        public static final TimeZone TIMEZONE = TimeZone.getTimeZone("UTC");
+        /**
+         * Encapsulated time in milliseconds.
+         */
+        private final transient long msec;
+        /**
+         * Ctor.
+         */
+        public Time() {
+            this(new Date());
+        }
+        /**
+         * Ctor.
+         * @param text ISO date/time
+         * @throws ParseException If fails
+         */
+        public Time(final String text) throws ParseException {
+            this(Github.Time.format().parse(text));
+        }
+        /**
+         * Ctor.
+         * @param date Date to encapsulate
+         */
+        public Time(final Date date) {
+            this(date.getTime());
+        }
+        /**
+         * Ctor.
+         * @param millis Milliseconds
+         */
+        public Time(final long millis) {
+            this.msec = millis;
+        }
+        @Override
+        public String toString() {
+            return Github.Time.format().format(this.date());
+        }
+        /**
+         * Get date.
+         * @return Date
+         */
+        public Date date() {
+            return new Date(this.msec);
+        }
+        /**
+         * Make format.
+         * @return Date format
+         */
+        private static DateFormat format() {
+            final DateFormat fmt = new SimpleDateFormat(
+                Github.Time.FORMAT_ISO, Locale.ENGLISH
+            );
+            fmt.setTimeZone(Github.Time.TIMEZONE);
+            return fmt;
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.xml.XML;
+import com.jcabi.xml.XMLDocument;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import lombok.EqualsAndHashCode;
+import org.apache.commons.io.FileUtils;
+import org.xembly.Directive;
+import org.xembly.Xembler;
+/**
+ * Storage of Github data.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @checkstyle MultipleStringLiteralsCheck (200 lines)
+ */
+@Immutable
+@SuppressWarnings("PMD.TooManyMethods")
+public interface MkStorage {
+    /**
+     * Get full XML.
+     * @return XML
+     * @throws IOException If there is any I/O problem, or if the current
+     *  storage is locked by another thread.
+     */
+    XML xml() throws IOException;
+    /**
+     * Update XML with this directives.
+     * @param dirs Directives
+     * @throws IOException If there is any I/O problem, or if the current
+     *  storage is locked by another thread.
+     */
+    void apply(
+        Iterable<Directive> dirs
+    ) throws IOException;
+    /**
+     * Locks storage to the current thread.
+     *
+     * <p>If the lock is available, grant it
+     * to the calling thread and block all operations from other threads.
+     * If not available, wait for the holder of the lock to release it with
+     * {@link #unlock()} before any other operations can be performed.
+     *
+     * <p>Locking behavior is reentrant, which means a thread can invoke
+     * {@link #lock()} multiple times, where a hold count is maintained.
+     */
+    void lock();
+    /**
+     * Unlock storage.
+     *
+     * <p>Locking behavior is reentrant, thus if the thread invoked
+     * {@link #lock()} multiple times, the hold count is decremented. If the
+     * hold count reaches 0, the lock is released.
+     *
+     * <p>If the current thread does not hold the lock, an
+     * {@link IllegalMonitorStateException} will be thrown.
+     */
+    void unlock();
+    /**
+     * In file.
+     */
+    @Immutable
+    @EqualsAndHashCode(of = "name")
+    @Loggable(Loggable.DEBUG)
+    final class InFile implements MkStorage {
+        /**
+         * File name.
+         */
+        private final transient String name;
+        /**
+         * Public ctor.
+         * @throws IOException If there is any I/O problem
+         */
+        public InFile() throws IOException {
+            this(File.createTempFile("jcabi-github", ".xml"));
+            new File(this.name).deleteOnExit();
+        }
+        /**
+         * Public ctor.
+         * @param file File to use
+         * @throws IOException If there is any I/O problem
+         */
+        public InFile(
+            final File file
+        ) throws IOException {
+            FileUtils.write(file, "<github/>", StandardCharsets.UTF_8);
+            this.name = file.getAbsolutePath();
+        }
+        @Override
+        public String toString() {
+            try {
+                return this.xml().toString();
+            } catch (final IOException ex) {
+                throw new IllegalStateException(ex);
+            }
+        }
+        @Override
+        public XML xml() throws IOException {
+            synchronized (this.name) {
+                return new XMLDocument(
+                    FileUtils.readFileToString(
+                        new File(this.name), StandardCharsets.UTF_8
+                    )
+                );
+            }
+        }
+        @Override
+        public void apply(
+            final Iterable<Directive> dirs
+        ) throws IOException {
+            synchronized (this.name) {
+                FileUtils.write(
+                    new File(this.name),
+                    new XMLDocument(
+                        new Xembler(dirs).applyQuietly(this.xml().node())
+                    ).toString(),
+                    StandardCharsets.UTF_8
+                );
+            }
+        }
+        @Override
+        public void lock() {
+            // nothing
+        }
+        @Override
+        public void unlock() {
+            // nothing
+        }
+    }
+    /**
+     * Syncronized.
+     */
+    @Immutable
+    @EqualsAndHashCode(of = { "origin", "lock" })
+    @Loggable(Loggable.DEBUG)
+    final class Synced implements MkStorage {
+        /**
+         * Original storage.
+         */
+        private final transient MkStorage origin;
+        /**
+         * Lock object.
+         */
+        private final transient ImmutableReentrantLock lock =
+            new ImmutableReentrantLock();
+        /**
+         * Public ctor.
+         * @param storage Original
+         */
+        public Synced(final MkStorage storage) {
+            this.origin = storage;
+        }
+        @Override
+        public String toString() {
+            return this.origin.toString();
+        }
+        @Override
+        public XML xml() throws IOException {
+            return this.origin.xml();
+        }
+        @Override
+        public void apply(final Iterable<Directive> dirs) throws IOException {
+            this.origin.apply(dirs);
+        }
+        @Override
+        public void lock() {
+            this.lock.lock();
+        }
+        @Override
+        public void unlock() {
+            this.lock.unlock();
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.util.EnumMap;
+/**
+ * Github search.
+ *
+ * @author Carlos Miranda (miranda.cma@gmail.com)
+ * @version $Id$
+ * @since 0.8
+ * @see <a href="https://developer.github.com/v3/search/">Search API</a>
+ */
+@Immutable
+@SuppressWarnings("PMD.AvoidDuplicateLiterals")
+public interface Search {
+    /**
+     * Github we're in.
+     *
+     * @return Github
+     */
+    Github github();
+    /**
+     * Search repositories.
+     *
+     * @param keywords The search keywords
+     * @param sort The sort field
+     * @param order The sort order
+     * @return Repos
+     * @see <a href="https://developer.github.com/v3/search/#search-repositories">Search repositories</a>
+     */
+    Iterable<Repo> repos(
+        String keywords,
+        String sort,
+        Order order
+    );
+    /**
+     * Search issues.
+     *
+     * @param keywords The search keywords
+     * @param sort The sort field
+     * @param order The sort order
+     * @param qualifiers The search qualifier
+     * @return Issues
+     * @see <a href="https://developer.github.com/v3/search/#search-issues">Search issues</a>
+     * @checkstyle ParameterNumberCheck (7 lines)
+     */
+    Iterable<Issue> issues(
+        String keywords,
+        String sort,
+        Order order,
+        EnumMap<Qualifier, String> qualifiers);
+    /**
+     * Search users.
+     *
+     * @param keywords The search keywords
+     * @param sort The sort field
+     * @param order The sort order
+     * @return Users
+     * @see <a href="https://developer.github.com/v3/search/#search-users">Search users</a>
+     */
+    Iterable<User> users(
+        String keywords,
+        String sort,
+        Order order);
+    /**
+     * Search code.
+     *
+     * @param keywords The search keywords
+     * @param sort The sort field
+     * @param order The sort order
+     * @return Contents
+     * @see <a href="https://developer.github.com/v3/search/#search-code">Search code</a>
+     */
+    Iterable<Content> codes(
+        String keywords,
+        String sort,
+        Order order);
+    enum Qualifier implements StringEnum {
+        /**
+         * The search by issues or pull request only.
+         */
+        TYPE("type"),
+        /**
+         * Qualifies which fields are searched.
+         * <p>With this qualifier you can restrict the search to just
+         * the title, body, comments, or any combination of these.</p>
+         */
+        IN("in"),
+        /**
+         * Finds issues created by a certain user.
+         */
+        AUTHOR("author"),
+        /**
+         * Finds issues that are assigned to a certain user.
+         */
+        ASSIGNEE("assignee"),
+        /**
+         * Finds issues that mention a certain user.
+         */
+        MENTIONS("mentions"),
+        /**
+         * Finds issues that a certain user commented on.
+         */
+        COMMENTER("commenter"),
+        /**
+         * Finds issues that were either created by a certain user.
+         * <p>Or assigned to that user, mention that user,
+         *  or were commented on by that user.</p>
+         */
+        INVOLVES("involves"),
+        /**
+         * Finds issues or pull requests which mention a particular team within
+         * an organization which the user is a member of.
+        */
+        TEAM("team"),
+        /**
+         * Filter issues based on whether they’re open or closed.
+         */
+        STATE("state"),
+        /**
+         * Filters issues based on their labels.
+         */
+        LABEL("label"),
+        /**
+         * Filters items missing certain metadata.
+         */
+        NO("no"),
+        /**
+         * Searches for issues within repositories matching a certain language.
+         */
+        LANGUAGE("language"),
+        /**
+         * Searches for items within repositories that match a certain state.
+         */
+        IS("is"),
+        /**
+         * Filters issues based on date of creation.
+         */
+        CREATED("created"),
+        /**
+         * Filters issues based on date last updated.
+         */
+        UPDATED("updated"),
+        /**
+         * Filters pull requests based on the date when they were merged.
+         */
+        MERGED("merged"),
+        /**
+         * Filters issues based on the date when they were closed.
+         */
+        CLOSED("closed"),
+        /**
+         * Filters issues based on the quantity of comments.
+         */
+        COMMENTS("comments"),
+        /**
+         * Limits searches to a specific user.
+         */
+        USER("user"),
+        /**
+         * Limits searches to a specific repository.
+         */
+        REPO("repo");
+        /**
+         * Search qualifier.
+         */
+        private final transient String qualifier;
+        /**
+         * Ctor.
+         * @param key Search qualifier
+         */
+        Qualifier(final String key) {
+            this.qualifier = key;
+        }
+        /**
+         * Get search qualifier.
+         * @return String
+         */
+        @Override
+        public String identifier() {
+            return this.qualifier;
+        }
+    }
+    enum Order implements StringEnum {
+        /**
+         * Sorting ascending.
+         */
+        ASC("asc"),
+        /**
+         * Sorting descending.
+         */
+        DESC("desc");
+        /**
+         * The sort order.
+         */
+        private final transient String order;
+        /**
+         * Ctor.
+         * @param key The sort order
+         */
+        Order(final String key) {
+            this.order = key;
+        }
+        /**
+         * Get sort order.
+         * @return String
+         */
+        @Override
+        public String identifier() {
+            return this.order;
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import java.io.IOException;
+import javax.json.JsonObject;
+import javax.json.JsonValue;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Github repository.
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.1
+ * @checkstyle MultipleStringLiterals (500 lines)
+ */
+@Immutable
+@SuppressWarnings({"PMD.TooManyMethods", "PMD.ExcessivePublicCount"})
+public interface Repo extends JsonReadable, JsonPatchable, Comparable<Repo> {
+    /**
+     * Get its owner.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Get its coordinates.
+     * @return Coordinates
+     */
+    Coordinates coordinates();
+    /**
+     * Iterate issues.
+     * @return Issues
+     */
+    Issues issues();
+    /**
+     * Iterate milestones.
+     * @return Milestones
+     * @since 0.7
+     */
+    Milestones milestones();
+    /**
+     * Pull requests.
+     * @return Pulls
+     */
+    Pulls pulls();
+    /**
+     * Hooks.
+     * @return Hooks
+     * @since 0.8
+     */
+    Hooks hooks();
+    /**
+     * Get all issue events for the repository.
+     * @return Issue events
+     * @see <a href="https://developer.github.com/v3/issues/events/#list-events-for-a-repository">List Events for a Repository</a>
+     */
+    IssueEvents issueEvents();
+    /**
+     * Get all labels of the repo.
+     * @return Labels
+     * @see <a href="https://developer.github.com/v3/issues/labels/">Labels API</a>
+     */
+    Labels labels();
+    /**
+     * Get all available assignees to which issues may be assigned.
+     * @return Assignees
+     * @see <a href="https://developer.github.com/v3/issues/assignees/">Assignees API</a>
+     */
+    Assignees assignees();
+    /**
+     * Get all releases of the repo.
+     * @return Releases
+     * @see <a href="https://developer.github.com/v3/repos/releases/">Releases API</a>
+     */
+    Releases releases();
+    /**
+     * Get all deploy keys of the repo.
+     * @return DeployKeys
+     * @see <a href="https://developer.github.com/v3/repos/keys/">Deploy Keys API</a>
+     */
+    DeployKeys keys();
+    /**
+     * Get all forks of the repo.
+     * @return Forks
+     * @see <a href="https://developer.github.com/v3/repos/forks/">Forks API</a>
+     */
+    Forks forks();
+    /**
+     * Get repository's commits.
+     * @return Commits
+     * @see <a href="https://developer.github.com/v3/repos/commits/">Commits API</a>
+     */
+    RepoCommits commits();
+    /**
+     * Get repository's branches.
+     * @return Branches
+     * @see <a href="https://developer.github.com/v3/repos/#list-branches">List Branches API</a>
+     */
+    Branches branches();
+    /**
+     * Get all contents of the repo.
+     * @return Contents
+     * @see <a href="https://developer.github.com/v3/repos/contents/">Contents API</a>
+     */
+    Contents contents();
+    /**
+     * Gel all collaborators.
+     * @return Collaborators
+     * @see <a href="https://developer.github.com/v3/repos/collaborators/">Collaborators API</a>
+     */
+    Collaborators collaborators();
+    /**
+     * Get the Git API entry point.
+     * @return Collaborators
+     * @see <a href="https://developer.github.com/v3/git/">Git Data API</a>
+     */
+    Git git();
+    /**
+     * Get Starring API.
+     * @return Stars
+     * @see <a href="https://developer.github.com/v3/activity/starring/">Starring API</a>
+     * @since 0.15
+     */
+    Stars stars();
+    /**
+     * Get Notifications API.
+     * @return Stars
+     * @see <a href="https://developer.github.com/v3/activity/notifications/">Notifications API</a>
+     * @since 0.15
+     */
+    Notifications notifications();
+    /**
+     * Get languages for the specified repository.
+     * @return Languages
+     * @throws IOException If there is any I/O problem
+     * @see <a href="https://developer.github.com/v3/repos/#list-languages">List languages</a>
+     * @since 0.15
+     */
+    Iterable<Language> languages() throws IOException;
+    /**
+     * Get default branch.
+     *
+     * @return Default branch.
+     * @throws IOException If there is any I/O problem.
+     */
+    Branch defaultBranch() throws IOException;
+    /**
+     * Lists the people that have starred the repository.
+     * @return Lists the people that have starred the repository.
+     */
+    Stargazers stargazers();
+    /**
+     * Smart Repo with extra features.
+     */
+    @Immutable
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = {"repo", "jsn"})
+    final class Smart implements Repo {
+        /**
+         * Encapsulated Repo.
+         */
+        private final transient Repo repo;
+        /**
+         * SmartJson object for convenient JSON parsing.
+         */
+        private final transient SmartJson jsn;
+        /**
+         * Public ctor.
+         * @param rep Repo
+         */
+        public Smart(
+            final Repo rep
+        ) {
+            this.repo = rep;
+            this.jsn = new SmartJson(rep);
+        }
+        /**
+         * Does this Repo actually exist in Github?
+         * @return True if it exists, false otherwise.
+         * @throws IOException If there is any I/O problem.
+         */
+        public boolean exists() throws IOException {
+            return new Existence(this.repo).check();
+        }
+        /**
+         * Does it have a description.
+         * @return TRUE if description is present
+         * @throws IOException If there is any I/O problem
+         */
+        public boolean hasDescription() throws IOException {
+            return this.jsn.hasNotNull("description");
+        }
+        /**
+         * Get its description.
+         * @return Description
+         * @throws IOException If there is any I/O problem
+         */
+        public String description() throws IOException {
+            return this.jsn.text("description");
+        }
+        /**
+         * Is it private?.
+         * @return TRUE if it's private
+         * @throws IOException If there is any I/O problem
+         */
+        public boolean isPrivate() throws IOException {
+            return Boolean.parseBoolean(
+                this.json()
+                    .getOrDefault("private", JsonValue.FALSE)
+                    .toString().replace("\"", "")
+            );
+        }
+        @Override
+        public Github github() {
+            return this.repo.github();
+        }
+        @Override
+        public Coordinates coordinates() {
+            return this.repo.coordinates();
+        }
+        @Override
+        public Issues issues() {
+            return this.repo.issues();
+        }
+        @Override
+        public Milestones milestones() {
+            return this.repo.milestones();
+        }
+        @Override
+        public Pulls pulls() {
+            return this.repo.pulls();
+        }
+        @Override
+        public Hooks hooks() {
+            return this.repo.hooks();
+        }
+        @Override
+        public IssueEvents issueEvents() {
+            return this.repo.issueEvents();
+        }
+        @Override
+        public Labels labels() {
+            return this.repo.labels();
+        }
+        @Override
+        public Assignees assignees() {
+            return this.repo.assignees();
+        }
+        @Override
+        public Releases releases() {
+            return this.repo.releases();
+        }
+        @Override
+        public DeployKeys keys() {
+            return this.repo.keys();
+        }
+        @Override
+        public Forks forks() {
+            return this.repo.forks();
+        }
+        @Override
+        public Contents contents() {
+            return this.repo.contents();
+        }
+        @Override
+        public Collaborators collaborators() {
+            return this.repo.collaborators();
+        }
+        @Override
+        public Git git() {
+            return this.repo.git();
+        }
+        @Override
+        public Stars stars() {
+            return this.repo.stars();
+        }
+        @Override
+        public Notifications notifications() {
+            return this.repo.notifications();
+        }
+        @Override
+        public Iterable<Language> languages() throws IOException {
+            return this.repo.languages();
+        }
+        @Override
+        public Branch defaultBranch() throws IOException {
+            return this.repo.defaultBranch();
+        }
+        @Override
+        public Stargazers stargazers() {
+            throw new UnsupportedOperationException(
+                "stargazers() not yet implemented"
+            );
+        }
+        @Override
+        public void patch(
+            final JsonObject json
+        ) throws IOException {
+            this.repo.patch(json);
+        }
+        @Override
+        public RepoCommits commits() {
+            return this.repo.commits();
+        }
+        @Override
+        public Branches branches() {
+            return this.repo.branches();
+        }
+        @Override
+        public JsonObject json() throws IOException {
+            return this.repo.json();
+        }
+        @Override
+        public int compareTo(final Repo repos) {
+            return this.repo.compareTo(repos);
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Gitignores;
+import java.util.Collections;
+import java.util.Map;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Mock Gitignore.
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @version $Id$
+ * @since 0.8
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "ghub" })
+@SuppressWarnings("PMD.UseConcurrentHashMap")
+final class MkGitignores implements Gitignores {
+    /**
+     * The gitignore templates.
+     */
+    private static final Map<String, String> GITIGNORES =
+        Collections.singletonMap(
+            "Java",
+            "*.class\n\n# Package Files #\n*.jar\n*.war\n*.ear\n"
+        );
+    /**
+     * Github.
+     */
+    private final transient MkGithub ghub;
+    /**
+     * Public ctor.
+     * @param github The github
+     */
+    MkGitignores(final MkGithub github) {
+        this.ghub = github;
+    }
+    @Override
+    public Github github() {
+        return this.ghub;
+    }
+    @Override
+    public Iterable<String> iterate() {
+        return GITIGNORES.keySet();
+    }
+    @Override
+    public String template(
+        final String name) {
+        final String template = GITIGNORES.get(name);
+        if (template == null) {
+            throw new IllegalArgumentException("Template not found.");
+        }
+        return template;
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.aspects.Tv;
+import com.jcabi.github.Gists;
+import com.jcabi.github.Github;
+import com.jcabi.github.Gitignores;
+import com.jcabi.github.Limits;
+import com.jcabi.github.Markdown;
+import com.jcabi.github.Organizations;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Repos;
+import com.jcabi.github.Search;
+import com.jcabi.github.Users;
+import com.jcabi.http.Request;
+import com.jcabi.http.request.FakeRequest;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import org.apache.commons.lang3.RandomStringUtils;
+/**
+ * Mock Github client.
+ *
+ * <p>This is how you use it:
+ *
+ * <pre> GitHub gitHub = new MkGithub("username");
+ * Repos.RepoCreate create = new Repos.RepoCreate("dummy", false);
+ * Repo repo = gitHub.repos().create(create);
+ * Issue issue = repo.issues().create("title", "body");</pre>
+ *
+ * <p>By default, it works with a temporary file, which will be deleted
+ * on JVM exit:
+ *
+ * <pre> Github github = new MkGithub("jeff");</pre>
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @checkstyle ClassDataAbstractionCoupling (500 lines)
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = { "storage", "self" })
+@SuppressWarnings("PMD.TooManyMethods")
+public final class MkGithub implements Github {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @throws IOException If there is any I/O problem
+     */
+    public MkGithub() throws IOException {
+        this("jeff");
+    }
+    /**
+     * Public ctor.
+     * @param login User to login
+     * @throws IOException If there is any I/O problem
+     */
+    public MkGithub(
+        final String login
+    ) throws IOException {
+        this(new MkStorage.Synced(new MkStorage.InFile()), login);
+    }
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     */
+    public MkGithub(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public String toString() {
+        return this.storage.toString();
+    }
+    @Override
+    public Request entry() {
+        return new FakeRequest()
+            .withBody("{}")
+            .withStatus(HttpURLConnection.HTTP_OK);
+    }
+    @Override
+    public Repos repos() {
+        try {
+            return new MkRepos(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Gists gists() {
+        try {
+            return new MkGists(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Users users() {
+        try {
+            return new MkUsers(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Organizations organizations() {
+        try {
+            return new MkOrganizations(this.storage);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Limits limits() {
+        return new MkLimits(this.storage, this.self);
+    }
+    @Override
+    public JsonObject meta() {
+        return Json.createObjectBuilder()
+            .add("hooks", Json.createArrayBuilder().build())
+            .add("git", Json.createArrayBuilder().build())
+            .build();
+    }
+    @Override
+    public Search search() {
+        return new MkSearch(this.storage, this.self);
+    }
+    @Override
+    public Gitignores gitignores() {
+        return new MkGitignores(this);
+    }
+    @Override
+    public JsonObject emojis() {
+        return Json.createObjectBuilder()
+            .add("+1", "http://locahost/up")
+            .add("-1", "http://locahost/down")
+            .build();
+    }
+    @Override
+    public Markdown markdown() {
+        return new MkMarkdown(this);
+    }
+    /**
+     * Relogin.
+     * @param login User to login
+     * @return Github
+     */
+    public Github relogin(final String login
+    ) {
+        return new MkGithub(this.storage, login);
+    }
+    /**
+     * Create repo with random name.
+     * @return Repo
+     * @throws IOException If fails
+     */
+    public Repo randomRepo() throws IOException {
+        return this.repos().create(
+            new Repos.RepoCreate(
+                RandomStringUtils.randomAlphanumeric(Tv.TWENTY),
+                true
+            )
+        );
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+/**
+ * Github Gitignore.
+ * <p>Defines storage of .gitignore templates
+ *
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @version $Id$
+ * @see <a href="https://developer.github.com/v3/gitignore/#gitignore">Gitignore</a>
+ * @since 0.8
+ */
+@Immutable
+public interface Gitignores {
+    /**
+     * Get its owner.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Iterate them all.
+     * @return Iterator of Gitignote template names
+     * @throws IOException If it fails due to I/O problem
+     * @see <a href="https://developer.github.com/v3/gitignore/#listing-available-templates">Listing available templates</a>
+     */
+    Iterable<String> iterate() throws IOException;
+    /**
+     * Gets raw gitignore template.
+     * @param name Name of the template
+     * @return Raw template
+     * @throws IOException If it fails due to I/O problem
+     */
+    String template(String name) throws IOException;
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Gist;
+import com.jcabi.github.GistComments;
+import com.jcabi.github.Github;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import java.util.List;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.apache.commons.lang3.StringUtils;
+import org.xembly.Directives;
+/**
+ * Mock Github gist.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self", "gist" })
+@SuppressWarnings("PMD.TooManyMethods")
+final class MkGist implements Gist {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Gist name.
+     */
+    private final transient String gist;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @param name Gist name
+     * @checkstyle ParameterNumber (5 lines)
+     */
+    MkGist(
+        final MkStorage stg,
+        final String login,
+        final String name
+    ) {
+        this.storage = stg;
+        this.self = login;
+        this.gist = name;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String identifier() {
+        return this.gist;
+    }
+    @Override
+    public String read(
+        final String file
+    ) throws IOException {
+        final List<XML> files = this.storage.xml().nodes(
+            String.format(
+                "%s/files/file[filename='%s']",
+                this.xpath(), file
+            )
+        );
+        if (files.isEmpty()) {
+            throw new IOException(
+                String.format("Couldn't find file with the name %s.", file)
+            );
+        }
+        final List<String> contents = files.get(0)
+            .xpath("raw_content/text()");
+        String content = "";
+        if (!contents.isEmpty()) {
+            content = contents.get(0);
+        }
+        return content;
+    }
+    @Override
+    public void write(
+        final String file,
+        final String content
+    )
+        throws IOException {
+        this.storage.apply(
+            // @checkstyle MultipleStringLiterals (3 lines)
+            new Directives().xpath(this.xpath()).xpath(
+                String.format("files[not(file[filename='%s'])]", file)
+            ).add("file").add("filename").set(file).up().add("raw_content")
+        );
+        this.storage.apply(
+            new Directives().xpath(this.xpath()).xpath(
+                String.format(
+                    "files/file[filename='%s']/raw_content",
+                    file
+                )
+            ).set(content)
+        );
+    }
+    /**
+     * Stars.
+     * @throws IOException If there is any I/O problem
+     * @checkstyle MultipleStringLiterals (10 lines)
+     */
+    @Override
+    public void star() throws IOException {
+        this.storage.apply(
+            new Directives()
+                .xpath(this.xpath())
+                .attr("starred", Boolean.toString(true))
+        );
+    }
+    /**
+     * Unstars.
+     * @throws IOException If there is any I/O problem
+     * @checkstyle MultipleStringLiterals (10 lines)
+     */
+    @Override
+    public void unstar() throws IOException {
+        this.storage.apply(
+            new Directives()
+                .xpath(this.xpath())
+                .attr("starred", Boolean.toString(false))
+        );
+    }
+    /**
+     * Checks if starred.
+     * @return True if gist is starred
+     * @throws IOException If there is any I/O problem
+     */
+    @Override
+    public boolean starred() throws IOException {
+        final List<String> xpath = this.storage.xml().xpath(
+            String.format("%s/@starred", this.xpath())
+        );
+        return !xpath.isEmpty() && StringUtils.equalsIgnoreCase(
+            Boolean.toString(true),
+            xpath.get(0)
+        );
+    }
+    @Override
+    public Gist fork() throws IOException {
+        this.storage.lock();
+        final String number;
+        try {
+            final XML xml = this.storage.xml();
+            number = Integer.toString(
+                1 + xml.xpath("/github/gists/gist/id/text()").size()
+            );
+            final Directives dirs = new Directives().xpath("/github/gists")
+                .add("gist")
+                .add("id").set(number).up()
+                .add("files");
+            final List<XML> files = xml.nodes(
+                String.format("%s/files/file", this.xpath())
+            );
+            for (final XML file : files) {
+                final String filename = file.xpath("filename/text()").get(0);
+                // @checkstyle MultipleStringLiterals (3 lines)
+                dirs.add("file")
+                    .add("filename").set(filename).up()
+                    .add("raw_content").set(this.read(filename)).up().up();
+            }
+            this.storage.apply(dirs);
+        } finally {
+            this.storage.unlock();
+        }
+        return new MkGist(this.storage, this.self, number);
+    }
+    @Override
+    public GistComments comments() {
+        throw new UnsupportedOperationException();
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return String.format(
+            "/github/gists/gist[id='%s']",
+            this.gist
+        );
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Limit;
+import com.jcabi.github.Limits;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Mock Github Rate Limit API.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.6
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "himself" })
+final class MkLimits implements Limits {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String himself;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     */
+    MkLimits(final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.himself = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.himself);
+    }
+    @Override
+    public Limit get(final String resource) {
+        // @checkstyle AnonInnerLength (50 lines)
+        return new Limit() {
+            @Override
+            public Github github() {
+                return MkLimits.this.github();
+            }
+            @Override
+            public JsonObject json() {
+                return Json.createObjectBuilder()
+                    // @checkstyle MagicNumber (2 lines)
+                    .add("limit", 5000)
+                    .add("remaining", 4999)
+                    .add("reset", System.currentTimeMillis())
+                    .build();
+            }
+        };
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Github Rate Limit API.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.6
+ * @see <a href="https://developer.github.com/v3/rate_limit/">Rate Limit API</a>
+ */
+@Immutable
+public interface Limits {
+    /**
+     * Resource name.
+     */
+    String CORE = "core";
+    /**
+     * Resource name.
+     */
+    String SEARCH = "search";
+    /**
+     * Github we're in.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Get limit for the given resource.
+     * @param resource Name of resource
+     * @return Limit
+     */
+    Limit get(String resource);
+    /**
+     * Throttled Limits.
+     * @since 0.6
+     */
+    @Immutable
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = "origin")
+    final class Throttled implements Limits {
+        /**
+         * Original.
+         */
+        private final transient Limits origin;
+        /**
+         * Maximum allowed, instead of default 5000.
+         */
+        private final transient int max;
+        /**
+         * Public ctor.
+         * @param limits Original limits
+         * @param allowed Maximum allowed
+         */
+        public Throttled(
+            final Limits limits,
+            final int allowed
+        ) {
+            this.origin = limits;
+            this.max = allowed;
+        }
+        @Override
+        public Github github() {
+            return this.origin.github();
+        }
+        @Override
+        public Limit get(
+            final String resource
+        ) {
+            return new Limit.Throttled(this.origin.get(resource), this.max);
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.User;
+import com.jcabi.github.Users;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Mock Github users.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "himself" })
+final class MkUsers implements Users {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String himself;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @throws IOException If there is any I/O problem
+     */
+    MkUsers(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.himself = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("users")
+        );
+        this.add(login);
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.himself);
+    }
+    @Override
+    public User self() {
+        return this.get(this.himself);
+    }
+    @Override
+    public User get(
+        final String login
+    ) {
+        return new MkUser(this.storage, login);
+    }
+    @Override
+    public Iterable<User> iterate(
+        final String identifier
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/users/user",
+            xml -> this.get(xml.xpath("login/text()").get(0))
+        );
+    }
+    @Override
+    public User add(final String login) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(
+                        String.format(
+                            "/github/users[not(user[login='%s'])]", login
+                        )
+                    )
+                    .add("user")
+                    .add("login").set(login).up()
+                    .add("type").set("User").up()
+                    .add("name").set(login).up()
+                    .add("notifications").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return this.get(login);
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+import java.util.Map;
+/**
+ * Github gists.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.1
+ * @see <a href="https://developer.github.com/v3/gists/">Gists API</a>
+ */
+@Immutable
+public interface Gists {
+    /**
+     * Github we're in.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Create a new gist.
+     *
+     * @param files Names and content of files
+     * @param visible Indicates whether the gist is public
+     * @return Gist
+     * @throws IOException If there is any I/O problem
+     * @see <a href="https://developer.github.com/v3/gists/#create-a-gist">Create a Gist</a>
+     */
+    Gist create(
+        Map<String, String> files, boolean visible
+    ) throws IOException;
+    /**
+     * Get gist by name.
+     * @param name Name of it
+     * @return Gist
+     * @see <a href="https://developer.github.com/v3/gists/#get-a-single-gist">Get a Single Gist</a>
+     */
+    Gist get(String name);
+    /**
+     * Iterate all gists.
+     * @return Iterator of gists
+     * @see <a href="https://developer.github.com/v3/gists/#list-gists">List Gists</a>
+     */
+    Iterable<Gist> iterate();
+    /**
+     * Removes a gist by id.
+     *
+     *
+     * @param identifier Identifier of the gist to be removed.
+     * @throws IOException If there is any I/O problem
+     */
+    void remove(String identifier) throws IOException;
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.safe;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comment;
+import com.jcabi.github.Issue;
+import com.jcabi.github.Reaction;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+/**
+ * Safe comment.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @author Paulo Lobo (pauloeduardolobo@gmail.com)
+ * @version $Id$
+ * @since 0.34
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+public final class SfComment implements Comment {
+    /**
+     * Original comment.
+     */
+    private final transient Comment origin;
+    /**
+     * Public ctor.
+     * @param cmt The original comment
+     */
+    public SfComment(final Comment cmt) {
+        this.origin = cmt;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public Issue issue() {
+        return this.origin.issue();
+    }
+    @Override
+    public long number() {
+        return this.origin.number();
+    }
+    @Override
+    public void remove() throws IOException {
+        try {
+            this.origin.remove();
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to remove comment: %[exception]s", ex);
+        }
+    }
+    @Override
+    public void react(final Reaction reaction) throws IOException {
+        this.origin.react(reaction);
+    }
+    @Override
+    public Iterable<Reaction> reactions() {
+        return this.origin.reactions();
+    }
+    @Override
+    public int compareTo(final Comment cmt) {
+        return this.origin.compareTo(cmt);
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        try {
+            this.origin.patch(json);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to path comment: %[exception]s", ex);
+        }
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        JsonObject json;
+        try {
+            json = this.origin.json();
+        } catch (final AssertionError ex) {
+            final String author = new Issue.Smart(
+                new SfIssue(this.origin.issue())
+            ).author().login();
+            json = new MkGithub(author).randomRepo()
+                .issues().create("", "")
+                .comments().post("deleted comment").json();
+            Logger.warn(this, "failed to fetch comment: %[exception]s", ex);
+        }
+        return json;
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.safe;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comments;
+import com.jcabi.github.Event;
+import com.jcabi.github.Issue;
+import com.jcabi.github.IssueLabels;
+import com.jcabi.github.Reaction;
+import com.jcabi.github.Repo;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+/**
+ * Safe issue.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.36
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+@SuppressWarnings("PMD.TooManyMethods")
+public final class SfIssue implements Issue {
+    /**
+     * Original issue.
+     */
+    private final transient Issue origin;
+    /**
+     * Public ctor.
+     * @param issue The original issue
+     */
+    public SfIssue(final Issue issue) {
+        this.origin = issue;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        JsonObject json;
+        try {
+            json = this.origin.json();
+        } catch (final AssertionError ex) {
+            json = new MkGithub().randomRepo()
+                .issues().create("", "").json();
+            Logger.warn(this, "failed to fetch issue: %[exception]s", ex);
+        }
+        return json;
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        try {
+            this.origin.patch(json);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "failed to patch issue: %[exception]s", ex);
+        }
+    }
+    @Override
+    public Repo repo() {
+        return this.origin.repo();
+    }
+    @Override
+    public int number() {
+        return this.origin.number();
+    }
+    @Override
+    public Comments comments() {
+        return new SfComments(this.origin.comments());
+    }
+    @Override
+    public IssueLabels labels() {
+        return this.origin.labels();
+    }
+    @Override
+    public Iterable<Event> events() throws IOException {
+        return this.origin.events();
+    }
+    @Override
+    public boolean exists() throws IOException {
+        return this.origin.exists();
+    }
+    @Override
+    public int compareTo(final Issue issue) {
+        return this.origin.compareTo(issue);
+    }
+    @Override
+    public void react(final Reaction reaction) throws IOException {
+        this.origin.react(reaction);
+    }
+    @Override
+    public Iterable<Reaction> reactions() {
+        return this.origin.reactions();
+    }
+    @Override
+    public void lock(final String reason) {
+        this.origin.lock(reason);
+    }
+    @Override
+    public void unlock() {
+        this.origin.unlock();
+    }
+    @Override
+    public boolean isLocked() {
+        return this.origin.isLocked();
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+/**
+ * Github users.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.1
+ * @see <a href="https://developer.github.com/v3/users/">Users API</a>
+ */
+@Immutable
+public interface Users {
+    /**
+     * Github we're in.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Get myself.
+     * @return Myself
+     */
+    User self();
+    /**
+     * Get user by login.
+     * @param login Login of it
+     * @return User
+     * @see <a href="https://developer.github.com/v3/users/#get-a-single-user">Get a Single User</a>
+     */
+    User get(String login);
+    /**
+     * Add user by login and returns it.
+     * @param login Login of it
+     * @return Added user
+     */
+    User add(String login);
+    /**
+     * Iterate all users, starting with the one you've seen already.
+     * @param identifier The integer ID of the last User that you’ve seen.
+     * @return Iterator of gists
+     * @see <a href="https://developer.github.com/v3/users/#get-all-users">Get All Users</a>
+     */
+    Iterable<User> iterate(
+        String identifier
+    );
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Organization;
+import com.jcabi.github.PublicMembers;
+import com.jcabi.github.User;
+import java.io.IOException;
+import java.security.SecureRandom;
+import java.util.Random;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Mock GitHub organization.
+ *
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @version $Id$
+ * @see <a href="https://developer.github.com/v3/orgs/">Organizations API</a>
+ * @since 0.24
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+public final class MkOrganization implements Organization {
+    /**
+     * Random generator.
+     */
+    private static final Random RAND = new SecureRandom();
+    /**
+     * Login key in key-value pair.
+     */
+    private static final String LOGIN_KEY = "login";
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Username of the organization.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login Username of organization
+     */
+    public MkOrganization(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String login() {
+        return this.self;
+    }
+    @Override
+    public JsonObject json() {
+        return Json.createObjectBuilder()
+            .add(LOGIN_KEY, this.self)
+            .add("id", Integer.toString(RAND.nextInt()))
+            .add("name", "github")
+            .add("company", "GitHub")
+            .add("blog", "https://github.com/blog")
+            .add("location", "San Francisco")
+            .add("email", "octocat@github.com")
+            .add("public_repos", RAND.nextInt())
+            .add("public_gists", RAND.nextInt())
+            .add("total_private_repos", RAND.nextInt())
+            .add("owned_private_repos", RAND.nextInt())
+            .add("followers", RAND.nextInt())
+            .add("following", RAND.nextInt())
+            .add("url", "https://github.com/orgs/cat")
+            .add("repos_url", "https://github.com/orgs/cat/repos")
+            .add("events_url", "https://github.com/orgs/cat/events")
+            .add("html_url", "https://github.com/cat")
+            .add("created_at", new Github.Time().toString())
+            .add("type", "Organization")
+            .build();
+    }
+    @Override
+    public int compareTo(final Organization obj) {
+        return this.login().compareTo(obj.login());
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        new JsonPatch(this.storage)
+            .patch(this.xpath(), json);
+    }
+    @Override
+    public PublicMembers publicMembers() {
+        return new MkPublicMembers(this.storage, this);
+    }
+    /**
+     * Add the given user to this organization.
+     * @param user User to add to the organization
+     * @todo #1107:30min Implement the "Add team membership" API (see
+     *  https://developer.github.com/v3/orgs/teams/#add-team-membership )
+     *  (per https://developer.github.com/v3/orgs/members/#add-a-member ,
+     *  you can't add a user directly to an org; you instead add them to one
+     *  of that org's teams) and replace uses of this method with uses of that
+     *  API (or downgrade this method to a convenience method for unit tests).
+     */
+    public void addMember(final User user) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(String.format("%s/members", this.xpath()))
+                    .add("member")
+                    .add(LOGIN_KEY).set(user.login()).up()
+                    .add("public").set("false").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return String.format("/github/orgs/org[login='%s']", this.self);
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Markdown;
+import javax.json.JsonObject;
+import lombok.ToString;
+/**
+ * Mock markdown API.
+ *
+ * @author Andrej Istomin (andrej.istomin.ikeen@gmail.com)
+ * @version $Id$
+ * @since  0.10
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+public final class MkMarkdown implements Markdown {
+    /**
+     * Owner github.
+     */
+    private final transient Github owner;
+    /**
+     * Creates new instance.
+     * @param github Owner github
+     */
+    public MkMarkdown(final Github github) {
+        this.owner = github;
+    }
+    @Override
+    public Github github() {
+        return this.owner;
+    }
+    @Override
+    public String render(
+        final JsonObject json
+    ) {
+        return json.getString("text");
+    }
+    @Override
+    public String raw(
+        final String text
+    ) {
+        return text;
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.safe;
+import com.google.common.collect.Iterables;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comment;
+import com.jcabi.github.Comments;
+import com.jcabi.github.Issue;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import java.util.Date;
+import lombok.EqualsAndHashCode;
+/**
+ * Safe comments.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.34
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+public final class SfComments implements Comments {
+    /**
+     * Original comments.
+     */
+    private final transient Comments origin;
+    /**
+     * Public ctor.
+     * @param cmt The original comment
+     */
+    public SfComments(final Comments cmt) {
+        this.origin = cmt;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public Issue issue() {
+        return this.origin.issue();
+    }
+    @Override
+    public Comment get(final long number) {
+        return new SfComment(this.origin.get(number));
+    }
+    @Override
+    public Iterable<Comment> iterate(final Date since) {
+        return Iterables.transform(
+            this.origin.iterate(since),
+            input -> new SfComment(input)
+        );
+    }
+    @Override
+    public Comment post(final String text) throws IOException {
+        Comment cmt;
+        try {
+            cmt = this.origin.post(text);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to post to GitHub: %[exception]s", ex);
+            cmt = new MkGithub().randomRepo()
+                .issues().create("", "")
+                .comments().post(text);
+        }
+        return cmt;
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Organization;
+import com.jcabi.github.Organizations;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Github organizations.
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @version $Id$
+ * @see <a href="https://developer.github.com/v3/orgs/">Organizations API</a>
+ * @since 0.24
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage" })
+final class MkOrganizations implements Organizations {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @throws IOException If there is any I/O problem
+     */
+    MkOrganizations(
+        final MkStorage stg
+    )
+        throws IOException {
+        this.storage = stg;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("orgs")
+        );
+    }
+    @Override
+    public Organization get(
+        final String login
+    ) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(
+                        String.format(
+                            "/github/orgs[not(org[login='%s'])]",
+                            login
+                    )
+                )
+                    .add("org")
+                    .add("login").set(login).up()
+                    .add("members").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return new MkOrganization(this.storage, login);
+    }
+    @Override
+    public Iterable<Organization> iterate() {
+        return new MkIterable<>(
+            this.storage,
+            String.format("%s/org", this.xpath()),
+            xml -> this.get(
+                xml.xpath("login/text()").get(0)
+            )
+        );
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return "/github/orgs";
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.Github;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Repos;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Github repos.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @checkstyle MultipleStringLiterals (500 lines)
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkRepos implements Repos {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @throws IOException If there is any I/O problem
+     */
+    MkRepos(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(new Directives().xpath("/github").addIf("repos"));
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Repo create(
+        final RepoCreate settings
+    ) throws IOException {
+        String owner = this.self;
+        final String org = settings.organization();
+        if (org != null && !org.isEmpty()) {
+            owner = "/orgs/".concat(org).concat("/repos");
+        }
+        final Coordinates coords = new Coordinates.Simple(
+            owner,
+            settings.name()
+        );
+        this.storage.apply(
+            new Directives().xpath(this.xpath()).add("repo")
+                .attr("coords", coords.toString())
+                .add("name").set(settings.name()).up()
+                .add("description").set("test repository").up()
+                .add("private").set(settings.isPrivate()).up()
+        );
+        final Repo repo = this.get(coords);
+        repo.patch(settings.json());
+        Logger.info(
+            this, "repository %s created by %s",
+            coords, owner
+        );
+        return repo;
+    }
+    @Override
+    public Repo get(
+        final Coordinates coords
+    ) {
+        try {
+            final String xpath = String.format(
+                "%s/repo[@coords='%s']", this.xpath(), coords
+            );
+            if (this.storage.xml().nodes(xpath).isEmpty()) {
+                throw new IllegalArgumentException(
+                    String.format("repository %s doesn't exist", coords)
+                );
+            }
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return new MkRepo(this.storage, this.self, coords);
+    }
+    @Override
+    public void remove(
+        final Coordinates coords) {
+        try {
+            this.storage.apply(
+                new Directives().xpath(
+                    String.format("%s/repo[@coords='%s']", this.xpath(), coords)
+                ).remove()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    /**
+     * Iterate all public repos, starting with the one you've seen already.
+     * @param identifier The integer ID of the last Repo that you’ve seen.
+     * @return Iterator of repo
+     */
+    @Override
+    public Iterable<Repo> iterate(
+        final String identifier) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo",
+            xml -> new MkRepo(
+                this.storage, this.self,
+                new Coordinates.Simple(xml.xpath("@coords").get(0))
+            )
+        );
+    }
+    @Override
+    public boolean exists(final Coordinates coords) throws IOException {
+        final String xpath = String.format(
+            "%s/repo[@coords='%s']", this.xpath(), coords
+        );
+        return !this.storage.xml().nodes(xpath).isEmpty();
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return "/github/repos";
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Content;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.Github;
+import com.jcabi.github.Issue;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Search;
+import com.jcabi.github.User;
+import java.util.EnumMap;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Mock Github search.
+ *
+ * @author Carlos Miranda (miranda.cma@gmail.com)
+ * @version $Id$
+ * @checkstyle ClassDataAbstractionCouplingCheck (500 lines)
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkSearch implements Search {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     *
+     * @param stg Storage
+     * @param login User to login
+     */
+    MkSearch(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Iterable<Repo> repos(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo",
+            xml -> new MkRepo(
+                this.storage, this.self,
+                new Coordinates.Simple(xml.xpath("@coords").get(0))
+            )
+        );
+    }
+    //@checkstyle ParameterNumberCheck (5 lines)
+    @Override
+    public Iterable<Issue> issues(final String keywords, final String sort,
+        final Order order, final EnumMap<Qualifier, String> qualifiers
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo/issues/issue",
+            xml -> new MkIssue(
+                this.storage, this.self,
+                new Coordinates.Simple(
+                    xml.xpath("../../@coords").get(0)
+                ),
+                Integer.parseInt(xml.xpath("number/text()").get(0))
+            )
+        );
+    }
+    @Override
+    public Iterable<User> users(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/users/user",
+            xml -> new MkUser(
+                this.storage,
+                xml.xpath("login/text()").get(0)
+            )
+        );
+    }
+    @Override
+    public Iterable<Content> codes(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo/name",
+            xml -> new MkContent(
+                this.storage,
+                this.self,
+                new Coordinates.Simple(this.self, "repo"),
+                "/path/to/search",
+                "master"
+            )
+        );
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Organization;
+import com.jcabi.github.Organizations;
+import com.jcabi.github.User;
+import com.jcabi.github.UserOrganizations;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Github user organizations.
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @author Chris Rebert (github@chrisrebert.com)
+ * @version $Id$
+ * @see <a href="https://developer.github.com/v3/orgs/">Organizations API</a>
+ * @since 0.24
+ * @checkstyle MultipleStringLiteralsCheck (200 lines)
+ * @checkstyle ClassDataAbstractionCoupling (200 lines)
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+@SuppressWarnings("PMD.TooManyMethods")
+final class MkUserOrganizations implements UserOrganizations {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @throws IOException If there is any I/O problem
+     */
+    MkUserOrganizations(
+        final MkStorage stg,
+        final String login
+    )
+        throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("orgs")
+        );
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public User user() {
+        return new MkUser(this.storage, this.self);
+    }
+    @Override
+    public Iterable<Organization> iterate() throws IOException {
+        return new MkIterable<>(
+            this.storage,
+            "/github/orgs/org",
+            new OrganizationMapping(new MkOrganizations(this.storage))
+        );
+    }
+    private static final class OrganizationMapping
+        implements MkIterable.Mapping<Organization> {
+        /**
+         * Organizations.
+         */
+        private final transient Organizations organizations;
+        /**
+         * Ctor.
+         * @param orgs Organizations
+         */
+        OrganizationMapping(final Organizations orgs) {
+            this.organizations = orgs;
+        }
+        @Override
+        public Organization map(final XML xml) {
+            return this.organizations.get(
+                xml.xpath("login/text()").get(0)
+            );
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+import javax.json.JsonObject;
+/**
+ * Markdown API.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.6
+ * @see <a href="https://developer.github.com/v3/markdown/">Markdown API</a>
+ */
+@Immutable
+public interface Markdown {
+    /**
+     * Get its owner.
+     * @return Github
+     */
+    Github github();
+    /**
+     * Render.
+     * @param json JSON parameters
+     * @return HTML
+     * @throws IOException If it fails due to I/O problem
+     */
+    String render(JsonObject json)
+        throws IOException;
+    /**
+     * Raw rendering.
+     * @param text Text in Markdown format
+     * @return HTML
+     * @throws IOException If it fails due to I/O problem
+     */
+    String raw(String text)
+        throws IOException;
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+/**
+ * Github organizations.
+ * @author Paul Polishchuk (ppol@ua.fm)
+ * @author Chris Rebert (github@chrisrebert.com)
+ * @version $Id$
+ * @see <a href="https://developer.github.com/v3/orgs/">Organizations API</a>
+ * @since 0.24
+ */
+@Immutable
+public interface Organizations {
+    /**
+     * Get specific organization by name.
+     * @param login Login name of the organization.
+     * @return Organization
+     * @see <a href="https://developer.github.com/v3/orgs/#get-an-organization">Get a Single Organization</a>
+     */
+    Organization get(String login);
+    /**
+     * Iterate over organizations of the currently logged-in user.
+     * @return Iterator of Organizations
+     * @see <a href="https://developer.github.com/v3/orgs/#list-your-organizations">List Your Organizations</a>
+     */
+    Iterable<Organization> iterate();
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github;
+import com.google.common.base.Optional;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import javax.json.Json;
+import javax.json.JsonObject;
+import javax.json.JsonObjectBuilder;
+import javax.json.JsonValue;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Github Repo API.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @see <a href="https://developer.github.com/v3/repos/">Repos API</a>
+ */
+@SuppressWarnings("PMD.TooManyMethods")
+@Immutable
+public interface Repos {
+    /**
+     * Get its owner.
+     * @return Github
+     */
+    Github github();
+    //byte[]
+    /**
+     * Create repository.
+     * @param settings Settings to use for creating the new repository
+     * @return Repository
+     * @throws IOException If there is any I/O problem
+     * @since 0.5
+     * @see <a href="https://developer.github.com/v3/repos/#create">Create Repository</a>
+     */
+    Repo create(RepoCreate settings)
+        throws IOException;
+    /**
+     * Get repository by name.
+     * @param coords Repository name in "user/repo" format
+     * @return Repository
+     * @see <a href="https://developer.github.com/v3/repos/#get">Get Repository</a>
+     */
+    Repo get(Coordinates coords);
+    /**
+     * Remove repository by name.
+     *
+     * <p>Note: Deleting a repository requires admin access.
+     * If OAuth is used, the delete_repo scope is required.
+     *
+     * @param coords Repository name in "user/repo" format
+     * @throws IOException If there is any I/O problem
+     * @see <a href="https://developer.github.com/v3/repos/#delete-a-repository">Delete a Repository</a>
+     */
+    void remove(Coordinates coords) throws IOException;
+    /**
+     * Iterate all public repos, starting with the one you've seen already.
+     * @param identifier The integer ID of the last Repo that you’ve seen.
+     * @return Iterator of repo
+     * @see <a href="https://developer.github.com/v3/repos/#list-all-public-repositories">List all public repositories</a>
+     */
+    Iterable<Repo> iterate(
+        String identifier
+    );
+    /**
+     * Check if a repository exists on Github.
+     * @param coords Coordinates of the repo.
+     * @return True if it exists, false otherwise.
+     * @throws IOException If something goes wrong.
+     */
+    boolean exists(final Coordinates coords) throws IOException;
+    /**
+     * Settings to use when creating a new GitHub repository.
+     *
+     * @author Chris Rebert (github@rebertia.com)
+     * @version $Id$
+     * @since 0.24
+     * @see <a href="https://developer.github.com/v3/repos/#create">Create Repo API</a>
+     * @todo #1095:30m Add the ability to set the other parameters of
+     *  the repo creation API (has_issues, has_wiki, has_downloads,
+     *  team_id, gitignore_template, license_template).
+     */
+    @SuppressWarnings("PMD.TooManyMethods")
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = {"nam", "priv", "descr", "home", "init"})
+    final class RepoCreate implements JsonReadable {
+        /**
+         * Name of the new repo.
+         */
+        private final transient String nam;
+        /**
+         * Privateness of the new repo.
+         */
+        private final transient boolean priv;
+        /**
+         * Description of the new repo.
+         */
+        private final transient String descr;
+        /**
+         * Homepage of the new repo.
+         */
+        private final transient String home;
+        /**
+         * Auto-init the new repo?
+         */
+        private final transient Optional<Boolean> init;
+        /**
+         * Organization where the created repo belongs.
+         */
+        private final transient String organization;
+        /**
+         * Other parameters which repo might have.
+         */
+        private final transient Map<String, JsonValue> other;
+        /**
+         * Public ctor.
+         * @param nme Name of the new repository. Cannot be empty.
+         * @param prvt Will the new repo be private?
+         *  If not, then it will be public.
+         */
+        public RepoCreate(final String nme, final boolean prvt) {
+            this(nme, prvt, "", "", Optional.<Boolean>absent(), "");
+        }
+        /**
+         * Private ctor.
+         * @param nme Name of the new repo. Cannot be empty.
+         * @param prvt Will the new repo be private?
+         *  If not, then it will be public.
+         * @param desc Description of the new repo
+         * @param page Homepage of the new repo
+         * @param auto Auto-init the new repo?
+         * @param org Organization to which this repo belongs.
+         *  When empty or null, the repo is created under the
+         *  authenticated user.
+         * @checkstyle ParameterNumberCheck (7 lines)
+         */
+        private RepoCreate(
+            final String nme,
+            final boolean prvt,
+            final String desc,
+            final String page,
+            final Optional<Boolean> auto,
+            final String org
+        ) {
+            if (nme.isEmpty()) {
+                throw new IllegalArgumentException("Name cannot be empty!");
+            }
+            this.nam = nme;
+            this.priv = prvt;
+            this.descr = desc;
+            this.home = page;
+            this.init = auto;
+            this.organization = org;
+            this.other = new HashMap<>(0);
+        }
+        /**
+         * Name of the new repo.
+         * @return Name
+         */
+        public String name() {
+            return this.nam;
+        }
+        /**
+         * Will the new repo be private? If not, then it will be public.
+         * @return Is this repo private?
+         */
+        public boolean isPrivate() {
+            return this.priv;
+        }
+        /**
+         * Description of the new repo.
+         * If it has no description, this is an empty string.
+         * @return Description
+         */
+        public String description() {
+            return this.descr;
+        }
+        /**
+         * Homepage of the new repo.
+         * If it has no homepage, this is an empty string.
+         * @return Homepage
+         */
+        public String homepage() {
+            return this.home;
+        }
+        /**
+         * Auto-init the new repo?
+         * If absent, the GitHub default will be used.
+         * @return Optional boolean
+         */
+        public Optional<Boolean> autoInit() {
+            return this.init;
+        }
+        /**
+         * Name of the organization to which this repo belongs.
+         * @return String org name
+         */
+        public String organization() {
+            return this.organization;
+        }
+        /**
+         * Returns a RepoCreate with the given name.
+         * The name cannot be empty.
+         * @param nme Name of the new repo
+         * @return RepoCreate
+         */
+        public RepoCreate withName(
+            final String nme
+        ) {
+            return new RepoCreate(
+                nme,
+                this.priv,
+                this.descr,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given privacy.
+         * @param privacy Privateness of the new repo
+         * @return RepoCreate
+         */
+        public RepoCreate withPrivacy(final boolean privacy) {
+            return new RepoCreate(
+                this.nam,
+                privacy,
+                this.descr,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given description.
+         * @param desc Description
+         * @return RepoCreate
+         */
+        public RepoCreate withDescription(
+            final String desc
+        ) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                desc,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given homepage.
+         * @param page Homepage URL
+         * @return RepoCreate
+         */
+        public RepoCreate withHomepage(
+            final String page
+        ) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                page,
+                this.init,
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given auto-init enabledness.
+         * @param auto Auto-init the new repo?
+         * @return RepoCreate
+         */
+        public RepoCreate withAutoInit(final Optional<Boolean> auto) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                auto,
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given auto-init enabledness.
+         * @param auto Auto-init the new repo?
+         * @return RepoCreate
+         */
+        public RepoCreate withAutoInit(final boolean auto) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                Optional.of(auto),
+                this.organization
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given organization.
+         * @param org Organization to which this repo belongs.
+         * @return RepoCreate
+         */
+        public RepoCreate withOrganization(final String org) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                this.init,
+                org
+            );
+        }
+        /**
+         * Returns a RepoCreate with the given json fields.
+         * @param key Json key
+         * @param value Json value
+         * @return The same RepoCreate.
+         * @todo #1660:30min Make 'with' method immutable.
+         *  Currently, the 'with' method mutates the 'other' field.
+         *  This is not ideal, as it makes the class mutable.
+         *  Make the 'with' method immutable and return a new
+         *  RepoCreate object with the new field.
+         */
+        public RepoCreate with(final String key, final JsonValue value) {
+            this.other.put(key, value);
+            return this;
+        }
+        @Override
+        public JsonObject json() {
+            JsonObjectBuilder builder = Json.createObjectBuilder()
+                .add("name", this.nam)
+                .add("description", this.descr)
+                .add("homepage", this.home)
+                .add("private", this.priv);
+            if (this.init.isPresent()) {
+                builder = builder.add("auto_init", this.init.get());
+            }
+            for (final Map.Entry<String, JsonValue> entry
+                : this.other.entrySet()) {
+                builder.add(entry.getKey(), entry.getValue());
+            }
+            return builder.build();
+        }
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Notifications;
+import com.jcabi.github.PublicKeys;
+import com.jcabi.github.User;
+import com.jcabi.github.UserEmails;
+import com.jcabi.github.UserOrganizations;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import java.util.Date;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+/**
+ * Github user.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ * @checkstyle ClassDataAbstractionCouplingCheck (8 lines)
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkUser implements User {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     */
+    MkUser(final MkStorage stg, final String login) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String login() {
+        return this.self;
+    }
+    @Override
+    public UserOrganizations organizations() {
+        try {
+            return new MkUserOrganizations(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public PublicKeys keys() {
+        try {
+            return new MkPublicKeys(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public UserEmails emails() {
+        try {
+            return new MkUserEmails(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Notifications notifications() {
+        return new MkNotifications(
+            this.storage,
+            this.xpath().concat("/notifications/notification")
+        );
+    }
+    @Override
+    public void markAsRead(final Date lastread) throws IOException {
+        final Iterable<XML> ids = this.storage.xml().nodes(
+            this.xpath() + String.format(
+                "/notifications/notification[date <= %s]/id",
+                lastread.getTime()
+            )
+        );
+        final JsonPatch json = new JsonPatch(this.storage);
+        final JsonObject read = Json.createObjectBuilder()
+            .add("read", true).build();
+        for (final XML nid : ids) {
+            json.patch(
+                String.format(
+                    this.xpath().concat("/notifications/notification[id = %s]"),
+                    nid.xpath("text()").get(0)
+                ),
+                read
+            );
+        }
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return String.format("/github/users/user[login='%s']", this.self);
+    }
+}
+/**
+ * Copyright (c) 2013-2024, jcabi.com
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met: 1) Redistributions of source code must retain the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer. 2) Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution. 3) Neither the name of the jcabi.com nor
+ * the names of its contributors may be used to endorse or promote
+ * products derived from this software without specific prior written
+ * permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+ * NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+ * OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Gist;
+import com.jcabi.github.Gists;
+import com.jcabi.github.Github;
+import java.io.IOException;
+import java.util.Map;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+/**
+ * Mock Github gists.
+ *
+ * @author Yegor Bugayenko (yegor256@gmail.com)
+ * @version $Id$
+ * @since 0.5
+ */
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkGists implements Gists {
+    /**
+     * Storage.
+     */
+    private final transient MkStorage storage;
+    /**
+     * Login of the user logged in.
+     */
+    private final transient String self;
+    /**
+     * Public ctor.
+     * @param stg Storage
+     * @param login User to login
+     * @throws IOException If there is any I/O problem
+     */
+    MkGists(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("gists")
+        );
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Gist create(
+        final Map<String, String> files, final boolean visible
+    ) throws IOException {
+        this.storage.lock();
+        final String number;
+        try {
+            number = Integer.toString(
+                1 + this.storage.xml().xpath(
+                    String.format("%s/gist/id/text()", this.xpath())
+                ).size()
+            );
+            final Directives dirs = new Directives().xpath(this.xpath())
+                .add("gist")
+                .add("id").set(number).up()
+                .add("public").set(String.valueOf(visible)).up()
+                .add("files");
+            for (final Map.Entry<String, String> file : files.entrySet()) {
+                dirs.add("file")
+                    .add("filename").set(file.getKey()).up()
+                    .add("raw_content").set(file.getValue()).up().up();
+            }
+            this.storage.apply(dirs);
+        } finally {
+            this.storage.unlock();
+        }
+        return this.get(number);
+    }
+    @Override
+    public Gist get(final String name
+    ) {
+        return new MkGist(this.storage, this.self, name);
+    }
+    @Override
+    public Iterable<Gist> iterate() {
+        return new MkIterable<>(
+            this.storage,
+            String.format("%s/gist", this.xpath()),
+            xml -> this.get(xml.xpath("id/text()").get(0))
+        );
+    }
+    @Override
+    public void remove(final String identifier
+    ) throws IOException {
+        this.storage.apply(
+            new Directives().xpath(
+                String.format("%s/gist[id='%s']", this.xpath(), identifier)
+            ).remove()
+        );
+    }
+    /**
+     * XPath of this element in XML tree.
+     * @return XPath
+     */
+    private String xpath() {
+        return "/github/gists";
+    }
+}

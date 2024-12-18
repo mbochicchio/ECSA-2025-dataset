@@ -1,0 +1,4164 @@
+package com.getcapacitor;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.webkit.ValueCallback;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContract;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.pm.PackageInfoCompat;
+import androidx.fragment.app.Fragment;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import com.getcapacitor.android.R;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.cordova.MockCordovaInterfaceImpl;
+import com.getcapacitor.cordova.MockCordovaWebViewImpl;
+import com.getcapacitor.util.HostMask;
+import com.getcapacitor.util.InternalUtils;
+import com.getcapacitor.util.PermissionHelper;
+import com.getcapacitor.util.WebColor;
+import java.io.File;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.apache.cordova.ConfigXmlParser;
+import org.apache.cordova.CordovaPreferences;
+import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.PluginEntry;
+import org.apache.cordova.PluginManager;
+import org.json.JSONException;
+/**
+ * The Bridge class is the main engine of Capacitor. It manages
+ * loading and communicating with all Plugins,
+ * proxying Native events to Plugins, executing Plugin methods,
+ * communicating with the WebView, and a whole lot more.
+ *
+ * Generally, you'll not use Bridge directly, instead, extend from BridgeActivity
+ * to get a WebView instance and proxy native events automatically.
+ *
+ * If you want to use this Bridge in an existing Android app, please
+ * see the source for BridgeActivity for the methods you'll need to
+ * pass through to Bridge:
+ * <a href="https://github.com/ionic-team/capacitor/blob/HEAD/android/capacitor/src/main/java/com/getcapacitor/BridgeActivity.java">
+ *   BridgeActivity.java</a>
+ */
+public class Bridge {
+    private static final String PERMISSION_PREFS_NAME = "PluginPermStates";
+    private static final String BUNDLE_LAST_PLUGIN_ID_KEY = "capacitorLastActivityPluginId";
+    private static final String BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY = "capacitorLastActivityPluginMethod";
+    private static final String BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY = "capacitorLastPluginCallOptions";
+    private static final String BUNDLE_PLUGIN_CALL_BUNDLE_KEY = "capacitorLastPluginCallBundle";
+    private static final String LAST_BINARY_VERSION_CODE = "lastBinaryVersionCode";
+    private static final String LAST_BINARY_VERSION_NAME = "lastBinaryVersionName";
+    private static final String MINIMUM_ANDROID_WEBVIEW_ERROR = "System WebView is not supported";
+    // The name of the directory we use to look for index.html and the rest of our web assets
+    public static final String DEFAULT_WEB_ASSET_DIR = "public";
+    public static final String CAPACITOR_HTTP_SCHEME = "http";
+    public static final String CAPACITOR_HTTPS_SCHEME = "https";
+    public static final String CAPACITOR_FILE_START = "/_capacitor_file_";
+    public static final String CAPACITOR_CONTENT_START = "/_capacitor_content_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_START = "/_capacitor_http_interceptor_";
+    /** @deprecated CAPACITOR_HTTPS_INTERCEPTOR_START is no longer required. All proxied requests are handled via CAPACITOR_HTTP_INTERCEPTOR_START instead */
+    @Deprecated
+    public static final String CAPACITOR_HTTPS_INTERCEPTOR_START = "/_capacitor_https_interceptor_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_URL_PARAM = "u";
+    public static final int DEFAULT_ANDROID_WEBVIEW_VERSION = 60;
+    public static final int MINIMUM_ANDROID_WEBVIEW_VERSION = 55;
+    public static final int DEFAULT_HUAWEI_WEBVIEW_VERSION = 10;
+    public static final int MINIMUM_HUAWEI_WEBVIEW_VERSION = 10;
+    // Loaded Capacitor config
+    private CapConfig config;
+    // A reference to the main activity for the app
+    private final AppCompatActivity context;
+    // A reference to the containing Fragment if used
+    private final Fragment fragment;
+    private WebViewLocalServer localServer;
+    private String localUrl;
+    private String appUrl;
+    private String appUrlConfig;
+    private HostMask appAllowNavigationMask;
+    private Set<String> allowedOriginRules = new HashSet<String>();
+    private ArrayList<String> authorities = new ArrayList<>();
+    // A reference to the main WebView for the app
+    private final WebView webView;
+    public final MockCordovaInterfaceImpl cordovaInterface;
+    private CordovaWebView cordovaWebView;
+    private CordovaPreferences preferences;
+    private BridgeWebViewClient webViewClient;
+    private App app;
+    // Our MessageHandler for sending and receiving data to the WebView
+    private final MessageHandler msgHandler;
+    // The ThreadHandler for executing plugin calls
+    private final HandlerThread handlerThread = new HandlerThread("CapacitorPlugins");
+    // Our Handler for posting plugin calls. Created from the ThreadHandler
+    private Handler taskHandler = null;
+    private final List<Class<? extends Plugin>> initialPlugins;
+    private final List<Plugin> pluginInstances;
+    // A map of Plugin Id's to PluginHandle's
+    private Map<String, PluginHandle> plugins = new HashMap<>();
+    // Stored plugin calls that we're keeping around to call again someday
+    private Map<String, PluginCall> savedCalls = new HashMap<>();
+    // The call IDs of saved plugin calls with associated plugin id for handling permissions
+    private Map<String, LinkedList<String>> savedPermissionCallIds = new HashMap<>();
+    // Store a plugin that started a new activity, in case we need to resume
+    // the app and return that data back
+    private PluginCall pluginCallForLastActivity;
+    // Any URI that was passed to the app on start
+    private Uri intentUri;
+    // A list of listeners that trigger when webView events occur
+    private List<WebViewListener> webViewListeners = new ArrayList<>();
+    // An interface to manipulate route resolving
+    private RouteProcessor routeProcessor;
+    // A pre-determined path to load the bridge
+    private ServerPath serverPath;
+    /**
+     * Create the Bridge with a reference to the main {@link Activity} for the
+     * app, and a reference to the {@link WebView} our app will use.
+     * @param context
+     * @param webView
+     * @deprecated Use {@link Bridge.Builder} to create Bridge instances
+     */
+    @Deprecated
+    public Bridge(
+        AppCompatActivity context,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this(context, null, null, webView, initialPlugins, new ArrayList<>(), cordovaInterface, pluginManager, preferences, config);
+    }
+    private Bridge(
+        AppCompatActivity context,
+        ServerPath serverPath,
+        Fragment fragment,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        List<Plugin> pluginInstances,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this.app = new App();
+        this.serverPath = serverPath;
+        this.context = context;
+        this.fragment = fragment;
+        this.webView = webView;
+        this.webViewClient = new BridgeWebViewClient(this);
+        this.initialPlugins = initialPlugins;
+        this.pluginInstances = pluginInstances;
+        this.cordovaInterface = cordovaInterface;
+        this.preferences = preferences;
+        // Start our plugin execution threads and handlers
+        handlerThread.start();
+        taskHandler = new Handler(handlerThread.getLooper());
+        this.config = config != null ? config : CapConfig.loadDefault(getActivity());
+        Logger.init(this.config);
+        // Initialize web view and message handler for it
+        this.initWebView();
+        this.setAllowedOriginRules();
+        this.msgHandler = new MessageHandler(this, webView, pluginManager);
+        // Grab any intent info that our app was launched with
+        Intent intent = context.getIntent();
+        this.intentUri = intent.getData();
+        // Register our core plugins
+        this.registerAllPlugins();
+        this.loadWebView();
+    }
+    private void setAllowedOriginRules() {
+        String[] appAllowNavigationConfig = this.config.getAllowNavigation();
+        String authority = this.getHost();
+        String scheme = this.getScheme();
+        allowedOriginRules.add(scheme + "://" + authority);
+        if (this.getServerUrl() != null) {
+            allowedOriginRules.add(this.getServerUrl());
+        }
+        if (appAllowNavigationConfig != null) {
+            for (String allowNavigation : appAllowNavigationConfig) {
+                if (!allowNavigation.startsWith("http")) {
+                    allowedOriginRules.add("https://" + allowNavigation);
+                } else {
+                    allowedOriginRules.add(allowNavigation);
+                }
+            }
+            authorities.addAll(Arrays.asList(appAllowNavigationConfig));
+        }
+        this.appAllowNavigationMask = HostMask.Parser.parse(appAllowNavigationConfig);
+    }
+    public App getApp() {
+        return app;
+    }
+    private void loadWebView() {
+        final boolean html5mode = this.config.isHTML5Mode();
+        // Start the local web server
+        JSInjector injector = getJSInjector();
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            String allowedOrigin = Uri.parse(appUrl).buildUpon().path(null).fragment(null).clearQuery().build().toString();
+            try {
+                WebViewCompat.addDocumentStartJavaScript(webView, injector.getScriptString(), Collections.singleton(allowedOrigin));
+                injector = null;
+            } catch (IllegalArgumentException ex) {
+                Logger.warn("Invalid url, using fallback");
+            }
+        }
+        localServer = new WebViewLocalServer(context, this, injector, authorities, html5mode);
+        localServer.hostAssets(DEFAULT_WEB_ASSET_DIR);
+        Logger.debug("Loading app at " + appUrl);
+        webView.setWebChromeClient(new BridgeWebChromeClient(this));
+        webView.setWebViewClient(this.webViewClient);
+        if (!isDeployDisabled() && !isNewBinary()) {
+            SharedPreferences prefs = getContext()
+                .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+            String path = prefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, null);
+            if (path != null && !path.isEmpty() && new File(path).exists()) {
+                setServerBasePath(path);
+            }
+        }
+        if (!this.isMinimumWebViewInstalled()) {
+            String errorUrl = this.getErrorUrl();
+            if (errorUrl != null) {
+                webView.loadUrl(errorUrl);
+                return;
+            } else {
+                Logger.error(MINIMUM_ANDROID_WEBVIEW_ERROR);
+            }
+        }
+        // If serverPath configured, start server based on provided path
+        if (serverPath != null) {
+            if (serverPath.getType() == ServerPath.PathType.ASSET_PATH) {
+                setServerAssetPath(serverPath.getPath());
+            } else {
+                setServerBasePath(serverPath.getPath());
+            }
+        } else {
+            // Get to work
+            webView.loadUrl(appUrl);
+        }
+    }
+    @SuppressLint("WebViewApiAvailability")
+    public boolean isMinimumWebViewInstalled() {
+        PackageManager pm = getContext().getPackageManager();
+        // Check getCurrentWebViewPackage() directly if above Android 8
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PackageInfo info = WebView.getCurrentWebViewPackage();
+            Pattern pattern = Pattern.compile("(\\d+)");
+            Matcher matcher = pattern.matcher(info.versionName);
+            if (matcher.find()) {
+                String majorVersionStr = matcher.group(0);
+                int majorVersion = Integer.parseInt(majorVersionStr);
+                if (info.packageName.equals("com.huawei.webview")) {
+                    return majorVersion >= config.getMinHuaweiWebViewVersion();
+                }
+                return majorVersion >= config.getMinWebViewVersion();
+            } else {
+                return false;
+            }
+        }
+        // Otherwise manually check WebView versions
+        try {
+            String webViewPackage = "com.google.android.webview";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                webViewPackage = "com.android.chrome";
+            }
+            PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackage);
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.google.android.webview'" + ex.toString());
+        }
+        try {
+            PackageInfo info = InternalUtils.getPackageInfo(pm, "com.android.webview");
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.android.webview'" + ex.toString());
+        }
+        final int amazonFireMajorWebViewVersion = extractWebViewMajorVersion(pm, "com.amazon.webview.chromium");
+        if (amazonFireMajorWebViewVersion >= config.getMinWebViewVersion()) {
+            return true;
+        }
+        // Could not detect any webview, return false
+        return false;
+    }
+    private int extractWebViewMajorVersion(final PackageManager pm, final String webViewPackageName) {
+        try {
+            final PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackageName);
+            final String majorVersionStr = info.versionName.split("\\.")[0];
+            final int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion;
+        } catch (Exception ex) {
+            Logger.warn(String.format("Unable to get package info for '%s' with err '%s'", webViewPackageName, ex));
+        }
+        return 0;
+    }
+    public boolean launchIntent(Uri url) {
+        /*
+         * Give plugins the chance to handle the url
+         */
+        for (Map.Entry<String, PluginHandle> entry : plugins.entrySet()) {
+            Plugin plugin = entry.getValue().getInstance();
+            if (plugin != null) {
+                Boolean shouldOverrideLoad = plugin.shouldOverrideLoad(url);
+                if (shouldOverrideLoad != null) {
+                    return shouldOverrideLoad;
+                }
+            }
+        }
+        if (url.getScheme().equals("data") || url.getScheme().equals("blob")) {
+            return false;
+        }
+        Uri appUri = Uri.parse(appUrl);
+        if (
+            !(appUri.getHost().equals(url.getHost()) && url.getScheme().equals(appUri.getScheme())) &&
+            !appAllowNavigationMask.matches(url.getHost())
+        ) {
+            try {
+                Intent openIntent = new Intent(Intent.ACTION_VIEW, url);
+                getContext().startActivity(openIntent);
+            } catch (ActivityNotFoundException e) {
+                // TODO - trigger an event
+            }
+            return true;
+        }
+        return false;
+    }
+    private boolean isNewBinary() {
+        String versionCode = "";
+        String versionName = "";
+        SharedPreferences prefs = getContext()
+            .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+        String lastVersionCode = prefs.getString(LAST_BINARY_VERSION_CODE, null);
+        String lastVersionName = prefs.getString(LAST_BINARY_VERSION_NAME, null);
+        try {
+            PackageManager pm = getContext().getPackageManager();
+            PackageInfo pInfo = InternalUtils.getPackageInfo(pm, getContext().getPackageName());
+            versionCode = Integer.toString((int) PackageInfoCompat.getLongVersionCode(pInfo));
+            versionName = pInfo.versionName;
+        } catch (Exception ex) {
+            Logger.error("Unable to get package info", ex);
+        }
+        if (!versionCode.equals(lastVersionCode) || !versionName.equals(lastVersionName)) {
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(LAST_BINARY_VERSION_CODE, versionCode);
+            editor.putString(LAST_BINARY_VERSION_NAME, versionName);
+            editor.putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
+            editor.apply();
+            return true;
+        }
+        return false;
+    }
+    public boolean isDeployDisabled() {
+        return preferences.getBoolean("DisableDeploy", false);
+    }
+    public boolean shouldKeepRunning() {
+        return preferences.getBoolean("KeepRunning", true);
+    }
+    public void handleAppUrlLoadError(Exception ex) {
+        if (ex instanceof SocketTimeoutException) {
+            Logger.error(
+                "Unable to load app. Ensure the server is running at " +
+                appUrl +
+                ", or modify the " +
+                "appUrl setting in capacitor.config.json (make sure to npx cap copy after to commit changes).",
+                ex
+            );
+        }
+    }
+    public boolean isDevMode() {
+        return (getActivity().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+    protected void setCordovaWebView(CordovaWebView cordovaWebView) {
+        this.cordovaWebView = cordovaWebView;
+    }
+    /**
+     * Get the Context for the App
+     * @return
+     */
+    public Context getContext() {
+        return this.context;
+    }
+    /**
+     * Get the activity for the app
+     * @return
+     */
+    public AppCompatActivity getActivity() {
+        return this.context;
+    }
+    /**
+     * Get the fragment for the app, if applicable. This will likely be null unless Capacitor
+     * is being used embedded in a Native Android app.
+     *
+     * @return The fragment containing the Capacitor WebView.
+     */
+    public Fragment getFragment() {
+        return this.fragment;
+    }
+    /**
+     * Get the core WebView under Capacitor's control
+     * @return
+     */
+    public WebView getWebView() {
+        return this.webView;
+    }
+    /**
+     * Get the URI that was used to launch the app (if any)
+     * @return
+     */
+    public Uri getIntentUri() {
+        return intentUri;
+    }
+    /**
+     * Get scheme that is used to serve content
+     * @return
+     */
+    public String getScheme() {
+        return this.config.getAndroidScheme();
+    }
+    /**
+     * Get host name that is used to serve content
+     * @return
+     */
+    public String getHost() {
+        return this.config.getHostname();
+    }
+    /**
+     * Get the server url that is used to serve content
+     * @return
+     */
+    public String getServerUrl() {
+        return this.config.getServerUrl();
+    }
+    public String getErrorUrl() {
+        String errorPath = this.config.getErrorPath();
+        if (errorPath != null && !errorPath.trim().isEmpty()) {
+            String authority = this.getHost();
+            String scheme = this.getScheme();
+            String localUrl = scheme + "://" + authority;
+            return localUrl + "/" + errorPath;
+        }
+        return null;
+    }
+    public String getAppUrl() {
+        return appUrl;
+    }
+    public CapConfig getConfig() {
+        return this.config;
+    }
+    public void reset() {
+        savedCalls = new HashMap<>();
+    }
+    /**
+     * Initialize the WebView, setting required flags
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void initWebView() {
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setGeolocationEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        if (this.config.isMixedContentAllowed()) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        String appendUserAgent = this.config.getAppendedUserAgentString();
+        if (appendUserAgent != null) {
+            String defaultUserAgent = settings.getUserAgentString();
+            settings.setUserAgentString(defaultUserAgent + " " + appendUserAgent);
+        }
+        String overrideUserAgent = this.config.getOverriddenUserAgentString();
+        if (overrideUserAgent != null) {
+            settings.setUserAgentString(overrideUserAgent);
+        }
+        String backgroundColor = this.config.getBackgroundColor();
+        try {
+            if (backgroundColor != null) {
+                webView.setBackgroundColor(WebColor.parseColor(backgroundColor));
+            }
+        } catch (IllegalArgumentException ex) {
+            Logger.debug("WebView background color not applied");
+        }
+        settings.setDisplayZoomControls(false);
+        settings.setBuiltInZoomControls(this.config.isZoomableWebView());
+        if (config.isInitialFocus()) {
+            webView.requestFocusFromTouch();
+        }
+        WebView.setWebContentsDebuggingEnabled(this.config.isWebContentsDebuggingEnabled());
+        appUrlConfig = this.getServerUrl();
+        String authority = this.getHost();
+        authorities.add(authority);
+        String scheme = this.getScheme();
+        localUrl = scheme + "://" + authority;
+        if (appUrlConfig != null) {
+            try {
+                URL appUrlObject = new URL(appUrlConfig);
+                authorities.add(appUrlObject.getAuthority());
+            } catch (Exception ex) {
+                Logger.error("Provided server url is invalid: " + ex.getMessage());
+                return;
+            }
+            localUrl = appUrlConfig;
+            appUrl = appUrlConfig;
+        } else {
+            appUrl = localUrl;
+            // custom URL schemes requires path ending with /
+            if (!scheme.equals(Bridge.CAPACITOR_HTTP_SCHEME) && !scheme.equals(CAPACITOR_HTTPS_SCHEME)) {
+                appUrl += "/";
+            }
+        }
+        String appUrlPath = this.config.getStartPath();
+        if (appUrlPath != null && !appUrlPath.trim().isEmpty()) {
+            appUrl += appUrlPath;
+        }
+    }
+    /**
+     * Register our core Plugin APIs
+     */
+    private void registerAllPlugins() {
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorCookies.class);
+        this.registerPlugin(com.getcapacitor.plugin.WebView.class);
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorHttp.class);
+        for (Class<? extends Plugin> pluginClass : this.initialPlugins) {
+            this.registerPlugin(pluginClass);
+        }
+        for (Plugin plugin : pluginInstances) {
+            registerPluginInstance(plugin);
+        }
+    }
+    /**
+     * Register additional plugins
+     * @param pluginClasses the plugins to register
+     */
+    public void registerPlugins(Class<? extends Plugin>[] pluginClasses) {
+        for (Class<? extends Plugin> plugin : pluginClasses) {
+            this.registerPlugin(plugin);
+        }
+    }
+    public void registerPluginInstances(Plugin[] pluginInstances) {
+        for (Plugin plugin : pluginInstances) {
+            this.registerPluginInstance(plugin);
+        }
+    }
+    @SuppressWarnings("deprecation")
+    private String getLegacyPluginName(Class<? extends Plugin> pluginClass) {
+        NativePlugin legacyPluginAnnotation = pluginClass.getAnnotation(NativePlugin.class);
+        if (legacyPluginAnnotation == null) {
+            Logger.error("Plugin doesn't have the @CapacitorPlugin annotation. Please add it");
+            return null;
+        }
+        return legacyPluginAnnotation.name();
+    }
+    /**
+     * Register a plugin class
+     * @param pluginClass a class inheriting from Plugin
+     */
+    public void registerPlugin(Class<? extends Plugin> pluginClass) {
+        String pluginId = pluginId(pluginClass);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, pluginClass));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(pluginClass);
+        } catch (PluginLoadException ex) {
+            logPluginLoadException(pluginClass, ex);
+        }
+    }
+    public void registerPluginInstance(Plugin plugin) {
+        Class<? extends Plugin> clazz = plugin.getClass();
+        String pluginId = pluginId(clazz);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, plugin));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(clazz);
+        }
+    }
+    private String pluginId(Class<? extends Plugin> clazz) {
+        String pluginName = pluginName(clazz);
+        String pluginId = clazz.getSimpleName();
+        if (pluginName == null) return null;
+        if (!pluginName.equals("")) {
+            pluginId = pluginName;
+        }
+        Logger.debug("Registering plugin instance: " + pluginId);
+        return pluginId;
+    }
+    private String pluginName(Class<? extends Plugin> clazz) {
+        String pluginName;
+        CapacitorPlugin pluginAnnotation = clazz.getAnnotation(CapacitorPlugin.class);
+        if (pluginAnnotation == null) {
+            pluginName = this.getLegacyPluginName(clazz);
+        } else {
+            pluginName = pluginAnnotation.name();
+        }
+        return pluginName;
+    }
+    private void logInvalidPluginException(Class<? extends Plugin> clazz) {
+        Logger.error(
+            "NativePlugin " +
+            clazz.getName() +
+            " is invalid. Ensure the @CapacitorPlugin annotation exists on the plugin class and" +
+            " the class extends Plugin"
+        );
+    }
+    private void logPluginLoadException(Class<? extends Plugin> clazz, Exception ex) {
+        Logger.error("NativePlugin " + clazz.getName() + " failed to load", ex);
+    }
+    public PluginHandle getPlugin(String pluginId) {
+        return this.plugins.get(pluginId);
+    }
+    /**
+     * Find the plugin handle that responds to the given request code. This will
+     * fire after certain Android OS intent results/permission checks/etc.
+     * @param requestCode
+     * @return
+     */
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public PluginHandle getPluginWithRequestCode(int requestCode) {
+        for (PluginHandle handle : this.plugins.values()) {
+            int[] requestCodes;
+            CapacitorPlugin pluginAnnotation = handle.getPluginAnnotation();
+            if (pluginAnnotation == null) {
+                // Check for legacy plugin annotation, @NativePlugin
+                NativePlugin legacyPluginAnnotation = handle.getLegacyPluginAnnotation();
+                if (legacyPluginAnnotation == null) {
+                    continue;
+                }
+                if (legacyPluginAnnotation.permissionRequestCode() == requestCode) {
+                    return handle;
+                }
+                requestCodes = legacyPluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            } else {
+                requestCodes = pluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    /**
+     * Call a method on a plugin.
+     * @param pluginId the plugin id to use to lookup the plugin handle
+     * @param methodName the name of the method to call
+     * @param call the call object to pass to the method
+     */
+    public void callPluginMethod(String pluginId, final String methodName, final PluginCall call) {
+        try {
+            final PluginHandle plugin = this.getPlugin(pluginId);
+            if (plugin == null) {
+                Logger.error("unable to find plugin : " + pluginId);
+                call.errorCallback("unable to find plugin : " + pluginId);
+                return;
+            }
+            if (Logger.shouldLog()) {
+                Logger.verbose(
+                    "callback: " +
+                    call.getCallbackId() +
+                    ", pluginId: " +
+                    plugin.getId() +
+                    ", methodName: " +
+                    methodName +
+                    ", methodData: " +
+                    call.getData().toString()
+                );
+            }
+            Runnable currentThreadTask = () -> {
+                try {
+                    plugin.invoke(methodName, call);
+                    if (call.isKeptAlive()) {
+                        saveCall(call);
+                    }
+                } catch (PluginLoadException | InvalidPluginMethodException ex) {
+                    Logger.error("Unable to execute plugin method", ex);
+                } catch (Exception ex) {
+                    Logger.error("Serious error executing plugin", ex);
+                    throw new RuntimeException(ex);
+                }
+            };
+            taskHandler.post(currentThreadTask);
+        } catch (Exception ex) {
+            Logger.error(Logger.tags("callPluginMethod"), "error : " + ex, null);
+            call.errorCallback(ex.toString());
+        }
+    }
+    /**
+     * Evaluate JavaScript in the web view. This method
+     * executes on the main thread automatically.
+     * @param js the JS to execute
+     * @param callback an optional ValueCallback that will synchronously receive a value
+     *                 after calling the JS
+     */
+    public void eval(final String js, final ValueCallback<String> callback) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(() -> webView.evaluateJavascript(js, callback));
+    }
+    public void logToJs(final String message, final String level) {
+        eval("window.Capacitor.logJs(\"" + message + "\", \"" + level + "\")", null);
+    }
+    public void logToJs(final String message) {
+        logToJs(message, "log");
+    }
+    public void triggerJSEvent(final String eventName, final String target) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\")", s -> {});
+    }
+    public void triggerJSEvent(final String eventName, final String target, final String data) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\", " + data + ")", s -> {});
+    }
+    public void triggerWindowJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "window");
+    }
+    public void triggerWindowJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "window", data);
+    }
+    public void triggerDocumentJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "document");
+    }
+    public void triggerDocumentJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "document", data);
+    }
+    public void execute(Runnable runnable) {
+        taskHandler.post(runnable);
+    }
+    public void executeOnMainThread(Runnable runnable) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(runnable);
+    }
+    /**
+     * Retain a call between plugin invocations
+     * @param call
+     */
+    public void saveCall(PluginCall call) {
+        this.savedCalls.put(call.getCallbackId(), call);
+    }
+    /**
+     * Get a retained plugin call
+     * @param callbackId the callbackId to use to lookup the call with
+     * @return the stored call
+     */
+    public PluginCall getSavedCall(String callbackId) {
+        if (callbackId == null) {
+            return null;
+        }
+        return this.savedCalls.get(callbackId);
+    }
+    PluginCall getPluginCallForLastActivity() {
+        PluginCall pluginCallForLastActivity = this.pluginCallForLastActivity;
+        this.pluginCallForLastActivity = null;
+        return pluginCallForLastActivity;
+    }
+    void setPluginCallForLastActivity(PluginCall pluginCallForLastActivity) {
+        this.pluginCallForLastActivity = pluginCallForLastActivity;
+    }
+    /**
+     * Release a retained call
+     * @param call a call to release
+     */
+    public void releaseCall(PluginCall call) {
+        releaseCall(call.getCallbackId());
+    }
+    /**
+     * Release a retained call by its ID
+     * @param callbackId an ID of a callback to release
+     */
+    public void releaseCall(String callbackId) {
+        this.savedCalls.remove(callbackId);
+    }
+    /**
+     * Removes the earliest saved call prior to a permissions request for a given plugin and
+     * returns it.
+     *
+     * @return The saved plugin call
+     */
+    protected PluginCall getPermissionCall(String pluginId) {
+        LinkedList<String> permissionCallIds = this.savedPermissionCallIds.get(pluginId);
+        String savedCallId = null;
+        if (permissionCallIds != null) {
+            savedCallId = permissionCallIds.poll();
+        }
+        return getSavedCall(savedCallId);
+    }
+    /**
+     * Save a call to be retrieved after requesting permissions. Calls are saved in order.
+     *
+     * @param call The plugin call to save.
+     */
+    protected void savePermissionCall(PluginCall call) {
+        if (call != null) {
+            if (!savedPermissionCallIds.containsKey(call.getPluginId())) {
+                savedPermissionCallIds.put(call.getPluginId(), new LinkedList<>());
+            }
+            savedPermissionCallIds.get(call.getPluginId()).add(call.getCallbackId());
+            saveCall(call);
+        }
+    }
+    /**
+     * Register an Activity Result Launcher to the containing Fragment or Activity.
+     *
+     * @param contract A contract specifying that an activity can be called with an input of
+     *                 type I and produce an output of type O.
+     * @param callback The callback run on Activity Result.
+     * @return A registered Activity Result Launcher.
+     */
+    public <I, O> ActivityResultLauncher<I> registerForActivityResult(
+        @NonNull final ActivityResultContract<I, O> contract,
+        @NonNull final ActivityResultCallback<O> callback
+    ) {
+        if (fragment != null) {
+            return fragment.registerForActivityResult(contract, callback);
+        } else {
+            return context.registerForActivityResult(contract, callback);
+        }
+    }
+    /**
+     * Build the JSInjector that will be used to inject JS into files served to the app,
+     * to ensure that Capacitor's JS and the JS for all the plugins is loaded each time.
+     */
+    private JSInjector getJSInjector() {
+        try {
+            String globalJS = JSExport.getGlobalJS(context, config.isLoggingEnabled(), isDevMode());
+            String bridgeJS = JSExport.getBridgeJS(context);
+            String pluginJS = JSExport.getPluginJS(plugins.values());
+            String cordovaJS = JSExport.getCordovaJS(context);
+            String cordovaPluginsJS = JSExport.getCordovaPluginJS(context);
+            String cordovaPluginsFileJS = JSExport.getCordovaPluginsFileJS(context);
+            String localUrlJS = "window.WEBVIEW_SERVER_URL = '" + localUrl + "';";
+            return new JSInjector(globalJS, bridgeJS, pluginJS, cordovaJS, cordovaPluginsJS, cordovaPluginsFileJS, localUrlJS);
+        } catch (Exception ex) {
+            Logger.error("Unable to export Capacitor JS. App will not function!", ex);
+        }
+        return null;
+    }
+    /**
+     * Restore any saved bundle state data
+     * @param savedInstanceState
+     */
+    public void restoreInstanceState(Bundle savedInstanceState) {
+        String lastPluginId = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_ID_KEY);
+        String lastPluginCallMethod = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY);
+        String lastOptionsJson = savedInstanceState.getString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY);
+        if (lastPluginId != null) {
+            // If we have JSON blob saved, create a new plugin call with the original options
+            if (lastOptionsJson != null) {
+                try {
+                    JSObject options = new JSObject(lastOptionsJson);
+                    pluginCallForLastActivity = new PluginCall(
+                        msgHandler,
+                        lastPluginId,
+                        PluginCall.CALLBACK_ID_DANGLING,
+                        lastPluginCallMethod,
+                        options
+                    );
+                } catch (JSONException ex) {
+                    Logger.error("Unable to restore plugin call, unable to parse persisted JSON object", ex);
+                }
+            }
+            // Let the plugin restore any state it needs
+            Bundle bundleData = savedInstanceState.getBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY);
+            PluginHandle lastPlugin = getPlugin(lastPluginId);
+            if (bundleData != null && lastPlugin != null) {
+                lastPlugin.getInstance().restoreState(bundleData);
+            } else {
+                Logger.error("Unable to restore last plugin call");
+            }
+        }
+    }
+    public void saveInstanceState(Bundle outState) {
+        Logger.debug("Saving instance state!");
+        // If there was a last PluginCall for a started activity, we need to
+        // persist it so we can load it again in case our app gets terminated
+        if (pluginCallForLastActivity != null) {
+            PluginCall call = pluginCallForLastActivity;
+            PluginHandle handle = getPlugin(call.getPluginId());
+            if (handle != null) {
+                Bundle bundle = handle.getInstance().saveInstanceState();
+                if (bundle != null) {
+                    outState.putString(BUNDLE_LAST_PLUGIN_ID_KEY, call.getPluginId());
+                    outState.putString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY, call.getMethodName());
+                    outState.putString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY, call.getData().toString());
+                    outState.putBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY, bundle);
+                } else {
+                    Logger.error("Couldn't save last " + call.getPluginId() + "'s Plugin " + call.getMethodName() + " call");
+                }
+            }
+        }
+    }
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public void startActivityForPluginWithResult(PluginCall call, Intent intent, int requestCode) {
+        Logger.debug("Starting activity for result");
+        pluginCallForLastActivity = call;
+        getActivity().startActivityForResult(intent, requestCode);
+    }
+    /**
+     * Check for legacy Capacitor or Cordova plugins that may have registered to handle a permission
+     * request, and handle them if so. If not handled, false is returned.
+     *
+     * @param requestCode the code that was requested
+     * @param permissions the permissions requested
+     * @param grantResults the set of granted/denied permissions
+     * @return true if permission code was handled by a plugin explicitly, false if not
+     */
+    @SuppressWarnings("deprecation")
+    boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null) {
+            boolean permissionHandled = false;
+            Logger.debug("Unable to find a Capacitor plugin to handle permission requestCode, trying Cordova plugins " + requestCode);
+            try {
+                permissionHandled = cordovaInterface.handlePermissionResult(requestCode, permissions, grantResults);
+            } catch (JSONException e) {
+                Logger.debug("Error on Cordova plugin permissions request " + e.getMessage());
+            }
+            return permissionHandled;
+        }
+        // Call deprecated method if using deprecated NativePlugin annotation
+        if (plugin.getPluginAnnotation() == null) {
+            plugin.getInstance().handleRequestPermissionsResult(requestCode, permissions, grantResults);
+            return true;
+        }
+        return false;
+    }
+    /**
+     * Saves permission states and rejects if permissions were not correctly defined in
+     * the AndroidManifest.xml file.
+     *
+     * @param plugin
+     * @param savedCall
+     * @param permissions
+     * @return true if permissions were saved and defined correctly, false if not
+     */
+    protected boolean validatePermissions(Plugin plugin, PluginCall savedCall, Map<String, Boolean> permissions) {
+        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+        for (Map.Entry<String, Boolean> permission : permissions.entrySet()) {
+            String permString = permission.getKey();
+            boolean isGranted = permission.getValue();
+            if (isGranted) {
+                // Permission granted. If previously denied, remove cached state
+                String state = prefs.getString(permString, null);
+                if (state != null) {
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.remove(permString);
+                    editor.apply();
+                }
+            } else {
+                SharedPreferences.Editor editor = prefs.edit();
+                if (ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permString)) {
+                    // Permission denied, can prompt again with rationale
+                    editor.putString(permString, PermissionState.PROMPT_WITH_RATIONALE.toString());
+                } else {
+                    // Permission denied permanently, store this state for future reference
+                    editor.putString(permString, PermissionState.DENIED.toString());
+                }
+                editor.apply();
+            }
+        }
+        String[] permStrings = permissions.keySet().toArray(new String[0]);
+        if (!PermissionHelper.hasDefinedPermissions(getContext(), permStrings)) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("Missing the following permissions in AndroidManifest.xml:\n");
+            String[] missing = PermissionHelper.getUndefinedPermissions(getContext(), permStrings);
+            for (String perm : missing) {
+                builder.append(perm + "\n");
+            }
+            savedCall.reject(builder.toString());
+            return false;
+        }
+        return true;
+    }
+    /**
+     * Helper to check all permissions and see the current states of each permission.
+     *
+     * @since 3.0.0
+     * @return A mapping of permission aliases to the associated granted status.
+     */
+    protected Map<String, PermissionState> getPermissionStates(Plugin plugin) {
+        Map<String, PermissionState> permissionsResults = new HashMap<>();
+        CapacitorPlugin annotation = plugin.getPluginHandle().getPluginAnnotation();
+        for (Permission perm : annotation.permissions()) {
+            // If a permission is defined with no permission constants, return GRANTED for it.
+            // Otherwise, get its true state.
+            if (perm.strings().length == 0 || (perm.strings().length == 1 && perm.strings()[0].isEmpty())) {
+                String key = perm.alias();
+                if (!key.isEmpty()) {
+                    PermissionState existingResult = permissionsResults.get(key);
+                    // auto set permission state to GRANTED if the alias is empty.
+                    if (existingResult == null) {
+                        permissionsResults.put(key, PermissionState.GRANTED);
+                    }
+                }
+            } else {
+                for (String permString : perm.strings()) {
+                    String key = perm.alias().isEmpty() ? permString : perm.alias();
+                    PermissionState permissionStatus;
+                    if (ActivityCompat.checkSelfPermission(this.getContext(), permString) == PackageManager.PERMISSION_GRANTED) {
+                        permissionStatus = PermissionState.GRANTED;
+                    } else {
+                        permissionStatus = PermissionState.PROMPT;
+                        // Check if there is a cached permission state for the "Never ask again" state
+                        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+                        String state = prefs.getString(permString, null);
+                        if (state != null) {
+                            permissionStatus = PermissionState.byState(state);
+                        }
+                    }
+                    PermissionState existingResult = permissionsResults.get(key);
+                    // multiple permissions with the same alias must all be true, otherwise all false.
+                    if (existingResult == null || existingResult == PermissionState.GRANTED) {
+                        permissionsResults.put(key, permissionStatus);
+                    }
+                }
+            }
+        }
+        return permissionsResults;
+    }
+    /**
+     * Handle an activity result and pass it to a plugin that has indicated it wants to
+     * handle the result.
+     * @param requestCode
+     * @param resultCode
+     * @param data
+     */
+    @SuppressWarnings("deprecation")
+    boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null || plugin.getInstance() == null) {
+            Logger.debug("Unable to find a Capacitor plugin to handle requestCode, trying Cordova plugins " + requestCode);
+            return cordovaInterface.onActivityResult(requestCode, resultCode, data);
+        }
+        // deprecated, to be removed
+        PluginCall lastCall = plugin.getInstance().getSavedCall();
+        // If we don't have a saved last call (because our app was killed and restarted, for example),
+        // Then we should see if we have any saved plugin call information and generate a new,
+        // "dangling" plugin call (a plugin call that doesn't have a corresponding web callback)
+        // and then send that to the plugin
+        if (lastCall == null && pluginCallForLastActivity != null) {
+            plugin.getInstance().saveCall(pluginCallForLastActivity);
+        }
+        plugin.getInstance().handleOnActivityResult(requestCode, resultCode, data);
+        // Clear the plugin call we may have re-hydrated on app launch
+        pluginCallForLastActivity = null;
+        return true;
+    }
+    /**
+     * Handle an onNewIntent lifecycle event and notify the plugins
+     * @param intent
+     */
+    public void onNewIntent(Intent intent) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnNewIntent(intent);
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.onNewIntent(intent);
+        }
+    }
+    /**
+     * Handle an onConfigurationChanged event and notify the plugins
+     * @param newConfig
+     */
+    public void onConfigurationChanged(Configuration newConfig) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnConfigurationChanged(newConfig);
+        }
+    }
+    /**
+     * Handle onRestart lifecycle event and notify the plugins
+     */
+    public void onRestart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnRestart();
+        }
+    }
+    /**
+     * Handle onStart lifecycle event and notify the plugins
+     */
+    public void onStart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStart();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStart();
+        }
+    }
+    /**
+     * Handle onResume lifecycle event and notify the plugins
+     */
+    public void onResume() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnResume();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleResume(this.shouldKeepRunning());
+        }
+    }
+    /**
+     * Handle onPause lifecycle event and notify the plugins
+     */
+    public void onPause() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnPause();
+        }
+        if (cordovaWebView != null) {
+            boolean keepRunning = this.shouldKeepRunning() || cordovaInterface.getActivityResultCallback() != null;
+            cordovaWebView.handlePause(keepRunning);
+        }
+    }
+    /**
+     * Handle onStop lifecycle event and notify the plugins
+     */
+    public void onStop() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStop();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStop();
+        }
+    }
+    /**
+     * Handle onDestroy lifecycle event and notify the plugins
+     */
+    public void onDestroy() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnDestroy();
+        }
+        handlerThread.quitSafely();
+        if (cordovaWebView != null) {
+            cordovaWebView.handleDestroy();
+        }
+    }
+    /**
+     * Handle onDetachedFromWindow lifecycle event
+     */
+    public void onDetachedFromWindow() {
+        webView.removeAllViews();
+        webView.destroy();
+    }
+    public String getServerBasePath() {
+        return this.localServer.getBasePath();
+    }
+    /**
+     * Tell the local server to load files from the given
+     * file path instead of the assets path.
+     * @param path
+     */
+    public void setServerBasePath(String path) {
+        localServer.hostFiles(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    /**
+     * Tell the local server to load files from the given
+     * asset path.
+     * @param path
+     */
+    public void setServerAssetPath(String path) {
+        localServer.hostAssets(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    /**
+     * Reload the WebView
+     */
+    public void reload() {
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    public String getLocalUrl() {
+        return localUrl;
+    }
+    public WebViewLocalServer getLocalServer() {
+        return localServer;
+    }
+    public HostMask getAppAllowNavigationMask() {
+        return appAllowNavigationMask;
+    }
+    public Set<String> getAllowedOriginRules() {
+        return allowedOriginRules;
+    }
+    public BridgeWebViewClient getWebViewClient() {
+        return this.webViewClient;
+    }
+    public void setWebViewClient(BridgeWebViewClient client) {
+        this.webViewClient = client;
+        webView.setWebViewClient(client);
+    }
+    List<WebViewListener> getWebViewListeners() {
+        return webViewListeners;
+    }
+    void setWebViewListeners(List<WebViewListener> webViewListeners) {
+        this.webViewListeners = webViewListeners;
+    }
+    RouteProcessor getRouteProcessor() {
+        return routeProcessor;
+    }
+    void setRouteProcessor(RouteProcessor routeProcessor) {
+        this.routeProcessor = routeProcessor;
+    }
+    ServerPath getServerPath() {
+        return serverPath;
+    }
+    /**
+     * Add a listener that the WebViewClient can trigger on certain events.
+     * @param webViewListener A {@link WebViewListener} to add.
+     */
+    public void addWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.add(webViewListener);
+    }
+    /**
+     * Remove a listener that the WebViewClient triggers on certain events.
+     * @param webViewListener A {@link WebViewListener} to remove.
+     */
+    public void removeWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.remove(webViewListener);
+    }
+    public static class Builder {
+        private Bundle instanceState = null;
+        private CapConfig config = null;
+        private List<Class<? extends Plugin>> plugins = new ArrayList<>();
+        private List<Plugin> pluginInstances = new ArrayList<>();
+        private AppCompatActivity activity;
+        private Fragment fragment;
+        private RouteProcessor routeProcessor;
+        private final List<WebViewListener> webViewListeners = new ArrayList<>();
+        private ServerPath serverPath;
+        public Builder(AppCompatActivity activity) {
+            this.activity = activity;
+        }
+        public Builder(Fragment fragment) {
+            this.activity = (AppCompatActivity) fragment.getActivity();
+            this.fragment = fragment;
+        }
+        public Builder setInstanceState(Bundle instanceState) {
+            this.instanceState = instanceState;
+            return this;
+        }
+        public Builder setConfig(CapConfig config) {
+            this.config = config;
+            return this;
+        }
+        public Builder setPlugins(List<Class<? extends Plugin>> plugins) {
+            this.plugins = plugins;
+            return this;
+        }
+        public Builder addPlugin(Class<? extends Plugin> plugin) {
+            this.plugins.add(plugin);
+            return this;
+        }
+        public Builder addPlugins(List<Class<? extends Plugin>> plugins) {
+            for (Class<? extends Plugin> cls : plugins) {
+                this.addPlugin(cls);
+            }
+            return this;
+        }
+        public Builder addPluginInstance(Plugin plugin) {
+            this.pluginInstances.add(plugin);
+            return this;
+        }
+        public Builder addPluginInstances(List<Plugin> plugins) {
+            this.pluginInstances.addAll(plugins);
+            return this;
+        }
+        public Builder addWebViewListener(WebViewListener webViewListener) {
+            webViewListeners.add(webViewListener);
+            return this;
+        }
+        public Builder addWebViewListeners(List<WebViewListener> webViewListeners) {
+            for (WebViewListener listener : webViewListeners) {
+                this.addWebViewListener(listener);
+            }
+            return this;
+        }
+        public Builder setRouteProcessor(RouteProcessor routeProcessor) {
+            this.routeProcessor = routeProcessor;
+            return this;
+        }
+        public Builder setServerPath(ServerPath serverPath) {
+            this.serverPath = serverPath;
+            return this;
+        }
+        public Bridge create() {
+            // Cordova initialization
+            ConfigXmlParser parser = new ConfigXmlParser();
+            parser.parse(activity.getApplicationContext());
+            CordovaPreferences preferences = parser.getPreferences();
+            preferences.setPreferencesBundle(activity.getIntent().getExtras());
+            List<PluginEntry> pluginEntries = parser.getPluginEntries();
+            MockCordovaInterfaceImpl cordovaInterface = new MockCordovaInterfaceImpl(activity);
+            if (instanceState != null) {
+                cordovaInterface.restoreInstanceState(instanceState);
+            }
+            WebView webView = this.fragment != null ? fragment.getView().findViewById(R.id.webview) : activity.findViewById(R.id.webview);
+            MockCordovaWebViewImpl mockWebView = new MockCordovaWebViewImpl(activity.getApplicationContext());
+            mockWebView.init(cordovaInterface, pluginEntries, preferences, webView);
+            PluginManager pluginManager = mockWebView.getPluginManager();
+            cordovaInterface.onCordovaInit(pluginManager);
+            // Bridge initialization
+            Bridge bridge = new Bridge(
+                activity,
+                serverPath,
+                fragment,
+                webView,
+                plugins,
+                pluginInstances,
+                cordovaInterface,
+                pluginManager,
+                preferences,
+                config
+            );
+            if (webView instanceof CapacitorWebView) {
+                CapacitorWebView capacitorWebView = (CapacitorWebView) webView;
+                capacitorWebView.setBridge(bridge);
+            }
+            bridge.setCordovaWebView(mockWebView);
+            bridge.setWebViewListeners(webViewListeners);
+            bridge.setRouteProcessor(routeProcessor);
+            if (instanceState != null) {
+                bridge.restoreInstanceState(instanceState);
+            }
+            return bridge;
+        }
+    }
+}
+package com.getcapacitor;
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Bundle;
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import com.getcapacitor.util.PermissionHelper;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.json.JSONException;
+/**
+ * Plugin is the base class for all plugins, containing a number of
+ * convenient features for interacting with the {@link Bridge}, managing
+ * plugin permissions, tracking lifecycle events, and more.
+ *
+ * You should inherit from this class when creating new plugins, along with
+ * adding the {@link CapacitorPlugin} annotation to add additional required
+ * metadata about the Plugin
+ */
+public class Plugin {
+    // The key we will use inside of a persisted Bundle for the JSON blob
+    // for a plugin call options.
+    private static final String BUNDLE_PERSISTED_OPTIONS_JSON_KEY = "_json";
+    // Reference to the Bridge
+    protected Bridge bridge;
+    // Reference to the PluginHandle wrapper for this Plugin
+    protected PluginHandle handle;
+    /**
+     * A way for plugins to quickly save a call that they will need to reference
+     * between activity/permissions starts/requests
+     *
+     * @deprecated store calls on the bridge using the methods
+     * {@link com.getcapacitor.Bridge#saveCall(PluginCall)},
+     * {@link com.getcapacitor.Bridge#getSavedCall(String)} and
+     * {@link com.getcapacitor.Bridge#releaseCall(PluginCall)}
+     */
+    @Deprecated
+    protected PluginCall savedLastCall;
+    // Stored event listeners
+    private final Map<String, List<PluginCall>> eventListeners;
+    /**
+     * Launchers used by the plugin to handle activity results
+     */
+    private final Map<String, ActivityResultLauncher<Intent>> activityLaunchers = new HashMap<>();
+    /**
+     * Launchers used by the plugin to handle permission results
+     */
+    private final Map<String, ActivityResultLauncher<String[]>> permissionLaunchers = new HashMap<>();
+    private String lastPluginCallId;
+    // Stored results of an event if an event was fired and
+    // no listeners were attached yet. Only stores the last value.
+    private final Map<String, List<JSObject>> retainedEventArguments;
+    public Plugin() {
+        eventListeners = new HashMap<>();
+        retainedEventArguments = new HashMap<>();
+    }
+    /**
+     * Called when the plugin has been connected to the bridge
+     * and is ready to start initializing.
+     */
+    public void load() {}
+    /**
+     * Registers activity result launchers defined on plugins, used for permission requests and
+     * activities started for result.
+     */
+    void initializeActivityLaunchers() {
+        List<Method> pluginClassMethods = new ArrayList<>();
+        for (
+            Class<?> pluginCursor = getClass();
+            !pluginCursor.getName().equals(Object.class.getName());
+            pluginCursor = pluginCursor.getSuperclass()
+        ) {
+            pluginClassMethods.addAll(Arrays.asList(pluginCursor.getDeclaredMethods()));
+        }
+        for (final Method method : pluginClassMethods) {
+            if (method.isAnnotationPresent(ActivityCallback.class)) {
+                // register callbacks annotated with ActivityCallback for activity results
+                ActivityResultLauncher<Intent> launcher = bridge.registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> triggerActivityCallback(method, result)
+                );
+                activityLaunchers.put(method.getName(), launcher);
+            } else if (method.isAnnotationPresent(PermissionCallback.class)) {
+                // register callbacks annotated with PermissionCallback for permission results
+                ActivityResultLauncher<String[]> launcher = bridge.registerForActivityResult(
+                    new ActivityResultContracts.RequestMultiplePermissions(),
+                    permissions -> triggerPermissionCallback(method, permissions)
+                );
+                permissionLaunchers.put(method.getName(), launcher);
+            }
+        }
+    }
+    private void triggerPermissionCallback(Method method, Map<String, Boolean> permissionResultMap) {
+        PluginCall savedCall = bridge.getPermissionCall(handle.getId());
+        // validate permissions and invoke the permission result callback
+        if (bridge.validatePermissions(this, savedCall, permissionResultMap)) {
+            try {
+                method.setAccessible(true);
+                method.invoke(this, savedCall);
+            } catch (IllegalAccessException | InvocationTargetException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    private void triggerActivityCallback(Method method, ActivityResult result) {
+        PluginCall savedCall = bridge.getSavedCall(lastPluginCallId);
+        if (savedCall == null) {
+            savedCall = bridge.getPluginCallForLastActivity();
+        }
+        // invoke the activity result callback
+        try {
+            method.setAccessible(true);
+            method.invoke(this, savedCall, result);
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            e.printStackTrace();
+        }
+    }
+    /**
+     * Start activity for result with the provided Intent and resolve with the provided callback method name.
+     * <p>
+     * If there is no registered activity callback for the method name passed in, the call will
+     * be rejected. Make sure a valid activity result callback method is registered using the
+     * {@link ActivityCallback} annotation.
+     *
+     * @param call the plugin call
+     * @param intent the intent used to start an activity
+     * @param callbackName the name of the callback to run when the launched activity is finished
+     * @since 3.0.0
+     */
+    public void startActivityForResult(PluginCall call, Intent intent, String callbackName) {
+        ActivityResultLauncher<Intent> activityResultLauncher = getActivityLauncherOrReject(call, callbackName);
+        if (activityResultLauncher == null) {
+            // return when null since call was rejected in getLauncherOrReject
+            return;
+        }
+        bridge.setPluginCallForLastActivity(call);
+        lastPluginCallId = call.getCallbackId();
+        bridge.saveCall(call);
+        activityResultLauncher.launch(intent);
+    }
+    private void permissionActivityResult(PluginCall call, String[] permissionStrings, String callbackName) {
+        ActivityResultLauncher<String[]> permissionResultLauncher = getPermissionLauncherOrReject(call, callbackName);
+        if (permissionResultLauncher == null) {
+            // return when null since call was rejected in getLauncherOrReject
+            return;
+        }
+        bridge.savePermissionCall(call);
+        permissionResultLauncher.launch(permissionStrings);
+    }
+    /**
+     * Get the main {@link Context} for the current Activity (your app)
+     * @return the Context for the current activity
+     */
+    public Context getContext() {
+        return this.bridge.getContext();
+    }
+    /**
+     * Get the main {@link Activity} for the app
+     * @return the Activity for the current app
+     */
+    public AppCompatActivity getActivity() {
+        return this.bridge.getActivity();
+    }
+    /**
+     * Set the Bridge instance for this plugin
+     * @param bridge
+     */
+    public void setBridge(Bridge bridge) {
+        this.bridge = bridge;
+    }
+    /**
+     * Get the Bridge instance for this plugin
+     */
+    public Bridge getBridge() {
+        return this.bridge;
+    }
+    /**
+     * Set the wrapper {@link PluginHandle} instance for this plugin that
+     * contains additional metadata about the Plugin instance (such
+     * as indexed methods for reflection, and {@link CapacitorPlugin} annotation data).
+     * @param pluginHandle
+     */
+    public void setPluginHandle(PluginHandle pluginHandle) {
+        this.handle = pluginHandle;
+    }
+    /**
+     * Return the wrapper {@link PluginHandle} for this plugin.
+     *
+     * This wrapper contains additional metadata about the plugin instance,
+     * such as indexed methods for reflection, and {@link CapacitorPlugin} annotation data).
+     * @return
+     */
+    public PluginHandle getPluginHandle() {
+        return this.handle;
+    }
+    /**
+     * Get the root App ID
+     * @return
+     */
+    public String getAppId() {
+        return getContext().getPackageName();
+    }
+    /**
+     * Called to save a {@link PluginCall} in order to reference it
+     * later, such as in an activity or permissions result handler
+     * @deprecated use {@link Bridge#saveCall(PluginCall)}
+     *
+     * @param lastCall
+     */
+    @Deprecated
+    public void saveCall(PluginCall lastCall) {
+        this.savedLastCall = lastCall;
+    }
+    /**
+     * Set the last saved call to null to free memory
+     * @deprecated use {@link PluginCall#release(Bridge)}
+     */
+    @Deprecated
+    public void freeSavedCall() {
+        this.savedLastCall.release(bridge);
+        this.savedLastCall = null;
+    }
+    /**
+     * Get the last saved call, if any
+     * @deprecated use {@link Bridge#getSavedCall(String)}
+     *
+     * @return
+     */
+    @Deprecated
+    public PluginCall getSavedCall() {
+        return this.savedLastCall;
+    }
+    /**
+     * Get the config options for this plugin.
+     *
+     * @return a config object representing the plugin config options, or an empty config
+     * if none exists
+     */
+    public PluginConfig getConfig() {
+        return bridge.getConfig().getPluginConfiguration(handle.getId());
+    }
+    /**
+     * Get the value for a key on the config for this plugin.
+     * @deprecated use {@link #getConfig()} and access config values using the methods available
+     * depending on the type.
+     *
+     * @param key the key for the config value
+     * @return some object containing the value from the config
+     */
+    @Deprecated
+    public Object getConfigValue(String key) {
+        try {
+            PluginConfig pluginConfig = getConfig();
+            return pluginConfig.getConfigJSON().get(key);
+        } catch (JSONException ex) {
+            return null;
+        }
+    }
+    /**
+     * Check whether any of the given permissions has been defined in the AndroidManifest.xml
+     * @deprecated use {@link #isPermissionDeclared(String)}
+     *
+     * @param permissions
+     * @return
+     */
+    @Deprecated
+    public boolean hasDefinedPermissions(String[] permissions) {
+        for (String permission : permissions) {
+            if (!PermissionHelper.hasDefinedPermission(getContext(), permission)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * Check if all annotated permissions have been defined in the AndroidManifest.xml
+     * @deprecated use {@link #isPermissionDeclared(String)}
+     *
+     * @return true if permissions are all defined in the Manifest
+     */
+    @Deprecated
+    public boolean hasDefinedRequiredPermissions() {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            // Check for legacy plugin annotation, @NativePlugin
+            NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+            return hasDefinedPermissions(legacyAnnotation.permissions());
+        } else {
+            for (Permission perm : annotation.permissions()) {
+                for (String permString : perm.strings()) {
+                    if (!PermissionHelper.hasDefinedPermission(getContext(), permString)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    /**
+     * Checks if the given permission alias is correctly declared in AndroidManifest.xml
+     * @param alias a permission alias defined on the plugin
+     * @return true only if all permissions associated with the given alias are declared in the manifest
+     */
+    public boolean isPermissionDeclared(String alias) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation != null) {
+            for (Permission perm : annotation.permissions()) {
+                if (alias.equalsIgnoreCase(perm.alias())) {
+                    boolean result = true;
+                    for (String permString : perm.strings()) {
+                        result = result && PermissionHelper.hasDefinedPermission(getContext(), permString);
+                    }
+                    return result;
+                }
+            }
+        }
+        Logger.error(String.format("isPermissionDeclared: No alias defined for %s " + "or missing @CapacitorPlugin annotation.", alias));
+        return false;
+    }
+    /**
+     * Check whether the given permission has been granted by the user
+     * @deprecated use {@link #getPermissionState(String)} and {@link #getPermissionStates()} to get
+     * the states of permissions defined on the Plugin in conjunction with the @CapacitorPlugin
+     * annotation. Use the Android API {@link ActivityCompat#checkSelfPermission(Context, String)}
+     * methods to check permissions with Android permission strings
+     *
+     * @param permission
+     * @return
+     */
+    @Deprecated
+    public boolean hasPermission(String permission) {
+        return ActivityCompat.checkSelfPermission(this.getContext(), permission) == PackageManager.PERMISSION_GRANTED;
+    }
+    /**
+     * If the plugin annotation specified a set of permissions, this method checks if each is
+     * granted
+     * @deprecated use {@link #getPermissionState(String)} or {@link #getPermissionStates()} to
+     * check whether permissions are granted or not
+     *
+     * @return
+     */
+    @Deprecated
+    public boolean hasRequiredPermissions() {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            // Check for legacy plugin annotation, @NativePlugin
+            NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+            for (String perm : legacyAnnotation.permissions()) {
+                if (ActivityCompat.checkSelfPermission(this.getContext(), perm) != PackageManager.PERMISSION_GRANTED) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        for (Permission perm : annotation.permissions()) {
+            for (String permString : perm.strings()) {
+                if (ActivityCompat.checkSelfPermission(this.getContext(), permString) != PackageManager.PERMISSION_GRANTED) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    /**
+     * Request all of the specified permissions in the CapacitorPlugin annotation (if any)
+     *
+     * If there is no registered permission callback for the PluginCall passed in, the call will
+     * be rejected. Make sure a valid permission callback method is registered using the
+     * {@link PermissionCallback} annotation.
+     *
+     * @since 3.0.0
+     * @param call the plugin call
+     * @param callbackName the name of the callback to run when the permission request is complete
+     */
+    protected void requestAllPermissions(@NonNull PluginCall call, @NonNull String callbackName) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation != null) {
+            HashSet<String> perms = new HashSet<>();
+            for (Permission perm : annotation.permissions()) {
+                perms.addAll(Arrays.asList(perm.strings()));
+            }
+            permissionActivityResult(call, perms.toArray(new String[0]), callbackName);
+        }
+    }
+    /**
+     * Request permissions using an alias defined on the plugin.
+     *
+     * If there is no registered permission callback for the PluginCall passed in, the call will
+     * be rejected. Make sure a valid permission callback method is registered using the
+     * {@link PermissionCallback} annotation.
+     *
+     * @param alias an alias defined on the plugin
+     * @param call  the plugin call involved in originating the request
+     * @param callbackName the name of the callback to run when the permission request is complete
+     */
+    protected void requestPermissionForAlias(@NonNull String alias, @NonNull PluginCall call, @NonNull String callbackName) {
+        requestPermissionForAliases(new String[] { alias }, call, callbackName);
+    }
+    /**
+     * Request permissions using aliases defined on the plugin.
+     *
+     * If there is no registered permission callback for the PluginCall passed in, the call will
+     * be rejected. Make sure a valid permission callback method is registered using the
+     * {@link PermissionCallback} annotation.
+     *
+     * @param aliases a set of aliases defined on the plugin
+     * @param call    the plugin call involved in originating the request
+     * @param callbackName the name of the callback to run when the permission request is complete
+     */
+    protected void requestPermissionForAliases(@NonNull String[] aliases, @NonNull PluginCall call, @NonNull String callbackName) {
+        if (aliases.length == 0) {
+            Logger.error("No permission alias was provided");
+            return;
+        }
+        String[] permissions = getPermissionStringsForAliases(aliases);
+        if (permissions.length > 0) {
+            permissionActivityResult(call, permissions, callbackName);
+        }
+    }
+    /**
+     * Gets the Android permission strings defined on the {@link CapacitorPlugin} annotation with
+     * the provided aliases.
+     *
+     * @param aliases aliases for permissions defined on the plugin
+     * @return Android permission strings associated with the provided aliases, if exists
+     */
+    private String[] getPermissionStringsForAliases(@NonNull String[] aliases) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        HashSet<String> perms = new HashSet<>();
+        for (Permission perm : annotation.permissions()) {
+            if (Arrays.asList(aliases).contains(perm.alias())) {
+                perms.addAll(Arrays.asList(perm.strings()));
+            }
+        }
+        return perms.toArray(new String[0]);
+    }
+    /**
+     * Gets the activity launcher associated with the calling methodName, or rejects the call if
+     * no registered launcher exists
+     *
+     * @param call       the plugin call
+     * @param methodName the name of the activity callback method
+     * @return a launcher, or null if none found
+     */
+    private @Nullable ActivityResultLauncher<Intent> getActivityLauncherOrReject(PluginCall call, String methodName) {
+        ActivityResultLauncher<Intent> activityLauncher = activityLaunchers.get(methodName);
+        // if there is no registered launcher, reject the call with an error and return null
+        if (activityLauncher == null) {
+            String registerError =
+                "There is no ActivityCallback method registered for the name: %s. " +
+                "Please define a callback method annotated with @ActivityCallback " +
+                "that receives arguments: (PluginCall, ActivityResult)";
+            registerError = String.format(Locale.US, registerError, methodName);
+            Logger.error(registerError);
+            call.reject(registerError);
+            return null;
+        }
+        return activityLauncher;
+    }
+    /**
+     * Gets the permission launcher associated with the calling methodName, or rejects the call if
+     * no registered launcher exists
+     *
+     * @param call       the plugin call
+     * @param methodName the name of the permission callback method
+     * @return a launcher, or null if none found
+     */
+    private @Nullable ActivityResultLauncher<String[]> getPermissionLauncherOrReject(PluginCall call, String methodName) {
+        ActivityResultLauncher<String[]> permissionLauncher = permissionLaunchers.get(methodName);
+        // if there is no registered launcher, reject the call with an error and return null
+        if (permissionLauncher == null) {
+            String registerError =
+                "There is no PermissionCallback method registered for the name: %s. " +
+                "Please define a callback method annotated with @PermissionCallback " +
+                "that receives arguments: (PluginCall)";
+            registerError = String.format(Locale.US, registerError, methodName);
+            Logger.error(registerError);
+            call.reject(registerError);
+            return null;
+        }
+        return permissionLauncher;
+    }
+    /**
+     * Request all of the specified permissions in the CapacitorPlugin annotation (if any)
+     *
+     * @deprecated use {@link #requestAllPermissions(PluginCall, String)} in conjunction with @CapacitorPlugin
+     */
+    @Deprecated
+    public void pluginRequestAllPermissions() {
+        NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+        ActivityCompat.requestPermissions(getActivity(), legacyAnnotation.permissions(), legacyAnnotation.permissionRequestCode());
+    }
+    /**
+     * Helper for requesting a specific permission
+     *
+     * @param permission  the permission to request
+     * @param requestCode the requestCode to use to associate the result with the plugin
+     * @deprecated use {@link #requestPermissionForAlias(String, PluginCall, String)} in conjunction with @CapacitorPlugin
+     */
+    @Deprecated
+    public void pluginRequestPermission(String permission, int requestCode) {
+        ActivityCompat.requestPermissions(getActivity(), new String[] { permission }, requestCode);
+    }
+    /**
+     * Helper for requesting specific permissions
+     * @deprecated use {@link #requestPermissionForAliases(String[], PluginCall, String)} in conjunction
+     * with @CapacitorPlugin
+     *
+     * @param permissions the set of permissions to request
+     * @param requestCode the requestCode to use to associate the result with the plugin
+     */
+    @Deprecated
+    public void pluginRequestPermissions(String[] permissions, int requestCode) {
+        ActivityCompat.requestPermissions(getActivity(), permissions, requestCode);
+    }
+    /**
+     * Get the permission state for the provided permission alias.
+     *
+     * @param alias the permission alias to get
+     * @return the state of the provided permission alias or null
+     */
+    public PermissionState getPermissionState(String alias) {
+        return getPermissionStates().get(alias);
+    }
+    /**
+     * Helper to check all permissions defined on a plugin and see the state of each.
+     *
+     * @since 3.0.0
+     * @return A mapping of permission aliases to the associated granted status.
+     */
+    public Map<String, PermissionState> getPermissionStates() {
+        return bridge.getPermissionStates(this);
+    }
+    /**
+     * Add a listener for the given event
+     * @param eventName
+     * @param call
+     */
+    private void addEventListener(String eventName, PluginCall call) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null || listeners.isEmpty()) {
+            listeners = new ArrayList<>();
+            eventListeners.put(eventName, listeners);
+            // Must add the call before sending retained arguments
+            listeners.add(call);
+            sendRetainedArgumentsForEvent(eventName);
+        } else {
+            listeners.add(call);
+        }
+    }
+    /**
+     * Remove a listener from the given event
+     * @param eventName
+     * @param call
+     */
+    private void removeEventListener(String eventName, PluginCall call) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null) {
+            return;
+        }
+        listeners.remove(call);
+    }
+    /**
+     * Notify all listeners that an event occurred
+     * @param eventName
+     * @param data
+     */
+    protected void notifyListeners(String eventName, JSObject data, boolean retainUntilConsumed) {
+        Logger.verbose(getLogTag(), "Notifying listeners for event " + eventName);
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null || listeners.isEmpty()) {
+            Logger.debug(getLogTag(), "No listeners found for event " + eventName);
+            if (retainUntilConsumed) {
+                List<JSObject> argList = retainedEventArguments.get(eventName);
+                if (argList == null) {
+                    argList = new ArrayList<JSObject>();
+                }
+                argList.add(data);
+                retainedEventArguments.put(eventName, argList);
+            }
+            return;
+        }
+        CopyOnWriteArrayList<PluginCall> listenersCopy = new CopyOnWriteArrayList(listeners);
+        for (PluginCall call : listenersCopy) {
+            call.resolve(data);
+        }
+    }
+    /**
+     * Notify all listeners that an event occurred
+     * This calls {@link Plugin#notifyListeners(String, JSObject, boolean)}
+     * with retainUntilConsumed set to false
+     * @param eventName
+     * @param data
+     */
+    protected void notifyListeners(String eventName, JSObject data) {
+        notifyListeners(eventName, data, false);
+    }
+    /**
+     * Check if there are any listeners for the given event
+     */
+    protected boolean hasListeners(String eventName) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null) {
+            return false;
+        }
+        return !listeners.isEmpty();
+    }
+    /**
+     * Send retained arguments (if any) for this event. This
+     * is called only when the first listener for an event is added
+     * @param eventName
+     */
+    private void sendRetainedArgumentsForEvent(String eventName) {
+        // copy retained args and null source to prevent potential race conditions
+        List<JSObject> retainedArgs = retainedEventArguments.get(eventName);
+        if (retainedArgs == null) {
+            return;
+        }
+        retainedEventArguments.remove(eventName);
+        for (JSObject retained : retainedArgs) {
+            notifyListeners(eventName, retained);
+        }
+    }
+    /**
+     * Exported plugin call for adding a listener to this plugin
+     * @param call
+     */
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void addListener(PluginCall call) {
+        String eventName = call.getString("eventName");
+        call.setKeepAlive(true);
+        addEventListener(eventName, call);
+    }
+    /**
+     * Exported plugin call to remove a listener from this plugin
+     * @param call
+     */
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void removeListener(PluginCall call) {
+        String eventName = call.getString("eventName");
+        String callbackId = call.getString("callbackId");
+        PluginCall savedCall = bridge.getSavedCall(callbackId);
+        if (savedCall != null) {
+            removeEventListener(eventName, savedCall);
+            bridge.releaseCall(savedCall);
+        }
+    }
+    /**
+     * Exported plugin call to remove all listeners from this plugin
+     * @param call
+     */
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
+    public void removeAllListeners(PluginCall call) {
+        eventListeners.clear();
+        call.resolve();
+    }
+    /**
+     * Exported plugin call for checking the granted status for each permission
+     * declared on the plugin. This plugin call responds with a mapping of permissions to
+     * the associated granted status.
+     *
+     * @since 3.0.0
+     */
+    @PluginMethod
+    @PermissionCallback
+    public void checkPermissions(PluginCall pluginCall) {
+        Map<String, PermissionState> permissionsResult = getPermissionStates();
+        if (permissionsResult.size() == 0) {
+            // if no permissions are defined on the plugin, resolve undefined
+            pluginCall.resolve();
+        } else {
+            JSObject permissionsResultJSON = new JSObject();
+            for (Map.Entry<String, PermissionState> entry : permissionsResult.entrySet()) {
+                permissionsResultJSON.put(entry.getKey(), entry.getValue());
+            }
+            pluginCall.resolve(permissionsResultJSON);
+        }
+    }
+    /**
+     * Exported plugin call to request all permissions for this plugin.
+     * To manually request permissions within a plugin use:
+     * {@link #requestAllPermissions(PluginCall, String)}, or
+     * {@link #requestPermissionForAlias(String, PluginCall, String)}, or
+     * {@link #requestPermissionForAliases(String[], PluginCall, String)}
+     *
+     * @param call the plugin call
+     */
+    @PluginMethod
+    public void requestPermissions(PluginCall call) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            handleLegacyPermission(call);
+        } else {
+            // handle permission requests for plugins defined with @CapacitorPlugin (since 3.0.0)
+            String[] permAliases = null;
+            Set<String> autoGrantPerms = new HashSet<>();
+            // If call was made with a list of specific permission aliases to request, save them
+            // to be requested
+            JSArray providedPerms = call.getArray("permissions");
+            List<String> providedPermsList = null;
+            if (providedPerms != null) {
+                try {
+                    providedPermsList = providedPerms.toList();
+                } catch (JSONException ignore) {
+                    // do nothing
+                }
+            }
+            // If call was made without any custom permissions, request all from plugin annotation
+            Set<String> aliasSet = new HashSet<>();
+            if (providedPermsList == null || providedPermsList.isEmpty()) {
+                for (Permission perm : annotation.permissions()) {
+                    // If a permission is defined with no permission strings, separate it for auto-granting.
+                    // Otherwise, the alias is added to the list to be requested.
+                    if (perm.strings().length == 0 || (perm.strings().length == 1 && perm.strings()[0].isEmpty())) {
+                        if (!perm.alias().isEmpty()) {
+                            autoGrantPerms.add(perm.alias());
+                        }
+                    } else {
+                        aliasSet.add(perm.alias());
+                    }
+                }
+                permAliases = aliasSet.toArray(new String[0]);
+            } else {
+                for (Permission perm : annotation.permissions()) {
+                    if (providedPermsList.contains(perm.alias())) {
+                        aliasSet.add(perm.alias());
+                    }
+                }
+                if (aliasSet.isEmpty()) {
+                    call.reject("No valid permission alias was requested of this plugin.");
+                } else {
+                    permAliases = aliasSet.toArray(new String[0]);
+                }
+            }
+            if (permAliases != null && permAliases.length > 0) {
+                // request permissions using provided aliases or all defined on the plugin
+                requestPermissionForAliases(permAliases, call, "checkPermissions");
+            } else if (!autoGrantPerms.isEmpty()) {
+                // if the plugin only has auto-grant permissions, return all as GRANTED
+                JSObject permissionsResults = new JSObject();
+                for (String perm : autoGrantPerms) {
+                    permissionsResults.put(perm, PermissionState.GRANTED.toString());
+                }
+                call.resolve(permissionsResults);
+            } else {
+                // no permissions are defined on the plugin, resolve undefined
+                call.resolve();
+            }
+        }
+    }
+    @SuppressWarnings("deprecation")
+    private void handleLegacyPermission(PluginCall call) {
+        // handle permission requests for plugins defined with @NativePlugin (prior to 3.0.0)
+        NativePlugin legacyAnnotation = this.handle.getLegacyPluginAnnotation();
+        String[] perms = legacyAnnotation.permissions();
+        if (perms.length > 0) {
+            saveCall(call);
+            pluginRequestPermissions(perms, legacyAnnotation.permissionRequestCode());
+        } else {
+            call.resolve();
+        }
+    }
+    /**
+     * Handle request permissions result. A plugin using the deprecated {@link NativePlugin}
+     * should override this to handle the result, or this method will handle the result
+     * for our convenient requestPermissions call.
+     * @deprecated in favor of using callbacks in conjunction with {@link CapacitorPlugin}
+     *
+     * @param requestCode
+     * @param permissions
+     * @param grantResults
+     */
+    @Deprecated
+    protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (!hasDefinedPermissions(permissions)) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("Missing the following permissions in AndroidManifest.xml:\n");
+            String[] missing = PermissionHelper.getUndefinedPermissions(getContext(), permissions);
+            for (String perm : missing) {
+                builder.append(perm + "\n");
+            }
+            savedLastCall.reject(builder.toString());
+            savedLastCall = null;
+        }
+    }
+    /**
+     * Called before the app is destroyed to give a plugin the chance to
+     * save the last call options for a saved plugin. By default, this
+     * method saves the full JSON blob of the options call. Since Bundle sizes
+     * may be limited, plugins that expect to be called with large data
+     * objects (such as a file), should override this method and selectively
+     * store option values in a {@link Bundle} to avoid exceeding limits.
+     * @return a new {@link Bundle} with fields set from the options of the last saved {@link PluginCall}
+     */
+    protected Bundle saveInstanceState() {
+        PluginCall savedCall = bridge.getSavedCall(lastPluginCallId);
+        if (savedCall == null) {
+            return null;
+        }
+        Bundle ret = new Bundle();
+        JSObject callData = savedCall.getData();
+        if (callData != null) {
+            ret.putString(BUNDLE_PERSISTED_OPTIONS_JSON_KEY, callData.toString());
+        }
+        return ret;
+    }
+    /**
+     * Called when the app is opened with a previously un-handled
+     * activity response. If the plugin that started the activity
+     * stored data in {@link Plugin#saveInstanceState()} then this
+     * method will be called to allow the plugin to restore from that.
+     * @param state
+     */
+    protected void restoreState(Bundle state) {}
+    /**
+     * Handle activity result, should be overridden by each plugin
+     *
+     * @deprecated provide a callback method using the {@link ActivityCallback} annotation and use
+     * the {@link #startActivityForResult(PluginCall, Intent, String)} method
+     *
+     * @param requestCode
+     * @param resultCode
+     * @param data
+     */
+    @Deprecated
+    protected void handleOnActivityResult(int requestCode, int resultCode, Intent data) {}
+    /**
+     * Handle onNewIntent
+     * @param intent
+     */
+    protected void handleOnNewIntent(Intent intent) {}
+    /**
+     * Handle onConfigurationChanged
+     * @param newConfig
+     */
+    protected void handleOnConfigurationChanged(Configuration newConfig) {}
+    /**
+     * Handle onStart
+     */
+    protected void handleOnStart() {}
+    /**
+     * Handle onRestart
+     */
+    protected void handleOnRestart() {}
+    /**
+     * Handle onResume
+     */
+    protected void handleOnResume() {}
+    /**
+     * Handle onPause
+     */
+    protected void handleOnPause() {}
+    /**
+     * Handle onStop
+     */
+    protected void handleOnStop() {}
+    /**
+     * Handle onDestroy
+     */
+    protected void handleOnDestroy() {}
+    /**
+     * Give the plugins a chance to take control when a URL is about to be loaded in the WebView.
+     * Returning true causes the WebView to abort loading the URL.
+     * Returning false causes the WebView to continue loading the URL.
+     * Returning null will defer to the default Capacitor policy
+     */
+    @SuppressWarnings("unused")
+    public Boolean shouldOverrideLoad(Uri url) {
+        return null;
+    }
+    /**
+     * Start a new Activity.
+     *
+     * Note: This method must be used by all plugins instead of calling
+     * {@link Activity#startActivityForResult} as it associates the plugin with
+     * any resulting data from the new Activity even if this app
+     * is destroyed by the OS (to free up memory, for example).
+     * @param intent
+     * @param resultCode
+     */
+    @Deprecated
+    protected void startActivityForResult(PluginCall call, Intent intent, int resultCode) {
+        bridge.startActivityForPluginWithResult(call, intent, resultCode);
+    }
+    /**
+     * Execute the given runnable on the Bridge's task handler
+     * @param runnable
+     */
+    public void execute(Runnable runnable) {
+        bridge.execute(runnable);
+    }
+    /**
+     * Shortcut for getting the plugin log tag
+     * @param subTags
+     */
+    protected String getLogTag(String... subTags) {
+        return Logger.tags(subTags);
+    }
+    /**
+     * Gets a plugin log tag with the child's class name as subTag.
+     */
+    protected String getLogTag() {
+        return Logger.tags(this.getClass().getSimpleName());
+    }
+}
+package com.getcapacitor.plugin;
+import android.Manifest;
+import android.webkit.JavascriptInterface;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginConfig;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.plugin.util.CapacitorHttpUrlConnection;
+import com.getcapacitor.plugin.util.HttpRequestHandler;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+@CapacitorPlugin(
+    permissions = {
+        @Permission(strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE }, alias = "HttpWrite"),
+        @Permission(strings = { Manifest.permission.READ_EXTERNAL_STORAGE }, alias = "HttpRead")
+    }
+)
+public class CapacitorHttp extends Plugin {
+    private final Map<Runnable, PluginCall> activeRequests = new ConcurrentHashMap<>();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    @Override
+    public void load() {
+        this.bridge.getWebView().addJavascriptInterface(this, "CapacitorHttpAndroidInterface");
+        super.load();
+    }
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        for (Map.Entry<Runnable, PluginCall> entry : activeRequests.entrySet()) {
+            Runnable job = entry.getKey();
+            PluginCall call = entry.getValue();
+            if (call.getData().has("activeCapacitorHttpUrlConnection")) {
+                try {
+                    CapacitorHttpUrlConnection connection = (CapacitorHttpUrlConnection) call
+                        .getData()
+                        .get("activeCapacitorHttpUrlConnection");
+                    connection.disconnect();
+                    call.getData().remove("activeCapacitorHttpUrlConnection");
+                } catch (Exception ignored) {}
+            }
+            getBridge().releaseCall(call);
+        }
+        activeRequests.clear();
+        executor.shutdownNow();
+    }
+    private void http(final PluginCall call, final String httpMethod) {
+        Runnable asyncHttpCall = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSObject response = HttpRequestHandler.request(call, httpMethod, getBridge());
+                    call.resolve(response);
+                } catch (Exception e) {
+                    call.reject(e.getLocalizedMessage(), e.getClass().getSimpleName(), e);
+                } finally {
+                    activeRequests.remove(this);
+                }
+            }
+        };
+        if (!executor.isShutdown()) {
+            activeRequests.put(asyncHttpCall, call);
+            executor.submit(asyncHttpCall);
+        } else {
+            call.reject("Failed to execute request - Http Plugin was shutdown");
+        }
+    }
+    @JavascriptInterface
+    public boolean isEnabled() {
+        PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorHttp");
+        return pluginConfig.getBoolean("enabled", false);
+    }
+    @PluginMethod
+    public void request(final PluginCall call) {
+        this.http(call, null);
+    }
+    @PluginMethod
+    public void get(final PluginCall call) {
+        this.http(call, "GET");
+    }
+    @PluginMethod
+    public void post(final PluginCall call) {
+        this.http(call, "POST");
+    }
+    @PluginMethod
+    public void put(final PluginCall call) {
+        this.http(call, "PUT");
+    }
+    @PluginMethod
+    public void patch(final PluginCall call) {
+        this.http(call, "PATCH");
+    }
+    @PluginMethod
+    public void delete(final PluginCall call) {
+        this.http(call, "DELETE");
+    }
+}
+package com.getcapacitor.plugin.util;
+import android.text.TextUtils;
+import android.util.Base64;
+import com.getcapacitor.Bridge;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.JSValue;
+import com.getcapacitor.PluginCall;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+public class HttpRequestHandler {
+    /**
+     * An enum specifying conventional HTTP Response Types
+     * See https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/responseType
+     */
+    public enum ResponseType {
+        ARRAY_BUFFER("arraybuffer"),
+        BLOB("blob"),
+        DOCUMENT("document"),
+        JSON("json"),
+        TEXT("text");
+        private final String name;
+        ResponseType(String name) {
+            this.name = name;
+        }
+        static final ResponseType DEFAULT = TEXT;
+        public static ResponseType parse(String value) {
+            for (ResponseType responseType : values()) {
+                if (responseType.name.equalsIgnoreCase(value)) {
+                    return responseType;
+                }
+            }
+            return DEFAULT;
+        }
+    }
+    /**
+     * Internal builder class for building a CapacitorHttpUrlConnection
+     */
+    public static class HttpURLConnectionBuilder {
+        public Integer connectTimeout;
+        public Integer readTimeout;
+        public Boolean disableRedirects;
+        public JSObject headers;
+        public String method;
+        public URL url;
+        public CapacitorHttpUrlConnection connection;
+        public HttpURLConnectionBuilder setConnectTimeout(Integer connectTimeout) {
+            this.connectTimeout = connectTimeout;
+            return this;
+        }
+        public HttpURLConnectionBuilder setReadTimeout(Integer readTimeout) {
+            this.readTimeout = readTimeout;
+            return this;
+        }
+        public HttpURLConnectionBuilder setDisableRedirects(Boolean disableRedirects) {
+            this.disableRedirects = disableRedirects;
+            return this;
+        }
+        public HttpURLConnectionBuilder setHeaders(JSObject headers) {
+            this.headers = headers;
+            return this;
+        }
+        public HttpURLConnectionBuilder setMethod(String method) {
+            this.method = method;
+            return this;
+        }
+        public HttpURLConnectionBuilder setUrl(URL url) {
+            this.url = url;
+            return this;
+        }
+        public HttpURLConnectionBuilder openConnection() throws IOException {
+            connection = new CapacitorHttpUrlConnection((HttpURLConnection) url.openConnection());
+            connection.setAllowUserInteraction(false);
+            connection.setRequestMethod(method);
+            if (connectTimeout != null) connection.setConnectTimeout(connectTimeout);
+            if (readTimeout != null) connection.setReadTimeout(readTimeout);
+            if (disableRedirects != null) connection.setDisableRedirects(disableRedirects);
+            connection.setRequestHeaders(headers);
+            return this;
+        }
+        public HttpURLConnectionBuilder setUrlParams(JSObject params) throws MalformedURLException, URISyntaxException, JSONException {
+            return this.setUrlParams(params, true);
+        }
+        public HttpURLConnectionBuilder setUrlParams(JSObject params, boolean shouldEncode)
+            throws URISyntaxException, MalformedURLException {
+            String initialQuery = url.getQuery();
+            String initialQueryBuilderStr = initialQuery == null ? "" : initialQuery;
+            Iterator<String> keys = params.keys();
+            if (!keys.hasNext()) {
+                return this;
+            }
+            StringBuilder urlQueryBuilder = new StringBuilder(initialQueryBuilderStr);
+            // Build the new query string
+            while (keys.hasNext()) {
+                String key = keys.next();
+                // Attempt as JSONArray and fallback to string if it fails
+                try {
+                    StringBuilder value = new StringBuilder();
+                    JSONArray arr = params.getJSONArray(key);
+                    for (int x = 0; x < arr.length(); x++) {
+                        this.addUrlParam(value, key, arr.getString(x), shouldEncode);
+                        if (x != arr.length() - 1) {
+                            value.append("&");
+                        }
+                    }
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    urlQueryBuilder.append(value);
+                } catch (JSONException e) {
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    this.addUrlParam(urlQueryBuilder, key, params.getString(key), shouldEncode);
+                }
+            }
+            String urlQuery = urlQueryBuilder.toString();
+            URI uri = url.toURI();
+            String unEncodedUrlString =
+                uri.getScheme() +
+                "://" +
+                uri.getAuthority() +
+                uri.getPath() +
+                ((!urlQuery.equals("")) ? "?" + urlQuery : "") +
+                ((uri.getFragment() != null) ? uri.getFragment() : "");
+            this.url = new URL(unEncodedUrlString);
+            return this;
+        }
+        private static void addUrlParam(StringBuilder sb, String key, String value, boolean shouldEncode) {
+            if (shouldEncode) {
+                try {
+                    key = URLEncoder.encode(key, "UTF-8");
+                    value = URLEncoder.encode(value, "UTF-8");
+                } catch (UnsupportedEncodingException ex) {
+                    throw new RuntimeException(ex.getCause());
+                }
+            }
+            sb.append(key).append("=").append(value);
+        }
+        public CapacitorHttpUrlConnection build() {
+            return connection;
+        }
+    }
+    /**
+     * Builds an HTTP Response given CapacitorHttpUrlConnection and ResponseType objects.
+     *   Defaults to ResponseType.DEFAULT
+     * @param connection The CapacitorHttpUrlConnection to respond with
+     * @throws IOException Thrown if the InputStream is unable to be parsed correctly
+     * @throws JSONException Thrown if the JSON is unable to be parsed
+     */
+    public static JSObject buildResponse(CapacitorHttpUrlConnection connection) throws IOException, JSONException {
+        return buildResponse(connection, ResponseType.DEFAULT);
+    }
+    /**
+     * Builds an HTTP Response given CapacitorHttpUrlConnection and ResponseType objects
+     * @param connection The CapacitorHttpUrlConnection to respond with
+     * @param responseType The requested ResponseType
+     * @return A JSObject that contains the HTTPResponse to return to the browser
+     * @throws IOException Thrown if the InputStream is unable to be parsed correctly
+     * @throws JSONException Thrown if the JSON is unable to be parsed
+     */
+    public static JSObject buildResponse(CapacitorHttpUrlConnection connection, ResponseType responseType)
+        throws IOException, JSONException {
+        int statusCode = connection.getResponseCode();
+        JSObject output = new JSObject();
+        output.put("status", statusCode);
+        output.put("headers", buildResponseHeaders(connection));
+        output.put("url", connection.getURL());
+        output.put("data", readData(connection, responseType));
+        InputStream errorStream = connection.getErrorStream();
+        if (errorStream != null) {
+            output.put("error", true);
+        }
+        return output;
+    }
+    /**
+     * Read the existing ICapacitorHttpUrlConnection data
+     * @param connection The ICapacitorHttpUrlConnection object to read in
+     * @param responseType The type of HTTP response to return to the API
+     * @return The parsed data from the connection
+     * @throws IOException Thrown if the InputStreams cannot be properly parsed
+     * @throws JSONException Thrown if the JSON is malformed when parsing as JSON
+     */
+    public static Object readData(ICapacitorHttpUrlConnection connection, ResponseType responseType) throws IOException, JSONException {
+        InputStream errorStream = connection.getErrorStream();
+        String contentType = connection.getHeaderField("Content-Type");
+        if (errorStream != null) {
+            if (isOneOf(contentType, MimeType.APPLICATION_JSON, MimeType.APPLICATION_VND_API_JSON)) {
+                return parseJSON(readStreamAsString(errorStream));
+            } else {
+                return readStreamAsString(errorStream);
+            }
+        } else if (contentType != null && contentType.contains(MimeType.APPLICATION_JSON.getValue())) {
+            // backward compatibility
+            return parseJSON(readStreamAsString(connection.getInputStream()));
+        } else {
+            InputStream stream = connection.getInputStream();
+            switch (responseType) {
+                case ARRAY_BUFFER:
+                case BLOB:
+                    return readStreamAsBase64(stream);
+                case JSON:
+                    return parseJSON(readStreamAsString(stream));
+                case DOCUMENT:
+                case TEXT:
+                default:
+                    return readStreamAsString(stream);
+            }
+        }
+    }
+    /**
+     * Helper function for determining if the Content-Type is a typeof an existing Mime-Type
+     * @param contentType The Content-Type string to check for
+     * @param mimeTypes The Mime-Type values to check against
+     * @return
+     */
+    public static boolean isOneOf(String contentType, MimeType... mimeTypes) {
+        if (contentType != null) {
+            for (MimeType mimeType : mimeTypes) {
+                if (contentType.contains(mimeType.getValue())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    /**
+     * Build the JSObject response headers based on the connection header map
+     * @param connection The CapacitorHttpUrlConnection connection
+     * @return A JSObject of the header values from the CapacitorHttpUrlConnection
+     */
+    public static JSObject buildResponseHeaders(CapacitorHttpUrlConnection connection) {
+        JSObject output = new JSObject();
+        for (Map.Entry<String, List<String>> entry : connection.getHeaderFields().entrySet()) {
+            String valuesString = TextUtils.join(", ", entry.getValue());
+            output.put(entry.getKey(), valuesString);
+        }
+        return output;
+    }
+    /**
+     * Returns a JSObject or a JSArray based on a string-ified input
+     * @param input String-ified JSON that needs parsing
+     * @return A JSObject or JSArray
+     * @throws JSONException thrown if the JSON is malformed
+     */
+    public static Object parseJSON(String input) throws JSONException {
+        JSONObject json = new JSONObject();
+        try {
+            if ("null".equals(input.trim())) {
+                return JSONObject.NULL;
+            } else if ("true".equals(input.trim())) {
+                return true;
+            } else if ("false".equals(input.trim())) {
+                return false;
+            } else if (input.trim().length() <= 0) {
+                return "";
+            } else if (input.trim().matches("^\".*\"$")) {
+                // a string enclosed in " " is a json value, return the string without the quotes
+                return input.trim().substring(1, input.trim().length() - 1);
+            } else if (input.trim().matches("^-?\\d+$")) {
+                return Integer.parseInt(input.trim());
+            } else if (input.trim().matches("^-?\\d+(\\.\\d+)?$")) {
+                return Double.parseDouble(input.trim());
+            } else {
+                try {
+                    return new JSObject(input);
+                } catch (JSONException e) {
+                    return new JSArray(input);
+                }
+            }
+        } catch (JSONException e) {
+            return input;
+        }
+    }
+    /**
+     * Returns a string based on a base64 InputStream
+     * @param in The base64 InputStream to convert to a String
+     * @return String value of InputStream
+     * @throws IOException thrown if the InputStream is unable to be read as base64
+     */
+    public static String readStreamAsBase64(InputStream in) throws IOException {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int readBytes;
+            while ((readBytes = in.read(buffer)) != -1) {
+                out.write(buffer, 0, readBytes);
+            }
+            byte[] result = out.toByteArray();
+            return Base64.encodeToString(result, 0, result.length, Base64.DEFAULT);
+        }
+    }
+    /**
+     * Returns a string based on an InputStream
+     * @param in The InputStream to convert to a String
+     * @return String value of InputStream
+     * @throws IOException thrown if the InputStream is unable to be read
+     */
+    public static String readStreamAsString(InputStream in) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+            StringBuilder builder = new StringBuilder();
+            String line = reader.readLine();
+            while (line != null) {
+                builder.append(line);
+                line = reader.readLine();
+                if (line != null) {
+                    builder.append(System.getProperty("line.separator"));
+                }
+            }
+            return builder.toString();
+        }
+    }
+    /**
+     * Makes an Http Request based on the PluginCall parameters
+     * @param call The Capacitor PluginCall that contains the options need for an Http request
+     * @param httpMethod The HTTP method that overrides the PluginCall HTTP method
+     * @throws IOException throws an IO request when a connection can't be made
+     * @throws URISyntaxException thrown when the URI is malformed
+     * @throws JSONException thrown when the incoming JSON is malformed
+     */
+    public static JSObject request(PluginCall call, String httpMethod, Bridge bridge)
+        throws IOException, URISyntaxException, JSONException {
+        String urlString = call.getString("url", "");
+        JSObject headers = call.getObject("headers", new JSObject());
+        JSObject params = call.getObject("params", new JSObject());
+        Integer connectTimeout = call.getInt("connectTimeout");
+        Integer readTimeout = call.getInt("readTimeout");
+        Boolean disableRedirects = call.getBoolean("disableRedirects");
+        Boolean shouldEncode = call.getBoolean("shouldEncodeUrlParams", true);
+        ResponseType responseType = ResponseType.parse(call.getString("responseType"));
+        String dataType = call.getString("dataType");
+        String method = httpMethod != null ? httpMethod.toUpperCase(Locale.ROOT) : call.getString("method", "GET").toUpperCase(Locale.ROOT);
+        boolean isHttpMutate = method.equals("DELETE") || method.equals("PATCH") || method.equals("POST") || method.equals("PUT");
+        URL url = new URL(urlString);
+        HttpURLConnectionBuilder connectionBuilder = new HttpURLConnectionBuilder()
+            .setUrl(url)
+            .setMethod(method)
+            .setHeaders(headers)
+            .setUrlParams(params, shouldEncode)
+            .setConnectTimeout(connectTimeout)
+            .setReadTimeout(readTimeout)
+            .setDisableRedirects(disableRedirects)
+            .openConnection();
+        CapacitorHttpUrlConnection connection = connectionBuilder.build();
+        if (null != bridge && !isDomainExcludedFromSSL(bridge, url)) {
+            connection.setSSLSocketFactory(bridge);
+        }
+        // Set HTTP body on a non GET or HEAD request
+        if (isHttpMutate) {
+            JSValue data = new JSValue(call, "data");
+            if (data.getValue() != null) {
+                connection.setDoOutput(true);
+                connection.setRequestBody(call, data, dataType);
+            }
+        }
+        call.getData().put("activeCapacitorHttpUrlConnection", connection);
+        connection.connect();
+        JSObject response = buildResponse(connection, responseType);
+        connection.disconnect();
+        call.getData().remove("activeCapacitorHttpUrlConnection");
+        return response;
+    }
+    public static Boolean isDomainExcludedFromSSL(Bridge bridge, URL url) {
+        try {
+            Class<?> sslPinningImpl = Class.forName("io.ionic.sslpinning.SSLPinning");
+            Method method = sslPinningImpl.getDeclaredMethod("isDomainExcluded", Bridge.class, URL.class);
+            return (Boolean) method.invoke(sslPinningImpl.getDeclaredConstructor().newInstance(), bridge, url);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+    @FunctionalInterface
+    public interface ProgressEmitter {
+        void emit(Integer bytes, Integer contentLength);
+    }
+}
+package com.getcapacitor;
+import androidx.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+/**
+ * Wraps a call from the web layer to native
+ */
+public class PluginCall {
+    /**
+     * A special callback id that indicates there is no matching callback
+     * on the client to associate any PluginCall results back to. This is used
+     * in the case of an app resuming with saved instance data, for example.
+     */
+    public static final String CALLBACK_ID_DANGLING = "-1";
+    private final MessageHandler msgHandler;
+    private final String pluginId;
+    private final String callbackId;
+    private final String methodName;
+    private final JSObject data;
+    private boolean keepAlive = false;
+    /**
+     * Indicates that this PluginCall was released, and should no longer be used
+     */
+    @Deprecated
+    private boolean isReleased = false;
+    public PluginCall(MessageHandler msgHandler, String pluginId, String callbackId, String methodName, JSObject data) {
+        this.msgHandler = msgHandler;
+        this.pluginId = pluginId;
+        this.callbackId = callbackId;
+        this.methodName = methodName;
+        this.data = data;
+    }
+    public void successCallback(PluginResult successResult) {
+        if (CALLBACK_ID_DANGLING.equals(this.callbackId)) {
+            // don't send back response if the callbackId was "-1"
+            return;
+        }
+        this.msgHandler.sendResponseMessage(this, successResult, null);
+    }
+    public void resolve(JSObject data) {
+        PluginResult result = new PluginResult(data);
+        this.msgHandler.sendResponseMessage(this, result, null);
+    }
+    public void resolve() {
+        this.msgHandler.sendResponseMessage(this, null, null);
+    }
+    public void errorCallback(String msg) {
+        PluginResult errorResult = new PluginResult();
+        try {
+            errorResult.put("message", msg);
+        } catch (Exception jsonEx) {
+            Logger.error(Logger.tags("Plugin"), jsonEx.toString(), null);
+        }
+        this.msgHandler.sendResponseMessage(this, null, errorResult);
+    }
+    public void reject(String msg, String code, Exception ex, JSObject data) {
+        PluginResult errorResult = new PluginResult();
+        if (ex != null) {
+            Logger.error(Logger.tags("Plugin"), msg, ex);
+        }
+        try {
+            errorResult.put("message", msg);
+            errorResult.put("code", code);
+            if (null != data) {
+                errorResult.put("data", data);
+            }
+        } catch (Exception jsonEx) {
+            Logger.error(Logger.tags("Plugin"), jsonEx.getMessage(), jsonEx);
+        }
+        this.msgHandler.sendResponseMessage(this, null, errorResult);
+    }
+    public void reject(String msg, Exception ex, JSObject data) {
+        reject(msg, null, ex, data);
+    }
+    public void reject(String msg, String code, JSObject data) {
+        reject(msg, code, null, data);
+    }
+    public void reject(String msg, String code, Exception ex) {
+        reject(msg, code, ex, null);
+    }
+    public void reject(String msg, JSObject data) {
+        reject(msg, null, null, data);
+    }
+    public void reject(String msg, Exception ex) {
+        reject(msg, null, ex, null);
+    }
+    public void reject(String msg, String code) {
+        reject(msg, code, null, null);
+    }
+    public void reject(String msg) {
+        reject(msg, null, null, null);
+    }
+    public void unimplemented() {
+        unimplemented("not implemented");
+    }
+    public void unimplemented(String msg) {
+        reject(msg, "UNIMPLEMENTED", null, null);
+    }
+    public void unavailable() {
+        unavailable("not available");
+    }
+    public void unavailable(String msg) {
+        reject(msg, "UNAVAILABLE", null, null);
+    }
+    public String getPluginId() {
+        return this.pluginId;
+    }
+    public String getCallbackId() {
+        return this.callbackId;
+    }
+    public String getMethodName() {
+        return this.methodName;
+    }
+    public JSObject getData() {
+        return this.data;
+    }
+    @Nullable
+    public String getString(String name) {
+        return this.getString(name, null);
+    }
+    @Nullable
+    public String getString(String name, @Nullable String defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof String) {
+            return (String) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Integer getInt(String name) {
+        return this.getInt(name, null);
+    }
+    @Nullable
+    public Integer getInt(String name, @Nullable Integer defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Integer) {
+            return (Integer) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Long getLong(String name) {
+        return this.getLong(name, null);
+    }
+    @Nullable
+    public Long getLong(String name, @Nullable Long defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Long) {
+            return (Long) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Float getFloat(String name) {
+        return this.getFloat(name, null);
+    }
+    @Nullable
+    public Float getFloat(String name, @Nullable Float defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Float) {
+            return (Float) value;
+        }
+        if (value instanceof Double) {
+            return ((Double) value).floatValue();
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).floatValue();
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Double getDouble(String name) {
+        return this.getDouble(name, null);
+    }
+    @Nullable
+    public Double getDouble(String name, @Nullable Double defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Double) {
+            return (Double) value;
+        }
+        if (value instanceof Float) {
+            return ((Float) value).doubleValue();
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).doubleValue();
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Boolean getBoolean(String name) {
+        return this.getBoolean(name, null);
+    }
+    @Nullable
+    public Boolean getBoolean(String name, @Nullable Boolean defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return defaultValue;
+    }
+    public JSObject getObject(String name) {
+        return this.getObject(name, null);
+    }
+    @Nullable
+    public JSObject getObject(String name, JSObject defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof JSONObject) {
+            try {
+                return JSObject.fromJSONObject((JSONObject) value);
+            } catch (JSONException ex) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+    public JSArray getArray(String name) {
+        return this.getArray(name, null);
+    }
+    /**
+     * Get a JSONArray and turn it into a JSArray
+     * @param name
+     * @param defaultValue
+     * @return
+     */
+    @Nullable
+    public JSArray getArray(String name, JSArray defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof JSONArray) {
+            try {
+                JSONArray valueArray = (JSONArray) value;
+                List<Object> items = new ArrayList<>();
+                for (int i = 0; i < valueArray.length(); i++) {
+                    items.add(valueArray.get(i));
+                }
+                return new JSArray(items.toArray());
+            } catch (JSONException ex) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+    /**
+     * @param name of the option to check
+     * @return boolean indicating if the plugin call has an option for the provided name.
+     * @deprecated Presence of a key should not be considered significant.
+     * Use typed accessors to check the value instead.
+     */
+    @Deprecated
+    public boolean hasOption(String name) {
+        return this.data.has(name);
+    }
+    /**
+     * Indicate that the Bridge should cache this call in order to call
+     * it again later. For example, the addListener system uses this to
+     * continuously call the call's callback (😆).
+     * @deprecated use {@link #setKeepAlive(Boolean)} instead
+     */
+    @Deprecated
+    public void save() {
+        setKeepAlive(true);
+    }
+    /**
+     * Indicate that the Bridge should cache this call in order to call
+     * it again later. For example, the addListener system uses this to
+     * continuously call the call's callback.
+     *
+     * @param keepAlive whether to keep the callback saved
+     */
+    public void setKeepAlive(Boolean keepAlive) {
+        this.keepAlive = keepAlive;
+    }
+    public void release(Bridge bridge) {
+        this.keepAlive = false;
+        bridge.releaseCall(this);
+        this.isReleased = true;
+    }
+    /**
+     * @deprecated use {@link #isKeptAlive()}
+     * @return true if the plugin call is kept alive
+     */
+    @Deprecated
+    public boolean isSaved() {
+        return isKeptAlive();
+    }
+    /**
+     * Gets the keepAlive value of the plugin call
+     * @return true if the plugin call is kept alive
+     */
+    public boolean isKeptAlive() {
+        return keepAlive;
+    }
+    @Deprecated
+    public boolean isReleased() {
+        return isReleased;
+    }
+    class PluginCallDataTypeException extends Exception {
+        PluginCallDataTypeException(String m) {
+            super(m);
+        }
+    }
+}
+package com.getcapacitor.plugin.util;
+import android.os.Build;
+import android.os.LocaleList;
+import android.text.TextUtils;
+import com.getcapacitor.Bridge;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.JSValue;
+import com.getcapacitor.PluginCall;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.ProtocolException;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.net.UnknownServiceException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
+import org.json.JSONException;
+import org.json.JSONObject;
+public class CapacitorHttpUrlConnection implements ICapacitorHttpUrlConnection {
+    private final HttpURLConnection connection;
+    /**
+     * Make a new CapacitorHttpUrlConnection instance, which wraps around HttpUrlConnection
+     * and provides some helper functions for setting request headers and the request body
+     * @param conn the base HttpUrlConnection. You can pass the value from
+     *             {@code (HttpUrlConnection) URL.openConnection()}
+     */
+    public CapacitorHttpUrlConnection(HttpURLConnection conn) {
+        connection = conn;
+        this.setDefaultRequestProperties();
+    }
+    /**
+     * Returns the underlying HttpUrlConnection value
+     * @return the underlying HttpUrlConnection value
+     */
+    public HttpURLConnection getHttpConnection() {
+        return connection;
+    }
+    public void disconnect() {
+        connection.disconnect();
+    }
+    /**
+     * Set the value of the {@code allowUserInteraction} field of
+     * this {@code URLConnection}.
+     *
+     * @param   isAllowedInteraction   the new value.
+     * @throws IllegalStateException if already connected
+     */
+    public void setAllowUserInteraction(boolean isAllowedInteraction) {
+        connection.setAllowUserInteraction(isAllowedInteraction);
+    }
+    /**
+     * Set the method for the URL request, one of:
+     * <UL>
+     *  <LI>GET
+     *  <LI>POST
+     *  <LI>HEAD
+     *  <LI>OPTIONS
+     *  <LI>PUT
+     *  <LI>DELETE
+     *  <LI>TRACE
+     * </UL> are legal, subject to protocol restrictions.  The default
+     * method is GET.
+     *
+     * @param method the HTTP method
+     * @exception ProtocolException if the method cannot be reset or if
+     *              the requested method isn't valid for HTTP.
+     * @exception SecurityException if a security manager is set and the
+     *              method is "TRACE", but the "allowHttpTrace"
+     *              NetPermission is not granted.
+     */
+    public void setRequestMethod(String method) throws ProtocolException {
+        connection.setRequestMethod(method);
+    }
+    /**
+     * Sets a specified timeout value, in milliseconds, to be used
+     * when opening a communications link to the resource referenced
+     * by this URLConnection.  If the timeout expires before the
+     * connection can be established, a
+     * java.net.SocketTimeoutException is raised. A timeout of zero is
+     * interpreted as an infinite timeout.
+     *
+     * <p><strong>Warning</strong>: If the hostname resolves to multiple IP
+     * addresses, Android's default implementation of {@link HttpURLConnection}
+     * will try each in
+     * <a href="http://www.ietf.org/rfc/rfc3484.txt">RFC 3484</a> order. If
+     * connecting to each of these addresses fails, multiple timeouts will
+     * elapse before the connect attempt throws an exception. Host names
+     * that support both IPv6 and IPv4 always have at least 2 IP addresses.
+     *
+     * @param timeout an {@code int} that specifies the connect
+     *               timeout value in milliseconds
+     * @throws IllegalArgumentException if the timeout parameter is negative
+     */
+    public void setConnectTimeout(int timeout) {
+        if (timeout < 0) {
+            throw new IllegalArgumentException("timeout can not be negative");
+        }
+        connection.setConnectTimeout(timeout);
+    }
+    /**
+     * Sets the read timeout to a specified timeout, in
+     * milliseconds. A non-zero value specifies the timeout when
+     * reading from Input stream when a connection is established to a
+     * resource. If the timeout expires before there is data available
+     * for read, a java.net.SocketTimeoutException is raised. A
+     * timeout of zero is interpreted as an infinite timeout.
+     *
+     * @param timeout an {@code int} that specifies the timeout
+     * value to be used in milliseconds
+     * @throws IllegalArgumentException if the timeout parameter is negative
+     */
+    public void setReadTimeout(int timeout) {
+        if (timeout < 0) {
+            throw new IllegalArgumentException("timeout can not be negative");
+        }
+        connection.setReadTimeout(timeout);
+    }
+    /**
+     * Sets whether automatic HTTP redirects should be disabled
+     * @param disableRedirects the flag to determine if redirects should be followed
+     */
+    public void setDisableRedirects(boolean disableRedirects) {
+        connection.setInstanceFollowRedirects(!disableRedirects);
+    }
+    /**
+     * Sets the request headers given a JSObject of key-value pairs
+     * @param headers the JSObject values to map to the HttpUrlConnection request headers
+     */
+    public void setRequestHeaders(JSObject headers) {
+        Iterator<String> keys = headers.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            String value = headers.getString(key);
+            connection.setRequestProperty(key, value);
+        }
+    }
+    /**
+     * Sets the value of the {@code doOutput} field for this
+     * {@code URLConnection} to the specified value.
+     * <p>
+     * A URL connection can be used for input and/or output.  Set the DoOutput
+     * flag to true if you intend to use the URL connection for output,
+     * false if not.  The default is false.
+     *
+     * @param  shouldDoOutput   the new value.
+     * @throws IllegalStateException if already connected
+     */
+    public void setDoOutput(boolean shouldDoOutput) {
+        connection.setDoOutput(shouldDoOutput);
+    }
+    /**
+     *
+     * @param call
+     * @throws JSONException
+     * @throws IOException
+     */
+    public void setRequestBody(PluginCall call, JSValue body) throws JSONException, IOException {
+        setRequestBody(call, body, null);
+    }
+    /**
+     *
+     * @param call
+     * @throws JSONException
+     * @throws IOException
+     */
+    public void setRequestBody(PluginCall call, JSValue body, String bodyType) throws JSONException, IOException {
+        String contentType = connection.getRequestProperty("Content-Type");
+        String dataString = "";
+        if (contentType == null || contentType.isEmpty()) return;
+        if (contentType.contains("application/json")) {
+            JSArray jsArray = null;
+            if (body != null) {
+                dataString = body.toString();
+            } else {
+                jsArray = call.getArray("data", null);
+            }
+            if (jsArray != null) {
+                dataString = jsArray.toString();
+            } else if (body == null) {
+                dataString = call.getString("data");
+            }
+            this.writeRequestBody(dataString != null ? dataString : "");
+        } else if (bodyType != null && bodyType.equals("file")) {
+            try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    os.write(Base64.getDecoder().decode(body.toString()));
+                }
+                os.flush();
+            }
+        } else if (contentType.contains("application/x-www-form-urlencoded")) {
+            try {
+                JSObject obj = body.toJSObject();
+                this.writeObjectRequestBody(obj);
+            } catch (Exception e) {
+                // Body is not a valid JSON, treat it as an already formatted string
+                this.writeRequestBody(body.toString());
+            }
+        } else if (bodyType != null && bodyType.equals("formData")) {
+            this.writeFormDataRequestBody(contentType, body.toJSArray());
+        } else {
+            this.writeRequestBody(body.toString());
+        }
+    }
+    /**
+     * Writes the provided string to the HTTP connection managed by this instance.
+     *
+     * @param body The string value to write to the connection stream.
+     */
+    private void writeRequestBody(String body) throws IOException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            os.write(body.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        }
+    }
+    private void writeObjectRequestBody(JSObject object) throws IOException, JSONException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                Object d = object.get(key);
+                os.writeBytes(key);
+                os.writeBytes("=");
+                os.writeBytes(URLEncoder.encode(d.toString(), "UTF-8"));
+                if (keys.hasNext()) {
+                    os.writeBytes("&");
+                }
+            }
+            os.flush();
+        }
+    }
+    private void writeFormDataRequestBody(String contentType, JSArray entries) throws IOException, JSONException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            String boundary = contentType.split(";")[1].split("=")[1];
+            String lineEnd = "\r\n";
+            String twoHyphens = "--";
+            for (Object e : entries.toList()) {
+                if (e instanceof JSONObject) {
+                    JSONObject entry = (JSONObject) e;
+                    String type = entry.getString("type");
+                    String key = entry.getString("key");
+                    String value = entry.getString("value");
+                    if (type.equals("string")) {
+                        os.writeBytes(twoHyphens + boundary + lineEnd);
+                        os.writeBytes("Content-Disposition: form-data; name=\"" + key + "\"" + lineEnd + lineEnd);
+                        os.write(value.getBytes(StandardCharsets.UTF_8));
+                        os.writeBytes(lineEnd);
+                    } else if (type.equals("base64File")) {
+                        String fileName = entry.getString("fileName");
+                        String fileContentType = entry.getString("contentType");
+                        os.writeBytes(twoHyphens + boundary + lineEnd);
+                        os.writeBytes("Content-Disposition: form-data; name=\"" + key + "\"; filename=\"" + fileName + "\"" + lineEnd);
+                        os.writeBytes("Content-Type: " + fileContentType + lineEnd);
+                        os.writeBytes("Content-Transfer-Encoding: binary" + lineEnd);
+                        os.writeBytes(lineEnd);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            os.write(Base64.getDecoder().decode(value));
+                        } else {
+                            os.write(android.util.Base64.decode(value, android.util.Base64.DEFAULT));
+                        }
+                        os.writeBytes(lineEnd);
+                    }
+                }
+            }
+            os.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd);
+            os.flush();
+        }
+    }
+    /**
+     * Opens a communications link to the resource referenced by this
+     * URL, if such a connection has not already been established.
+     * <p>
+     * If the {@code connect} method is called when the connection
+     * has already been opened (indicated by the {@code connected}
+     * field having the value {@code true}), the call is ignored.
+     * <p>
+     * URLConnection objects go through two phases: first they are
+     * created, then they are connected.  After being created, and
+     * before being connected, various options can be specified
+     * (e.g., doInput and UseCaches).  After connecting, it is an
+     * error to try to set them.  Operations that depend on being
+     * connected, like getContentLength, will implicitly perform the
+     * connection, if necessary.
+     *
+     * @throws SocketTimeoutException if the timeout expires before
+     *               the connection can be established
+     * @exception  IOException  if an I/O error occurs while opening the
+     *               connection.
+     */
+    public void connect() throws IOException {
+        connection.connect();
+    }
+    /**
+     * Gets the status code from an HTTP response message.
+     * For example, in the case of the following status lines:
+     * <PRE>
+     * HTTP/1.0 200 OK
+     * HTTP/1.0 401 Unauthorized
+     * </PRE>
+     * It will return 200 and 401 respectively.
+     * Returns -1 if no code can be discerned
+     * from the response (i.e., the response is not valid HTTP).
+     * @throws IOException if an error occurred connecting to the server.
+     * @return the HTTP Status-Code, or -1
+     */
+    public int getResponseCode() throws IOException {
+        return connection.getResponseCode();
+    }
+    /**
+     * Returns the value of this {@code URLConnection}'s {@code URL}
+     * field.
+     *
+     * @return  the value of this {@code URLConnection}'s {@code URL}
+     *          field.
+     */
+    public URL getURL() {
+        return connection.getURL();
+    }
+    /**
+     * Returns the error stream if the connection failed
+     * but the server sent useful data nonetheless. The
+     * typical example is when an HTTP server responds
+     * with a 404, which will cause a FileNotFoundException
+     * to be thrown in connect, but the server sent an HTML
+     * help page with suggestions as to what to do.
+     *
+     * <p>This method will not cause a connection to be initiated.  If
+     * the connection was not connected, or if the server did not have
+     * an error while connecting or if the server had an error but
+     * no error data was sent, this method will return null. This is
+     * the default.
+     *
+     * @return an error stream if any, null if there have been no
+     * errors, the connection is not connected or the server sent no
+     * useful data.
+     */
+    @Override
+    public InputStream getErrorStream() {
+        return connection.getErrorStream();
+    }
+    /**
+     * Returns the value of the named header field.
+     * <p>
+     * If called on a connection that sets the same header multiple times
+     * with possibly different values, only the last value is returned.
+     *
+     *
+     * @param   name   the name of a header field.
+     * @return  the value of the named header field, or {@code null}
+     *          if there is no such field in the header.
+     */
+    @Override
+    public String getHeaderField(String name) {
+        return connection.getHeaderField(name);
+    }
+    /**
+     * Returns an input stream that reads from this open connection.
+     *
+     * A SocketTimeoutException can be thrown when reading from the
+     * returned input stream if the read timeout expires before data
+     * is available for read.
+     *
+     * @return     an input stream that reads from this open connection.
+     * @exception  IOException              if an I/O error occurs while
+     *               creating the input stream.
+     * @exception UnknownServiceException  if the protocol does not support
+     *               input.
+     * @see #setReadTimeout(int)
+     */
+    @Override
+    public InputStream getInputStream() throws IOException {
+        return connection.getInputStream();
+    }
+    /**
+     * Returns an unmodifiable Map of the header fields.
+     * The Map keys are Strings that represent the
+     * response-header field names. Each Map value is an
+     * unmodifiable List of Strings that represents
+     * the corresponding field values.
+     *
+     * @return a Map of header fields
+     */
+    public Map<String, List<String>> getHeaderFields() {
+        return connection.getHeaderFields();
+    }
+    /**
+     * Sets the default request properties on the newly created connection.
+     * This is called as early as possible to allow overrides by user-provided values.
+     */
+    private void setDefaultRequestProperties() {
+        String acceptLanguage = buildDefaultAcceptLanguageProperty();
+        if (!TextUtils.isEmpty(acceptLanguage)) {
+            connection.setRequestProperty("Accept-Language", acceptLanguage);
+        }
+    }
+    /**
+     * Builds and returns a locale string describing the device's current locale preferences.
+     */
+    private String buildDefaultAcceptLanguageProperty() {
+        Locale locale;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            locale = LocaleList.getDefault().get(0);
+        } else {
+            locale = Locale.getDefault();
+        }
+        String result = "";
+        String lang = locale.getLanguage();
+        String country = locale.getCountry();
+        if (!TextUtils.isEmpty(lang)) {
+            if (!TextUtils.isEmpty(country)) {
+                result = String.format("%s-%s,%s;q=0.5", lang, country, lang);
+            } else {
+                result = String.format("%s;q=0.5", lang);
+            }
+        }
+        return result;
+    }
+    public void setSSLSocketFactory(Bridge bridge) {
+        // Attach SSL Certificates if Enterprise Plugin is available
+        try {
+            Class<?> sslPinningImpl = Class.forName("io.ionic.sslpinning.SSLPinning");
+            Method method = sslPinningImpl.getDeclaredMethod("getSSLSocketFactory", Bridge.class);
+            SSLSocketFactory sslSocketFactory = (SSLSocketFactory) method.invoke(
+                sslPinningImpl.getDeclaredConstructor().newInstance(),
+                bridge
+            );
+            if (sslSocketFactory != null) {
+                ((HttpsURLConnection) this.connection).setSSLSocketFactory(sslSocketFactory);
+            }
+        } catch (Exception ignored) {}
+    }
+}
+package com.getcapacitor;
+import org.json.JSONException;
+/**
+ * Represents a single user-data value of any type on the capacitor PluginCall object.
+ */
+public class JSValue {
+    private final Object value;
+    /**
+     * @param call The capacitor plugin call, used for accessing the value safely.
+     * @param name The name of the property to access.
+     */
+    public JSValue(PluginCall call, String name) {
+        this.value = this.toValue(call, name);
+    }
+    /**
+     * Returns the coerced but uncasted underlying value.
+     */
+    public Object getValue() {
+        return this.value;
+    }
+    @Override
+    public String toString() {
+        return this.getValue().toString();
+    }
+    /**
+     * Returns the underlying value as a JSObject, or throwing if it cannot.
+     *
+     * @throws JSONException If the underlying value is not a JSObject.
+     */
+    public JSObject toJSObject() throws JSONException {
+        if (this.value instanceof JSObject) return (JSObject) this.value;
+        throw new JSONException("JSValue could not be coerced to JSObject.");
+    }
+    /**
+     * Returns the underlying value as a JSArray, or throwing if it cannot.
+     *
+     * @throws JSONException If the underlying value is not a JSArray.
+     */
+    public JSArray toJSArray() throws JSONException {
+        if (this.value instanceof JSArray) return (JSArray) this.value;
+        throw new JSONException("JSValue could not be coerced to JSArray.");
+    }
+    /**
+     * Returns the underlying value this object represents, coercing it into a capacitor-friendly object if supported.
+     */
+    private Object toValue(PluginCall call, String name) {
+        Object value = null;
+        value = call.getArray(name, null);
+        if (value != null) return value;
+        value = call.getObject(name, null);
+        if (value != null) return value;
+        value = call.getString(name, null);
+        if (value != null) return value;
+        return call.getData().opt(name);
+    }
+}
+package com.getcapacitor.plugin;
+import android.app.Activity;
+import android.content.SharedPreferences;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+@CapacitorPlugin
+public class WebView extends Plugin {
+    public static final String WEBVIEW_PREFS_NAME = "CapWebViewSettings";
+    public static final String CAP_SERVER_PATH = "serverBasePath";
+    @PluginMethod
+    public void setServerAssetPath(PluginCall call) {
+        String path = call.getString("path");
+        bridge.setServerAssetPath(path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void setServerBasePath(PluginCall call) {
+        String path = call.getString("path");
+        bridge.setServerBasePath(path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void getServerBasePath(PluginCall call) {
+        String path = bridge.getServerBasePath();
+        JSObject ret = new JSObject();
+        ret.put("path", path);
+        call.resolve(ret);
+    }
+    @PluginMethod
+    public void persistServerBasePath(PluginCall call) {
+        String path = bridge.getServerBasePath();
+        SharedPreferences prefs = getContext().getSharedPreferences(WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(CAP_SERVER_PATH, path);
+        editor.apply();
+        call.resolve();
+    }
+}
+package com.getcapacitor;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+/**
+ * PluginHandle is an instance of a plugin that has been registered
+ * and indexed. Think of it as a Plugin instance with extra metadata goodies
+ */
+public class PluginHandle {
+    private final Bridge bridge;
+    private final Class<? extends Plugin> pluginClass;
+    private final Map<String, PluginMethodHandle> pluginMethods = new HashMap<>();
+    private final String pluginId;
+    @SuppressWarnings("deprecation")
+    private NativePlugin legacyPluginAnnotation;
+    private CapacitorPlugin pluginAnnotation;
+    private Plugin instance;
+    @SuppressWarnings("deprecation")
+    private PluginHandle(Class<? extends Plugin> clazz, Bridge bridge) throws InvalidPluginException {
+        this.bridge = bridge;
+        this.pluginClass = clazz;
+        CapacitorPlugin pluginAnnotation = pluginClass.getAnnotation(CapacitorPlugin.class);
+        if (pluginAnnotation == null) {
+            // Check for legacy plugin annotation, @NativePlugin
+            NativePlugin legacyPluginAnnotation = pluginClass.getAnnotation(NativePlugin.class);
+            if (legacyPluginAnnotation == null) {
+                throw new InvalidPluginException("No @CapacitorPlugin annotation found for plugin " + pluginClass.getName());
+            }
+            if (!legacyPluginAnnotation.name().equals("")) {
+                this.pluginId = legacyPluginAnnotation.name();
+            } else {
+                this.pluginId = pluginClass.getSimpleName();
+            }
+            this.legacyPluginAnnotation = legacyPluginAnnotation;
+        } else {
+            if (!pluginAnnotation.name().equals("")) {
+                this.pluginId = pluginAnnotation.name();
+            } else {
+                this.pluginId = pluginClass.getSimpleName();
+            }
+            this.pluginAnnotation = pluginAnnotation;
+        }
+        this.indexMethods(clazz);
+    }
+    public PluginHandle(Bridge bridge, Class<? extends Plugin> pluginClass) throws InvalidPluginException, PluginLoadException {
+        this(pluginClass, bridge);
+        this.load();
+    }
+    public PluginHandle(Bridge bridge, Plugin plugin) throws InvalidPluginException {
+        this(plugin.getClass(), bridge);
+        this.loadInstance(plugin);
+    }
+    public Class<? extends Plugin> getPluginClass() {
+        return pluginClass;
+    }
+    public String getId() {
+        return this.pluginId;
+    }
+    @SuppressWarnings("deprecation")
+    public NativePlugin getLegacyPluginAnnotation() {
+        return this.legacyPluginAnnotation;
+    }
+    public CapacitorPlugin getPluginAnnotation() {
+        return this.pluginAnnotation;
+    }
+    public Plugin getInstance() {
+        return this.instance;
+    }
+    public Collection<PluginMethodHandle> getMethods() {
+        return this.pluginMethods.values();
+    }
+    public Plugin load() throws PluginLoadException {
+        if (this.instance != null) {
+            return this.instance;
+        }
+        try {
+            this.instance = this.pluginClass.getDeclaredConstructor().newInstance();
+            return this.loadInstance(instance);
+        } catch (Exception ex) {
+            throw new PluginLoadException("Unable to load plugin instance. Ensure plugin is publicly accessible");
+        }
+    }
+    public Plugin loadInstance(Plugin plugin) {
+        this.instance = plugin;
+        this.instance.setPluginHandle(this);
+        this.instance.setBridge(this.bridge);
+        this.instance.load();
+        this.instance.initializeActivityLaunchers();
+        return this.instance;
+    }
+    /**
+     * Call a method on a plugin.
+     * @param methodName the name of the method to call
+     * @param call the constructed PluginCall with parameters from the caller
+     * @throws InvalidPluginMethodException if no method was found on that plugin
+     */
+    public void invoke(String methodName, PluginCall call)
+        throws PluginLoadException, InvalidPluginMethodException, InvocationTargetException, IllegalAccessException {
+        if (this.instance == null) {
+            // Can throw PluginLoadException
+            this.load();
+        }
+        PluginMethodHandle methodMeta = pluginMethods.get(methodName);
+        if (methodMeta == null) {
+            throw new InvalidPluginMethodException("No method " + methodName + " found for plugin " + pluginClass.getName());
+        }
+        methodMeta.getMethod().invoke(this.instance, call);
+    }
+    /**
+     * Index all the known callable methods for a plugin for faster
+     * invocation later
+     */
+    private void indexMethods(Class<? extends Plugin> plugin) {
+        //Method[] methods = pluginClass.getDeclaredMethods();
+        Method[] methods = pluginClass.getMethods();
+        for (Method methodReflect : methods) {
+            PluginMethod method = methodReflect.getAnnotation(PluginMethod.class);
+            if (method == null) {
+                continue;
+            }
+            PluginMethodHandle methodMeta = new PluginMethodHandle(methodReflect, method);
+            pluginMethods.put(methodReflect.getName(), methodMeta);
+        }
+    }
+}
+package com.getcapacitor.plugin;
+import android.webkit.JavascriptInterface;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginConfig;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.UnsupportedEncodingException;
+import java.net.CookieHandler;
+import java.net.HttpCookie;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+@CapacitorPlugin
+public class CapacitorCookies extends Plugin {
+    CapacitorCookieManager cookieManager;
+    @Override
+    public void load() {
+        this.bridge.getWebView().addJavascriptInterface(this, "CapacitorCookiesAndroidInterface");
+        this.cookieManager = new CapacitorCookieManager(null, java.net.CookiePolicy.ACCEPT_ALL, this.bridge);
+        this.cookieManager.removeSessionCookies();
+        CookieHandler.setDefault(this.cookieManager);
+        super.load();
+    }
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        this.cookieManager.removeSessionCookies();
+    }
+    @JavascriptInterface
+    public boolean isEnabled() {
+        PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorCookies");
+        return pluginConfig.getBoolean("enabled", false);
+    }
+    @JavascriptInterface
+    public void setCookie(String domain, String action) {
+        cookieManager.setCookie(domain, action);
+    }
+    @PluginMethod
+    public void getCookies(PluginCall call) {
+        this.bridge.eval("document.cookie", value -> {
+                String cookies = value.substring(1, value.length() - 1);
+                String[] cookieArray = cookies.split(";");
+                JSObject cookieMap = new JSObject();
+                for (String cookie : cookieArray) {
+                    if (cookie.length() > 0) {
+                        String[] keyValue = cookie.split("=", 2);
+                        if (keyValue.length == 2) {
+                            String key = keyValue[0].trim();
+                            String val = keyValue[1].trim();
+                            try {
+                                key = URLDecoder.decode(keyValue[0].trim(), StandardCharsets.UTF_8.name());
+                                val = URLDecoder.decode(keyValue[1].trim(), StandardCharsets.UTF_8.name());
+                            } catch (UnsupportedEncodingException ignored) {}
+                            cookieMap.put(key, val);
+                        }
+                    }
+                }
+                call.resolve(cookieMap);
+            });
+    }
+    @PluginMethod
+    public void setCookie(PluginCall call) {
+        String key = call.getString("key");
+        if (null == key) {
+            call.reject("Must provide key");
+        }
+        String value = call.getString("value");
+        if (null == value) {
+            call.reject("Must provide value");
+        }
+        String url = call.getString("url");
+        String expires = call.getString("expires", "");
+        String path = call.getString("path", "/");
+        cookieManager.setCookie(url, key, value, expires, path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void deleteCookie(PluginCall call) {
+        String key = call.getString("key");
+        if (null == key) {
+            call.reject("Must provide key");
+        }
+        String url = call.getString("url");
+        cookieManager.setCookie(url, key + "=; Expires=Wed, 31 Dec 2000 23:59:59 GMT");
+        call.resolve();
+    }
+    @PluginMethod
+    public void clearCookies(PluginCall call) {
+        String url = call.getString("url");
+        HttpCookie[] cookies = cookieManager.getCookies(url);
+        for (HttpCookie cookie : cookies) {
+            cookieManager.setCookie(url, cookie.getName() + "=; Expires=Wed, 31 Dec 2000 23:59:59 GMT");
+        }
+        call.resolve();
+    }
+    @PluginMethod
+    public void clearAllCookies(PluginCall call) {
+        cookieManager.removeAllCookies();
+        call.resolve();
+    }
+}
+package com.getcapacitor;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.TimeZone;
+/**
+ * Wraps a result for web from calling a native plugin.
+ */
+public class PluginResult {
+    private final JSObject json;
+    public PluginResult() {
+        this(new JSObject());
+    }
+    public PluginResult(JSObject json) {
+        this.json = json;
+    }
+    public PluginResult put(String name, boolean value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, double value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, int value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, long value) {
+        return this.jsonPut(name, value);
+    }
+    /**
+     * Format a date as an ISO string
+     */
+    public PluginResult put(String name, Date value) {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm'Z'");
+        df.setTimeZone(tz);
+        return this.jsonPut(name, df.format(value));
+    }
+    public PluginResult put(String name, Object value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, PluginResult value) {
+        return this.jsonPut(name, value.json);
+    }
+    PluginResult jsonPut(String name, Object value) {
+        try {
+            this.json.put(name, value);
+        } catch (Exception ex) {
+            Logger.error(Logger.tags("Plugin"), "", ex);
+        }
+        return this;
+    }
+    public String toString() {
+        return this.json.toString();
+    }
+    /**
+     * Return plugin metadata and information about the result, if it succeeded the data, or error information if it didn't.
+     * This is used for appRestoredResult, as it's technically a raw data response from a plugin.
+     * @return the raw data response from the plugin.
+     */
+    public JSObject getWrappedResult() {
+        JSObject ret = new JSObject();
+        ret.put("pluginId", this.json.getString("pluginId"));
+        ret.put("methodName", this.json.getString("methodName"));
+        ret.put("success", this.json.getBoolean("success", false));
+        ret.put("data", this.json.getJSObject("data"));
+        ret.put("error", this.json.getJSObject("error"));
+        return ret;
+    }
+}
+package com.getcapacitor;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import org.apache.cordova.PluginManager;
+/**
+ * MessageHandler handles messages from the WebView, dispatching them
+ * to plugins.
+ */
+public class MessageHandler {
+    private Bridge bridge;
+    private WebView webView;
+    private PluginManager cordovaPluginManager;
+    private JavaScriptReplyProxy javaScriptReplyProxy;
+    public MessageHandler(Bridge bridge, WebView webView, PluginManager cordovaPluginManager) {
+        this.bridge = bridge;
+        this.webView = webView;
+        this.cordovaPluginManager = cordovaPluginManager;
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
+            WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                if (isMainFrame) {
+                    postMessage(message.getData());
+                    javaScriptReplyProxy = replyProxy;
+                } else {
+                    Logger.warn("Plugin execution is allowed in Main Frame only");
+                }
+            };
+            try {
+                WebViewCompat.addWebMessageListener(webView, "androidBridge", bridge.getAllowedOriginRules(), capListener);
+            } catch (Exception ex) {
+                webView.addJavascriptInterface(this, "androidBridge");
+            }
+        } else {
+            webView.addJavascriptInterface(this, "androidBridge");
+        }
+    }
+    /**
+     * The main message handler that will be called from JavaScript
+     * to send a message to the native bridge.
+     * @param jsonStr
+     */
+    @JavascriptInterface
+    @SuppressWarnings("unused")
+    public void postMessage(String jsonStr) {
+        try {
+            JSObject postData = new JSObject(jsonStr);
+            String type = postData.getString("type");
+            boolean typeIsNotNull = type != null;
+            boolean isCordovaPlugin = typeIsNotNull && type.equals("cordova");
+            boolean isJavaScriptError = typeIsNotNull && type.equals("js.error");
+            String callbackId = postData.getString("callbackId");
+            if (isCordovaPlugin) {
+                String service = postData.getString("service");
+                String action = postData.getString("action");
+                String actionArgs = postData.getString("actionArgs");
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Cordova plugin): callbackId: " +
+                    callbackId +
+                    ", service: " +
+                    service +
+                    ", action: " +
+                    action +
+                    ", actionArgs: " +
+                    actionArgs
+                );
+                this.callCordovaPluginMethod(callbackId, service, action, actionArgs);
+            } else if (isJavaScriptError) {
+                Logger.error("JavaScript Error: " + jsonStr);
+            } else {
+                String pluginId = postData.getString("pluginId");
+                String methodName = postData.getString("methodName");
+                JSObject methodData = postData.getJSObject("options", new JSObject());
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Capacitor plugin): callbackId: " + callbackId + ", pluginId: " + pluginId + ", methodName: " + methodName
+                );
+                this.callPluginMethod(callbackId, pluginId, methodName, methodData);
+            }
+        } catch (Exception ex) {
+            Logger.error("Post message error:", ex);
+        }
+    }
+    public void sendResponseMessage(PluginCall call, PluginResult successResult, PluginResult errorResult) {
+        try {
+            PluginResult data = new PluginResult();
+            data.put("save", call.isKeptAlive());
+            data.put("callbackId", call.getCallbackId());
+            data.put("pluginId", call.getPluginId());
+            data.put("methodName", call.getMethodName());
+            boolean pluginResultInError = errorResult != null;
+            if (pluginResultInError) {
+                data.put("success", false);
+                data.put("error", errorResult);
+                Logger.debug("Sending plugin error: " + data.toString());
+            } else {
+                data.put("success", true);
+                if (successResult != null) {
+                    data.put("data", successResult);
+                }
+            }
+            boolean isValidCallbackId = !call.getCallbackId().equals(PluginCall.CALLBACK_ID_DANGLING);
+            if (isValidCallbackId) {
+                if (bridge.getConfig().isUsingLegacyBridge()) {
+                    legacySendResponseMessage(data);
+                } else if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && javaScriptReplyProxy != null) {
+                    javaScriptReplyProxy.postMessage(data.toString());
+                } else {
+                    legacySendResponseMessage(data);
+                }
+            } else {
+                bridge.getApp().fireRestoredResult(data);
+            }
+        } catch (Exception ex) {
+            Logger.error("sendResponseMessage: error: " + ex);
+        }
+        if (!call.isKeptAlive()) {
+            call.release(bridge);
+        }
+    }
+    private void legacySendResponseMessage(PluginResult data) {
+        final String runScript = "window.Capacitor.fromNative(" + data.toString() + ")";
+        final WebView webView = this.webView;
+        webView.post(() -> webView.evaluateJavascript(runScript, null));
+    }
+    private void callPluginMethod(String callbackId, String pluginId, String methodName, JSObject methodData) {
+        PluginCall call = new PluginCall(this, pluginId, callbackId, methodName, methodData);
+        bridge.callPluginMethod(pluginId, methodName, call);
+    }
+    private void callCordovaPluginMethod(String callbackId, String service, String action, String actionArgs) {
+        bridge.execute(() -> {
+            cordovaPluginManager.exec(service, action, callbackId, actionArgs);
+        });
+    }
+}
+package com.getcapacitor;
+import android.text.TextUtils;
+import android.util.Log;
+public class Logger {
+    public static final String LOG_TAG_CORE = "Capacitor";
+    public static CapConfig config;
+    private static Logger instance;
+    private static Logger getInstance() {
+        if (instance == null) {
+            instance = new Logger();
+        }
+        return instance;
+    }
+    public static void init(CapConfig config) {
+        Logger.getInstance().loadConfig(config);
+    }
+    private void loadConfig(CapConfig config) {
+        Logger.config = config;
+    }
+    public static String tags(String... subtags) {
+        if (subtags != null && subtags.length > 0) {
+            return LOG_TAG_CORE + "/" + TextUtils.join("/", subtags);
+        }
+        return LOG_TAG_CORE;
+    }
+    public static void verbose(String message) {
+        verbose(LOG_TAG_CORE, message);
+    }
+    public static void verbose(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.v(tag, message);
+    }
+    public static void debug(String message) {
+        debug(LOG_TAG_CORE, message);
+    }
+    public static void debug(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.d(tag, message);
+    }
+    public static void info(String message) {
+        info(LOG_TAG_CORE, message);
+    }
+    public static void info(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.i(tag, message);
+    }
+    public static void warn(String message) {
+        warn(LOG_TAG_CORE, message);
+    }
+    public static void warn(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.w(tag, message);
+    }
+    public static void error(String message) {
+        error(LOG_TAG_CORE, message, null);
+    }
+    public static void error(String message, Throwable e) {
+        error(LOG_TAG_CORE, message, e);
+    }
+    public static void error(String tag, String message, Throwable e) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.e(tag, message, e);
+    }
+    public static boolean shouldLog() {
+        return config == null || config.isLoggingEnabled();
+    }
+}
