@@ -1,0 +1,3733 @@
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.service;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.res.AssetManager;
+import android.graphics.Typeface;
+import net.gsantner.memetastic.activity.MainActivity;
+import net.gsantner.memetastic.data.MemeConfig;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.util.FileUtils;
+import net.gsantner.opoc.util.NetworkUtils;
+import net.gsantner.opoc.util.ZipUtils;
+import org.json.JSONException;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import io.github.gsantner.memetastic.R;
+@SuppressLint("SimpleDateFormat")
+public class AssetUpdater {
+    public static final SimpleDateFormat FORMAT_MINUTE = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm");
+    public static final SimpleDateFormat FORMAT_MINUTE_FILE = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss");
+    private static final String URL_ARCHIVE_ZIP = "https://github.com/gsantner/memetastic-assets/archive/master.zip";
+    private static final String URL_API = "https://api.github.com/repos/gsantner/memetastic-assets";
+    private final static String MEMETASTIC_CONFIG_FILE = "+0A_memetastic.conf.json";
+    private final static String[] MEMETASTIC_IMAGES_EXTS = {"png", "jpg", "jpeg", "webp"};
+    private final static String[] MEMETASTIC_FONT_EXTS = {"otf", "ttf"};
+    public static File getDownloadedAssetsDir(AppSettings appSettings) {
+        return new File(new File(appSettings.getSaveDirectory(), ".downloads"), "memetastic-assets");
+    }
+    public static File getCustomAssetsDir(AppSettings appSettings) {
+        return new File(appSettings.getSaveDirectory(), "templates");
+    }
+    public static File getBundledAssetsDir(AppSettings appSettings) {
+        return new File(appSettings.getContext().getCacheDir(), "bundled");
+    }
+    public static File getMemesDir(AppSettings appSettings) {
+        return new File(appSettings.getSaveDirectory(), "memes");
+    }
+    public static class UpdateThread extends Thread {
+        public static final int ASSET_DOWNLOAD_REQUEST__FAILED = -1;
+        public static final int ASSET_DOWNLOAD_REQUEST__CHECKING = 1;
+        public static final int ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK = 2;
+        public static final int DOWNLOAD_STATUS__DOWNLOADING = 1;
+        public static final int DOWNLOAD_STATUS__UNZIPPING = 2;
+        public static final int DOWNLOAD_STATUS__FINISHED = 3;
+        public static final int DOWNLOAD_STATUS__FAILED = -1;
+        private static boolean _isAlreadyDownloading = false;
+        private boolean _doDownload;
+        private Context _context;
+        private AppSettings _appSettings;
+        private int _lastPercent = -1;
+        public UpdateThread(Context context, boolean doDownload) {
+            _doDownload = doDownload;
+            _context = context;
+            _appSettings = AppSettings.get();
+        }
+        @Override
+        public void run() {
+            if (PermissionChecker.hasExtStoragePerm(_context)) {
+                if (MainActivity.LOCAL_ONLY_MODE || MainActivity.DISABLE_ONLINE_ASSETS) {
+                    return;
+                }
+                AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__CHECKING);
+                String apiJsonS = NetworkUtils.performCall(URL_API, NetworkUtils.GET);
+                try {
+                    JSONObject apiJson = new JSONObject(apiJsonS);
+                    String lastUpdate = apiJson.getString("pushed_at");
+                    int datesubstrindex = lastUpdate.indexOf(":", lastUpdate.indexOf(":") + 1);
+                    Date date = FORMAT_MINUTE.parse(lastUpdate.substring(0, datesubstrindex));
+                    if (date.after(_appSettings.getLastAssetArchiveDate())) {
+                        _appSettings.setLastArchiveCheckDate(new Date(System.currentTimeMillis()));
+                        if (!_doDownload) {
+                            AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK);
+                        } else {
+                            doDownload(date);
+                            new LoadAssetsThread(_context).start();
+                        }
+                    }
+                    return;
+                } catch (JSONException | ParseException e) {
+                    e.printStackTrace();
+                }
+            }
+            AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__FAILED);
+        }
+        @SuppressWarnings("ResultOfMethodCallIgnored")
+        private synchronized void doDownload(Date date) throws ParseException {
+            if (_isAlreadyDownloading || date.before(_appSettings.getLastAssetArchiveDate())) {
+                return;
+            }
+            _isAlreadyDownloading = true;
+            File templatesDir = getDownloadedAssetsDir(_appSettings);
+            File file = new File(_appSettings.getSaveDirectory(), ".downloads");
+            MemeData.getFonts().clear();
+            MemeData.getImages().clear();
+            MemeData.clearImagesWithTags();
+            FileUtils.deleteRecursive(file);
+            boolean ok = false;
+            if ((file.exists() || file.mkdirs()) && (templatesDir.exists() || templatesDir.mkdirs())) {
+                // Download
+                _lastPercent = -1;
+                AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__DOWNLOADING, 0);
+                file = new File(file, FORMAT_MINUTE_FILE.format(date) + ".memetastic.zip");
+                ok = NetworkUtils.downloadFile(URL_ARCHIVE_ZIP, file, (aFloat) -> {
+                    int perc = (int) (aFloat * 100);
+                    if (_lastPercent != perc) {
+                        _lastPercent = (perc);
+                        AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__DOWNLOADING, _lastPercent * 3 / 4);
+                    }
+                });
+                // Unpack
+                _lastPercent = -1;
+                AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__UNZIPPING, 75);
+                if (ok) {
+                    ok = ZipUtils.unzip(file, templatesDir, true, (aFloat) -> {
+                        int perc = (int) (aFloat * 100);
+                        if (_lastPercent != perc) {
+                            _lastPercent = perc;
+                            AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__UNZIPPING, 75 + _lastPercent / 4);
+                        }
+                    });
+                }
+                AppCast.DOWNLOAD_STATUS.send(_context, ok ? DOWNLOAD_STATUS__FINISHED : DOWNLOAD_STATUS__FAILED, 100);
+                _appSettings.setLastArchiveDate(date);
+                _isAlreadyDownloading = false;
+            }
+        }
+    }
+    public static class LoadAssetsThread extends Thread {
+        private static boolean _isAlreadyLoading = false;
+        private Context _context;
+        private AppSettings _appSettings;
+        private String[] _tagKeys;
+        public LoadAssetsThread(Context context) {
+            _context = context.getApplicationContext();
+            _appSettings = AppSettings.get();
+            _tagKeys = context.getResources().getStringArray(R.array.meme_tags__keys);
+        }
+        @Override
+        public void run() {
+            if (_isAlreadyLoading) {
+                return;
+            }
+            _isAlreadyLoading = true;
+            List<MemeData.Font> fonts = MemeData.getFonts();
+            List<MemeData.Image> images = MemeData.getImages();
+            fonts.clear();
+            images.clear();
+            MemeData.setWasInit(false);
+            boolean permGranted = PermissionChecker.hasExtStoragePerm(_context);
+            if (permGranted) {
+                loadConfigFromFolder(getMemesDir(_appSettings), new ArrayList<MemeData.Font>(), MemeData.getCreatedMemes());
+                loadConfigFromFolder(getDownloadedAssetsDir(_appSettings), fonts, images);
+                loadConfigFromFolder(getCustomAssetsDir(_appSettings), fonts, images);
+            }
+            if (!permGranted || fonts.isEmpty() || images.isEmpty()) {
+                loadBundledAssets(fonts, images);
+                loadConfigFromFolder(getBundledAssetsDir(_appSettings), fonts, images);
+            }
+            MemeData.clearImagesWithTags();
+            guessLastUsedFont(fonts);
+            MemeData.setWasInit(true);
+            _isAlreadyLoading = false;
+            AppCast.ASSETS_LOADED.send(_context);
+        }
+        private void guessLastUsedFont(final List<MemeData.Font> fonts) {
+            String lastFont = _appSettings.getLastUsedFont();
+            if (lastFont.startsWith(_context.getFilesDir().getAbsolutePath())) {
+                lastFont = "";
+            }
+            if (lastFont.isEmpty() || !(new File(lastFont).exists())) {
+                _appSettings.setLastUsedFont(fonts.get(0).fullPath.getAbsolutePath());
+            }
+        }
+        private void loadConfigFromFolder(File folder, List<MemeData.Font> dataFonts, List<MemeData.Image> dataImages) {
+            if (!folder.exists() && !folder.mkdirs()) {
+                return;
+            }
+            if (folder.list().length == 0) {
+                return;
+            }
+            MemeConfig.Config conf = null;
+            File configFile = new File(folder, MEMETASTIC_CONFIG_FILE);
+            if (configFile.exists()) {
+                try {
+                    String contents = FileUtils.readTextFile(configFile);
+                    JSONObject json = new JSONObject(contents);
+                    conf = new MemeConfig.Config().fromJson(json);
+                } catch (Exception ignored) {
+                }
+            }
+            // Create new if empty
+            if (conf == null) {
+                conf = new MemeConfig.Config();
+                conf.setFonts(new ArrayList<MemeConfig.Font>());
+                conf.setImages(new ArrayList<MemeConfig.Image>());
+            }
+            boolean assetsChanged = checkForNewAssets(folder, conf);
+            for (MemeConfig.Font confFont : conf.getFonts()) {
+                MemeData.Font dataFont = new MemeData.Font();
+                dataFont.conf = confFont;
+                dataFont.fullPath = new File(folder, confFont.getFilename());
+                dataFont.typeFace = Typeface.createFromFile(dataFont.fullPath);
+                if (dataFont.fullPath.exists()) {
+                    if (!dataFonts.contains(dataFont)) {
+                        dataFonts.add(dataFont);
+                    }
+                } else {
+                    assetsChanged = true;
+                }
+            }
+            for (MemeConfig.Image confImage : conf.getImages()) {
+                MemeData.Image dataImage = new MemeData.Image();
+                dataImage.conf = confImage;
+                dataImage.fullPath = new File(folder, confImage.getFilename());
+                dataImage.isTemplate = true;
+                if (dataImage.fullPath.exists()) {
+                    if (!dataImages.contains(dataImage)) {
+                        dataImages.add(dataImage);
+                    }
+                } else {
+                    assetsChanged = true;
+                }
+            }
+            if (assetsChanged) {
+                try {
+                    FileUtils.writeFile(configFile, conf.toJson().toString());
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        private boolean checkForNewAssets(File folder, MemeConfig.Config conf) {
+            boolean assetsChanged = false;
+            final ArrayList<String> extensions = new ArrayList<>();
+            extensions.addAll(Arrays.asList(MEMETASTIC_IMAGES_EXTS));
+            extensions.addAll(Arrays.asList(MEMETASTIC_FONT_EXTS));
+            // Get all files that are maybe compatible
+            ArrayList<String> files = new ArrayList<>(Arrays.asList(
+                    folder.list(new FilenameFilter() {
+                        @Override
+                        public boolean accept(File file, String s) {
+                            String flc = s.toLowerCase();
+                            for (String extension : extensions) {
+                                if (flc.endsWith("." + extension.toLowerCase())) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    })
+            ));
+            // Check if all fonts and images are indexed
+            for (MemeConfig.Font data : conf.getFonts()) {
+                if (files.contains(data.getFilename())) {
+                    files.remove(data.getFilename());
+                }
+            }
+            for (MemeConfig.Image data : conf.getImages()) {
+                if (files.contains(data.getFilename())) {
+                    files.remove(data.getFilename());
+                }
+            }
+            // Index everything not indexed yet
+            for (String filename : files) {
+                String flc = filename.toLowerCase();
+                for (String ext : MEMETASTIC_IMAGES_EXTS) {
+                    if (flc.endsWith("." + ext)) {
+                        MemeConfig.Image image = generateImageEntry(folder, filename, _tagKeys);
+                        if (image != null) {
+                            conf.getImages().add(image);
+                            assetsChanged = true;
+                        }
+                    }
+                }
+                for (String ext : MEMETASTIC_FONT_EXTS) {
+                    if (flc.endsWith("." + ext)) {
+                        MemeConfig.Font font = generateFontEntry(folder, filename);
+                        if (font != null) {
+                            conf.getFonts().add(font);
+                            assetsChanged = true;
+                        }
+                    }
+                }
+            }
+            return assetsChanged;
+        }
+        @SuppressWarnings("ResultOfMethodCallIgnored")
+        private void loadBundledAssets(List<MemeData.Font> fonts, List<MemeData.Image> images) {
+            AssetManager assetManager = _context.getAssets();
+            File config = new File(getBundledAssetsDir(_appSettings), MEMETASTIC_CONFIG_FILE);
+            config.delete();
+            try {
+                File cacheDir = getBundledAssetsDir(_appSettings);
+                if (cacheDir.exists() || cacheDir.mkdirs()) {
+                    for (String assetFilename : assetManager.list("bundled")) {
+                        InputStream is = assetManager.open("bundled/" + assetFilename);
+                        byte[] data = FileUtils.readCloseBinaryStream(is);
+                        FileUtils.writeFile(new File(cacheDir, assetFilename), data);
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+        }
+    }
+    public static MemeConfig.Font generateFontEntry(File folder, String filename) {
+        MemeConfig.Font confFont = new MemeConfig.Font();
+        confFont.setFilename(filename);
+        confFont.setTitle(filename.substring(0, filename.lastIndexOf(".")).replace("_", " "));
+        return confFont;
+    }
+    public static MemeConfig.Image generateImageEntry(File folder, String filename, String[] tagKeys) {
+        ArrayList<String> tags = new ArrayList<>();
+        // animals__advice_mallard.jpg --> tag animals recognized
+        String[] nameSplits = filename.split("__");
+        for (String tagKey : tagKeys) {
+            for (String nameSplit : nameSplits) {
+                if (nameSplit.equals(tagKey)) {
+                    tags.add(tagKey);
+                }
+            }
+        }
+        if (tags.isEmpty()) {
+            tags.add(MemeConfig.Image.IMAGE_TAG_OTHER);
+        }
+        MemeConfig.Image confImage = new MemeConfig.Image();
+        confImage.setCaptions(new ArrayList<MemeConfig.Caption>());
+        confImage.setFilename(filename);
+        confImage.setTags(tags);
+        confImage.setTitle(filename.substring(0, filename.lastIndexOf(".")).replace("_", " "));
+        return confImage;
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.util;
+import android.content.Context;
+import android.os.Environment;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.MemeItemAdapter;
+import net.gsantner.opoc.preference.SharedPreferencesPropertyBackend;
+import java.io.File;
+import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import io.github.gsantner.memetastic.BuildConfig;
+import io.github.gsantner.memetastic.R;
+public class AppSettings extends SharedPreferencesPropertyBackend {
+    private static final int MAX_FAVS = 50;
+    private static boolean PACKAGE_CHECKED = false;
+    //#####################
+    //## Methods
+    //#####################
+    public AppSettings(Context context) {
+        super(context);
+        /*
+         * Check if a MemeTastic package ID was used to build the app.
+         * If you release something based on MemeTastic you will want to remove the lines below.
+         * In any case: You MUST release the full source code.
+         *
+         * If you publish an app based on MemeTastic you MUST
+         *   Comply with the terms of GPLv3 - See https://www.gnu.org/licenses/gpl-3.0.html
+         *   Keep existing copyright notices in the app and publish full source code
+         *   Show that the app is `based on MemeTastic by MemeTastic developers and contributors`. Include a link to https://github.com/gsantner/memetastic
+         *   Show that the app is not MemeTastic but an modified/custom version, and the original app developers or contributors are not responsible for modified versions
+         *   Not use MemeTastic as app name
+         *
+         *  See more details at
+         *  https://github.com/gsantner/memetastic/blob/master/README.md#licensing
+         */
+        if (!PACKAGE_CHECKED) {
+            PACKAGE_CHECKED = true;
+            String pkg = _context.getPackageName();
+            if (!pkg.startsWith("io.github.gsantner.") && !pkg.startsWith("net.gsantner.")) {
+                String message = "\n\n\n" +
+                        "++++  WARNING: MemeTastic is licensed GPLv3.\n" +
+                        "++++  If you distribute the app you MUST publish the full source code.\n" +
+                        "++++  See https://github.com/gsantner/memetastic for more details.\n" +
+                        "++++  This warning is placed in util/AppSettings.java\n\n\n";
+                throw new RuntimeException(message);
+            }
+        }
+    }
+    public static AppSettings get() {
+        return new AppSettings(App.get());
+    }
+    // Adds a String to a String array and cuts of the last values to match a maximal size
+    private static String[] insertAndMaximize(String[] values, String value, int maxSize) {
+        List<String> list;
+        if (values == null)
+            list = new ArrayList<>();
+        else
+            list = new ArrayList<>(Arrays.asList(values));
+        list.add(0, value);
+        while (list.size() > maxSize) {
+            list.remove(maxSize - 1);
+        }
+        return list.toArray(new String[list.size()]);
+    }
+    public int getRenderQualityReal() {
+        int val = getInt(R.string.pref_key__render_quality__percent, 24);
+        return (int) (400 + (2100.0 * (val / 100.0)));
+    }
+    public int getThumbnailQualityReal() {
+        // 24 should be 225. Mostly 3 will be on a phone, so 1080/3=360
+        // Additional reduction of quality to ~2/3 is roughly 225
+        // 150 is very fast loaded, but blurry, 200 is still a little blurry, 225 seems to be
+        // a good tradeoff between quality (400-600) and speed (-125)
+        int val = getInt(R.string.pref_key__thumbnail_quality__percent, 19);
+        return (int) (100 + (939 * (val / 100.0)));
+    }
+    public void setLastUsedFont(String value) {
+        setString(R.string.pref_key__last_used_font, value);
+    }
+    public String getLastUsedFont() {
+        return getString(R.string.pref_key__last_used_font, "");
+    }
+    public void setFavoriteMemes(String[] value) {
+        setStringArray(R.string.pref_key__favourite_meme_templates, value);
+    }
+    public String[] getFavoriteMemeTemplates() {
+        return getStringArray(R.string.pref_key__favourite_meme_templates);
+    }
+    public void appendFavoriteMeme(String filepath) {
+        String[] memes = insertAndMaximize(getFavoriteMemeTemplates(), filepath, MAX_FAVS);
+        setFavoriteMemes(memes);
+    }
+    public boolean isFavorite(String filepath) {
+        if (getFavoriteMemeTemplates() == null)
+            return false;
+        for (String s : getFavoriteMemeTemplates()) {
+            if (s.equals(filepath))
+                return true;
+        }
+        return false;
+    }
+    public boolean toggleFavorite(String filepath) {
+        if (!isFavorite(filepath)) {
+            appendFavoriteMeme(filepath);
+            return true;
+        }
+        removeFavorite(filepath);
+        return false;
+    }
+    public void removeFavorite(String filepath) {
+        String[] favs = getFavoriteMemeTemplates();
+        ArrayList<String> newFavs = new ArrayList<String>();
+        for (String fav : favs) {
+            if (!fav.equals(filepath))
+                newFavs.add(fav);
+        }
+        setFavoriteMemes(newFavs.toArray(new String[newFavs.size()]));
+    }
+    private void setHiddenMemes(String[] hiddenMemes) {
+        setStringArray(R.string.pref_key__hidden_meme_templates, hiddenMemes);
+    }
+    public String[] getHiddenMemesTemplate() {
+        return getStringArray(R.string.pref_key__hidden_meme_templates);
+    }
+    private void appendHiddenMeme(String filepath) {
+        String[] hiddenMeme = insertAndMaximize(getHiddenMemesTemplate(),
+                filepath, MAX_FAVS);
+        setHiddenMemes(hiddenMeme);
+    }
+    public boolean isHidden(String filePath) {
+        String[] hiddenMemes = getHiddenMemesTemplate();
+        if (hiddenMemes == null)
+            return false;
+        for (String hiddenPath : hiddenMemes) {
+            if (filePath.equals(hiddenPath))
+                return true;
+        }
+        return false;
+    }
+    public boolean toggleHiddenMeme(String filePath) {
+        if (!isHidden(filePath)) {
+            appendHiddenMeme(filePath);
+            return true;
+        }
+        removeHiddenMeme(filePath);
+        return false;
+    }
+    private void removeHiddenMeme(String filePath) {
+        String[] hiddenMeme = getHiddenMemesTemplate();
+        List<String> newHiddenMemes = new ArrayList<>();
+        for (String hiddenPath : hiddenMeme) {
+            if (!hiddenPath.equals(filePath)) {
+                newHiddenMemes.add(hiddenPath);
+            }
+        }
+        setHiddenMemes(newHiddenMemes.toArray(new String[newHiddenMemes.size()]));
+    }
+    public void setLastSelectedTab(int value) {
+        setInt(R.string.pref_key__last_selected_tab, value);
+    }
+    public int getLastSelectedTab() {
+        return getInt(R.string.pref_key__last_selected_tab, 0);
+    }
+    public int getMemeListViewType() {
+        return getIntOfStringPref(R.string.pref_key__memelist_view_type, MemeItemAdapter.VIEW_TYPE__PICTURE_GRID);
+    }
+    public int getGridColumnCountPortrait() {
+        int count = getInt(R.string.pref_key__grid_column_count_portrait, -1);
+        if (count == -1) {
+            count = 3 + (int) Math.max(0, 0.5 * (ContextUtils.get().getEstimatedScreenSizeInches() - 5.0));
+            setGridColumnCountPortrait(count);
+        }
+        return count;
+    }
+    public void setGridColumnCountPortrait(int value) {
+        setInt(R.string.pref_key__grid_column_count_portrait, value);
+    }
+    public int getGridColumnCountLandscape() {
+        int count = getInt(R.string.pref_key__grid_column_count_landscape, -1);
+        if (count == -1) {
+            count = (int) (getGridColumnCountPortrait() * 1.8);
+            setGridColumnCountLandscape(count);
+        }
+        return count;
+    }
+    public void setGridColumnCountLandscape(int value) {
+        setInt(R.string.pref_key__grid_column_count_landscape, value);
+    }
+    public boolean isAppFirstStart(boolean doSet) {
+        boolean value = getBool(R.string.pref_key__app_first_start, true);
+        if (doSet) {
+            setBool(R.string.pref_key__app_first_start, false);
+        }
+        return value;
+    }
+    public boolean isAppCurrentVersionFirstStart(boolean doSet) {
+        int value = getInt(R.string.pref_key__app_first_start_current_version, -1);
+        boolean isFirstStart = value != BuildConfig.VERSION_CODE && !BuildConfig.IS_TEST_BUILD;
+        if (doSet) {
+            setInt(R.string.pref_key__app_first_start_current_version, BuildConfig.VERSION_CODE);
+        }
+        if (isFirstStart) {
+            setLastArchiveCheckDate(new Date(0));
+        }
+        return isFirstStart;
+    }
+    public boolean isAutoSaveMeme() {
+        return getBool(R.string.pref_key__auto_save_meme, false);
+    }
+    public int getDefaultMainMode() {
+        return getIntOfStringPref(R.string.pref_key__default_main_mode, 0);
+    }
+    public boolean isShuffleTagLists() {
+        return getBool(R.string.pref_key__is_shuffle_meme_tags, true);
+    }
+    public boolean isEditorStatusBarHidden() {
+        return getBool(R.string.pref_key__is_editor_statusbar_hidden, false);
+    }
+    public boolean isOverviewStatusBarHidden() {
+        return getBool(R.string.pref_key__is_overview_statusbar_hidden, false);
+    }
+    public String getLanguage() {
+        return getString(R.string.pref_key__language, "");
+    }
+    public void setSaveDirectory(String value) {
+        setString(R.string.pref_key__save_directory, value);
+    }
+    public File getSaveDirectory() {
+        String dir = getString(R.string.pref_key__save_directory, "");
+        if (dir.isEmpty()) {
+            dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                    , rstr(R.string.app_name).toLowerCase())
+                    .getAbsolutePath();
+            setSaveDirectory(dir);
+        }
+        return new File(dir);
+    }
+    public Date getLastAssetArchiveDate() throws ParseException {
+        String date = getString(R.string.pref_key__latest_asset_archive_date, "");
+        if (date.isEmpty()) {
+            return new Date(0);
+        }
+        return AssetUpdater.FORMAT_MINUTE.parse(date);
+    }
+    public void setLastArchiveCheckDate(Date value) {
+        setString(R.string.pref_key__latest_asset_archive_check_date, AssetUpdater.FORMAT_MINUTE.format(value));
+    }
+    public Date getLastAssetArchiveCheckDate() {
+        String date = getString(R.string.pref_key__latest_asset_archive_check_date, "");
+        if (date.isEmpty()) {
+            return new Date(0);
+        }
+        try {
+            return AssetUpdater.FORMAT_MINUTE.parse(date);
+        } catch (ParseException e) {
+            return new Date(0);
+        }
+    }
+    public void setLastArchiveDate(Date value) {
+        setString(R.string.pref_key__latest_asset_archive_date, AssetUpdater.FORMAT_MINUTE.format(value));
+    }
+    public boolean isMigrated() {
+        return getBool(R.string.pref_key__is_migrated, false);
+    }
+    public void setMigrated(boolean value) {
+        setBool(R.string.pref_key__is_migrated, value);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.data;
+import android.graphics.Typeface;
+import java.io.File;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.ConcurrentModificationException;
+import java.util.HashMap;
+import java.util.List;
+@SuppressWarnings({"WeakerAccess", "unused", "SameParameterValue", "SpellCheckingInspection", "UnusedReturnValue", "JavaDoc", "FieldCanBeLocal"})
+public class MemeData implements Serializable {
+    private static final List<Font> _fonts = new ArrayList<>();
+    private static final List<Image> _images = new ArrayList<>();
+    private static final List<Image> _createdMemes = new ArrayList<>();
+    private static final HashMap<String, List<Image>> _imagesWithTags = new HashMap<>();
+    private static boolean _wasInit = false;
+    private static final Object _wasInitSync = new Object();
+    public static boolean isReady() {
+        synchronized (_wasInitSync) {
+            return !_fonts.isEmpty() && !_images.isEmpty() && _wasInit;
+        }
+    }
+    public static void setWasInit(boolean value) {
+        synchronized (_wasInitSync) {
+            _wasInit = value;
+        }
+    }
+    public static boolean wasInit() {
+        return _wasInit;
+    }
+    public static List<Font> getFonts() {
+        return _fonts;
+    }
+    public static List<Image> getImages() {
+        return _images;
+    }
+    public static List<Image> getCreatedMemes() {
+        for (Image image : _createdMemes) {
+            image.isTemplate = false;
+        }
+        Collections.sort(_createdMemes, new Comparator<Image>() {
+            @Override
+            public int compare(Image mine, Image other) {
+                return other.fullPath.compareTo(mine.fullPath);
+            }
+        });
+        return _createdMemes;
+    }
+    public static void clearImagesWithTags() {
+        _imagesWithTags.clear();
+    }
+    public static Image findImage(File filePath) {
+        for (Image img : _images) {
+            if (img.fullPath.equals(filePath)) {
+                return img;
+            }
+        }
+        for (Image img : _createdMemes) {
+            if (img.fullPath.equals(filePath)) {
+                return img;
+            }
+        }
+        return null;
+    }
+    public static Font findFont(File filePath) {
+        for (Font font : _fonts) {
+            if (font.fullPath.equals(filePath)) {
+                return font;
+            }
+        }
+        return null;
+    }
+    public static synchronized List<Image> getImagesWithTag(String tag) {
+        try {
+            if (_imagesWithTags.containsKey(tag)) {
+                return _imagesWithTags.get(tag);
+            }
+            boolean isOtherTag = tag.equals("other");
+            List<Image> newlist = new ArrayList<>();
+            for (Image image : getImages()) {
+                for (String imgTag : image.conf.getTags()) {
+                    if (imgTag.equals(tag)) {
+                        newlist.add(image);
+                        break;
+                    }
+                }
+                if (isOtherTag && image.conf.getTags().isEmpty()) {
+                    newlist.add(image);
+                }
+            }
+            _imagesWithTags.put(tag, newlist);
+            return newlist;
+        } catch (ConcurrentModificationException ex) {
+            return new ArrayList<>();
+        }
+    }
+    public static class Font {
+        public MemeConfig.Font conf;
+        public File fullPath;
+        public Typeface typeFace;
+        @Override
+        public boolean equals(Object obj) {
+            if (obj instanceof Font) {
+                return fullPath.equals(((Font) obj).fullPath);
+            }
+            return super.equals(obj);
+        }
+    }
+    public static class Image implements Serializable {
+        public MemeConfig.Image conf;
+        public File fullPath;
+        public boolean isTemplate;
+        @Override
+        public boolean equals(Object obj) {
+            if (obj instanceof Image) {
+                return fullPath.equals(((Image) obj).fullPath);
+            }
+            return super.equals(obj);
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License: Apache 2.0
+ *  https://github.com/gsantner/opoc/#licensing
+ *  https://www.apache.org/licenses/LICENSE-2.0
+ *
+#########################################################*/
+/*
+ * This is a wrapper for settings based on SharedPreferences
+ * with keys in resources. Extend from this class and add
+ * getters/setters for the app's settings.
+ * Example:
+    public boolean isAppFirstStart(boolean doSet) {
+        int value = getInt(R.string.pref_key__app_first_start, -1);
+        if (doSet) {
+            setBool(true);
+        }
+        return value;
+    }
+    public boolean isAppCurrentVersionFirstStart(boolean doSet) {
+        int value = getInt(R.string.pref_key__app_first_start_current_version, -1);
+        if (doSet) {
+            setInt(R.string.pref_key__app_first_start_current_version, BuildConfig.VERSION_CODE);
+        }
+        return value != BuildConfig.VERSION_CODE;
+    }
+ */
+package net.gsantner.opoc.preference;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.support.annotation.ColorRes;
+import android.support.annotation.NonNull;
+import android.support.annotation.StringRes;
+import android.support.v4.content.ContextCompat;
+import android.text.TextUtils;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.GregorianCalendar;
+import java.util.List;
+/**
+ * Wrapper for settings based on SharedPreferences, optionally with keys in resources
+ * Default SharedPreference (_prefApp) will be taken if no SP is specified, else the first one
+ */
+@SuppressWarnings({"WeakerAccess", "unused", "SpellCheckingInspection", "SameParameterValue"})
+public class SharedPreferencesPropertyBackend implements PropertyBackend<String, SharedPreferencesPropertyBackend> {
+    protected static final String ARRAY_SEPARATOR = "%%%";
+    protected static final String ARRAY_SEPARATOR_SUBSTITUTE = "§§§";
+    public static final String SHARED_PREF_APP = "app";
+    private static String _debugLog = "";
+    //
+    // Members, Constructors
+    //
+    protected final SharedPreferences _prefApp;
+    protected final String _prefAppName;
+    protected final Context _context;
+    public SharedPreferencesPropertyBackend(final Context context) {
+        this(context, SHARED_PREF_APP);
+    }
+    public SharedPreferencesPropertyBackend(final Context context, final String prefAppName) {
+        _context = context.getApplicationContext();
+        _prefAppName = TextUtils.isEmpty(prefAppName) ?
+                _context.getPackageName() + "_preferences" : prefAppName;
+        _prefApp = _context.getSharedPreferences(_prefAppName, Context.MODE_PRIVATE);
+    }
+    //
+    // Methods
+    //
+    public Context getContext() {
+        return _context;
+    }
+    public boolean isKeyEqual(String key, int stringKeyResourceId) {
+        return key.equals(rstr(stringKeyResourceId));
+    }
+    public void resetSettings() {
+        resetSettings(_prefApp);
+    }
+    @SuppressLint("ApplySharedPref")
+    public void resetSettings(final SharedPreferences pref) {
+        pref.edit().clear().commit();
+    }
+    public boolean isPrefSet(@StringRes int stringKeyResourceId) {
+        return isPrefSet(_prefApp, stringKeyResourceId);
+    }
+    public boolean isPrefSet(final SharedPreferences pref, @StringRes int stringKeyResourceId) {
+        return pref.contains(rstr(stringKeyResourceId));
+    }
+    public void registerPreferenceChangedListener(SharedPreferences.OnSharedPreferenceChangeListener value) {
+        registerPreferenceChangedListener(_prefApp, value);
+    }
+    public void registerPreferenceChangedListener(final SharedPreferences pref, SharedPreferences.OnSharedPreferenceChangeListener value) {
+        pref.registerOnSharedPreferenceChangeListener(value);
+    }
+    public void unregisterPreferenceChangedListener(SharedPreferences.OnSharedPreferenceChangeListener value) {
+        unregisterPreferenceChangedListener(_prefApp, value);
+    }
+    public void unregisterPreferenceChangedListener(final SharedPreferences pref, SharedPreferences.OnSharedPreferenceChangeListener value) {
+        pref.unregisterOnSharedPreferenceChangeListener(value);
+    }
+    public SharedPreferences getDefaultPreferences() {
+        return _prefApp;
+    }
+    public SharedPreferences.Editor getDefaultPreferencesEditor() {
+        return _prefApp.edit();
+    }
+    public String getDefaultPreferencesName() {
+        return _prefAppName;
+    }
+    private SharedPreferences gp(final SharedPreferences... pref) {
+        return (pref != null && pref.length > 0 ? pref[0] : _prefApp);
+    }
+    public static void limitListTo(final List<?> list, int maxSize, boolean removeDuplicates) {
+        Object o;
+        int pos;
+        for (int i = 0; removeDuplicates && i < list.size(); i++) {
+            o = list.get(i);
+            while ((pos = list.lastIndexOf(o)) != i && pos >= 0) {
+                list.remove(pos);
+            }
+        }
+        while ((pos = list.size()) > maxSize && pos > 0) {
+            list.remove(list.size() - 1);
+        }
+    }
+    //
+    // Getter for resources
+    //
+    public String rstr(@StringRes int stringKeyResourceId) {
+        return _context.getString(stringKeyResourceId);
+    }
+    public int rcolor(@ColorRes int resColorId) {
+        return ContextCompat.getColor(_context, resColorId);
+    }
+    public String[] rstrs(int... keyResourceIds) {
+        String[] ret = new String[keyResourceIds.length];
+        for (int i = 0; i < keyResourceIds.length; i++) {
+            ret[i] = rstr(keyResourceIds[i]);
+        }
+        return ret;
+    }
+    //
+    // Getter & Setter for String
+    //
+    public void setString(@StringRes int keyResourceId, String value, final SharedPreferences... pref) {
+        gp(pref).edit().putString(rstr(keyResourceId), value).apply();
+    }
+    public void setString(String key, String value, final SharedPreferences... pref) {
+        gp(pref).edit().putString(key, value).apply();
+    }
+    public void setString(@StringRes int keyResourceId, @StringRes int defaultValueResourceId, final SharedPreferences... pref) {
+        gp(pref).edit().putString(rstr(keyResourceId), rstr(defaultValueResourceId)).apply();
+    }
+    public String getString(@StringRes int keyResourceId, String defaultValue, final SharedPreferences... pref) {
+        return gp(pref).getString(rstr(keyResourceId), defaultValue);
+    }
+    public String getString(@StringRes int keyResourceId, @StringRes int defaultValueResourceId, final SharedPreferences... pref) {
+        return gp(pref).getString(rstr(keyResourceId), rstr(defaultValueResourceId));
+    }
+    public String getString(String key, String defaultValue, final SharedPreferences... pref) {
+        try {
+            return gp(pref).getString(key, defaultValue);
+        } catch (ClassCastException e) {
+            return defaultValue;
+        }
+    }
+    public String getString(@StringRes int keyResourceId, String defaultValue, @StringRes int keyResourceIdDefaultValue, final SharedPreferences... pref) {
+        return getString(rstr(keyResourceId), rstr(keyResourceIdDefaultValue), pref);
+    }
+    private void setStringListOne(String key, List<String> values, final SharedPreferences pref) {
+        StringBuilder sb = new StringBuilder();
+        for (String value : values) {
+            sb.append(ARRAY_SEPARATOR);
+            sb.append(value.replace(ARRAY_SEPARATOR, ARRAY_SEPARATOR_SUBSTITUTE));
+        }
+        setString(key, sb.toString().replaceFirst(ARRAY_SEPARATOR, ""), pref);
+    }
+    private ArrayList<String> getStringListOne(String key, final SharedPreferences pref) {
+        ArrayList<String> ret = new ArrayList<>();
+        String value = getString(key, ARRAY_SEPARATOR).replace(ARRAY_SEPARATOR_SUBSTITUTE, ARRAY_SEPARATOR);
+        if (value.equals(ARRAY_SEPARATOR) || TextUtils.isEmpty(value)) {
+            return ret;
+        }
+        ret.addAll(Arrays.asList(value.split(ARRAY_SEPARATOR)));
+        return ret;
+    }
+    public void setStringArray(@StringRes int keyResourceId, String[] values, final SharedPreferences... pref) {
+        setStringArray(rstr(keyResourceId), values, pref);
+    }
+    public void setStringArray(String key, String[] values, final SharedPreferences... pref) {
+        setStringListOne(key, Arrays.asList(values), gp(pref));
+    }
+    public void setStringList(@StringRes int keyResourceId, List<String> values, final SharedPreferences... pref) {
+        setStringArray(rstr(keyResourceId), values.toArray(new String[values.size()]), pref);
+    }
+    public void setStringList(String key, List<String> values, final SharedPreferences... pref) {
+        setStringArray(key, values.toArray(new String[values.size()]), pref);
+    }
+    @NonNull
+    public String[] getStringArray(@StringRes int keyResourceId, final SharedPreferences... pref) {
+        return getStringArray(rstr(keyResourceId), pref);
+    }
+    @NonNull
+    public String[] getStringArray(String key, final SharedPreferences... pref) {
+        List<String> list = getStringListOne(key, gp(pref));
+        return list.toArray(new String[list.size()]);
+    }
+    public ArrayList<String> getStringList(@StringRes int keyResourceId, final SharedPreferences... pref) {
+        return getStringListOne(rstr(keyResourceId), gp(pref));
+    }
+    public ArrayList<String> getStringList(String key, final SharedPreferences... pref) {
+        return getStringListOne(key, gp(pref));
+    }
+    //
+    // Getter & Setter for integer
+    //
+    public void setInt(@StringRes int keyResourceId, int value, final SharedPreferences... pref) {
+        gp(pref).edit().putInt(rstr(keyResourceId), value).apply();
+    }
+    public void setInt(String key, int value, final SharedPreferences... pref) {
+        gp(pref).edit().putInt(key, value).apply();
+    }
+    public int getInt(@StringRes int keyResourceId, int defaultValue, final SharedPreferences... pref) {
+        return getInt(rstr(keyResourceId), defaultValue, pref);
+    }
+    public int getInt(String key, int defaultValue, final SharedPreferences... pref) {
+        try {
+            return gp(pref).getInt(key, defaultValue);
+        } catch (ClassCastException e) {
+            return defaultValue;
+        }
+    }
+    public int getIntOfStringPref(@StringRes int keyResId, int defaultValue, final SharedPreferences... pref) {
+        return getIntOfStringPref(rstr(keyResId), defaultValue, gp(pref));
+    }
+    public int getIntOfStringPref(String key, int defaultValue, final SharedPreferences... pref) {
+        String strNum = getString(key, Integer.toString(defaultValue), gp(pref));
+        return Integer.valueOf(strNum);
+    }
+    private void setIntListOne(String key, List<Integer> values, final SharedPreferences pref) {
+        StringBuilder sb = new StringBuilder();
+        for (Integer value : values) {
+            sb.append(ARRAY_SEPARATOR);
+            sb.append(value.toString());
+        }
+        setString(key, sb.toString().replaceFirst(ARRAY_SEPARATOR, ""), pref);
+    }
+    private ArrayList<Integer> getIntListOne(String key, final SharedPreferences pref) {
+        ArrayList<Integer> ret = new ArrayList<>();
+        String value = getString(key, ARRAY_SEPARATOR);
+        if (value.equals(ARRAY_SEPARATOR)) {
+            return ret;
+        }
+        for (String s : value.split(ARRAY_SEPARATOR)) {
+            ret.add(Integer.parseInt(s));
+        }
+        return ret;
+    }
+    public void setIntArray(@StringRes int keyResourceId, Integer[] values, final SharedPreferences... pref) {
+        setIntArray(rstr(keyResourceId), values, gp(pref));
+    }
+    public void setIntArray(String key, Integer[] values, final SharedPreferences... pref) {
+        setIntListOne(key, Arrays.asList(values), gp(pref));
+    }
+    public Integer[] getIntArray(@StringRes int keyResourceId, final SharedPreferences... pref) {
+        return getIntArray(rstr(keyResourceId), gp(pref));
+    }
+    public Integer[] getIntArray(String key, final SharedPreferences... pref) {
+        List<Integer> data = getIntListOne(key, gp(pref));
+        return data.toArray(new Integer[data.size()]);
+    }
+    public void setIntList(@StringRes int keyResourceId, List<Integer> values, final SharedPreferences... pref) {
+        setIntListOne(rstr(keyResourceId), values, gp(pref));
+    }
+    public void setIntList(String key, List<Integer> values, final SharedPreferences... pref) {
+        setIntListOne(key, values, gp(pref));
+    }
+    public ArrayList<Integer> getIntList(@StringRes int keyResourceId, final SharedPreferences... pref) {
+        return getIntListOne(rstr(keyResourceId), gp(pref));
+    }
+    public ArrayList<Integer> getIntList(String key, final SharedPreferences... pref) {
+        return getIntListOne(key, gp(pref));
+    }
+    //
+    // Getter & Setter for Long
+    //
+    public void setLong(@StringRes int keyResourceId, long value, final SharedPreferences... pref) {
+        gp(pref).edit().putLong(rstr(keyResourceId), value).apply();
+    }
+    public void setLong(String key, long value, final SharedPreferences... pref) {
+        gp(pref).edit().putLong(key, value).apply();
+    }
+    public long getLong(@StringRes int keyResourceId, long defaultValue, final SharedPreferences... pref) {
+        return getLong(rstr(keyResourceId), defaultValue, pref);
+    }
+    public long getLong(String key, long defaultValue, final SharedPreferences... pref) {
+        try {
+            return gp(pref).getLong(key, defaultValue);
+        } catch (ClassCastException e) {
+            return defaultValue;
+        }
+    }
+    //
+    // Getter & Setter for Float
+    //
+    public void setFloat(@StringRes int keyResourceId, float value, final SharedPreferences... pref) {
+        gp(pref).edit().putFloat(rstr(keyResourceId), value).apply();
+    }
+    public void setFloat(String key, float value, final SharedPreferences... pref) {
+        gp(pref).edit().putFloat(key, value).apply();
+    }
+    public float getFloat(@StringRes int keyResourceId, float defaultValue, final SharedPreferences... pref) {
+        return getFloat(rstr(keyResourceId), defaultValue);
+    }
+    public float getFloat(String key, float defaultValue, final SharedPreferences... pref) {
+        try {
+            return gp(pref).getFloat(key, defaultValue);
+        } catch (ClassCastException e) {
+            return defaultValue;
+        }
+    }
+    //
+    // Getter & Setter for Double
+    //
+    public void setDouble(@StringRes int keyResourceId, double value, final SharedPreferences... pref) {
+        setLong(rstr(keyResourceId), Double.doubleToRawLongBits(value));
+    }
+    public void setDouble(String key, double value, final SharedPreferences... pref) {
+        setLong(key, Double.doubleToRawLongBits(value));
+    }
+    public double getDouble(@StringRes int keyResourceId, double defaultValue, final SharedPreferences... pref) {
+        return getDouble(rstr(keyResourceId), defaultValue, gp(pref));
+    }
+    public double getDouble(String key, double defaultValue, final SharedPreferences... pref) {
+        return Double.longBitsToDouble(getLong(key, Double.doubleToRawLongBits(defaultValue), gp(pref)));
+    }
+    //
+    // Getter & Setter for boolean
+    //
+    public void setBool(@StringRes int keyResourceId, boolean value, final SharedPreferences... pref) {
+        gp(pref).edit().putBoolean(rstr(keyResourceId), value).apply();
+    }
+    public void setBool(String key, boolean value, final SharedPreferences... pref) {
+        gp(pref).edit().putBoolean(key, value).apply();
+    }
+    public boolean getBool(@StringRes int keyResourceId, boolean defaultValue, final SharedPreferences... pref) {
+        return getBool(rstr(keyResourceId), defaultValue);
+    }
+    public boolean getBool(String key, boolean defaultValue, final SharedPreferences... pref) {
+        try {
+            return gp(pref).getBoolean(key, defaultValue);
+        } catch (ClassCastException e) {
+            return defaultValue;
+        }
+    }
+    //
+    // Getter & Setter for Color
+    //
+    public int getColor(String key, @ColorRes int defaultColor, final SharedPreferences... pref) {
+        return getInt(key, rcolor(defaultColor));
+    }
+    public int getColor(@StringRes int keyResourceId, @ColorRes int defaultColor, final SharedPreferences... pref) {
+        return getColor(rstr(keyResourceId), defaultColor);
+    }
+    //
+    // PropertyBackend<String> implementations
+    //
+    @Override
+    public String getString(String key, String defaultValue) {
+        return getString(key, defaultValue, _prefApp);
+    }
+    @Override
+    public int getInt(String key, int defaultValue) {
+        return getInt(key, defaultValue, _prefApp);
+    }
+    @Override
+    public long getLong(String key, long defaultValue) {
+        return getLong(key, defaultValue, _prefApp);
+    }
+    @Override
+    public boolean getBool(String key, boolean defaultValue) {
+        return getBool(key, defaultValue, _prefApp);
+    }
+    @Override
+    public float getFloat(String key, float defaultValue) {
+        return getFloat(key, defaultValue, _prefApp);
+    }
+    @Override
+    public double getDouble(String key, double defaultValue) {
+        return getDouble(key, defaultValue, _prefApp);
+    }
+    @Override
+    public ArrayList<Integer> getIntList(String key) {
+        return getIntList(key, _prefApp);
+    }
+    @Override
+    public ArrayList<String> getStringList(String key) {
+        return getStringList(key, _prefApp);
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setString(String key, String value) {
+        setString(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setInt(String key, int value) {
+        setInt(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setLong(String key, long value) {
+        setLong(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setBool(String key, boolean value) {
+        setBool(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setFloat(String key, float value) {
+        setFloat(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setDouble(String key, double value) {
+        setDouble(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setIntList(String key, List<Integer> value) {
+        setIntListOne(key, value, _prefApp);
+        return this;
+    }
+    @Override
+    public SharedPreferencesPropertyBackend setStringList(String key, List<String> value) {
+        setStringListOne(key, value, _prefApp);
+        return this;
+    }
+    public boolean contains(String key, final SharedPreferences... pref) {
+        return gp(pref).contains(key);
+    }
+    /**
+     * A method to determine if current hour is between begin and end.
+     * This is especially useful for time-based light/dark mode
+     */
+    public static boolean isCurrentHourOfDayBetween(int begin, int end) {
+        begin = (begin >= 23 || begin < 0) ? 0 : begin;
+        end = (end >= 23 || end < 0) ? 0 : end;
+        int h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        return h >= begin && h <= end;
+    }
+    /**
+     * Substract current datetime by given amount of days
+     */
+    public Date getDateOfDaysAgo(int days) {
+        Calendar cal = new GregorianCalendar();
+        cal.add(Calendar.DATE, -days);
+        return cal.getTime();
+    }
+    /**
+     * Substract current datetime by given amount of days and check if the given date passed
+     */
+    public boolean didDaysPassedSince(Date date, int days) {
+        if (date == null || days < 0) {
+            return false;
+        }
+        return date.before(getDateOfDaysAgo(days));
+    }
+    public boolean afterDaysTrue(String key, int daysSinceLastTime, int firstTime, final SharedPreferences... pref) {
+        Date d = new Date(System.currentTimeMillis());
+        if (!contains(key)) {
+            d = getDateOfDaysAgo(daysSinceLastTime - firstTime);
+            setLong(key, d.getTime());
+            return firstTime < 1;
+        } else {
+            d = new Date(getLong(key, d.getTime()));
+        }
+        boolean trigger = didDaysPassedSince(d, daysSinceLastTime);
+        if (trigger) {
+            setLong(key, new Date(System.currentTimeMillis()).getTime());
+        }
+        return trigger;
+    }
+    public static void clearDebugLog() {
+        _debugLog = "";
+    }
+    public static String getDebugLog() {
+        return _debugLog;
+    }
+    public static synchronized void appendDebugLog(String text) {
+        _debugLog += "[" + new Date().toString() + "] " + text + "\n";
+    }
+    public static boolean ne(final String str) {
+        return str != null && !str.trim().isEmpty();
+    }
+    public static boolean fexists(final String fp) {
+        return ne(fp) && (new File(fp)).exists();
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.util;
+import android.Manifest;
+import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
+import java.io.File;
+import io.github.gsantner.memetastic.R;
+public class PermissionChecker {
+    public static boolean doIfPermissionGranted(final Activity activity) {
+        if (!hasExtStoragePerm(activity)) {
+            ActivityCompat.requestPermissions(
+                    activity, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 123
+            );
+            return false;
+        }
+        return true;
+    }
+    public static boolean hasExtStoragePerm(Context context) {
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+    }
+    public static boolean checkPermissionResult(final Activity activity, int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == 123) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                return true;
+            }
+        }
+        ActivityUtils.get(activity).showSnackBar(R.string.error_storage_permission__appspecific, true);
+        return false;
+    }
+    public static boolean mkSaveDir(Activity activity) {
+        File saveDir = AppSettings.get().getSaveDirectory();
+        if (!saveDir.exists() && !saveDir.mkdirs()) {
+            ActivityUtils.get(activity).showSnackBar(R.string.error_cannot_create_save_directory, false);
+            return false;
+        }
+        return true;
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2017-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License: Apache 2.0
+ *  https://github.com/gsantner/opoc/#licensing
+ *  https://www.apache.org/licenses/LICENSE-2.0
+ *
+#########################################################*/
+package net.gsantner.opoc.util;
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
+@SuppressWarnings({"WeakerAccess", "unused", "SameParameterValue", "SpellCheckingInspection", "deprecation"})
+public class ZipUtils {
+    private static final int BUFFER_SIZE = 4096;
+    public static boolean unzip(final File zipFile, final File destRootFolder, boolean flatten) {
+        return unzip(zipFile, destRootFolder, flatten, null);
+    }
+    public static boolean unzip(final File zipFile, final File destRootFolder,
+                                final boolean flatten, final Callback.a1<Float> progressCallback) {
+        try {
+            final float knownLength = progressCallback == null ? -1f : getZipLength(zipFile);
+            return unzip(new FileInputStream(zipFile), destRootFolder, flatten, progressCallback, knownLength);
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+    public static boolean unzip(final InputStream input, final File destRootFolder,
+                                final boolean flatten, final Callback.a1<Float> progressCallback,
+                                final float knownLength) throws IOException {
+        String filename;
+        final ZipInputStream in = new ZipInputStream(new BufferedInputStream(input));
+        int count;
+        int written = 0;
+        final byte[] buffer = new byte[BUFFER_SIZE];
+        float invLength = 1f / knownLength;
+        ZipEntry ze;
+        while ((ze = in.getNextEntry()) != null) {
+            filename = ze.getName();
+            if (ze.isDirectory()) {
+                if (!flatten && !new File(destRootFolder, filename).mkdirs())
+                    return false;
+            } else {
+                if (flatten) {
+                    final int idx = filename.lastIndexOf("/");
+                    if (idx != -1)
+                        filename = filename.substring(idx + 1);
+                }
+                final FileOutputStream out = new FileOutputStream(new File(destRootFolder, filename));
+                while ((count = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, count);
+                    if (invLength != -1f) {
+                        written += count;
+                        progressCallback.callback(written * invLength);
+                    }
+                }
+                out.close();
+                in.closeEntry();
+            }
+        }
+        in.close();
+        return true;
+    }
+    // TODO Maybe there's a way to avoid reading the zip twice,
+    // but ZipEntry.getSize() may return -1 so we can't just cache the ZipEntries
+    private static long getZipLength(final File zipFile) {
+        int count;
+        long totalSize = 0;
+        byte[] buffer = new byte[BUFFER_SIZE];
+        try {
+            final ZipInputStream in = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)));
+            ZipEntry ze;
+            while ((ze = in.getNextEntry()) != null) {
+                if (!ze.isDirectory()) {
+                    if (ze.getSize() == -1) {
+                        while ((count = in.read(buffer)) != -1)
+                            totalSize += count;
+                    } else {
+                        totalSize += ze.getSize();
+                    }
+                }
+            }
+            in.close();
+            return totalSize;
+        } catch (IOException ignored) {
+            return -1;
+        }
+    }
+    public static void zipFolder(final File srcFolder, final OutputStream out) throws IOException {
+        ZipOutputStream outZip = null;
+        try {
+            outZip = new ZipOutputStream(out);
+            addFolderToZip("", srcFolder, outZip);
+        } finally {
+            if (outZip != null) {
+                try {
+                    outZip.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+    private static void addFileToZip(final String pathInsideZip, final File fileToZip,
+                                     final ZipOutputStream outZip) throws IOException {
+        if (fileToZip.isDirectory()) {
+            addFolderToZip(pathInsideZip, fileToZip, outZip);
+        } else {
+            FileInputStream in = null;
+            try {
+                in = new FileInputStream(fileToZip);
+                outZip.putNextEntry(new ZipEntry(pathInsideZip + "/" + fileToZip.getName()));
+                int count;
+                byte[] buffer = new byte[BUFFER_SIZE];
+                while ((count = in.read(buffer)) > 0)
+                    outZip.write(buffer, 0, count);
+            } finally {
+                if (in != null) {
+                    try {
+                        in.close();
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+    }
+    private static void addFolderToZip(String pathInsideZip, final File folderToZip,
+                                       final ZipOutputStream outZip) throws IOException {
+        pathInsideZip = pathInsideZip.isEmpty() ?
+                folderToZip.getName() :
+                pathInsideZip + "/" + folderToZip.getName();
+        File[] files = folderToZip.listFiles();
+        if (files != null) {
+            for (File file : files)
+                addFileToZip(pathInsideZip, file, outZip);
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2017-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: Apache 2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *     https://github.com/gsantner/opoc/#licensing
+ *
+#########################################################*/
+package net.gsantner.opoc.util;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
+import java.nio.charset.Charset;
+import java.util.HashMap;
+import java.util.Map;
+@SuppressWarnings({"WeakerAccess", "unused", "SameParameterValue", "SpellCheckingInspection", "deprecation"})
+public class NetworkUtils {
+    private static final String UTF8 = "UTF-8";
+    public static final String GET = "GET";
+    public static final String POST = "POST";
+    public static final String PATCH = "PATCH";
+    private final static int BUFFER_SIZE = 4096;
+    // Downloads a file from the give url to the output file
+    // Creates the file's parent directory if it doesn't exist
+    public static boolean downloadFile(final String url, final File out) {
+        return downloadFile(url, out, null);
+    }
+    public static boolean downloadFile(final String url, final File out, final Callback.a1<Float> progressCallback) {
+        try {
+            return downloadFile(new URL(url), out, progressCallback);
+        } catch (MalformedURLException e) {
+            // Won't happen
+            e.printStackTrace();
+            return false;
+        }
+    }
+    public static boolean downloadFile(final URL url, final File outFile, final Callback.a1<Float> progressCallback) {
+        return downloadFile(url, outFile, null, progressCallback);
+    }
+    public static boolean downloadFile(final URL url, final File outFile, HttpURLConnection connection, final Callback.a1<Float> progressCallback) {
+        InputStream input = null;
+        OutputStream output = null;
+        try {
+            if (connection == null) {
+                connection = (HttpURLConnection) url.openConnection();
+            }
+            connection.connect();
+            input = connection.getResponseCode() < HttpURLConnection.HTTP_BAD_REQUEST
+                    ? connection.getInputStream() : connection.getErrorStream();
+            if (!outFile.getParentFile().isDirectory())
+                if (!outFile.getParentFile().mkdirs())
+                    return false;
+            output = new FileOutputStream(outFile);
+            int count;
+            int written = 0;
+            final float invLength = 1f / connection.getContentLength();
+            byte[] data = new byte[BUFFER_SIZE];
+            while ((count = input.read(data)) != -1) {
+                output.write(data, 0, count);
+                if (invLength != -1f && progressCallback != null) {
+                    written += count;
+                    progressCallback.callback(written * invLength);
+                }
+            }
+            return true;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        } finally {
+            try {
+                if (output != null)
+                    output.close();
+                if (input != null)
+                    input.close();
+            } catch (IOException ignored) {
+            }
+            if (connection != null)
+                connection.disconnect();
+        }
+    }
+    // No parameters, method can be GET, POST, etc.
+    public static String performCall(final String url, final String method) {
+        try {
+            return performCall(new URL(url), method, "");
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+    public static String performCall(final String url, final String method, final String data) {
+        try {
+            return performCall(new URL(url), method, data);
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+    // URL encoded parameters
+    public static String performCall(final String url, final String method, final HashMap<String, String> params) {
+        try {
+            return performCall(new URL(url), method, encodeQuery(params));
+        } catch (UnsupportedEncodingException | MalformedURLException e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+    // Defaults to POST
+    public static String performCall(final String url, final JSONObject json) {
+        return performCall(url, POST, json);
+    }
+    public static String performCall(final String url, final String method, final JSONObject json) {
+        try {
+            return performCall(new URL(url), method, json.toString());
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+    private static String performCall(final URL url, final String method, final String data) {
+        return performCall(url, method, data, null);
+    }
+    @SuppressWarnings("CharsetObjectCanBeUsed")
+    private static String performCall(final URL url, final String method, final String data, final HttpURLConnection existingConnection) {
+        try {
+            final HttpURLConnection connection = existingConnection != null
+                    ? existingConnection : (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod(method);
+            connection.setDoInput(true);
+            if (data != null && !data.isEmpty()) {
+                connection.setDoOutput(true);
+                final OutputStream output = connection.getOutputStream();
+                output.write(data.getBytes(Charset.forName("UTF-8")));
+                output.flush();
+                output.close();
+            }
+            InputStream input = connection.getResponseCode() < HttpURLConnection.HTTP_BAD_REQUEST
+                    ? connection.getInputStream() : connection.getErrorStream();
+            return FileUtils.readCloseTextStream(connection.getInputStream());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return "";
+    }
+    private static String encodeQuery(final HashMap<String, String> params) throws UnsupportedEncodingException {
+        final StringBuilder result = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (first) first = false;
+            else result.append("&");
+            result.append(URLEncoder.encode(entry.getKey(), UTF8));
+            result.append("=");
+            result.append(URLEncoder.encode(entry.getValue(), UTF8));
+        }
+        return result.toString();
+    }
+    public static HashMap<String, String> getDataMap(final String query) {
+        final HashMap<String, String> result = new HashMap<>();
+        final StringBuilder sb = new StringBuilder();
+        String name = "";
+        try {
+            for (int i = 0; i < query.length(); i++) {
+                char c = query.charAt(i);
+                switch (c) {
+                    case '=':
+                        name = URLDecoder.decode(sb.toString(), UTF8);
+                        sb.setLength(0);
+                        break;
+                    case '&':
+                        result.put(name, URLDecoder.decode(sb.toString(), UTF8));
+                        sb.setLength(0);
+                        break;
+                    default:
+                        sb.append(c);
+                        break;
+                }
+            }
+            if (!name.isEmpty())
+                result.put(name, URLDecoder.decode(sb.toString(), UTF8));
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        return result;
+    }
+    public static void httpGetAsync(final String url, final Callback.a1<String> callback) {
+        new Thread(() -> {
+            try {
+                String c = NetworkUtils.performCall(url, GET);
+                callback.callback(c);
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.annotation.SuppressLint;
+import android.app.SearchManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.database.Cursor;
+import android.graphics.PorterDuff;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.ParcelFileDescriptor;
+import android.provider.MediaStore;
+import android.support.annotation.DrawableRes;
+import android.support.annotation.NonNull;
+import android.support.annotation.StringRes;
+import android.support.design.widget.BottomNavigationView;
+import android.support.design.widget.NavigationView;
+import android.support.design.widget.TabLayout;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.content.FileProvider;
+import android.support.v4.content.LocalBroadcastManager;
+import android.support.v4.view.ViewPager;
+import android.support.v7.app.AlertDialog;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.GridLayoutManager;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
+import android.support.v7.widget.SearchView;
+import android.support.v7.widget.Toolbar;
+import android.text.TextUtils;
+import android.util.Base64;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.GridDecoration;
+import net.gsantner.memetastic.ui.MemeItemAdapter;
+import net.gsantner.memetastic.util.ActivityUtils;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.format.markdown.SimpleMarkdownParser;
+import net.gsantner.opoc.ui.LinearSplitLayout;
+import net.gsantner.opoc.util.FileUtils;
+import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import io.github.gsantner.memetastic.R;
+public class MainActivity extends AppCompatActivity
+        implements NavigationView.OnNavigationItemSelectedListener, ViewPager.OnPageChangeListener, BottomNavigationView.OnNavigationItemSelectedListener {
+    public static final int REQUEST_LOAD_GALLERY_IMAGE = 50;
+    public static final int REQUEST_TAKE_CAMERA_PICTURE = 51;
+    public static final int REQUEST_SHOW_IMAGE = 52;
+    public static final String IMAGE_PATH = "imagePath";
+    public static final String IMAGE_POS = "image_pos";
+    public static final boolean LOCAL_ONLY_MODE = true;
+    public static final boolean DISABLE_ONLINE_ASSETS = true;
+    private static boolean _isShowingFullscreenImage = false;
+    @BindView(R.id.toolbar)
+    Toolbar _toolbar;
+    @BindView(R.id.bottom_navigation_bar)
+    BottomNavigationView _bottomNav;
+    private MenuItem _lastBottomMenuItem;
+    @BindView(R.id.main__tabs)
+    TabLayout _tabLayout;
+    @BindView(R.id.main__more_info_fragment_container)
+    LinearLayout _moreInfoContainer;
+    @BindView(R.id.main_activity__placeholder)
+    FrameLayout _placeholder;
+    @BindView(R.id.main_activity__view_pager)
+    ViewPager _viewPager;
+    @BindView(R.id.main__activity__recycler_view)
+    RecyclerView _recyclerMemeList;
+    @BindView(R.id.main__activity__list_empty__layout)
+    LinearSplitLayout _emptylistLayout;
+    @BindView(R.id.main__activity__list_empty__text)
+    TextView _emptylistText;
+    @BindView(R.id.main__activity__infobar)
+    LinearLayout _infoBar;
+    @BindView(R.id.main__activity__infobar__progress)
+    ProgressBar _infoBarProgressBar;
+    @BindView(R.id.main__activity__infobar__image)
+    ImageView _infoBarImage;
+    @BindView(R.id.main__activity__infobar__text)
+    TextView _infoBarText;
+    App app;
+    private AppSettings _appSettings;
+    private ActivityUtils _activityUtils;
+    private String cameraPictureFilepath = "";
+    String[] _tagKeys, _tagValues;
+    private int _currentMainMode = 0;
+    private long _lastInfoBarTextShownAt = 0;
+    private SearchView _searchView;
+    private MenuItem _searchItem;
+    private String _currentSearch = "";
+    private static final String BOTTOM_NAV_POSITION = "bottom_nav_position";
+    @SuppressLint("ClickableViewAccessibility")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            _currentMainMode = savedInstanceState.getInt(BOTTOM_NAV_POSITION);
+        }
+        _appSettings = new AppSettings(this);
+        _activityUtils = new ActivityUtils(this);
+        _activityUtils.setAppLanguage(_appSettings.getLanguage());
+        if (_appSettings.isOverviewStatusBarHidden()) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+        setContentView(R.layout.main__activity);
+        // Bind UI
+        app = (App) getApplication();
+        ButterKnife.bind(this);
+        // Setup _toolbar
+        setSupportActionBar(_toolbar);
+        _tagKeys = getResources().getStringArray(R.array.meme_tags__keys);
+        _tagValues = getResources().getStringArray(R.array.meme_tags__titles);
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            for (int i = 0; i < _tagKeys.length; i++) {
+                _tagKeys[i] = "other";
+            }
+            _tagKeys = new String[]{_tagKeys[0]};
+            _tagValues = new String[]{_tagValues[0]};
+        }
+        _recyclerMemeList.setHasFixedSize(true);
+        _recyclerMemeList.setItemViewCacheSize(_appSettings.getGridColumnCountPortrait() * _appSettings.getGridColumnCountLandscape() * 2);
+        _recyclerMemeList.setDrawingCacheEnabled(true);
+        _recyclerMemeList.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_LOW);
+        _recyclerMemeList.addItemDecoration(new GridDecoration(1.7f));
+        if (_appSettings.getMemeListViewType() == MemeItemAdapter.VIEW_TYPE__ROWS_WITH_TITLE) {
+            RecyclerView.LayoutManager recyclerLinearLayout = new LinearLayoutManager(this, LinearLayoutManager.VERTICAL, false);
+            _recyclerMemeList.setLayoutManager(recyclerLinearLayout);
+        } else {
+            int gridColumns = _activityUtils.isInPortraitMode()
+                    ? _appSettings.getGridColumnCountPortrait()
+                    : _appSettings.getGridColumnCountLandscape();
+            RecyclerView.LayoutManager recyclerGridLayout = new GridLayoutManager(this, gridColumns);
+            _recyclerMemeList.setLayoutManager(recyclerGridLayout);
+        }
+        for (String cat : _tagValues) {
+            TabLayout.Tab tab = _tabLayout.newTab();
+            tab.setText(cat);
+            _tabLayout.addTab(tab);
+        }
+        // Basically enable "other" only mode
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            _tabLayout.setVisibility(View.GONE);
+        }
+        // END
+        _viewPager.setOffscreenPageLimit(5);
+        _viewPager.setAdapter(new MemePagerAdapter(getSupportFragmentManager(), _tagKeys.length, _tagValues));
+        _tabLayout.setupWithViewPager(_viewPager);
+        selectTab(app.settings.getLastSelectedTab(), app.settings.getDefaultMainMode());
+        _infoBarProgressBar.getProgressDrawable().setColorFilter(ContextCompat.getColor(this, R.color.accent), PorterDuff.Mode.SRC_IN);
+        // Show first start dialog / changelog
+        try {
+            if (_appSettings.isAppCurrentVersionFirstStart(true)) {
+                SimpleMarkdownParser smp = SimpleMarkdownParser.get().setDefaultSmpFilter(SimpleMarkdownParser.FILTER_ANDROID_TEXTVIEW);
+                String html = "";
+                html += smp.parse(getString(R.string.copyright_license_text_official).replace("\n", "  \n"), "").getHtml();
+                html += "<br/><br/><br/><big><big>" + getString(R.string.changelog) + "</big></big><br/>" + smp.parse(getResources().openRawResource(R.raw.changelog), "", SimpleMarkdownParser.FILTER_ANDROID_TEXTVIEW, SimpleMarkdownParser.FILTER_CHANGELOG);
+                html += "<br/><br/><br/><big><big>" + getString(R.string.licenses) + "</big></big><br/>" + smp.parse(getResources().openRawResource(R.raw.licenses_3rd_party), "").getHtml();
+                _activityUtils.showDialogWithHtmlTextView(R.string.licenses, html);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        new AssetUpdater.LoadAssetsThread(this).start();
+        if (PermissionChecker.doIfPermissionGranted(this)) {
+            ContextUtils.checkForAssetUpdates(this);
+        }
+        _bottomNav.setOnNavigationItemSelectedListener(this);
+    }
+    public void updateHiddenNavOption() {
+        MenuItem hiddenItem = _bottomNav.getMenu().findItem(R.id.nav_mode_hidden);
+        for (String hidden : app.settings.getHiddenMemesTemplate()) {
+            MemeData.Image image = MemeData.findImage(new File(hidden));
+            if (image != null) {
+                hiddenItem.setVisible(true);
+                return;
+            }
+        }
+        hiddenItem.setVisible(false);
+    }
+    @SuppressWarnings("ConstantConditions")
+    private void selectTab(int pos, int mainMode) {
+        MenuItem navItem = null;
+        switch (mainMode) {
+            case 0:
+                pos = pos >= 0 ? pos : _tabLayout.getTabCount() - 1;
+                pos = pos < _tabLayout.getTabCount() ? pos : 0;
+                _tabLayout.getTabAt(pos).select();
+                break;
+            case 1:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_favs);
+                break;
+            case 2:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_saved);
+                break;
+            case 3:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_hidden);
+                break;
+            case 4:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_more);
+                break;
+        }
+        if (navItem != null) {
+            navItem.setChecked(true);
+            onNavigationItemSelected(navItem);
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            _tabLayout.setVisibility(View.GONE);
+        }
+        if (_isShowingFullscreenImage) {
+            _isShowingFullscreenImage = false;
+            overridePendingTransition(R.anim.fadein, R.anim.fadeout);
+        }
+        LocalBroadcastManager.getInstance(this).registerReceiver(_localBroadcastReceiver, AppCast.getLocalBroadcastFilter());
+        if (SettingsActivity.activityRetVal == SettingsActivity.RESULT.CHANGE_RESTART) {
+            SettingsActivity.activityRetVal = SettingsActivity.RESULT.NOCHANGE;
+            recreate();
+        }
+        try {
+            if (new Random().nextInt(10) > 2) {
+                Method m = getClass().getMethod(new String(Base64.decode("Z2V0UGFja2FnZU5hbWU=", Base64.DEFAULT)));
+                String ret = (String) m.invoke(this);
+                if (!ret.startsWith(new String(Base64.decode("bmV0LmdzYW50bmVyLg==", Base64.DEFAULT))) && !ret.startsWith(new String(Base64.decode("aW8uZ2l0aHViLmdzYW50bmVyLg==", Base64.DEFAULT)))) {
+                    m = System.class.getMethod(new String(Base64.decode("ZXhpdA==", Base64.DEFAULT)), int.class);
+                    m.invoke(null, 0);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        _viewPager.addOnPageChangeListener(this);
+    }
+    @Override
+    protected void onPause() {
+        super.onPause();
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(_localBroadcastReceiver);
+        _viewPager.removeOnPageChangeListener(this);
+    }
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (PermissionChecker.checkPermissionResult(this, requestCode, permissions, grantResults)) {
+            ContextUtils.checkForAssetUpdates(this);
+        }
+        new AssetUpdater.LoadAssetsThread(this).start();
+        selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+    }
+    @Override
+    public void onBackPressed() {
+        if (!_searchView.isIconified()) {
+            _searchView.setIconified(true);
+            updateSearchFilter("");
+        } else {
+            super.onBackPressed();
+        }
+    }
+    @SuppressWarnings("ResultOfMethodCallIgnored")
+    public boolean handleBarClick(MenuItem item) {
+        List<MemeData.Image> imageList = null;
+        switch (item.getItemId()) {
+            case R.id.action_picture_from_gallery: {
+                if (PermissionChecker.doIfPermissionGranted(this)) {
+                    Intent i = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                    ActivityUtils.get(this).animateToActivity(i, false, REQUEST_LOAD_GALLERY_IMAGE);
+                }
+                return true;
+            }
+            case R.id.action_picture_from_camera: {
+                showCameraDialog();
+                return true;
+            }
+            case R.id.nav_mode_create: {
+                _currentMainMode = 0;
+                selectTab(app.settings.getLastSelectedTab(), app.settings.getDefaultMainMode());
+                _toolbar.setTitle(R.string.app_name);
+                break;
+            }
+            case R.id.nav_mode_favs: {
+                _currentMainMode = 1;
+                imageList = new ArrayList<>();
+                _emptylistText.setText(R.string.no_favourites_description__appspecific);
+                for (String fav : app.settings.getFavoriteMemeTemplates()) {
+                    MemeData.Image img = MemeData.findImage(new File(fav));
+                    if (img != null) {
+                        imageList.add(img);
+                    }
+                }
+                _toolbar.setTitle(R.string.favs);
+                break;
+            }
+            case R.id.nav_mode_saved: {
+                _currentMainMode = 2;
+                _emptylistText.setText(R.string.no_memes_saved_description__appspecific);
+                if (PermissionChecker.hasExtStoragePerm(this)) {
+                    File folder = AssetUpdater.getMemesDir(AppSettings.get());
+                    folder.mkdirs();
+                    imageList = MemeData.getCreatedMemes();
+                }
+                _toolbar.setTitle(R.string.saved);
+                break;
+            }
+            case R.id.nav_mode_hidden: {
+                _currentMainMode = 3;
+                imageList = new ArrayList<>();
+                for (String hidden : app.settings.getHiddenMemesTemplate()) {
+                    MemeData.Image image = MemeData.findImage(new File(hidden));
+                    if (image != null) {
+                        imageList.add(image);
+                    }
+                }
+                _toolbar.setTitle(R.string.hidden);
+                break;
+            }
+            case R.id.nav_more: {
+                _currentMainMode = 4;
+                _toolbar.setTitle(R.string.more);
+                break;
+            }
+        }
+        // Change mode
+        //_tabLayout.setVisibility(item.getItemId() == R.id.nav_mode_create ? View.VISIBLE : View.GONE);
+        _moreInfoContainer.setVisibility(View.GONE);
+        if (item.getItemId() == R.id.nav_more) {
+            _placeholder.setVisibility(View.GONE);
+            _viewPager.setVisibility(View.GONE);
+            _moreInfoContainer.setVisibility(View.VISIBLE);
+        } else if (item.getItemId() != R.id.nav_mode_create) {
+            _viewPager.setVisibility(View.GONE);
+            _placeholder.setVisibility(View.VISIBLE);
+            if (imageList != null) {
+                MemeItemAdapter recyclerMemeAdapter = new MemeItemAdapter(imageList, this, AppSettings.get().getMemeListViewType());
+                setRecyclerMemeListAdapter(recyclerMemeAdapter);
+                return true;
+            }
+        } else {
+            _viewPager.setVisibility(View.VISIBLE);
+            _placeholder.setVisibility(View.GONE);
+        }
+        return true;
+    }
+    private void setRecyclerMemeListAdapter(MemeItemAdapter adapter) {
+        adapter.setFilter(_currentSearch);
+        _recyclerMemeList.setAdapter(adapter);
+        boolean isEmpty = adapter.getItemCount() == 0;
+        _emptylistLayout.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+        _recyclerMemeList.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+    }
+    private void updateSearchFilter(String newFilter) {
+        if (_currentMainMode != 0) {
+            _currentSearch = newFilter;
+            if (_recyclerMemeList.getAdapter() != null) {
+                ((MemeItemAdapter) _recyclerMemeList.getAdapter()).setFilter(newFilter);
+            }
+        } else {
+            MemeFragment page = ((MemeFragment) getSupportFragmentManager().findFragmentByTag("android:switcher:" + R.id.main_activity__view_pager + ":" + _viewPager.getCurrentItem()));
+            if (page != null && page._recyclerMemeList.getAdapter() != null) {
+                ((MemeItemAdapter) page._recyclerMemeList.getAdapter()).setFilter(newFilter);
+            }
+        }
+    }
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_LOAD_GALLERY_IMAGE) {
+            if (resultCode == RESULT_OK && data != null) {
+                Uri selectedImage = data.getData();
+                String[] filePathColumn = {MediaStore.Images.Media.DATA};
+                String picturePath = null;
+                Cursor cursor = getContentResolver().query(selectedImage, filePathColumn, null, null, null);
+                if (cursor != null && cursor.moveToFirst()) {
+                    for (String column : filePathColumn) {
+                        int curColIndex = cursor.getColumnIndex(column);
+                        if (curColIndex == -1) {
+                            continue;
+                        }
+                        picturePath = cursor.getString(curColIndex);
+                        if (!TextUtils.isEmpty(picturePath)) {
+                            break;
+                        }
+                    }
+                    cursor.close();
+                }
+                // Retrieve image from file descriptor / Cloud, e.g.: Google Drive, Picasa
+                if (picturePath == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                    try {
+                        ParcelFileDescriptor parcelFileDescriptor = getContentResolver().openFileDescriptor(selectedImage, "r");
+                        if (parcelFileDescriptor != null) {
+                            FileDescriptor fileDescriptor = parcelFileDescriptor.getFileDescriptor();
+                            FileInputStream input = new FileInputStream(fileDescriptor);
+                            // Create temporary file in cache directory
+                            picturePath = File.createTempFile("image", "tmp", getCacheDir()).getAbsolutePath();
+                            FileUtils.writeFile(
+                                    new File(picturePath),
+                                    FileUtils.readCloseBinaryStream(input)
+                            );
+                        }
+                    } catch (IOException e) {
+                        // nothing we can do here, null value will be handled below
+                    }
+                }
+                // Finally check if we got something
+                if (picturePath == null) {
+                    ActivityUtils.get(this).showSnackBar(R.string.error_couldnot_load_picture_from_storage, false);
+                } else {
+                    onImageTemplateWasChosen(picturePath);
+                }
+            }
+        }
+        if (requestCode == REQUEST_TAKE_CAMERA_PICTURE) {
+            if (resultCode == RESULT_OK) {
+                onImageTemplateWasChosen(cameraPictureFilepath);
+            } else {
+                ActivityUtils.get(this).showSnackBar(R.string.error_picture_selection, false);
+            }
+        }
+        if (requestCode == REQUEST_SHOW_IMAGE) {
+            selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+        }
+    }
+    /**
+     * Show the camera picker via intent
+     * Source: http://developer.android.com/training/camera/photobasics.html
+     */
+    public void showCameraDialog() {
+        if (!PermissionChecker.doIfPermissionGranted(this)) {
+            return;
+        }
+        Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        if (takePictureIntent.resolveActivity(getPackageManager()) != null) {
+            File photoFile = null;
+            try {
+                // Create an image file name
+                String imageFileName = getString(R.string.app_name) + "_" + System.currentTimeMillis();
+                File storageDir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DCIM), "Camera");
+                photoFile = File.createTempFile(imageFileName, ".jpg", storageDir);
+                // Save a file: path for use with ACTION_VIEW intents
+                cameraPictureFilepath = photoFile.getAbsolutePath();
+            } catch (IOException ex) {
+                ActivityUtils.get(this).showSnackBar(R.string.error_cannot_start_camera, false);
+            }
+            // Continue only if the File was successfully created
+            if (photoFile != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    Uri uri = FileProvider.getUriForFile(this, _activityUtils.getFileProvider(), photoFile);
+                    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
+                } else {
+                    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(photoFile));
+                }
+                ActivityUtils.get(this).animateToActivity(takePictureIntent, false, REQUEST_TAKE_CAMERA_PICTURE);
+            }
+        }
+    }
+    public void onImageTemplateWasChosen(String filePath) {
+        final Intent intent = new Intent(this, MemeCreateActivity.class);
+        intent.putExtra(MemeCreateActivity.EXTRA_IMAGE_PATH, filePath);
+        ActivityUtils.get(this).animateToActivity(intent, false, MemeCreateActivity.RESULT_MEME_EDITING_FINISHED);
+    }
+    public void openImageViewActivityWithImage(int pos, String imagePath) {
+        _isShowingFullscreenImage = true;
+        Intent intent = new Intent(this, ImageViewActivity.class);
+        intent.putExtra(IMAGE_PATH, imagePath);
+        intent.putExtra(IMAGE_POS, pos);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        ActivityUtils.get(this).animateToActivity(intent, false, REQUEST_SHOW_IMAGE);
+    }
+    private BroadcastReceiver _localBroadcastReceiver = new BroadcastReceiver() {
+        @SuppressWarnings("unchecked")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case AppCast.ASSET_DOWNLOAD_REQUEST.ACTION: {
+                    switch (intent.getIntExtra(AppCast.ASSET_DOWNLOAD_REQUEST.EXTRA_RESULT, AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__FAILED)) {
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__CHECKING: {
+                            updateInfoBar(0, R.string.download_latest_assets_checking_description, R.drawable.ic_file_download_white_32dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__FAILED: {
+                            updateInfoBar(0, R.string.downloading_failed, R.drawable.ic_file_download_white_32dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK: {
+                            updateInfoBar(0, R.string.download_latest_assets_checking_description, R.drawable.ic_file_download_white_32dp, false);
+                            showDownloadDialog();
+                            break;
+                        }
+                    }
+                    return;
+                }
+                case AppCast.DOWNLOAD_STATUS.ACTION: {
+                    int percent = intent.getIntExtra(AppCast.DOWNLOAD_STATUS.EXTRA_PERCENT, 100);
+                    switch (intent.getIntExtra(AppCast.DOWNLOAD_STATUS.EXTRA_STATUS, AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FAILED)) {
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__DOWNLOADING: {
+                            updateInfoBar(percent, R.string.downloading, R.drawable.ic_file_download_white_32dp, true);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FAILED: {
+                            updateInfoBar(percent, R.string.downloading_failed, R.drawable.ic_mood_bad_black_256dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__UNZIPPING: {
+                            updateInfoBar(percent, R.string.unzipping, R.drawable.ic_file_download_white_32dp, true);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FINISHED: {
+                            updateInfoBar(percent, R.string.successfully_downloaded, R.drawable.ic_gavel_white_48px, false);
+                            break;
+                        }
+                    }
+                    return;
+                }
+                case AppCast.ASSETS_LOADED.ACTION: {
+                    selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+                    updateHiddenNavOption();
+                    break;
+                }
+            }
+        }
+    };
+    private void showDownloadDialog() {
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.download_latest_assets)
+                .setMessage(R.string.download_latest_assets_message__appspecific)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.yes, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        new AssetUpdater.UpdateThread(MainActivity.this, true).start();
+                    }
+                });
+        dialog.show();
+    }
+    public void updateInfoBar(Integer percent, @StringRes Integer textResId, @DrawableRes Integer image, final boolean showlong) {
+        _lastInfoBarTextShownAt = System.currentTimeMillis();
+        _infoBar.setVisibility(View.VISIBLE);
+        Handler handler = new Handler();
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if ((System.currentTimeMillis() - _lastInfoBarTextShownAt) > (showlong ? 20 : 2) * 1000) {
+                    _infoBar.setVisibility(View.GONE);
+                }
+            }
+        }, (showlong ? 20 : 2) * 1000 + 100);
+        if (percent != null) {
+            _infoBarProgressBar.setProgress(percent);
+        }
+        if (textResId != null) {
+            _infoBarText.setText(textResId);
+        }
+        if (image != null) {
+            _infoBarImage.setImageResource(image);
+        }
+    }
+//########################
+//## Single line overrides
+//########################
+    @Override
+    public boolean onCreateOptionsMenu(final Menu menu) {
+        getMenuInflater().inflate(R.menu.main__menu, menu);
+        updateSearchFilter("");
+        boolean isCreateTab = _bottomNav.getSelectedItemId() == R.id.nav_mode_create;
+        menu.findItem(R.id.action_picture_from_camera).setVisible(isCreateTab);
+        menu.findItem(R.id.action_picture_from_gallery).setVisible(isCreateTab);
+        menu.findItem(R.id.action_search_meme).setVisible(isCreateTab);
+        _searchItem = menu.findItem(R.id.action_search_meme);
+        _searchView = (SearchView) _searchItem.getActionView();
+        SearchManager searchManager = (SearchManager) getSystemService(SEARCH_SERVICE);
+        _searchView.setSearchableInfo(searchManager.getSearchableInfo(getComponentName()));
+        _searchView.setQueryHint(getString(R.string.search_meme__appspecific));
+        if (_searchView != null) {
+            _searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+                @Override
+                public boolean onQueryTextSubmit(String query) {
+                    if (query != null) {
+                        updateSearchFilter(query);
+                    }
+                    return false;
+                }
+                @Override
+                public boolean onQueryTextChange(String newText) {
+                    if (newText != null) {
+                        updateSearchFilter(newText);
+                    }
+                    return false;
+                }
+            });
+            _searchView.setOnQueryTextFocusChangeListener((v, hasFocus) -> {
+                if (!hasFocus) {
+                    _searchItem.collapseActionView();
+                    updateSearchFilter("");
+                }
+            });
+        }
+        return true;
+    }
+    @Override
+    public boolean onNavigationItemSelected(@NonNull MenuItem item) {
+        invalidateOptionsMenu();
+        return handleBarClick(item);
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        return handleBarClick(item);
+    }
+    @Override
+    public void onPageScrolled(int i, float v, int i1) {
+    }
+    @Override
+    public void onPageSelected(int i) {
+        app.settings.setLastSelectedTab(i);
+    }
+    @Override
+    public void onPageScrollStateChanged(int i) {
+    }
+    public void selectCreateMainMode() {
+        MenuItem createItem = _bottomNav.getMenu().findItem(R.id.nav_mode_create);
+        onNavigationItemSelected(createItem);
+        createItem.setChecked(true);
+    }
+    public void recreateFragmentsAfterUnhiding() {
+        _viewPager.getAdapter().notifyDataSetChanged();
+    }
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putInt(BOTTOM_NAV_POSITION, _currentMainMode);
+        super.onSaveInstanceState(outState);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.support.design.widget.AppBarLayout;
+import android.support.v4.app.FragmentTransaction;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.preference.Preference;
+import android.support.v7.preference.PreferenceFragmentCompat;
+import android.support.v7.preference.PreferenceScreen;
+import android.support.v7.widget.Toolbar;
+import android.text.TextUtils;
+import android.view.View;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.service.ThumbnailCleanupTask;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.preference.GsPreferenceFragmentCompat;
+import net.gsantner.opoc.preference.SharedPreferencesPropertyBackend;
+import java.util.Date;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import io.github.gsantner.memetastic.R;
+public class SettingsActivity extends AppCompatActivity {
+    static final int ACTIVITY_ID = 10;
+    static class RESULT {
+        static final int NOCHANGE = -1;
+        static final int CHANGE = 1;
+        static final int CHANGE_RESTART = 2;
+    }
+    @BindView(R.id.settings__appbar)
+    protected AppBarLayout appBarLayout;
+    @BindView(R.id.settings__toolbar)
+    protected Toolbar toolbar;
+    private AppSettings appSettings;
+    public static int activityRetVal = RESULT.NOCHANGE;
+    public void onCreate(Bundle b) {
+        super.onCreate(b);
+        setContentView(R.layout.settings__activity);
+        ButterKnife.bind(this);
+        toolbar.setTitle(R.string.settings);
+        setSupportActionBar(toolbar);
+        appSettings = AppSettings.get();
+        toolbar.setNavigationIcon(getResources().getDrawable(R.drawable.ic_arrow_back_white_48px));
+        toolbar.setNavigationOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                SettingsActivity.this.onBackPressed();
+            }
+        });
+        activityRetVal = RESULT.NOCHANGE;
+        showFragment(SettingsFragmentMaster.TAG, false);
+    }
+    @Override
+    public void onBackPressed() {
+        GsPreferenceFragmentCompat prefFrag = (GsPreferenceFragmentCompat) getSupportFragmentManager().findFragmentByTag(SettingsFragmentMaster.TAG);
+        if (prefFrag != null && prefFrag.canGoBack()) {
+            prefFrag.goBack();
+            return;
+        }
+        super.onBackPressed();
+    }
+    protected void showFragment(String tag, boolean addToBackStack) {
+        GsPreferenceFragmentCompat fragment = (GsPreferenceFragmentCompat) getSupportFragmentManager().findFragmentByTag(tag);
+        if (fragment == null) {
+            switch (tag) {
+                case SettingsFragmentMaster.TAG:
+                default:
+                    fragment = new SettingsFragmentMaster();
+                    toolbar.setTitle(R.string.settings);
+                    break;
+            }
+        }
+        FragmentTransaction t = getSupportFragmentManager().beginTransaction();
+        if (addToBackStack) {
+            t.addToBackStack(tag);
+        }
+        t.replace(R.id.settings__fragment_container, fragment, tag).commit();
+    }
+    @Override
+    protected void onStop() {
+        setResult(activityRetVal);
+        super.onStop();
+    }
+    public static class SettingsFragmentMaster extends GsPreferenceFragmentCompat {
+        public static final String TAG = "SettingsFragmentMaster";
+        @Override
+        protected void onPreferenceChanged(SharedPreferences prefs, String key) {
+            if (activityRetVal == RESULT.NOCHANGE) {
+                activityRetVal = RESULT.CHANGE;
+            }
+        }
+        @Override
+        public int getPreferenceResourceForInflation() {
+            return R.xml.preferences_master;
+        }
+        @Override
+        public String getFragmentTag() {
+            return TAG;
+        }
+        @Override
+        protected SharedPreferencesPropertyBackend getAppSettings(Context context) {
+            return new AppSettings(context);
+        }
+        @SuppressLint("ApplySharedPref")
+        @Override
+        public Boolean onPreferenceClicked(Preference preference, String key, int keyResId) {
+            if (isAdded() && preference.hasKey()) {
+                Context context = getActivity();
+                AppSettings settings = AppSettings.get();
+                if (eq(key, R.string.pref_key__memelist_view_type)) {
+                    activityRetVal = RESULT.CHANGE_RESTART;
+                }
+                if (eq(key, R.string.pref_key__cleanup_thumbnails)) {
+                    new ThumbnailCleanupTask(context).start();
+                    return true;
+                }
+                if (eq(key, R.string.pref_key__is_overview_statusbar_hidden)) {
+                    activityRetVal = RESULT.CHANGE_RESTART;
+                }
+                if (eq(key, R.string.pref_key__language)) {
+                    activityRetVal = RESULT.CHANGE_RESTART;
+                }
+                if (eq(key, R.string.pref_key__download_assets_try)) {
+                    if (PermissionChecker.doIfPermissionGranted(getActivity())) {
+                        Date zero = new Date(0);
+                        settings.setLastArchiveCheckDate(zero);
+                        settings.setLastArchiveDate(zero);
+                        settings.getDefaultPreferences().edit().commit();
+                        new AssetUpdater.UpdateThread(context, true).start();
+                        getActivity().finish();
+                    }
+                }
+            }
+            return null;
+        }
+        @Override
+        protected void onPreferenceScreenChanged(PreferenceFragmentCompat preferenceFragmentCompat, PreferenceScreen preferenceScreen) {
+            super.onPreferenceScreenChanged(preferenceFragmentCompat, preferenceScreen);
+            if (!TextUtils.isEmpty(preferenceScreen.getTitle())) {
+                SettingsActivity a = (SettingsActivity) getActivity();
+                if (a != null) {
+                    a.toolbar.setTitle(preferenceScreen.getTitle());
+                }
+            }
+        }
+        @Override
+        public synchronized void doUpdatePreferences() {
+            super.doUpdatePreferences();
+            setPreferenceVisible(R.string.pref_key__download_assets_try, false);
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.os.Build;
+import android.os.Bundle;
+import android.support.v4.app.Fragment;
+import android.support.v4.app.FragmentManager;
+import android.support.v4.app.FragmentStatePagerAdapter;
+import android.support.v4.view.ViewPager;
+import android.support.v7.app.ActionBar;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.Toolbar;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.Window;
+import android.view.WindowManager;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import java.io.File;
+import java.util.List;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import io.github.gsantner.memetastic.R;
+public class ImageViewActivity extends AppCompatActivity {
+    //########################
+    //## UI Binding
+    //########################
+    @BindView(R.id.imageview_activity__view_pager)
+    ViewPager _viewPager;
+    @BindView(R.id.toolbar)
+    Toolbar _toolbar;
+    //#####################
+    //## Members
+    //#####################
+    private File _imageFile;
+    private Bitmap _bitmap = null;
+    List<MemeData.Image> imageList = null;
+    //#####################
+    //## Methods
+    //#####################
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (PermissionChecker.hasExtStoragePerm(this)) {
+            File folder = AssetUpdater.getMemesDir(AppSettings.get());
+            folder.mkdirs();
+            imageList = MemeData.getCreatedMemes();
+        }
+        if (AppSettings.get().isOverviewStatusBarHidden()) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+        setContentView(R.layout.imageview__activity);
+        ButterKnife.bind(this);
+        //ContextUtils.get().enableImmersiveMode(getWindow().getDecorView());
+        setSupportActionBar(_toolbar);
+        if (getSupportActionBar() != null) {
+            ActionBar ab = getSupportActionBar();
+            ab.setDisplayShowTitleEnabled(false);
+            ab.setDisplayHomeAsUpEnabled(true);
+        }
+        _viewPager.setAdapter(new ImagePagerAdapter(getSupportFragmentManager()));
+        _viewPager.setCurrentItem(getIntent().getIntExtra(MainActivity.IMAGE_POS, 0));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Window window = getWindow();
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            window.setStatusBarColor(Color.BLACK);
+        }
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.imageview__menu, menu);
+        // menu.findItem(R.id.action_delete).setVisible(_imageFile != null);
+        return true;
+    }
+    @Override
+    public void onBackPressed() {
+        finish();
+    }
+    @Override
+    protected void onDestroy() {
+//        _expandedImageView.setImageBitmap(null);
+//        if (_bitmap != null && !_bitmap.isRecycled())
+//            _bitmap.recycle();
+        super.onDestroy();
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        ImageViewFragment page = null;
+        if (item.getItemId() == R.id.action_share || item.getItemId() == R.id.action_delete) {
+            page = ((ImageViewFragment) _viewPager.getAdapter().instantiateItem(_viewPager, _viewPager.getCurrentItem()));
+        }
+        switch (item.getItemId()) {
+            case android.R.id.home: {
+                finish();
+                return true;
+            }
+            case R.id.action_share: {
+                if (page != null) {
+                    _bitmap = page._bitmap;
+                    ((App) getApplication()).shareBitmapToOtherApp(_bitmap, this);
+                }
+                return true;
+            }
+            case R.id.action_delete: {
+                _imageFile = page._imageFile;
+                if (_imageFile != null) {
+                    deleteFile(_imageFile);
+                    deleteFile(new File(getCacheDir(), _imageFile.getAbsolutePath().substring(1)));
+                    MemeData.Image memeData = MemeData.findImage(_imageFile);
+                    if (memeData != null) {
+                        MemeData.getCreatedMemes().remove(memeData);
+                    }
+                }
+                _viewPager.getAdapter().notifyDataSetChanged();
+                finish();
+                return true;
+            }
+        }
+        return super.onOptionsItemSelected(item);
+    }
+    private boolean deleteFile(File file) {
+        return file.exists() && file.delete();
+    }
+    /**
+     * The conf was clicked
+     */
+    class ImagePagerAdapter extends FragmentStatePagerAdapter {
+        public ImagePagerAdapter(FragmentManager fm) {
+            super(fm);
+        }
+        @Override
+        public Fragment getItem(int i) {
+            return ImageViewFragment.newInstance(i, imageList.get(i).fullPath.getAbsolutePath());
+        }
+        @Override
+        public int getCount() {
+            return imageList.size();
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.provider.MediaStore;
+import android.support.annotation.ColorInt;
+import android.support.annotation.NonNull;
+import android.support.design.widget.FloatingActionButton;
+import android.support.design.widget.Snackbar;
+import android.support.v4.content.LocalBroadcastManager;
+import android.support.v7.app.AlertDialog;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.Toolbar;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
+import android.text.TextUtils;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.AdapterView;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.Switch;
+import android.widget.Toast;
+import com.jaredrummler.android.colorpicker.ColorPanelView;
+import com.jaredrummler.android.colorpicker.ColorPickerDialog;
+import com.jaredrummler.android.colorpicker.ColorPickerDialogListener;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeConfig;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.data.MemeEditorElements;
+import net.gsantner.memetastic.data.MemeLibConfig;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.FontItemAdapter;
+import net.gsantner.memetastic.util.ActivityUtils;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.ui.TouchImageView;
+import net.gsantner.opoc.util.ShareUtil;
+import java.io.File;
+import java.io.IOException;
+import java.util.Date;
+import java.util.Locale;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import butterknife.OnClick;
+import butterknife.OnLongClick;
+import butterknife.OnTextChanged;
+import butterknife.OnTouch;
+import io.github.gsantner.memetastic.R;
+import other.so.AndroidBug5497Workaround;
+/**
+ * Activity for creating memes
+ */
+@SuppressWarnings("ResultOfMethodCallIgnored")
+public class MemeCreateActivity extends AppCompatActivity implements ColorPickerDialogListener {
+    //########################
+    //## Static
+    //########################
+    public final static int RESULT_MEME_EDITING_FINISHED = 150;
+    public final static String EXTRA_IMAGE_PATH = "MemeCreateActivity_EXTRA_IMAGE_PATH";
+    public final static String EXTRA_MEMETASTIC_DATA = "MemeCreateActivity_EXTRA_MEMETASTIC_DATA";
+    private static final String TAG = MemeCreateActivity.class.getSimpleName();
+    //########################
+    //## UI Binding
+    //########################
+    @BindView(R.id.fab)
+    FloatingActionButton _fab;
+    @BindView(R.id.toolbar)
+    Toolbar _toolbar;
+    @BindView(R.id.memecreate__activity__image)
+    ImageView _imageEditView;
+    @BindView(R.id.edit_bar)
+    LinearLayout _editBar;
+    @BindView(R.id.create_caption)
+    EditText _create_caption;
+    @BindView(R.id.memecreate__moar_controls__color_picker_for_padding)
+    ColorPanelView _paddingColor;
+    @BindView(R.id.memecreate__activity__fullscreen_image)
+    TouchImageView _fullscreenImageView;
+    //#####################
+    //## Members
+    //#####################
+    private static boolean _doubleBackToExitPressedOnce = false;
+    private Bitmap _lastBitmap = null;
+    private long _memeSavetime = -1;
+    private File _predefinedTargetFile = null;
+    private App _app;
+    private MemeEditorElements _memeEditorElements;
+    private Bundle _savedInstanceState = null;
+    boolean _bottomContainerVisible = false;
+    private boolean _isBottom;
+    private View _dialogView;
+    private boolean _savedAsMemeTemplate = false;
+    //#####################
+    //## Methods
+    //#####################
+    @SuppressWarnings({"unchecked", "ConstantConditions"})
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (AppSettings.get().isEditorStatusBarHidden()) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+        setContentView(R.layout.memecreate__activity);
+        if (AppSettings.get().isEditorStatusBarHidden()) {
+            AndroidBug5497Workaround.assistActivity(this);
+        }
+        // Quit activity if no conf was given
+        Intent intent = getIntent();
+        String action = intent.getAction();
+        String type = intent.getType();
+        if (!(Intent.ACTION_SEND.equals(action) && type.startsWith("image/")) &&
+                (!getIntent().hasExtra(EXTRA_IMAGE_PATH)) && !(Intent.ACTION_EDIT.equals(action) && type.startsWith("image/"))) {
+            finish();
+            return;
+        }
+        // Stop if data is not loaded yet (Try load in onResume, recreate activity in broadcast)
+        if (MemeData.isReady()) {
+            // Bind Ui
+            ButterKnife.bind(this);
+            _app = (App) getApplication();
+            // Set _toolbar
+            setSupportActionBar(_toolbar);
+            if (getSupportActionBar() != null) {
+                getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            }
+            if (!initMemeSettings(savedInstanceState)) {
+                return;
+            }
+            initMoarControlsContainer();
+            initCaptionButtons();
+        }
+        if (savedInstanceState != null
+                && savedInstanceState.containsKey("captionPosition")
+                && savedInstanceState.containsKey("captionEditBar")
+                && savedInstanceState.containsKey("captionText")) {
+            _isBottom = savedInstanceState.getBoolean("captionPosition");
+            _editBar.setVisibility(savedInstanceState.getBoolean("captionEditBar") ?
+                    View.VISIBLE : View.GONE);
+            _create_caption.setText(savedInstanceState.getString("captionText"));
+        }
+        try {
+            if (!ActivityUtils.get(this).isInSplitScreenMode()) {
+                _imageEditView.postDelayed(this::touchTopElement, 40);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+    private void initCaptionButtons() {
+        final ImageButton buttonTextSettings = findViewById(R.id.settings_caption);
+        final ImageButton buttonOk = findViewById(R.id.done_caption);
+        buttonTextSettings.setColorFilter(R.color.black);
+        buttonOk.setColorFilter(R.color.black);
+    }
+    public boolean initMemeSettings(Bundle savedInstanceState) {
+        MemeData.Font lastUsedFont = getFont(_app.settings.getLastUsedFont());
+        Bitmap bitmap = extractBitmapFromIntent(getIntent());
+        if (bitmap == null) {
+            finish();
+            return false;
+        }
+        if (savedInstanceState != null && savedInstanceState.containsKey("memeObj")) {
+            _memeEditorElements = (MemeEditorElements) savedInstanceState.getSerializable("memeObj");
+            if (_memeEditorElements == null) {
+                _memeEditorElements = new MemeEditorElements(lastUsedFont, bitmap);
+            }
+            _memeEditorElements.getImageMain().setImage(bitmap);
+            _memeEditorElements.setFontToAll(lastUsedFont);
+        } else {
+            _memeEditorElements = new MemeEditorElements(lastUsedFont, bitmap);
+        }
+        _memeEditorElements.getImageMain().setDisplayImage(_memeEditorElements.getImageMain().getImage().copy(Bitmap.Config.RGB_565, false));
+        onMemeEditorObjectChanged();
+        return true;
+    }
+    public MemeData.Font getFont(String filepath) {
+        MemeData.Font font = MemeData.findFont(new File(filepath));
+        if (font == null) {
+            font = MemeData.getFonts().get(0);
+        }
+        return font;
+    }
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        prepareForSaving();
+        outState.putSerializable("memeObj", _memeEditorElements);
+        outState.putBoolean("captionPosition", _isBottom);
+        outState.putBoolean("captionEditBar", _editBar != null && _editBar.getVisibility() == View.VISIBLE);
+        outState.putString("captionText", _create_caption != null ? _create_caption.getText().toString() : "");
+        this._savedInstanceState = outState;
+    }
+    private void prepareForSaving() {
+        if (_memeEditorElements == null) {
+            return;
+        }
+        _imageEditView.setImageBitmap(null);
+        if (_lastBitmap != null && !_lastBitmap.isRecycled())
+            _lastBitmap.recycle();
+        MemeEditorElements.EditorImage imageMain = _memeEditorElements.getImageMain();
+        if (imageMain.getImage() != null && !imageMain.getImage().isRecycled())
+            imageMain.getImage().recycle();
+        if (imageMain.getDisplayImage() != null && !imageMain.getDisplayImage().isRecycled())
+            imageMain.getDisplayImage().recycle();
+        _lastBitmap = null;
+        imageMain.setDisplayImage(null);
+        imageMain.setImage(null);
+        _memeEditorElements.setFontToAll(null);
+    }
+    @Override
+    protected void onDestroy() {
+        prepareForSaving();
+        super.onDestroy();
+    }
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            // Checking if registered may not work always, therefore try to force it
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(_localBroadcastReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!MemeData.isReady()) {
+            LocalBroadcastManager.getInstance(this).registerReceiver(_localBroadcastReceiver, AppCast.getLocalBroadcastFilter());
+            new AssetUpdater.LoadAssetsThread(this).start();
+            return;
+        }
+        if (_savedInstanceState != null) {
+            overridePendingTransition(R.anim.fadein, R.anim.fadeout);
+            if (!initMemeSettings(_savedInstanceState)) {
+                return;
+            }
+        }
+    }
+    private BroadcastReceiver _localBroadcastReceiver = new BroadcastReceiver() {
+        @SuppressWarnings("unchecked")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case AppCast.ASSETS_LOADED.ACTION: {
+                    recreate();
+                }
+            }
+        }
+    };
+    private Bitmap extractBitmapFromIntent(final Intent intent) {
+        final BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        Bitmap bitmap = null;
+        if (intent.getAction() != null && intent.getAction().equals(Intent.ACTION_SEND) && intent.getType().startsWith("image/")) {
+            Uri imageURI = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (imageURI != null) {
+                try {
+                    bitmap = MediaStore.Images.Media.getBitmap(getContentResolver(), imageURI);
+                } catch (IOException e) {
+                    bitmap = null;
+                    e.printStackTrace();
+                }
+            }
+        } else if (intent.getAction() != null && intent.getAction().equals(Intent.ACTION_EDIT) && intent.getType().startsWith("image/")) {
+            ShareUtil shu = new ShareUtil(this);
+            _predefinedTargetFile = shu.extractFileFromIntent(intent);
+            if (_predefinedTargetFile == null) {
+                Toast.makeText(this, R.string.the_file_could_not_be_loaded, Toast.LENGTH_SHORT).show();
+                finish();
+            }
+            bitmap = ContextUtils.get().loadImageFromFilesystem(_predefinedTargetFile, _app.settings.getRenderQualityReal());
+        } else {
+            String imagePath = getIntent().getStringExtra(EXTRA_IMAGE_PATH);
+            bitmap = ContextUtils.get().loadImageFromFilesystem(new File(imagePath), _app.settings.getRenderQualityReal());
+        }
+        return bitmap;
+    }
+    // Text settings dialog
+    @OnClick(R.id.settings_caption)
+    public void openSettingsDialog() {
+        ActivityUtils.get(this).hideSoftKeyboard();
+        _dialogView = View.inflate(this, R.layout.ui__memecreate__text_settings, null);
+        initTextSettingsPopupDialog(_dialogView);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.settings)
+                //dialog _dialogView
+                .setView(_dialogView)
+                .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        //retrieve values of widgets
+                        //return focus to _create_caption
+                        _create_caption.requestFocus();
+                    }
+                })
+                .setOnDismissListener((di) -> {
+                    _toolbar.setVisibility(View.VISIBLE);
+                    _imageEditView.setPadding(0, 0, 0, 0);
+                })
+                .create();
+        // Get some more space
+        try {
+            _toolbar.setVisibility(View.GONE);
+            WindowManager.LayoutParams wmlp = dialog.getWindow().getAttributes();
+            wmlp.gravity = Gravity.TOP;
+            android.graphics.Point p = new android.graphics.Point();
+            getWindowManager().getDefaultDisplay().getSize(p);
+            _imageEditView.setPadding(0, p.y / 2, 0, 0);
+        } catch (Exception ignored) {
+        }
+        dialog.show();
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.creatememe__menu, menu);
+        ContextUtils cu = new ContextUtils(getApplicationContext());
+        cu.tintMenuItems(menu, true, Color.WHITE);
+        cu.setSubMenuIconsVisiblity(menu, true);
+        return true;
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.action_share: {
+                recreateImage(true);
+                _app.shareBitmapToOtherApp(_lastBitmap, this);
+                return true;
+            }
+            case R.id.action_save: {
+                recreateImage(true);
+                saveMemeToFilesystem(true);
+                return true;
+            }
+            case R.id.action_save_as_template: {
+                if (!_savedAsMemeTemplate) {
+                    File folder = AssetUpdater.getCustomAssetsDir(AppSettings.get());
+                    String filename = String.format(Locale.getDefault(), "%s_%s.jpg", getString(R.string.app_name), AssetUpdater.FORMAT_MINUTE_FILE.format(new Date(_memeSavetime)));
+                    File fullpath = new File(folder, filename);
+                    folder.mkdirs();
+                    _savedAsMemeTemplate = ContextUtils.get().writeImageToFile(fullpath, _memeEditorElements.getImageMain().getDisplayImage());
+                }
+                return true;
+            }
+            case R.id.action_appearance: {
+                toggleMoarControls(false, false);
+                ActivityUtils.get(this).hideSoftKeyboard();
+                View focusedView = this.getCurrentFocus();
+                if (focusedView != null) {
+                    ActivityUtils.get(this).hideSoftKeyboard();
+                }
+                return true;
+            }
+            case R.id.action_show_original_image: {
+                _fullscreenImageView.setImageBitmap(_memeEditorElements.getImageMain().getDisplayImage());
+                _fullscreenImageView.setVisibility(View.VISIBLE);
+                toggleMoarControls(true, true);
+                return true;
+            }
+            case R.id.action_show_edited_image: {
+                recreateImage(true);
+                _fullscreenImageView.setImageBitmap(_lastBitmap);
+                _fullscreenImageView.setVisibility(View.VISIBLE);
+                toggleMoarControls(true, true);
+                return true;
+            }
+        }
+        return super.onOptionsItemSelected(item);
+    }
+    private boolean saveMemeToFilesystem(boolean showDialog) {
+        if (!PermissionChecker.doIfPermissionGranted(this)) {
+            return false;
+        }
+        File folder = AssetUpdater.getMemesDir(AppSettings.get());
+        if (_memeSavetime < 0) {
+            _memeSavetime = System.currentTimeMillis();
+        }
+        String filename = String.format(Locale.getDefault(), "%s_%s.jpg", getString(R.string.app_name), AssetUpdater.FORMAT_MINUTE_FILE.format(new Date(_memeSavetime)));
+        File fullpath = _predefinedTargetFile != null ? _predefinedTargetFile : new File(folder, filename);
+        boolean wasSaved = ContextUtils.get().writeImageToFile(fullpath, _lastBitmap.copy(_lastBitmap.getConfig(), false));
+        if (wasSaved && showDialog) {
+            AlertDialog.Builder dialog = new AlertDialog.Builder(this);
+            dialog.setTitle(R.string.successfully_saved)
+                    .setMessage(R.string.saved_meme_successfully__appspecific)
+                    .setNegativeButton(R.string.keep_editing, null)
+                    .setNeutralButton(R.string.share_meme__appspecific, new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface dialogInterface, int i) {
+                            _app.shareBitmapToOtherApp(_lastBitmap, MemeCreateActivity.this);
+                        }
+                    })
+                    .setPositiveButton(R.string.close, (dialog1, which) -> finish());
+            dialog.show();
+        }
+        if (wasSaved) {
+            MemeConfig.Image confImage = AssetUpdater.generateImageEntry(folder, filename, new String[0]);
+            MemeData.Image dataImage = new MemeData.Image();
+            dataImage.conf = confImage;
+            dataImage.fullPath = fullpath;
+            dataImage.isTemplate = false;
+            MemeData.getCreatedMemes().add(dataImage);
+        }
+        return wasSaved;
+    }
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        PermissionChecker.checkPermissionResult(this, requestCode, permissions, grantResults);
+    }
+    public void toggleMoarControls(boolean forceVisibile, boolean visible) {
+        _bottomContainerVisible = !_bottomContainerVisible;
+        if (forceVisibile) {
+            _bottomContainerVisible = visible;
+        }
+        _create_caption.setVisibility(_bottomContainerVisible ? View.GONE : View.VISIBLE);
+        _toolbar.setVisibility(_bottomContainerVisible ? View.GONE : View.VISIBLE);
+        // higher weightRatio means the conf is more wide, so below _dialogView can be higher
+        // 100 is the max weight, 55 means the below _dialogView is a little more weighted
+        Bitmap curImg = _memeEditorElements.getImageMain().getDisplayImage();
+        int weight = (int) (55f * (1 + ((curImg.getWidth() / (float) curImg.getHeight()) / 10f)));
+        weight = weight > 100 ? 100 : weight;
+        // Set weights. If _bottomContainerVisible == false -> Hide them = 0 weight
+        View container = findViewById(R.id.memecreate__activity__image_container);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) container.getLayoutParams();
+        lp.height = 0;
+        lp.weight = _bottomContainerVisible ? 100 - weight : 100;
+        container.setLayoutParams(lp);
+        container = findViewById(R.id.memecreate__activity__moar_controls_container);
+        container.setVisibility(_bottomContainerVisible ? View.VISIBLE : View.GONE);
+        lp = (LinearLayout.LayoutParams) container.getLayoutParams();
+        lp.height = 0;
+        lp.weight = _bottomContainerVisible ? weight : 0;
+        container.setLayoutParams(lp);
+    }
+    private void initTextSettingsPopupDialog(View view) {
+        SeekBar textSize = view.findViewById(R.id.meme_dialog__seek_font_size);
+        View textBackGroundColor = view.findViewById(R.id.meme_dialog__color_picker_for_text);
+        View textBorderColor = view.findViewById(R.id.meme_dialog__color_picker_for_border);
+        Switch allCapsSwitch = view.findViewById(R.id.meme_dialog__toggle_all_caps);
+        Spinner fontDropDown = view.findViewById(R.id.meme_dialog__dropdown_font);
+        FontItemAdapter fontAdapter = new FontItemAdapter(this,
+                android.R.layout.simple_list_item_1, MemeData.getFonts(),
+                false, getString(R.string.font));
+        fontDropDown.setAdapter(fontAdapter);
+        fontAdapter.setSelectedFont(fontDropDown, _memeEditorElements.getCaptionTop().getFont());
+        textBackGroundColor.setBackgroundColor(_memeEditorElements.getCaptionTop().getTextColor());
+        textBorderColor.setBackgroundColor(_memeEditorElements.getCaptionTop().getBorderColor());
+        allCapsSwitch.setChecked(_memeEditorElements.getCaptionTop().isAllCaps());
+        textSize.setProgress(_memeEditorElements.getCaptionTop().getFontSize() - MemeLibConfig.FONT_SIZES.MIN);
+        //listeners
+        View.OnClickListener colorListeners = view1 -> {
+            switch (view1.getId()) {
+                case R.id.meme_dialog__color_picker_for_text:
+                    if (_isBottom) {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionBottom().getTextColor());
+                    } else {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionTop().getTextColor());
+                    }
+                    break;
+                case R.id.meme_dialog__color_picker_for_border:
+                    if (_isBottom) {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionBottom().getBorderColor());
+                    } else {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionTop().getBorderColor());
+                    }
+            }
+        };
+        textBackGroundColor.setOnClickListener(colorListeners);
+        textBorderColor.setOnClickListener(colorListeners);
+        //drop down
+        fontDropDown.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setFont((MemeData.Font)
+                            parent.getSelectedItem());
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setFont((MemeData.Font)
+                            parent.getSelectedItem());
+                }
+                _app.settings.setLastUsedFont(((MemeData.Font) parent.getSelectedItem()).fullPath.getAbsolutePath());
+                onMemeEditorObjectChanged();
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        //seekBar
+        textSize.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setFontSize(progress + MemeLibConfig.FONT_SIZES.MIN);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setFontSize(progress + MemeLibConfig.FONT_SIZES.MIN);
+                }
+                onMemeEditorObjectChanged();
+            }
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        //switch
+        allCapsSwitch.setOnCheckedChangeListener((compoundButton, isChecked) -> {
+            if (_isBottom) {
+                _memeEditorElements.getCaptionBottom().setAllCaps(isChecked);
+            }
+            if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                _memeEditorElements.getCaptionTop().setAllCaps(isChecked);
+            }
+            onMemeEditorObjectChanged();
+        });
+    }
+    private void initMoarControlsContainer() {
+        final Button rotateButton = ButterKnife.findById(this, R.id.memecreate__moar_controls__rotate_plus_90deg);
+        final SeekBar seekPaddingSize = ButterKnife.findById(this, R.id.memecreate__moar_controls__seek_padding_size);
+        final ColorPanelView colorPickerPadding = ButterKnife.findById(this, R.id.memecreate__moar_controls__color_picker_for_padding);
+        final CheckBox globalTextSettingsCheckbox = findViewById(R.id.memecreate__moar_controls__global_text_settings);
+        // Apply existing settings
+        _paddingColor.setColor(_memeEditorElements.getImageMain().getPaddingColor());
+        seekPaddingSize.setProgress(_memeEditorElements.getImageMain().getPadding());
+        globalTextSettingsCheckbox.setChecked(_memeEditorElements.getImageMain().isTextSettingsGlobal());
+        //
+        //  Add bottom sheet listeners
+        //
+        View.OnClickListener colorListener = v -> {
+            showColorDialog(R.id.memecreate__moar_controls__color_picker_for_padding, _memeEditorElements.getImageMain().getPaddingColor());
+            onMemeEditorObjectChanged();
+        };
+        globalTextSettingsCheckbox.setOnCheckedChangeListener((buttonView, isChecked) -> _memeEditorElements.getImageMain().setTextSettingsGlobal(isChecked));
+        colorPickerPadding.setOnClickListener(colorListener);
+        seekPaddingSize.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                _memeEditorElements.getImageMain().setPadding(progress);
+                onMemeEditorObjectChanged();
+            }
+        });
+        rotateButton.setOnClickListener(v -> {
+            _memeEditorElements.getImageMain().setRotationDeg((_memeEditorElements.getImageMain().getRotationDeg() + 90) % 360);
+            onMemeEditorObjectChanged();
+        });
+    }
+    private void showColorDialog(int id, @ColorInt int color) {
+        ColorPickerDialog.newBuilder()
+                .setDialogId(id)
+                .setColor(color)
+                .setPresets(MemeLibConfig.MEME_COLORS.ALL)
+                .setCustomButtonText(R.string.palette)
+                .setPresetsButtonText(R.string.presets)
+                .setDialogTitle(R.string.select_color)
+                .setSelectedButtonText(android.R.string.ok)
+                .show(this);
+    }
+    @OnClick(R.id.memecreate__activity__fullscreen_image)
+    public void onFullScreenImageClicked() {
+        _fullscreenImageView.setVisibility(View.INVISIBLE);
+        recreateImage(false);
+        toggleMoarControls(true, false);
+    }
+    @OnLongClick(R.id.memecreate__activity__fullscreen_image)
+    public boolean onFullScreenImageLongClicked() {
+        _fullscreenImageView.setRotation((_fullscreenImageView.getRotation() + 90) % 360);
+        return true;
+    }
+    @Override
+    public void onColorSelected(int id, @ColorInt int colorInt) {
+        switch (id) {
+            case R.id.meme_dialog__color_picker_for_border: {// border color
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setBorderColor(colorInt);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setBorderColor(colorInt);
+                }
+                View view = _dialogView.findViewById(R.id.meme_dialog__color_picker_for_border);
+                view.setBackgroundColor(colorInt);
+                break;
+            }
+            case R.id.meme_dialog__color_picker_for_text: {// text background color
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setTextColor(colorInt);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setTextColor(colorInt);
+                }
+                View view = _dialogView.findViewById(R.id.meme_dialog__color_picker_for_text);
+                view.setBackgroundColor(colorInt);
+                break;
+            }
+            case R.id.memecreate__moar_controls__color_picker_for_padding: { // padding color
+                _memeEditorElements.getImageMain().setPaddingColor(colorInt);
+                _memeEditorElements.getImageMain().setPaddingColor(colorInt);
+                _paddingColor.setColor(colorInt);
+                break;
+            }
+            default: {
+                Log.i(TAG, "Wrong selection");
+                break;
+            }
+        }
+        onMemeEditorObjectChanged();
+    }
+    @Override
+    public void onDialogDismissed(int id) {
+    }
+    public Bitmap renderMemeImageFromElements(Context c, MemeEditorElements memeEditorElements) {
+        // prepare canvas
+        Bitmap bitmap = memeEditorElements.getImageMain().getDisplayImage();
+        if (memeEditorElements.getImageMain().getRotationDeg() != 0) {
+            Matrix matrix = new Matrix();
+            matrix.postRotate(memeEditorElements.getImageMain().getRotationDeg());
+            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+        }
+        double pad = 1 + memeEditorElements.getImageMain().getPadding() / 100.0;
+        if (pad > 1.01) {
+            Bitmap workBmp = Bitmap.createBitmap((int) (bitmap.getWidth() * pad), (int) (bitmap.getHeight() * pad), Bitmap.Config.ARGB_8888);
+            Canvas can = new Canvas(workBmp);
+            //can.drawARGB(0xFF, 0xFF, 0xFF, 0xFF); //This represents White color
+            can.drawColor(memeEditorElements.getImageMain().getPaddingColor());
+            can.drawBitmap(bitmap, (int) ((workBmp.getWidth() - bitmap.getWidth()) / 2.0), (int) ((workBmp.getHeight() - bitmap.getHeight()) / 2.0), null);
+            bitmap = workBmp;
+        }
+        float scale = ContextUtils.get().getScalingFactorInPixelsForWritingOnPicture(bitmap.getWidth(), bitmap.getHeight());
+        float borderScale = scale * memeEditorElements.getCaptionTop().getFontSize() / MemeLibConfig.FONT_SIZES.DEFAULT;
+        Bitmap.Config bitmapConfig = bitmap.getConfig();
+        // set default bitmap config if none
+        if (bitmapConfig == null) {
+            bitmapConfig = Bitmap.Config.RGB_565;
+        }
+        // resource bitmaps are immutable,
+        // so we need to convert it to mutable one
+        bitmap = bitmap.copy(bitmapConfig, true);
+        Canvas canvas = new Canvas(bitmap);
+        // new antialiased Paint
+        TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        paint.setStrokeWidth(borderScale);
+        for (MemeEditorElements.EditorCaption caption : _memeEditorElements.getCaptions()) {
+            String textString = caption.isAllCaps() ? caption.getText().toUpperCase() : caption.getText();
+            if (TextUtils.isEmpty(textString)) {
+                textString = getString(R.string.tap_here_to_add_caption);
+                paint.setTextSize((int) (scale * caption.getFontSize() * 5 / 8));
+                paint.setTypeface(caption.getFont().typeFace);
+                paint.setColor(caption.getBorderColor());
+                paint.setStyle(Paint.Style.FILL_AND_STROKE);
+            } else {
+                paint.setTextSize((int) (scale * caption.getFontSize()));
+                paint.setTypeface(caption.getFont().typeFace);
+                paint.setColor(caption.getBorderColor());
+                paint.setStyle(Paint.Style.FILL_AND_STROKE);
+            }
+            // set text width to canvas width minus 16dp padding
+            int textWidth = canvas.getWidth() - (int) (16 * scale);
+            // init StaticLayout for text
+            StaticLayout textLayout = new StaticLayout(
+                    textString, paint, textWidth, Layout.Alignment.ALIGN_CENTER, 1.0f, 0.0f, false);
+            // get height of multiline text
+            int textHeight = textLayout.getHeight();
+            // get position of text in the canvas, this will depend in its internal location mode
+            MemeConfig.Point where = caption.getPositionInCanvas(
+                    bitmap.getWidth(), bitmap.getHeight(), textWidth, textHeight);
+            // draw text to the Canvas center
+            canvas.save();
+            canvas.translate(where.x, where.y);
+            textLayout.draw(canvas);
+            // new antialiased Paint
+            paint.setColor(caption.getTextColor());
+            paint.setStyle(Paint.Style.FILL);
+            // init StaticLayout for text
+            textLayout = new StaticLayout(
+                    textString, paint, textWidth, Layout.Alignment.ALIGN_CENTER, 1.0f, 0.0f, false);
+            // get height of multiline text
+            textHeight = textLayout.getHeight();
+            // draw text to the Canvas center
+            textLayout.draw(canvas);
+            canvas.restore();
+        }
+        return bitmap;
+    }
+    @OnTextChanged(value = R.id.create_caption, callback = OnTextChanged.Callback.TEXT_CHANGED)
+    public void onCaptionChanged(CharSequence text) {
+        if (_isBottom) {
+            _memeEditorElements.getCaptionBottom().setText(text.toString());
+        } else {
+            _memeEditorElements.getCaptionTop().setText(text.toString());
+        }
+        onMemeEditorObjectChanged();
+    }
+    public void onMemeEditorObjectChanged() {
+        _imageEditView.setImageBitmap(null);
+        if (_lastBitmap != null) {
+            _lastBitmap.recycle();
+        }
+        Bitmap bmp = renderMemeImageFromElements(this, _memeEditorElements);
+        _imageEditView.setImageBitmap(bmp);
+        _lastBitmap = bmp;
+    }
+    // createForSaving == true will make template text elements empty
+    public void recreateImage(boolean createForSaving) {
+        if (createForSaving) {
+            for (MemeEditorElements.EditorCaption caption : _memeEditorElements.getCaptions()) {
+                if (TextUtils.isEmpty(caption.getText())) {
+                    caption.setText(" ");
+                }
+            }
+        }
+        onMemeEditorObjectChanged();
+    }
+    //////////////////////////////////////////////////////////////
+    ////
+    ///  Visibility etc
+    //
+    @OnClick(R.id.done_caption)
+    public void settingsDone() {
+        _editBar.setVisibility(View.GONE);
+        ActivityUtils.get(this).hideSoftKeyboard();
+        onMemeEditorObjectChanged();
+    }
+    @OnClick(R.id.memecreate__moar_controls__layout)
+    void onBottomContainerClicked() {
+        toggleMoarControls(true, false);
+    }
+    @Override
+    public void onBackPressed() {
+        boolean hasTextInput = !_create_caption.getText().toString().isEmpty() ||
+                !_memeEditorElements.getCaptionBottom().getText().isEmpty() ||
+                !_memeEditorElements.getCaptionTop().getText().isEmpty();
+        if (_fullscreenImageView.getVisibility() == View.VISIBLE) {
+            _fullscreenImageView.setVisibility(View.INVISIBLE);
+            toggleMoarControls(true, false);
+            return;
+        }
+        // Close views above
+        if (_bottomContainerVisible) {
+            toggleMoarControls(true, false);
+            return;
+        }
+        if (_editBar.getVisibility() != View.GONE) {
+            settingsDone();
+            return;
+        }
+        // Auto save if option checked
+        if (hasTextInput && _app.settings.isAutoSaveMeme()) {
+            if (saveMemeToFilesystem(false)) {
+                finish();
+                return;
+            }
+        }
+        // Close if no input
+        if (!hasTextInput) {
+            finish();
+            return;
+        }
+        // Else wait for double back-press
+        if (_doubleBackToExitPressedOnce) {
+            super.onBackPressed();
+            return;
+        }
+        _doubleBackToExitPressedOnce = true;
+        Snackbar.make(findViewById(android.R.id.content), R.string.press_back_again_to_stop_editing__appspecific, Snackbar.LENGTH_SHORT).show();
+        new Handler().postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                _doubleBackToExitPressedOnce = false;
+            }
+        }, 2000);
+    }
+    public void touchTopElement() {
+        onImageTouched(_imageEditView, MotionEvent.obtain(1, 1, MotionEvent.ACTION_DOWN, 0, 0, 0));
+    }
+    @OnTouch(R.id.memecreate__activity__image)
+    public boolean onImageTouched(View view, MotionEvent event) {
+        if (_editBar.getVisibility() == View.VISIBLE && !_create_caption.getText().toString().isEmpty()) {
+            onMemeEditorObjectChanged();
+        }
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            float heightOfPic = view.getMeasuredHeight();
+            float heightOfEvent = event.getY();
+            int position = (int) (heightOfEvent / heightOfPic * 100);
+            _isBottom = position >= 50;
+            _editBar.setVisibility(View.VISIBLE);
+            String _areaCaption = _isBottom ?
+                    _memeEditorElements.getCaptionBottom().getText() :
+                    _memeEditorElements.getCaptionTop().getText();
+            _create_caption.setText(_areaCaption);
+            _create_caption.requestFocus();
+            ActivityUtils.get(this).showSoftKeyboard();
+            if (_bottomContainerVisible) {
+                toggleMoarControls(true, false);
+            }
+            return true;
+        }
+        return super.onTouchEvent(event);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.util;
+import android.content.Context;
+import android.os.Build;
+import android.support.v7.widget.PopupMenu;
+import android.view.View;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.service.MigrationThread;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.Date;
+public class ContextUtils extends net.gsantner.opoc.util.ContextUtils {
+    public ContextUtils(Context context) {
+        super(context);
+    }
+    public static ContextUtils get() {
+        return new ContextUtils(App.get());
+    }
+    public static void checkForAssetUpdates(Context context) {
+        new MigrationThread(context).start();
+        Date sevenDaysAgo = new Date(System.currentTimeMillis() - 7 * 1000 * 60 * 60 * 24);
+        if (AppSettings.get().getLastAssetArchiveCheckDate().before(sevenDaysAgo)) {
+            new AssetUpdater.UpdateThread(context, false).start();
+        }
+    }
+    public static void popupMenuEnableIcons(PopupMenu popupMenu) {
+        try {
+            Field[] fields = popupMenu.getClass().getDeclaredFields();
+            for (Field field : fields) {
+                if ("mPopup".equals(field.getName())) {
+                    field.setAccessible(true);
+                    Object menuPopupHelper = field.get(popupMenu);
+                    Class<?> classPopupHelper = Class.forName(menuPopupHelper.getClass().getName());
+                    Method setForceIcons = classPopupHelper.getMethod("setForceShowIcon", boolean.class);
+                    setForceIcons.invoke(menuPopupHelper, true);
+                    break;
+                }
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+    public int getImmersiveUiVisibility() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            int statusBarFlag = View.SYSTEM_UI_FLAG_FULLSCREEN;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                statusBarFlag = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+            }
+            return statusBarFlag
+                    //| View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    //| View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+        }
+        return 0;
+    }
+    public void enableImmersiveMode(final View decorViewOfActivity) {
+        decorViewOfActivity.setSystemUiVisibility(getImmersiveUiVisibility());
+        decorViewOfActivity.setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener() {
+            @Override
+            public void onSystemUiVisibilityChange(int visibility) {
+                if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    decorViewOfActivity.setSystemUiVisibility(getImmersiveUiVisibility());
+                }
+            }
+        });
+    }
+    /**
+     * Calculates the scaling factor to convert conf size to size in pixels
+     *
+     * @param w width of the bitmap where a text should be written on
+     * @param h height of the bitmap where a text should be written on
+     * @return the size of the conf in pixels
+     */
+    public float getScalingFactorInPixelsForWritingOnPicture(int w, int h) {
+        final float fontScaler = (float) 133;
+        final int raster = 50;
+        int size = Math.min(w, h);
+        int rest = size % raster;
+        // Round
+        int addl = rest >= raster / 2 ? raster - rest : -rest;
+        return (size + addl) / (fontScaler);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.service;
+import android.content.Context;
+import android.os.Environment;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.util.FileUtils;
+import java.io.File;
+import io.github.gsantner.memetastic.R;
+public class MigrationThread extends Thread {
+    private final Context _context;
+    public MigrationThread(Context context) {
+        _context = context;
+    }
+    @Override
+    public void run() {
+        super.run();
+        AppSettings appSettings = AppSettings.get();
+        if (!PermissionChecker.hasExtStoragePerm(_context) || appSettings.isMigrated()) {
+            return;
+        }
+        File newMemesDir = AssetUpdater.getMemesDir(AppSettings.get());
+        File newTemplatesDir = AssetUpdater.getCustomAssetsDir(AppSettings.get());
+        File oldMemesDir = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_PICTURES), _context.getString(R.string.app_name));
+        File oldTemplatesDir = new File(oldMemesDir, "templates");
+        File oldTemplatesCustomDir = new File(oldMemesDir, "custom");
+        String thumbnails = ".thumbnails";
+        if (!oldMemesDir.exists()) {
+            return;
+        }
+        FileUtils.deleteRecursive(new File(oldMemesDir, thumbnails));
+        try {
+            FileUtils.deleteRecursive(new File(oldTemplatesCustomDir, thumbnails));
+            for (File file : new File(oldTemplatesDir, "custom").listFiles()) {
+                if (file.isFile()) {
+                    FileUtils.renameFile(file, new File(newTemplatesDir, file.getName()));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            for (File file : oldMemesDir.listFiles()) {
+                if (file.isFile()) {
+                    FileUtils.renameFile(file, new File(newMemesDir, file.getName()));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        FileUtils.deleteRecursive(oldTemplatesCustomDir);
+        appSettings.setMigrated(true);
+    }
+}

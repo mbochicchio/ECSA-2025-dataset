@@ -1,0 +1,2622 @@
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.http;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.archive.ModelNotFoundException;
+import com.amazonaws.ml.mms.openapi.OpenApiUtils;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.amazonaws.ml.mms.util.messages.InputParameter;
+import com.amazonaws.ml.mms.util.messages.RequestInput;
+import com.amazonaws.ml.mms.util.messages.WorkerCommands;
+import com.amazonaws.ml.mms.wlm.Job;
+import com.amazonaws.ml.mms.wlm.Model;
+import com.amazonaws.ml.mms.wlm.ModelManager;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.QueryStringDecoder;
+import io.netty.handler.codec.http.multipart.DefaultHttpDataFactory;
+import io.netty.handler.codec.http.multipart.HttpDataFactory;
+import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder;
+import java.util.List;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import software.amazon.ai.mms.servingsdk.ModelServerEndpoint;
+/**
+ * A class handling inbound HTTP requests to the management API.
+ *
+ * <p>This class
+ */
+public class InferenceRequestHandler extends HttpRequestHandlerChain {
+    private static final Logger logger = LoggerFactory.getLogger(InferenceRequestHandler.class);
+    /** Creates a new {@code InferenceRequestHandler} instance. */
+    public InferenceRequestHandler(Map<String, ModelServerEndpoint> ep) {
+        endpointMap = ep;
+    }
+    @Override
+    protected void handleRequest(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelException {
+        if (isInferenceReq(segments)) {
+            if (endpointMap.getOrDefault(segments[1], null) != null) {
+                handleCustomEndpoint(ctx, req, segments, decoder);
+            } else {
+                switch (segments[1]) {
+                    case "ping":
+                        ModelManager.getInstance().workerStatus(ctx);
+                        break;
+                    case "models":
+                    case "invocations":
+                        validatePredictionsEndpoint(segments);
+                        handleInvocations(ctx, req, decoder, segments);
+                        break;
+                    case "predictions":
+                        handlePredictions(ctx, req, segments);
+                        break;
+                    default:
+                        handleLegacyPredict(ctx, req, decoder, segments);
+                        break;
+                }
+            }
+        } else {
+            chain.handleRequest(ctx, req, decoder, segments);
+        }
+    }
+    private boolean isInferenceReq(String[] segments) {
+        return segments.length == 0
+                || segments[1].equals("ping")
+                || (segments.length == 4 && segments[1].equals("models"))
+                || segments[1].equals("predictions")
+                || segments[1].equals("api-description")
+                || segments[1].equals("invocations")
+                || (segments.length == 3 && segments[2].equals("predict"))
+                || endpointMap.containsKey(segments[1]);
+    }
+    private void validatePredictionsEndpoint(String[] segments) {
+        if (segments.length == 2 && "invocations".equals(segments[1])) {
+            return;
+        } else if (segments.length == 4
+                && "models".equals(segments[1])
+                && "invoke".equals(segments[3])) {
+            return;
+        }
+        throw new ResourceNotFoundException();
+    }
+    private void handlePredictions(
+            ChannelHandlerContext ctx, FullHttpRequest req, String[] segments)
+            throws ModelNotFoundException {
+        if (segments.length < 3) {
+            throw new ResourceNotFoundException();
+        }
+        predict(ctx, req, null, segments[2]);
+    }
+    private void handleInvocations(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelNotFoundException {
+        String modelName =
+                ("invocations".equals(segments[1]))
+                        ? NettyUtils.getParameter(decoder, "model_name", null)
+                        : segments[2];
+        if (modelName == null || modelName.isEmpty()) {
+            if (ModelManager.getInstance().getStartupModels().size() == 1) {
+                modelName = ModelManager.getInstance().getStartupModels().iterator().next();
+            }
+        }
+        predict(ctx, req, decoder, modelName);
+    }
+    private void handleLegacyPredict(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelNotFoundException {
+        if (segments.length < 3 || !"predict".equals(segments[2])) {
+            throw new ResourceNotFoundException();
+        }
+        predict(ctx, req, decoder, segments[1]);
+    }
+    private void predict(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String modelName)
+            throws ModelNotFoundException, BadRequestException {
+        RequestInput input = parseRequest(ctx, req, decoder);
+        if (modelName == null) {
+            throw new BadRequestException("Parameter model_name is required.");
+        }
+        if (HttpMethod.OPTIONS.equals(req.method())) {
+            ModelManager modelManager = ModelManager.getInstance();
+            Model model = modelManager.getModels().get(modelName);
+            if (model == null) {
+                throw new ModelNotFoundException("Model not found: " + modelName);
+            }
+            String resp = OpenApiUtils.getModelApi(model);
+            NettyUtils.sendJsonResponse(ctx, resp);
+            return;
+        }
+        Job job = new Job(ctx, modelName, WorkerCommands.PREDICT, input);
+        if (!ModelManager.getInstance().addJob(job)) {
+            throw new ServiceUnavailableException(
+                    "No worker is available to serve request for model: "
+                            + modelName
+                            + ". Consider increasing job queue size.");
+        }
+    }
+    private static RequestInput parseRequest(
+            ChannelHandlerContext ctx, FullHttpRequest req, QueryStringDecoder decoder) {
+        String requestId = NettyUtils.getRequestId(ctx.channel());
+        RequestInput inputData = new RequestInput(requestId);
+        if (decoder != null) {
+            for (Map.Entry<String, List<String>> entry : decoder.parameters().entrySet()) {
+                String key = entry.getKey();
+                for (String value : entry.getValue()) {
+                    inputData.addParameter(new InputParameter(key, value));
+                }
+            }
+        }
+        CharSequence contentType = HttpUtil.getMimeType(req);
+        for (Map.Entry<String, String> entry : req.headers().entries()) {
+            inputData.updateHeaders(entry.getKey(), entry.getValue());
+        }
+        if (HttpPostRequestDecoder.isMultipart(req)
+                || HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED.contentEqualsIgnoreCase(
+                        contentType)) {
+            HttpDataFactory factory = new DefaultHttpDataFactory(6553500);
+            HttpPostRequestDecoder form = new HttpPostRequestDecoder(factory, req);
+            try {
+                while (form.hasNext()) {
+                    inputData.addParameter(NettyUtils.getFormData(form.next()));
+                }
+            } catch (HttpPostRequestDecoder.EndOfDataDecoderException ignore) {
+                logger.trace("End of multipart items.");
+            } finally {
+                form.cleanFiles();
+                form.destroy();
+            }
+        } else {
+            byte[] content = NettyUtils.getBytes(req.content());
+            inputData.addParameter(new InputParameter("body", content, contentType));
+        }
+        return inputData;
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.util;
+import com.amazonaws.ml.mms.http.ErrorResponse;
+import com.amazonaws.ml.mms.http.Session;
+import com.amazonaws.ml.mms.metrics.Dimension;
+import com.amazonaws.ml.mms.metrics.Metric;
+import com.amazonaws.ml.mms.util.messages.InputParameter;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.QueryStringDecoder;
+import io.netty.handler.codec.http.multipart.Attribute;
+import io.netty.handler.codec.http.multipart.FileUpload;
+import io.netty.handler.codec.http.multipart.InterfaceHttpData;
+import io.netty.util.AttributeKey;
+import io.netty.util.CharsetUtil;
+import java.io.IOException;
+import java.net.SocketAddress;
+import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+/** A utility class that handling Netty request and response. */
+public final class NettyUtils {
+    private static final Logger logger = LoggerFactory.getLogger("ACCESS_LOG");
+    private static final String REQUEST_ID = "x-request-id";
+    private static final AttributeKey<Session> SESSION_KEY = AttributeKey.valueOf("session");
+    private static final Dimension DIMENSION = new Dimension("Level", "Host");
+    private static final Metric REQUESTS_2_XX =
+            new Metric(
+                    "Requests2XX",
+                    "1",
+                    "Count",
+                    ConfigManager.getInstance().getHostName(),
+                    DIMENSION);
+    private static final Metric REQUESTS_4_XX =
+            new Metric(
+                    "Requests4XX",
+                    "1",
+                    "Count",
+                    ConfigManager.getInstance().getHostName(),
+                    DIMENSION);
+    private static final Metric REQUESTS_5_XX =
+            new Metric(
+                    "Requests5XX",
+                    "1",
+                    "Count",
+                    ConfigManager.getInstance().getHostName(),
+                    DIMENSION);
+    private static final Logger loggerMmsMetrics =
+            LoggerFactory.getLogger(ConfigManager.MODEL_SERVER_METRICS_LOGGER);
+    private NettyUtils() {}
+    public static void requestReceived(Channel channel, HttpRequest request) {
+        Session session = channel.attr(SESSION_KEY).get();
+        assert session == null;
+        SocketAddress address = channel.remoteAddress();
+        String remoteIp;
+        if (address == null) {
+            // This is can be null on UDS, or on certain case in Windows
+            remoteIp = "0.0.0.0";
+        } else {
+            remoteIp = address.toString();
+        }
+        channel.attr(SESSION_KEY).set(new Session(remoteIp, request));
+    }
+    public static String getRequestId(Channel channel) {
+        Session accessLog = channel.attr(SESSION_KEY).get();
+        if (accessLog != null) {
+            return accessLog.getRequestId();
+        }
+        return null;
+    }
+    public static void sendJsonResponse(ChannelHandlerContext ctx, Object json) {
+        sendJsonResponse(ctx, JsonUtils.GSON_PRETTY.toJson(json), HttpResponseStatus.OK);
+    }
+    public static void sendJsonResponse(
+            ChannelHandlerContext ctx, Object json, HttpResponseStatus status) {
+        sendJsonResponse(ctx, JsonUtils.GSON_PRETTY.toJson(json), status);
+    }
+    public static void sendJsonResponse(ChannelHandlerContext ctx, String json) {
+        sendJsonResponse(ctx, json, HttpResponseStatus.OK);
+    }
+    public static void sendJsonResponse(
+            ChannelHandlerContext ctx, String json, HttpResponseStatus status) {
+        FullHttpResponse resp =
+                new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1,
+                        status,
+                        Unpooled.directBuffer(),
+                        DefaultHttpHeadersFactory.headersFactory(),
+                        DefaultHttpHeadersFactory.trailersFactory());
+        resp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON);
+        ByteBuf content = resp.content();
+        content.writeCharSequence(json, CharsetUtil.UTF_8);
+        content.writeByte('\n');
+        sendHttpResponse(ctx, resp, true);
+    }
+    public static void sendError(
+            ChannelHandlerContext ctx, HttpResponseStatus status, Throwable t) {
+        ErrorResponse error =
+                new ErrorResponse(status.code(), t.getClass().getSimpleName(), t.getMessage());
+        sendJsonResponse(ctx, error, status);
+    }
+    public static void sendError(
+            ChannelHandlerContext ctx, HttpResponseStatus status, Throwable t, String msg) {
+        ErrorResponse error = new ErrorResponse(status.code(), t.getClass().getSimpleName(), msg);
+        sendJsonResponse(ctx, error, status);
+    }
+    /**
+     * Send HTTP response to client.
+     *
+     * @param ctx ChannelHandlerContext
+     * @param resp HttpResponse to send
+     * @param keepAlive if keep the connection
+     */
+    public static void sendHttpResponse(
+            ChannelHandlerContext ctx, FullHttpResponse resp, boolean keepAlive) {
+        // Send the response and close the connection if necessary.
+        Channel channel = ctx.channel();
+        Session session = channel.attr(SESSION_KEY).getAndSet(null);
+        HttpHeaders headers = resp.headers();
+        ConfigManager configManager = ConfigManager.getInstance();
+        if (session != null) {
+            // session might be recycled if channel is closed already.
+            session.setCode(resp.status().code());
+            headers.set(REQUEST_ID, session.getRequestId());
+            logger.info(session.toString());
+        }
+        int code = resp.status().code();
+        if (code >= 200 && code < 300) {
+            loggerMmsMetrics.info("{}", REQUESTS_2_XX);
+        } else if (code >= 400 && code < 500) {
+            loggerMmsMetrics.info("{}", REQUESTS_4_XX);
+        } else {
+            loggerMmsMetrics.info("{}", REQUESTS_5_XX);
+        }
+        String allowedOrigin = configManager.getCorsAllowedOrigin();
+        String allowedMethods = configManager.getCorsAllowedMethods();
+        String allowedHeaders = configManager.getCorsAllowedHeaders();
+        if (allowedOrigin != null
+                && !allowedOrigin.isEmpty()
+                && !headers.contains(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN)) {
+            headers.set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, allowedOrigin);
+        }
+        if (allowedMethods != null
+                && !allowedMethods.isEmpty()
+                && !headers.contains(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS)) {
+            headers.set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, allowedMethods);
+        }
+        if (allowedHeaders != null
+                && !allowedHeaders.isEmpty()
+                && !headers.contains(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS)) {
+            headers.set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, allowedHeaders);
+        }
+        // Add cache-control headers to avoid browser cache response
+        headers.set("Pragma", "no-cache");
+        headers.set("Cache-Control", "no-cache; no-store, must-revalidate, private");
+        headers.set("Expires", "Thu, 01 Jan 1970 00:00:00 UTC");
+        HttpUtil.setContentLength(resp, resp.content().readableBytes());
+        if (!keepAlive || code >= 400) {
+            headers.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            ChannelFuture f = channel.writeAndFlush(resp);
+            f.addListener(ChannelFutureListener.CLOSE);
+        } else {
+            headers.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            channel.writeAndFlush(resp);
+        }
+    }
+    /** Closes the specified channel after all queued write requests are flushed. */
+    public static void closeOnFlush(Channel ch) {
+        if (ch.isActive()) {
+            ch.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+        }
+    }
+    public static byte[] getBytes(ByteBuf buf) {
+        if (buf.hasArray()) {
+            return buf.array();
+        }
+        byte[] ret = new byte[buf.readableBytes()];
+        int readerIndex = buf.readerIndex();
+        buf.getBytes(readerIndex, ret);
+        return ret;
+    }
+    public static String getParameter(QueryStringDecoder decoder, String key, String def) {
+        List<String> param = decoder.parameters().get(key);
+        if (param != null && !param.isEmpty()) {
+            return param.get(0);
+        }
+        return def;
+    }
+    public static int getIntParameter(QueryStringDecoder decoder, String key, int def) {
+        String value = getParameter(decoder, key, null);
+        if (value == null) {
+            return def;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return def;
+        }
+    }
+    public static InputParameter getFormData(InterfaceHttpData data) {
+        if (data == null) {
+            return null;
+        }
+        String name = data.getName();
+        switch (data.getHttpDataType()) {
+            case Attribute:
+                Attribute attribute = (Attribute) data;
+                try {
+                    return new InputParameter(name, attribute.getValue());
+                } catch (IOException e) {
+                    throw new AssertionError(e);
+                }
+            case FileUpload:
+                FileUpload fileUpload = (FileUpload) data;
+                String contentType = fileUpload.getContentType();
+                try {
+                    return new InputParameter(name, getBytes(fileUpload.getByteBuf()), contentType);
+                } catch (IOException e) {
+                    throw new AssertionError(e);
+                }
+            default:
+                throw new IllegalArgumentException(
+                        "Except form field, but got " + data.getHttpDataType());
+        }
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.util;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyException;
+import java.security.KeyFactory;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.InvalidPropertiesFormatException;
+import java.util.List;
+import java.util.Properties;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.io.IOUtils;
+public final class ConfigManager {
+    // Variables that can be configured through config.properties and Environment Variables
+    // NOTE: Variables which can be configured through environment variables **SHOULD** have a
+    // "MMS_" prefix
+    private static final String MMS_DEBUG = "debug";
+    private static final String MMS_INFERENCE_ADDRESS = "inference_address";
+    private static final String MMS_MANAGEMENT_ADDRESS = "management_address";
+    private static final String MMS_LOAD_MODELS = "load_models";
+    private static final String MMS_BLACKLIST_ENV_VARS = "blacklist_env_vars";
+    private static final String MMS_DEFAULT_WORKERS_PER_MODEL = "default_workers_per_model";
+    private static final String MMS_DEFAULT_RESPONSE_TIMEOUT = "default_response_timeout";
+    private static final String MMS_DEFAULT_RESPONSE_TIMEOUT_SECONDS =
+            "default_response_timeout_seconds";
+    private static final String MMS_UNREGISTER_MODEL_TIMEOUT = "unregister_model_timeout";
+    private static final String MMS_NUMBER_OF_NETTY_THREADS = "number_of_netty_threads";
+    private static final String MMS_NETTY_CLIENT_THREADS = "netty_client_threads";
+    private static final String MMS_JOB_QUEUE_SIZE = "job_queue_size";
+    private static final String MMS_NUMBER_OF_GPU = "number_of_gpu";
+    private static final String MMS_ASYNC_LOGGING = "async_logging";
+    private static final String MMS_CORS_ALLOWED_ORIGIN = "cors_allowed_origin";
+    private static final String MMS_CORS_ALLOWED_METHODS = "cors_allowed_methods";
+    private static final String MMS_CORS_ALLOWED_HEADERS = "cors_allowed_headers";
+    private static final String MMS_DECODE_INPUT_REQUEST = "decode_input_request";
+    private static final String MMS_KEYSTORE = "keystore";
+    private static final String MMS_KEYSTORE_PASS = "keystore_pass";
+    private static final String MMS_KEYSTORE_TYPE = "keystore_type";
+    private static final String MMS_CERTIFICATE_FILE = "certificate_file";
+    private static final String MMS_PRIVATE_KEY_FILE = "private_key_file";
+    private static final String MMS_MAX_REQUEST_SIZE = "max_request_size";
+    private static final String MMS_MAX_RESPONSE_SIZE = "max_response_size";
+    private static final String MMS_DEFAULT_SERVICE_HANDLER = "default_service_handler";
+    private static final String MMS_PRELOAD_MODEL = "preload_model";
+    private static final String MODEL_SERVER_HOME = "model_server_home";
+    private static final String MMS_MODEL_STORE = "model_store";
+    private static final String MMS_PREFER_DIRECT_BUFFER = "prefer_direct_buffer";
+    // Configuration which are not documented or enabled through environment variables
+    private static final String USE_NATIVE_IO = "use_native_io";
+    private static final String IO_RATIO = "io_ratio";
+    private static final String METRIC_TIME_INTERVAL = "metric_time_interval";
+    private static final String ENABLE_ENVVARS_CONFIG = "enable_envvars_config";
+    // Variables which are local
+    public static final String MODEL_METRICS_LOGGER = "MODEL_METRICS";
+    public static final String MODEL_LOGGER = "MODEL_LOG";
+    public static final String MODEL_SERVER_METRICS_LOGGER = "MMS_METRICS";
+    private Pattern blacklistPattern;
+    private Properties prop;
+    private static Pattern pattern = Pattern.compile("\\$\\$([^$]+[^$])\\$\\$");
+    private static ConfigManager instance;
+    private String hostName;
+    private ConfigManager(Arguments args) {
+        prop = new Properties();
+        String filePath = System.getenv("MMS_CONFIG_FILE");
+        if (filePath == null) {
+            filePath = args.getMmsConfigFile();
+            if (filePath == null) {
+                filePath = System.getProperty("mmsConfigFile", "config.properties");
+            }
+        }
+        File file = new File(filePath);
+        if (file.exists()) {
+            try (FileInputStream stream = new FileInputStream(file)) {
+                prop.load(stream);
+                prop.put("mmsConfigFile", filePath);
+            } catch (IOException e) {
+                throw new IllegalStateException("Unable to read configuration file", e);
+            }
+        }
+        resolveEnvVarVals(prop);
+        String modelStore = args.getModelStore();
+        if (modelStore != null) {
+            prop.setProperty(MMS_MODEL_STORE, modelStore);
+        }
+        String[] models = args.getModels();
+        if (models != null) {
+            prop.setProperty(MMS_LOAD_MODELS, String.join(",", models));
+        }
+        prop.setProperty(
+                MMS_NUMBER_OF_GPU,
+                String.valueOf(
+                        Integer.min(
+                                getAvailableGpu(),
+                                getIntProperty(MMS_NUMBER_OF_GPU, Integer.MAX_VALUE))));
+        String pythonExecutable = args.getPythonExecutable();
+        if (pythonExecutable != null) {
+            prop.setProperty("PYTHON_EXECUTABLE", pythonExecutable);
+        }
+        try {
+            InetAddress ip = InetAddress.getLocalHost();
+            hostName = ip.getHostName();
+        } catch (UnknownHostException e) {
+            hostName = "Unknown";
+        }
+        if (Boolean.parseBoolean(prop.getProperty(MMS_ASYNC_LOGGING))) {
+            enableAsyncLogging();
+        }
+        if (Boolean.parseBoolean(getEnableEnvVarsConfig())) {
+            // Environment variables have higher precedence over the config file variables
+            setSystemVars();
+        }
+    }
+    private void resolveEnvVarVals(Properties prop) {
+        Set<String> keys = prop.stringPropertyNames();
+        for (String key : keys) {
+            String val = prop.getProperty(key);
+            Matcher matcher = pattern.matcher(val);
+            if (matcher.find()) {
+                StringBuffer sb = new StringBuffer();
+                do {
+                    String envVar = matcher.group(1);
+                    if (System.getenv(envVar) == null) {
+                        throw new IllegalArgumentException(
+                                "Invalid Environment Variable " + envVar);
+                    }
+                    matcher.appendReplacement(sb, System.getenv(envVar));
+                } while (matcher.find());
+                matcher.appendTail(sb);
+                prop.setProperty(key, sb.toString());
+            }
+        }
+    }
+    private void setSystemVars() {
+        Class<ConfigManager> configClass = ConfigManager.class;
+        Field[] fields = configClass.getDeclaredFields();
+        for (Field f : fields) {
+            if (f.getName().startsWith("MMS_")) {
+                String val = System.getenv(f.getName());
+                if (val != null) {
+                    try {
+                        prop.setProperty((String) f.get(ConfigManager.class), val);
+                    } catch (IllegalAccessException e) {
+                        e.printStackTrace(); // NOPMD
+                    }
+                }
+            }
+        }
+    }
+    String getEnableEnvVarsConfig() {
+        return prop.getProperty(ENABLE_ENVVARS_CONFIG, "false");
+    }
+    public String getHostName() {
+        return hostName;
+    }
+    public static void init(Arguments args) {
+        instance = new ConfigManager(args);
+    }
+    public static ConfigManager getInstance() {
+        return instance;
+    }
+    public boolean isDebug() {
+        return Boolean.getBoolean("MMS_DEBUG")
+                || Boolean.parseBoolean(prop.getProperty(MMS_DEBUG, "false"));
+    }
+    public Connector getListener(boolean management) {
+        String binding;
+        if (management) {
+            binding = prop.getProperty(MMS_MANAGEMENT_ADDRESS, "http://127.0.0.1:8081");
+        } else {
+            binding = prop.getProperty(MMS_INFERENCE_ADDRESS, "http://127.0.0.1:8080");
+        }
+        return Connector.parse(binding, management);
+    }
+    public String getPreloadModel() {
+        return getProperty(MMS_PRELOAD_MODEL, "false");
+    }
+    public boolean getPreferDirectBuffer() {
+        return Boolean.parseBoolean(getProperty(MMS_PREFER_DIRECT_BUFFER, "false"));
+    }
+    public int getNettyThreads() {
+        return getIntProperty(MMS_NUMBER_OF_NETTY_THREADS, 0);
+    }
+    public int getNettyClientThreads() {
+        return getIntProperty(MMS_NETTY_CLIENT_THREADS, 0);
+    }
+    public int getJobQueueSize() {
+        return getIntProperty(MMS_JOB_QUEUE_SIZE, 100);
+    }
+    public int getNumberOfGpu() {
+        return getIntProperty(MMS_NUMBER_OF_GPU, 0);
+    }
+    public String getMmsDefaultServiceHandler() {
+        return getProperty(MMS_DEFAULT_SERVICE_HANDLER, null);
+    }
+    public Properties getConfiguration() {
+        return new Properties(prop);
+    }
+    public int getConfiguredDefaultWorkersPerModel() {
+        return getIntProperty(MMS_DEFAULT_WORKERS_PER_MODEL, 0);
+    }
+    public int getDefaultWorkers() {
+        if (isDebug()) {
+            return 1;
+        }
+        int workers = getConfiguredDefaultWorkersPerModel();
+        if ((workers == 0) && (prop.getProperty("NUM_WORKERS", null) != null)) {
+            workers = getIntProperty("NUM_WORKERS", 0);
+        }
+        if (workers == 0) {
+            workers = getNumberOfGpu();
+        }
+        if (workers == 0) {
+            workers = Runtime.getRuntime().availableProcessors();
+        }
+        setProperty("NUM_WORKERS", Integer.toString(workers));
+        return workers;
+    }
+    public int getMetricTimeInterval() {
+        return getIntProperty(METRIC_TIME_INTERVAL, 60);
+    }
+    public String getModelServerHome() {
+        String mmsHome = System.getenv("MODEL_SERVER_HOME");
+        if (mmsHome == null) {
+            mmsHome = System.getProperty(MODEL_SERVER_HOME);
+            if (mmsHome == null) {
+                mmsHome = getProperty(MODEL_SERVER_HOME, null);
+                if (mmsHome == null) {
+                    mmsHome = getCanonicalPath(findMmsHome());
+                    return mmsHome;
+                }
+            }
+        }
+        File dir = new File(mmsHome);
+        if (!dir.exists()) {
+            throw new IllegalArgumentException("Model server home not exist: " + mmsHome);
+        }
+        mmsHome = getCanonicalPath(dir);
+        return mmsHome;
+    }
+    public String getPythonExecutable() {
+        return prop.getProperty("PYTHON_EXECUTABLE", "python");
+    }
+    public String getModelStore() {
+        return getCanonicalPath(prop.getProperty(MMS_MODEL_STORE));
+    }
+    public String getLoadModels() {
+        return prop.getProperty(MMS_LOAD_MODELS);
+    }
+    public Pattern getBlacklistPattern() {
+        return blacklistPattern;
+    }
+    public String getCorsAllowedOrigin() {
+        return prop.getProperty(MMS_CORS_ALLOWED_ORIGIN);
+    }
+    public String getCorsAllowedMethods() {
+        return prop.getProperty(MMS_CORS_ALLOWED_METHODS);
+    }
+    public String getCorsAllowedHeaders() {
+        return prop.getProperty(MMS_CORS_ALLOWED_HEADERS);
+    }
+    public SslContext getSslContext() throws IOException, GeneralSecurityException {
+        List<String> supportedCiphers =
+                Arrays.asList(
+                        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+                        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256");
+        PrivateKey privateKey;
+        X509Certificate[] chain;
+        String keyStoreFile = prop.getProperty(MMS_KEYSTORE);
+        String privateKeyFile = prop.getProperty(MMS_PRIVATE_KEY_FILE);
+        String certificateFile = prop.getProperty(MMS_CERTIFICATE_FILE);
+        if (keyStoreFile != null) {
+            char[] keystorePass = getProperty(MMS_KEYSTORE_PASS, "changeit").toCharArray();
+            String keystoreType = getProperty(MMS_KEYSTORE_TYPE, "PKCS12");
+            KeyStore keyStore = KeyStore.getInstance(keystoreType);
+            try (InputStream is = new FileInputStream(keyStoreFile)) {
+                keyStore.load(is, keystorePass);
+            }
+            Enumeration<String> en = keyStore.aliases();
+            String keyAlias = null;
+            while (en.hasMoreElements()) {
+                String alias = en.nextElement();
+                if (keyStore.isKeyEntry(alias)) {
+                    keyAlias = alias;
+                    break;
+                }
+            }
+            if (keyAlias == null) {
+                throw new KeyException("No key entry found in keystore.");
+            }
+            privateKey = (PrivateKey) keyStore.getKey(keyAlias, keystorePass);
+            Certificate[] certs = keyStore.getCertificateChain(keyAlias);
+            chain = new X509Certificate[certs.length];
+            for (int i = 0; i < certs.length; ++i) {
+                chain[i] = (X509Certificate) certs[i];
+            }
+        } else if (privateKeyFile != null && certificateFile != null) {
+            privateKey = loadPrivateKey(privateKeyFile);
+            chain = loadCertificateChain(certificateFile);
+        } else {
+            SelfSignedCertificate ssc = new SelfSignedCertificate();
+            privateKey = ssc.key();
+            chain = new X509Certificate[] {ssc.cert()};
+        }
+        return SslContextBuilder.forServer(privateKey, chain)
+                .protocols("TLSv1.2")
+                .ciphers(supportedCiphers)
+                .build();
+    }
+    private PrivateKey loadPrivateKey(String keyFile) throws IOException, GeneralSecurityException {
+        KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+        try (InputStream is = new FileInputStream(keyFile)) {
+            String content = IOUtils.toString(is, StandardCharsets.UTF_8);
+            content = content.replaceAll("-----(BEGIN|END)( RSA)? PRIVATE KEY-----\\s*", "");
+            byte[] buf = Base64.getMimeDecoder().decode(content);
+            try {
+                PKCS8EncodedKeySpec privKeySpec = new PKCS8EncodedKeySpec(buf);
+                return keyFactory.generatePrivate(privKeySpec);
+            } catch (InvalidKeySpecException e) {
+                // old private key is OpenSSL format private key
+                buf = OpenSslKey.convertPrivateKey(buf);
+                PKCS8EncodedKeySpec privKeySpec = new PKCS8EncodedKeySpec(buf);
+                return keyFactory.generatePrivate(privKeySpec);
+            }
+        }
+    }
+    private X509Certificate[] loadCertificateChain(String keyFile)
+            throws IOException, GeneralSecurityException {
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        try (InputStream is = new FileInputStream(keyFile)) {
+            Collection<? extends Certificate> certs = cf.generateCertificates(is);
+            int i = 0;
+            X509Certificate[] chain = new X509Certificate[certs.size()];
+            for (Certificate cert : certs) {
+                chain[i++] = (X509Certificate) cert;
+            }
+            return chain;
+        }
+    }
+    public String getProperty(String key, String def) {
+        return prop.getProperty(key, def);
+    }
+    public void validateConfigurations() throws InvalidPropertiesFormatException {
+        String blacklistVars = prop.getProperty(MMS_BLACKLIST_ENV_VARS, "");
+        try {
+            blacklistPattern = Pattern.compile(blacklistVars);
+        } catch (PatternSyntaxException e) {
+            throw new InvalidPropertiesFormatException(e);
+        }
+    }
+    public String dumpConfigurations() {
+        Runtime runtime = Runtime.getRuntime();
+        return "\nMMS Home: "
+                + getModelServerHome()
+                + "\nCurrent directory: "
+                + getCanonicalPath(".")
+                + "\nTemp directory: "
+                + System.getProperty("java.io.tmpdir")
+                + "\nNumber of GPUs: "
+                + getNumberOfGpu()
+                + "\nNumber of CPUs: "
+                + runtime.availableProcessors()
+                + "\nMax heap size: "
+                + (runtime.maxMemory() / 1024 / 1024)
+                + " M\nPython executable: "
+                + (getPythonExecutable() == null ? "N/A" : getPythonExecutable())
+                + "\nConfig file: "
+                + prop.getProperty("mmsConfigFile", "N/A")
+                + "\nInference address: "
+                + getListener(false)
+                + "\nManagement address: "
+                + getListener(true)
+                + "\nModel Store: "
+                + (getModelStore() == null ? "N/A" : getModelStore())
+                + "\nInitial Models: "
+                + (getLoadModels() == null ? "N/A" : getLoadModels())
+                + "\nLog dir: "
+                + getCanonicalPath(System.getProperty("LOG_LOCATION"))
+                + "\nMetrics dir: "
+                + getCanonicalPath(System.getProperty("METRICS_LOCATION"))
+                + "\nNetty threads: "
+                + getNettyThreads()
+                + "\nNetty client threads: "
+                + getNettyClientThreads()
+                + "\nDefault workers per model: "
+                + getDefaultWorkers()
+                + "\nBlacklist Regex: "
+                + prop.getProperty(MMS_BLACKLIST_ENV_VARS, "N/A")
+                + "\nMaximum Response Size: "
+                + prop.getProperty(MMS_MAX_RESPONSE_SIZE, "6553500")
+                + "\nMaximum Request Size: "
+                + prop.getProperty(MMS_MAX_REQUEST_SIZE, "6553500")
+                + "\nPreload model: "
+                + prop.getProperty(MMS_PRELOAD_MODEL, "false")
+                + "\nPrefer direct buffer: "
+                + prop.getProperty(MMS_PREFER_DIRECT_BUFFER, "false");
+    }
+    public boolean useNativeIo() {
+        return Boolean.parseBoolean(prop.getProperty(USE_NATIVE_IO, "true"));
+    }
+    public int getIoRatio() {
+        return getIntProperty(IO_RATIO, 50);
+    }
+    public int getMaxResponseSize() {
+        return getIntProperty(MMS_MAX_RESPONSE_SIZE, 6553500);
+    }
+    public int getMaxRequestSize() {
+        return getIntProperty(MMS_MAX_REQUEST_SIZE, 6553500);
+    }
+    void setProperty(String key, String value) {
+        prop.setProperty(key, value);
+    }
+    private int getIntProperty(String key, int def) {
+        String value = prop.getProperty(key);
+        if (value == null) {
+            return def;
+        }
+        return Integer.parseInt(value);
+    }
+    public int getDefaultResponseTimeoutSeconds() {
+        // TODO The MMS_DEFAULT_RESPONSE_TIMEOUT variable was never intended to represent minutes,
+        // but due to a bug that's what it did. We'd like to remove this and match the documented
+        // behavior, but for now we're being cautious about backward compatibility.
+        // Check both properties, prefer seconds if provided, convert to seconds for return value
+        int timeoutSeconds =
+                Integer.parseInt(prop.getProperty(MMS_DEFAULT_RESPONSE_TIMEOUT_SECONDS, "-1"));
+        if (timeoutSeconds < 0) {
+            int timeoutMinutes =
+                    Integer.parseInt(prop.getProperty(MMS_DEFAULT_RESPONSE_TIMEOUT, "120"));
+            timeoutSeconds = 60 * timeoutMinutes;
+        }
+        return timeoutSeconds;
+    }
+    public int getUnregisterModelTimeout() {
+        return Integer.parseInt(prop.getProperty(MMS_UNREGISTER_MODEL_TIMEOUT, "120"));
+    }
+    private File findMmsHome() {
+        File cwd = new File(getCanonicalPath("."));
+        File file = cwd;
+        while (file != null) {
+            File mms = new File(file, "mms");
+            if (mms.exists()) {
+                return file;
+            }
+            file = file.getParentFile();
+        }
+        return cwd;
+    }
+    private void enableAsyncLogging() {
+        System.setProperty(
+                "log4j2.contextSelector",
+                "org.apache.logging.log4j.core.async.AsyncLoggerContextSelector");
+    }
+    public HashMap<String, String> getBackendConfiguration() {
+        HashMap<String, String> config = new HashMap<>();
+        // Append properties used by backend worker here
+        config.put("MMS_DECODE_INPUT_REQUEST", prop.getProperty(MMS_DECODE_INPUT_REQUEST, "true"));
+        return config;
+    }
+    private static String getCanonicalPath(File file) {
+        try {
+            return file.getCanonicalPath();
+        } catch (IOException e) {
+            return file.getAbsolutePath();
+        }
+    }
+    private static String getCanonicalPath(String path) {
+        if (path == null) {
+            return null;
+        }
+        return getCanonicalPath(new File(path));
+    }
+    private static int getAvailableGpu() {
+        try {
+            Process process =
+                    Runtime.getRuntime().exec("nvidia-smi --query-gpu=index --format=csv");
+            int ret = process.waitFor();
+            if (ret != 0) {
+                return 0;
+            }
+            List<String> list = IOUtils.readLines(process.getInputStream(), StandardCharsets.UTF_8);
+            if (list.isEmpty() || !"index".equals(list.get(0))) {
+                throw new AssertionError("Unexpected nvidia-smi response.");
+            }
+            return list.size() - 1;
+        } catch (IOException | InterruptedException e) {
+            return 0;
+        }
+    }
+    public static final class Arguments {
+        private String mmsConfigFile;
+        private String pythonExecutable;
+        private String modelStore;
+        private String[] models;
+        public Arguments() {}
+        public Arguments(CommandLine cmd) {
+            mmsConfigFile = cmd.getOptionValue("mms-config-file");
+            pythonExecutable = cmd.getOptionValue("python");
+            modelStore = cmd.getOptionValue("model-store");
+            models = cmd.getOptionValues("models");
+        }
+        public static Options getOptions() {
+            Options options = new Options();
+            options.addOption(
+                    Option.builder("f")
+                            .longOpt("mms-config-file")
+                            .hasArg()
+                            .argName("MMS-CONFIG-FILE")
+                            .desc("Path to the configuration properties file.")
+                            .build());
+            options.addOption(
+                    Option.builder("e")
+                            .longOpt("python")
+                            .hasArg()
+                            .argName("PYTHON")
+                            .desc("Python runtime executable path.")
+                            .build());
+            options.addOption(
+                    Option.builder("m")
+                            .longOpt("models")
+                            .hasArgs()
+                            .argName("MODELS")
+                            .desc("Models to be loaded at startup.")
+                            .build());
+            options.addOption(
+                    Option.builder("s")
+                            .longOpt("model-store")
+                            .hasArg()
+                            .argName("MODELS-STORE")
+                            .desc("Model store location where models can be loaded.")
+                            .build());
+            return options;
+        }
+        public String getMmsConfigFile() {
+            return mmsConfigFile;
+        }
+        public String getPythonExecutable() {
+            return pythonExecutable;
+        }
+        public void setMmsConfigFile(String mmsConfigFile) {
+            this.mmsConfigFile = mmsConfigFile;
+        }
+        public String getModelStore() {
+            return modelStore;
+        }
+        public void setModelStore(String modelStore) {
+            this.modelStore = modelStore;
+        }
+        public String[] getModels() {
+            return models;
+        }
+        public void setModels(String[] models) {
+            this.models = models;
+        }
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.wlm;
+import com.amazonaws.ml.mms.archive.Manifest;
+import com.amazonaws.ml.mms.archive.ModelArchive;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.archive.ModelNotFoundException;
+import com.amazonaws.ml.mms.http.ConflictStatusException;
+import com.amazonaws.ml.mms.http.StatusResponse;
+import com.amazonaws.ml.mms.util.ConfigManager;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import java.io.IOException;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeoutException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public final class ModelManager {
+    private static final Logger logger = LoggerFactory.getLogger(ModelManager.class);
+    private static ModelManager modelManager;
+    private ConfigManager configManager;
+    private WorkLoadManager wlm;
+    private ConcurrentHashMap<String, Model> models;
+    private HashSet<String> startupModels;
+    private ScheduledExecutorService scheduler;
+    private ModelManager(ConfigManager configManager, WorkLoadManager wlm) {
+        this.configManager = configManager;
+        this.wlm = wlm;
+        models = new ConcurrentHashMap<>();
+        scheduler = Executors.newScheduledThreadPool(2);
+        this.startupModels = new HashSet<>();
+    }
+    public ScheduledExecutorService getScheduler() {
+        return scheduler;
+    }
+    public static void init(ConfigManager configManager, WorkLoadManager wlm) {
+        modelManager = new ModelManager(configManager, wlm);
+    }
+    public static ModelManager getInstance() {
+        return modelManager;
+    }
+    public ModelArchive registerModel(String url, String defaultModelName, String preloadModel)
+            throws ModelException, IOException, InterruptedException, ExecutionException,
+                    TimeoutException {
+        return registerModel(
+                url,
+                null,
+                null,
+                null,
+                1,
+                100,
+                configManager.getDefaultResponseTimeoutSeconds(),
+                defaultModelName,
+                preloadModel);
+    }
+    public ModelArchive registerModel(
+            String url,
+            String modelName,
+            Manifest.RuntimeType runtime,
+            String handler,
+            int batchSize,
+            int maxBatchDelay,
+            int responseTimeoutSeconds,
+            String defaultModelName,
+            String preloadModel)
+            throws ModelException, IOException, InterruptedException, ExecutionException,
+                    TimeoutException {
+        ModelArchive archive = ModelArchive.downloadModel(configManager.getModelStore(), url);
+        if (modelName == null || modelName.isEmpty()) {
+            if (archive.getModelName() == null || archive.getModelName().isEmpty()) {
+                archive.getManifest().getModel().setModelName(defaultModelName);
+            }
+            modelName = archive.getModelName();
+        } else {
+            archive.getManifest().getModel().setModelName(modelName);
+        }
+        if (runtime != null) {
+            archive.getManifest().setRuntime(runtime);
+        }
+        if (handler != null) {
+            archive.getManifest().getModel().setHandler(handler);
+        } else if (archive.getHandler() == null || archive.getHandler().isEmpty()) {
+            archive.getManifest()
+                    .getModel()
+                    .setHandler(configManager.getMmsDefaultServiceHandler());
+        }
+        archive.validate();
+        Model model = new Model(archive, configManager.getJobQueueSize(), preloadModel);
+        model.setBatchSize(batchSize);
+        model.setMaxBatchDelay(maxBatchDelay);
+        model.setResponseTimeoutSeconds(responseTimeoutSeconds);
+        Model existingModel = models.putIfAbsent(modelName, model);
+        if (existingModel != null) {
+            // model already exists
+            throw new ConflictStatusException("Model " + modelName + " is already registered.");
+        }
+        if (configManager.isDebug()) {
+            model.setPort(9000);
+        } else {
+            startBackendServer(model);
+        }
+        models.put(modelName, model);
+        logger.info("Model {} loaded.", model.getModelName());
+        return archive;
+    }
+    public HttpResponseStatus unregisterModel(String modelName) {
+        Model model = models.remove(modelName);
+        if (model == null) {
+            logger.warn("Model not found: " + modelName);
+            return HttpResponseStatus.NOT_FOUND;
+        }
+        model.setMinWorkers(0);
+        model.setMaxWorkers(0);
+        CompletableFuture<HttpResponseStatus> futureStatus = wlm.modelChanged(model);
+        HttpResponseStatus httpResponseStatus = HttpResponseStatus.OK;
+        try {
+            httpResponseStatus = futureStatus.get();
+        } catch (InterruptedException | ExecutionException e) {
+            logger.warn("Process was interrupted while cleaning resources.");
+            httpResponseStatus = HttpResponseStatus.INTERNAL_SERVER_ERROR;
+        }
+        // Only continue cleaning if resource cleaning succeeded
+        if (httpResponseStatus == HttpResponseStatus.OK) {
+            model.getModelArchive().clean();
+            startupModels.remove(modelName);
+            logger.info("Model {} unregistered.", modelName);
+        } else {
+            models.put(modelName, model);
+        }
+        return httpResponseStatus;
+    }
+    public void startBackendServer(Model model)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<HttpResponseStatus> future = new CompletableFuture<>();
+        if (model == null) {
+            throw new AssertionError("Model not found");
+        }
+        wlm.addServerThread(model, future);
+    }
+    public CompletableFuture<HttpResponseStatus> updateModel(
+            String modelName, int minWorkers, int maxWorkers) {
+        Model model = models.get(modelName);
+        if (model == null) {
+            throw new AssertionError("Model not found: " + modelName);
+        }
+        model.setMinWorkers(minWorkers);
+        model.setMaxWorkers(maxWorkers);
+        logger.debug("updateModel: {}, count: {}", modelName, minWorkers);
+        return wlm.modelChanged(model);
+    }
+    public Map<String, Model> getModels() {
+        return models;
+    }
+    public List<WorkerThread> getWorkers(String modelName) {
+        return wlm.getWorkers(modelName);
+    }
+    public Map<Integer, WorkerThread> getWorkers() {
+        return wlm.getWorkers();
+    }
+    public boolean addJob(Job job) throws ModelNotFoundException {
+        String modelName = job.getModelName();
+        Model model = models.get(modelName);
+        if (model == null) {
+            throw new ModelNotFoundException("Model not found: " + modelName);
+        }
+        if (wlm.hasNoWorker(modelName)) {
+            return false;
+        }
+        return model.addJob(job);
+    }
+    public void workerStatus(final ChannelHandlerContext ctx) {
+        Runnable r =
+                () -> {
+                    String response = "Healthy";
+                    int numWorking = 0;
+                    int numScaled = 0;
+                    for (Map.Entry<String, Model> m : models.entrySet()) {
+                        numScaled += m.getValue().getMinWorkers();
+                        numWorking += wlm.getNumRunningWorkers(m.getValue().getModelName());
+                    }
+                    if ((numWorking > 0) && (numWorking < numScaled)) {
+                        response = "Partial Healthy";
+                    } else if ((numWorking == 0) && (numScaled > 0)) {
+                        response = "Unhealthy";
+                    }
+                    // TODO: Check if its OK to send other 2xx errors to ALB for "Partial Healthy"
+                    // and "Unhealthy"
+                    NettyUtils.sendJsonResponse(
+                            ctx, new StatusResponse(response), HttpResponseStatus.OK);
+                };
+        wlm.scheduleAsync(r);
+    }
+    public boolean scaleRequestStatus(String modelName) {
+        Model model = ModelManager.getInstance().getModels().get(modelName);
+        int numWorkers = wlm.getNumRunningWorkers(modelName);
+        return model == null || model.getMinWorkers() <= numWorkers;
+    }
+    public void submitTask(Runnable runnable) {
+        wlm.scheduleAsync(runnable);
+    }
+    public Set<String> getStartupModels() {
+        return startupModels;
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.http;
+import com.amazonaws.ml.mms.archive.Manifest;
+import com.amazonaws.ml.mms.archive.ModelArchive;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.archive.ModelNotFoundException;
+import com.amazonaws.ml.mms.http.messages.RegisterModelRequest;
+import com.amazonaws.ml.mms.util.ConfigManager;
+import com.amazonaws.ml.mms.util.JsonUtils;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.amazonaws.ml.mms.wlm.Model;
+import com.amazonaws.ml.mms.wlm.ModelManager;
+import com.amazonaws.ml.mms.wlm.WorkerThread;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.QueryStringDecoder;
+import io.netty.util.CharsetUtil;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
+import software.amazon.ai.mms.servingsdk.ModelServerEndpoint;
+/**
+ * A class handling inbound HTTP requests to the management API.
+ *
+ * <p>This class
+ */
+public class ManagementRequestHandler extends HttpRequestHandlerChain {
+    /** Creates a new {@code ManagementRequestHandler} instance. */
+    public ManagementRequestHandler(Map<String, ModelServerEndpoint> ep) {
+        endpointMap = ep;
+    }
+    @Override
+    protected void handleRequest(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelException {
+        if (isManagementReq(segments)) {
+            if (endpointMap.getOrDefault(segments[1], null) != null) {
+                handleCustomEndpoint(ctx, req, segments, decoder);
+            } else {
+                if (!"models".equals(segments[1])) {
+                    throw new ResourceNotFoundException();
+                }
+                HttpMethod method = req.method();
+                if (segments.length < 3) {
+                    if (HttpMethod.GET.equals(method)) {
+                        handleListModels(ctx, decoder);
+                        return;
+                    } else if (HttpMethod.POST.equals(method)) {
+                        handleRegisterModel(ctx, decoder, req);
+                        return;
+                    }
+                    throw new MethodNotAllowedException();
+                }
+                if (HttpMethod.GET.equals(method)) {
+                    handleDescribeModel(ctx, segments[2]);
+                } else if (HttpMethod.PUT.equals(method)) {
+                    handleScaleModel(ctx, decoder, segments[2]);
+                } else if (HttpMethod.DELETE.equals(method)) {
+                    handleUnregisterModel(ctx, segments[2]);
+                } else {
+                    throw new MethodNotAllowedException();
+                }
+            }
+        } else {
+            chain.handleRequest(ctx, req, decoder, segments);
+        }
+    }
+    private boolean isManagementReq(String[] segments) {
+        return segments.length == 0
+                || ((segments.length == 2 || segments.length == 3) && segments[1].equals("models"))
+                || endpointMap.containsKey(segments[1]);
+    }
+    private void handleListModels(ChannelHandlerContext ctx, QueryStringDecoder decoder) {
+        int limit = NettyUtils.getIntParameter(decoder, "limit", 100);
+        int pageToken = NettyUtils.getIntParameter(decoder, "next_page_token", 0);
+        if (limit > 100 || limit < 0) {
+            limit = 100;
+        }
+        if (pageToken < 0) {
+            pageToken = 0;
+        }
+        ModelManager modelManager = ModelManager.getInstance();
+        Map<String, Model> models = modelManager.getModels();
+        List<String> keys = new ArrayList<>(models.keySet());
+        Collections.sort(keys);
+        ListModelsResponse list = new ListModelsResponse();
+        int last = pageToken + limit;
+        if (last > keys.size()) {
+            last = keys.size();
+        } else {
+            list.setNextPageToken(String.valueOf(last));
+        }
+        for (int i = pageToken; i < last; ++i) {
+            String modelName = keys.get(i);
+            Model model = models.get(modelName);
+            list.addModel(modelName, model.getModelUrl());
+        }
+        NettyUtils.sendJsonResponse(ctx, list);
+    }
+    private void handleDescribeModel(ChannelHandlerContext ctx, String modelName)
+            throws ModelNotFoundException {
+        ModelManager modelManager = ModelManager.getInstance();
+        Model model = modelManager.getModels().get(modelName);
+        if (model == null) {
+            throw new ModelNotFoundException("Model not found: " + modelName);
+        }
+        DescribeModelResponse resp = new DescribeModelResponse();
+        resp.setModelName(modelName);
+        resp.setModelUrl(model.getModelUrl());
+        resp.setBatchSize(model.getBatchSize());
+        resp.setMaxBatchDelay(model.getMaxBatchDelay());
+        resp.setMaxWorkers(model.getMaxWorkers());
+        resp.setMinWorkers(model.getMinWorkers());
+        resp.setLoadedAtStartup(modelManager.getStartupModels().contains(modelName));
+        Manifest manifest = model.getModelArchive().getManifest();
+        Manifest.Engine engine = manifest.getEngine();
+        if (engine != null) {
+            resp.setEngine(engine.getEngineName());
+        }
+        resp.setModelVersion(manifest.getModel().getModelVersion());
+        resp.setRuntime(manifest.getRuntime().getValue());
+        List<WorkerThread> workers = modelManager.getWorkers(modelName);
+        for (WorkerThread worker : workers) {
+            String workerId = worker.getWorkerId();
+            long startTime = worker.getStartTime();
+            boolean isRunning = worker.isRunning();
+            int gpuId = worker.getGpuId();
+            long memory = worker.getMemory();
+            resp.addWorker(workerId, startTime, isRunning, gpuId, memory);
+        }
+        NettyUtils.sendJsonResponse(ctx, resp);
+    }
+    private void handleRegisterModel(
+            ChannelHandlerContext ctx, QueryStringDecoder decoder, FullHttpRequest req)
+            throws ModelException {
+        RegisterModelRequest registerModelRequest = parseRequest(req, decoder);
+        String modelUrl = registerModelRequest.getModelUrl();
+        if (modelUrl == null) {
+            throw new BadRequestException("Parameter url is required.");
+        }
+        String modelName = registerModelRequest.getModelName();
+        String runtime = registerModelRequest.getRuntime();
+        String handler = registerModelRequest.getHandler();
+        int batchSize = registerModelRequest.getBatchSize();
+        int maxBatchDelay = registerModelRequest.getMaxBatchDelay();
+        int initialWorkers = registerModelRequest.getInitialWorkers();
+        boolean synchronous = registerModelRequest.isSynchronous();
+        int responseTimeoutSeconds = registerModelRequest.getResponseTimeoutSeconds();
+        String preloadModel = registerModelRequest.getPreloadModel();
+        if (preloadModel == null) {
+            preloadModel = ConfigManager.getInstance().getPreloadModel();
+        }
+        if (responseTimeoutSeconds == -1) {
+            responseTimeoutSeconds = ConfigManager.getInstance().getDefaultResponseTimeoutSeconds();
+        }
+        Manifest.RuntimeType runtimeType = null;
+        if (runtime != null) {
+            try {
+                runtimeType = Manifest.RuntimeType.fromValue(runtime);
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException(e);
+            }
+        }
+        ModelManager modelManager = ModelManager.getInstance();
+        final ModelArchive archive;
+        try {
+            archive =
+                    modelManager.registerModel(
+                            modelUrl,
+                            modelName,
+                            runtimeType,
+                            handler,
+                            batchSize,
+                            maxBatchDelay,
+                            responseTimeoutSeconds,
+                            null,
+                            preloadModel);
+        } catch (IOException | InterruptedException | ExecutionException | TimeoutException e) {
+            throw new InternalServerException("Failed to save model: " + modelUrl, e);
+        }
+        modelName = archive.getModelName();
+        final String msg = "Model \"" + modelName + "\" registered";
+        if (initialWorkers <= 0) {
+            NettyUtils.sendJsonResponse(ctx, new StatusResponse(msg));
+            return;
+        }
+        updateModelWorkers(
+                ctx,
+                modelName,
+                initialWorkers,
+                initialWorkers,
+                synchronous,
+                f -> {
+                    modelManager.unregisterModel(archive.getModelName());
+                    return null;
+                });
+    }
+    private void handleUnregisterModel(ChannelHandlerContext ctx, String modelName)
+            throws ModelNotFoundException, InternalServerException, RequestTimeoutException {
+        ModelManager modelManager = ModelManager.getInstance();
+        HttpResponseStatus httpResponseStatus = modelManager.unregisterModel(modelName);
+        if (httpResponseStatus == HttpResponseStatus.NOT_FOUND) {
+            throw new ModelNotFoundException("Model not found: " + modelName);
+        } else if (httpResponseStatus == HttpResponseStatus.INTERNAL_SERVER_ERROR) {
+            throw new InternalServerException("Interrupted while cleaning resources: " + modelName);
+        } else if (httpResponseStatus == HttpResponseStatus.REQUEST_TIMEOUT) {
+            throw new RequestTimeoutException("Timed out while cleaning resources: " + modelName);
+        }
+        String msg = "Model \"" + modelName + "\" unregistered";
+        NettyUtils.sendJsonResponse(ctx, new StatusResponse(msg));
+    }
+    private void handleScaleModel(
+            ChannelHandlerContext ctx, QueryStringDecoder decoder, String modelName)
+            throws ModelNotFoundException {
+        int minWorkers = NettyUtils.getIntParameter(decoder, "min_worker", 1);
+        int maxWorkers = NettyUtils.getIntParameter(decoder, "max_worker", minWorkers);
+        if (maxWorkers < minWorkers) {
+            throw new BadRequestException("max_worker cannot be less than min_worker.");
+        }
+        boolean synchronous =
+                Boolean.parseBoolean(NettyUtils.getParameter(decoder, "synchronous", null));
+        ModelManager modelManager = ModelManager.getInstance();
+        if (!modelManager.getModels().containsKey(modelName)) {
+            throw new ModelNotFoundException("Model not found: " + modelName);
+        }
+        updateModelWorkers(ctx, modelName, minWorkers, maxWorkers, synchronous, null);
+    }
+    private void updateModelWorkers(
+            final ChannelHandlerContext ctx,
+            final String modelName,
+            int minWorkers,
+            int maxWorkers,
+            boolean synchronous,
+            final Function<Void, Void> onError) {
+        ModelManager modelManager = ModelManager.getInstance();
+        CompletableFuture<HttpResponseStatus> future =
+                modelManager.updateModel(modelName, minWorkers, maxWorkers);
+        if (!synchronous) {
+            NettyUtils.sendJsonResponse(
+                    ctx,
+                    new StatusResponse("Processing worker updates..."),
+                    HttpResponseStatus.ACCEPTED);
+            return;
+        }
+        future.thenApply(
+                        v -> {
+                            boolean status = modelManager.scaleRequestStatus(modelName);
+                            if (HttpResponseStatus.OK.equals(v)) {
+                                if (status) {
+                                    NettyUtils.sendJsonResponse(
+                                            ctx, new StatusResponse("Workers scaled"), v);
+                                } else {
+                                    NettyUtils.sendJsonResponse(
+                                            ctx,
+                                            new StatusResponse("Workers scaling in progress..."),
+                                            new HttpResponseStatus(210, "Partial Success"));
+                                }
+                            } else {
+                                NettyUtils.sendError(
+                                        ctx,
+                                        v,
+                                        new InternalServerException("Failed to start workers"));
+                                if (onError != null) {
+                                    onError.apply(null);
+                                }
+                            }
+                            return v;
+                        })
+                .exceptionally(
+                        (e) -> {
+                            if (onError != null) {
+                                onError.apply(null);
+                            }
+                            NettyUtils.sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, e);
+                            return null;
+                        });
+    }
+    private RegisterModelRequest parseRequest(FullHttpRequest req, QueryStringDecoder decoder) {
+        RegisterModelRequest in;
+        CharSequence mime = HttpUtil.getMimeType(req);
+        if (HttpHeaderValues.APPLICATION_JSON.contentEqualsIgnoreCase(mime)) {
+            in =
+                    JsonUtils.GSON.fromJson(
+                            req.content().toString(CharsetUtil.UTF_8), RegisterModelRequest.class);
+        } else {
+            in = new RegisterModelRequest(decoder);
+        }
+        return in;
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.wlm;
+import com.amazonaws.ml.mms.metrics.Dimension;
+import com.amazonaws.ml.mms.metrics.Metric;
+import com.amazonaws.ml.mms.util.ConfigManager;
+import com.amazonaws.ml.mms.util.Connector;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.amazonaws.ml.mms.util.codec.ModelRequestEncoder;
+import com.amazonaws.ml.mms.util.codec.ModelResponseDecoder;
+import com.amazonaws.ml.mms.util.messages.BaseModelRequest;
+import com.amazonaws.ml.mms.util.messages.InputParameter;
+import com.amazonaws.ml.mms.util.messages.ModelWorkerResponse;
+import com.amazonaws.ml.mms.util.messages.RequestInput;
+import com.amazonaws.ml.mms.util.messages.WorkerCommands;
+import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.net.SocketAddress;
+import java.nio.channels.Channels;
+import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class WorkerThread implements Runnable {
+    static final Logger logger = LoggerFactory.getLogger(WorkerThread.class);
+    private static final Logger loggerMmsMetrics =
+            LoggerFactory.getLogger(ConfigManager.MODEL_SERVER_METRICS_LOGGER);
+    private Metric workerLoadTime;
+    private static final int[] BACK_OFF = {
+        0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597
+    };
+    static final long WORKER_TIMEOUT = ConfigManager.getInstance().isDebug() ? Long.MAX_VALUE : 2L;
+    static final ModelRequestEncoder ENCODER =
+            new ModelRequestEncoder(ConfigManager.getInstance().getPreferDirectBuffer());
+    private EventLoopGroup backendEventGroup;
+    private int port;
+    private Model model;
+    private Channel backendChannel;
+    private AtomicBoolean running = new AtomicBoolean(true);
+    private int backoffIdx;
+    private BatchAggregator aggregator;
+    private WorkerStateListener listener;
+    ArrayBlockingQueue<ModelWorkerResponse> replies;
+    private int gpuId;
+    private long memory;
+    private long startTime;
+    private AtomicReference<Thread> currentThread = new AtomicReference<>();
+    private String workerId;
+    private String threadName;
+    private BaseModelRequest req;
+    private WorkerState state;
+    private WorkerLifeCycle lifeCycle;
+    private boolean serverThread;
+    private RandomAccessFile out;
+    private RandomAccessFile err;
+    private Connector connector;
+    public WorkerState getState() {
+        return state;
+    }
+    public WorkerLifeCycle getLifeCycle() {
+        return lifeCycle;
+    }
+    public WorkerThread(
+            ConfigManager configManager,
+            EventLoopGroup backendEventGroup,
+            int port,
+            int gpuId,
+            Model model,
+            BatchAggregator aggregator,
+            WorkerStateListener listener,
+            int threadNumber,
+            boolean serverThread) {
+        this.workerId = String.valueOf(port); // Unique across all workers.
+        this.backendEventGroup = backendEventGroup;
+        this.port = port;
+        this.model = model;
+        this.aggregator = aggregator;
+        this.gpuId = gpuId;
+        this.listener = listener;
+        startTime = System.currentTimeMillis();
+        lifeCycle = new WorkerLifeCycle(configManager, model);
+        replies = new ArrayBlockingQueue<>(1);
+        this.serverThread = serverThread;
+        this.threadName =
+                !serverThread
+                        ? "W-"
+                                + model.getModelName()
+                                        .substring(0, Math.min(model.getModelName().length(), 25))
+                                + '-'
+                                + threadNumber
+                        : "BackendServer-" + model.getModelName();
+        workerLoadTime =
+                new Metric(
+                        getWorkerName(),
+                        String.valueOf(System.currentTimeMillis()),
+                        "ms",
+                        ConfigManager.getInstance().getHostName(),
+                        new Dimension("Level", "Host"));
+    }
+    private void runWorker()
+            throws WorkerInitializationException, InterruptedException, FileNotFoundException {
+        int responseTimeoutSeconds = model.getResponseTimeoutSeconds();
+        while (isRunning()) {
+            req = aggregator.getRequest(backendChannel.id().asLongText(), state);
+            backendChannel.writeAndFlush(req).sync();
+            long begin = System.currentTimeMillis();
+            // TODO: Change this to configurable param
+            ModelWorkerResponse reply = replies.poll(responseTimeoutSeconds, TimeUnit.SECONDS);
+            long duration = System.currentTimeMillis() - begin;
+            logger.info("Backend response time: {}", duration);
+            if (reply != null) {
+                aggregator.sendResponse(reply);
+            } else {
+                int val = model.incrFailedInfReqs();
+                logger.error("Number or consecutive unsuccessful inference {}", val);
+                throw new WorkerInitializationException(
+                        "Backend worker did not respond in given time");
+            }
+            switch (req.getCommand()) {
+                case PREDICT:
+                    model.resetFailedInfReqs();
+                    break;
+                case LOAD:
+                    String message = reply.getMessage();
+                    String tmpdir = System.getProperty("java.io.tmpdir");
+                    out =
+                            new RandomAccessFile(
+                                    tmpdir + '/' + backendChannel.id().asLongText() + "-stdout",
+                                    "rw");
+                    err =
+                            new RandomAccessFile(
+                                    tmpdir + '/' + backendChannel.id().asLongText() + "-stderr",
+                                    "rw");
+                    if (reply.getCode() == 200) {
+                        setState(WorkerState.WORKER_MODEL_LOADED, HttpResponseStatus.OK);
+                        lifeCycle.setPid(
+                                Integer.parseInt(
+                                        message.substring(
+                                                message.indexOf("[PID]:") + 6, message.length())));
+                        lifeCycle.attachIOStreams(
+                                threadName,
+                                Channels.newInputStream(out.getChannel()),
+                                Channels.newInputStream(err.getChannel()));
+                        backoffIdx = 0;
+                    } else {
+                        setState(
+                                WorkerState.WORKER_ERROR,
+                                HttpResponseStatus.valueOf(reply.getCode()));
+                    }
+                    break;
+                case UNLOAD:
+                case STATS:
+                default:
+                    break;
+            }
+            req = null;
+        }
+    }
+    @Override
+    public void run() {
+        Process process = null;
+        Thread thread = Thread.currentThread();
+        thread.setName(getWorkerName());
+        currentThread.set(thread);
+        HttpResponseStatus status = HttpResponseStatus.INTERNAL_SERVER_ERROR;
+        try {
+            if (!serverThread) {
+                connect();
+                runWorker();
+            } else {
+                // TODO: Move this logic to a seperate ServerThread class
+                // This is server thread and shouldn't come out as long as process exists in CPU.
+                model.setPort(port);
+                lifeCycle.startBackendServer(port);
+                setState(WorkerState.WORKER_MODEL_LOADED, HttpResponseStatus.OK);
+                process = lifeCycle.getProcess();
+                process.waitFor();
+            }
+        } catch (InterruptedException e) {
+            if (state == WorkerState.WORKER_SCALED_DOWN) {
+                logger.debug("Shutting down the thread .. Scaling down.");
+            } else {
+                logger.debug(
+                        "Backend worker monitoring thread interrupted or backend worker process died.",
+                        e);
+            }
+        } catch (WorkerInitializationException e) {
+            logger.error("Backend worker error", e);
+        } catch (OutOfMemoryError oom) {
+            logger.error("Out of memory error when creating workers", oom);
+            status = HttpResponseStatus.INSUFFICIENT_STORAGE;
+        } catch (Throwable t) {
+            logger.warn("Backend worker thread exception.", t);
+        } finally {
+            // WorkerThread is running in thread pool, the thread will be assigned to next
+            // Runnable once this worker is finished. If currentThread keep holding the reference
+            // of the thread, currentThread.interrupt() might kill next worker.
+            backendChannel.disconnect();
+            currentThread.set(null);
+            Integer exitValue = lifeCycle.getExitValue();
+            if (exitValue != null && exitValue == 137) {
+                status = HttpResponseStatus.INSUFFICIENT_STORAGE;
+            }
+            if (!serverThread && req != null) {
+                aggregator.sendError(req, "Worker died.", status);
+            } else if (serverThread) {
+                model.setPort(-1);
+                if (process != null && process.isAlive()) {
+                    process.destroyForcibly();
+                    try {
+                        process.waitFor(1, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        logger.warn(
+                                "WorkerThread interrupted during waitFor, possible asynch resource cleanup.");
+                    }
+                }
+            }
+            setState(WorkerState.WORKER_STOPPED, status);
+            lifeCycle.exit();
+            retry();
+        }
+    }
+    public String getWorkerId() {
+        return workerId;
+    }
+    public long getMemory() {
+        return memory;
+    }
+    public void setMemory(long memory) {
+        this.memory = memory;
+    }
+    private void connect()
+            throws WorkerInitializationException, InterruptedException, FileNotFoundException {
+        if (!this.serverThread && (model.getPort() == -1)) {
+            throw new WorkerInitializationException("Backend server is not runniing");
+        }
+        String modelName = model.getModelName();
+        setState(WorkerState.WORKER_STARTED, HttpResponseStatus.OK);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final int responseBufferSize = ConfigManager.getInstance().getMaxResponseSize();
+        try {
+            connector = new Connector(port);
+            Bootstrap b = new Bootstrap();
+            b.group(backendEventGroup)
+                    .channel(connector.getClientChannel())
+                    .handler(
+                            new ChannelInitializer<Channel>() {
+                                @Override
+                                public void initChannel(Channel ch) {
+                                    ChannelPipeline p = ch.pipeline();
+                                    p.addLast(ENCODER);
+                                    p.addLast(new ModelResponseDecoder(responseBufferSize));
+                                    p.addLast(new WorkerHandler());
+                                }
+                            });
+            SocketAddress address = connector.getSocketAddress();
+            logger.info("Connecting to: {}", address);
+            backendChannel = b.connect(address).sync().channel();
+            backendChannel
+                    .closeFuture()
+                    .addListener(
+                            (ChannelFutureListener)
+                                    future -> {
+                                        latch.countDown();
+                                        logger.info(
+                                                "{} Worker disconnected. {}", getWorkerId(), state);
+                                        Thread thread = currentThread.getAndSet(null);
+                                        if (thread != null) {
+                                            thread.interrupt();
+                                        }
+                                    });
+            backendChannel
+                    .newSucceededFuture()
+                    .addListener(
+                            (ChannelFutureListener)
+                                    future -> {
+                                        // TODO:
+                                        // use gpu, batch size in load model command
+                                        RequestInput input =
+                                                new RequestInput(UUID.randomUUID().toString());
+                                        if (gpuId >= 0) {
+                                            input.addParameter(
+                                                    new InputParameter(
+                                                            "gpu", String.valueOf(gpuId)));
+                                        }
+                                        Job job =
+                                                new Job(
+                                                        null,
+                                                        modelName,
+                                                        WorkerCommands.LOAD,
+                                                        input);
+                                        model.addJob(backendChannel.id().asLongText(), job);
+                                        latch.countDown();
+                                    });
+            if (!latch.await(WORKER_TIMEOUT, TimeUnit.MINUTES)) {
+                throw new WorkerInitializationException(
+                        "Worker failed to initialize within " + WORKER_TIMEOUT + " mins");
+            }
+            workerId = workerId + "-" + backendChannel.id();
+            running.set(true);
+        } catch (Throwable t) {
+            // https://github.com/netty/netty/issues/2597
+            if (t instanceof IOException) {
+                throw new WorkerInitializationException("Failed to connect to worker.", t);
+            }
+            throw t;
+        }
+    }
+    public boolean isRunning() {
+        return running.get();
+    }
+    public int getGpuId() {
+        return gpuId;
+    }
+    public long getStartTime() {
+        return startTime;
+    }
+    public int getPid() {
+        return lifeCycle.getPid();
+    }
+    public void shutdown() {
+        running.set(false);
+        setState(WorkerState.WORKER_SCALED_DOWN, HttpResponseStatus.OK);
+        if (backendChannel != null) {
+            model.removeJobQueue(backendChannel.id().asLongText());
+            backendChannel.close();
+        }
+        if (this.serverThread && this.connector != null) {
+            logger.debug("Cleaning connector socket");
+            this.connector.clean();
+        }
+        logger.debug("Terminating IOStreams for worker thread shutdown");
+        lifeCycle.terminateIOStreams();
+        try {
+            if (out != null) {
+                out.close();
+            }
+            if (err != null) {
+                err.close();
+            }
+        } catch (IOException e) {
+            logger.error("Failed to close IO file handles", e);
+        }
+        Thread thread = currentThread.getAndSet(null);
+        if (thread != null) {
+            thread.interrupt();
+            aggregator.sendError(
+                    null, "Worker scaled down.", HttpResponseStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+    public boolean isServerThread() {
+        return serverThread;
+    }
+    private final String getWorkerName() {
+        String modelName = model.getModelName();
+        if (modelName.length() > 25) {
+            modelName = modelName.substring(0, 25);
+        }
+        return "W-" + port + '-' + modelName;
+    }
+    void setState(WorkerState newState, HttpResponseStatus status) {
+        listener.notifyChangeState(model.getModelName(), newState, status);
+        logger.debug("{} State change {} -> {}", getWorkerName(), state, newState);
+        long timeTaken = System.currentTimeMillis() - startTime;
+        if (state != WorkerState.WORKER_SCALED_DOWN) {
+            // Don't update the state if it was terminated on purpose.. Scaling in..
+            this.state = newState;
+        }
+        if (state == WorkerState.WORKER_MODEL_LOADED) {
+            workerLoadTime.setValue(String.valueOf(timeTaken));
+            workerLoadTime.setTimestamp(
+                    String.valueOf(TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis())));
+            loggerMmsMetrics.info("{}", workerLoadTime);
+        }
+    }
+    void retry() {
+        if (state == WorkerState.WORKER_SCALED_DOWN) {
+            logger.debug("Worker terminated due to scale-down call.");
+            return;
+        }
+        ModelManager manager = ModelManager.getInstance();
+        if (backoffIdx < BACK_OFF.length - 1) {
+            ++backoffIdx;
+        }
+        manager.getScheduler()
+                .schedule(() -> manager.submitTask(this), BACK_OFF[backoffIdx], TimeUnit.SECONDS);
+        logger.info("Retry worker: {} in {} seconds.", workerId, BACK_OFF[backoffIdx]);
+    }
+    @ChannelHandler.Sharable
+    private class WorkerHandler extends SimpleChannelInboundHandler<ModelWorkerResponse> {
+        @Override
+        public void channelRead0(ChannelHandlerContext ctx, ModelWorkerResponse msg) {
+            if (!replies.offer(msg)) {
+                throw new IllegalStateException("Reply queue is full.");
+            }
+        }
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            logger.error("Unknown exception", cause);
+            if (cause instanceof OutOfMemoryError) {
+                NettyUtils.sendError(ctx, HttpResponseStatus.INSUFFICIENT_STORAGE, cause);
+            }
+            ctx.close();
+        }
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.wlm;
+import com.amazonaws.ml.mms.http.InternalServerException;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.amazonaws.ml.mms.util.messages.RequestInput;
+import com.amazonaws.ml.mms.util.messages.WorkerCommands;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class Job {
+    private static final Logger logger = LoggerFactory.getLogger(Job.class);
+    private ChannelHandlerContext ctx;
+    private String modelName;
+    private WorkerCommands cmd; // Else its data msg or inf requests
+    private RequestInput input;
+    private long begin;
+    private long scheduled;
+    public Job(
+            ChannelHandlerContext ctx, String modelName, WorkerCommands cmd, RequestInput input) {
+        this.ctx = ctx;
+        this.modelName = modelName;
+        this.cmd = cmd;
+        this.input = input;
+        begin = System.currentTimeMillis();
+        scheduled = begin;
+    }
+    public String getJobId() {
+        return input.getRequestId();
+    }
+    public String getModelName() {
+        return modelName;
+    }
+    public WorkerCommands getCmd() {
+        return cmd;
+    }
+    public boolean isControlCmd() {
+        return !WorkerCommands.PREDICT.equals(cmd);
+    }
+    public RequestInput getPayload() {
+        return input;
+    }
+    public void setScheduled() {
+        scheduled = System.currentTimeMillis();
+    }
+    public void response(
+            byte[] body,
+            CharSequence contentType,
+            int statusCode,
+            String statusPhrase,
+            Map<String, String> responseHeaders) {
+        HttpResponseStatus status =
+                (statusPhrase == null)
+                        ? HttpResponseStatus.valueOf(statusCode)
+                        : HttpResponseStatus.valueOf(statusCode, statusPhrase);
+        FullHttpResponse resp =
+                new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1,
+                        status,
+                        Unpooled.directBuffer(),
+                        DefaultHttpHeadersFactory.headersFactory(),
+                        DefaultHttpHeadersFactory.trailersFactory());
+        if (contentType != null && contentType.length() > 0) {
+            resp.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
+        }
+        if (responseHeaders != null) {
+            for (Map.Entry<String, String> e : responseHeaders.entrySet()) {
+                resp.headers().set(e.getKey(), e.getValue());
+            }
+        }
+        resp.content().writeBytes(body);
+        /*
+         * We can load the models based on the configuration file.Since this Job is
+         * not driven by the external connections, we could have a empty context for
+         * this job. We shouldn't try to send a response to ctx if this is not triggered
+         * by external clients.
+         */
+        if (ctx != null) {
+            NettyUtils.sendHttpResponse(ctx, resp, true);
+        }
+        logger.debug(
+                "Waiting time: {}, Backend time: {}",
+                scheduled - begin,
+                System.currentTimeMillis() - scheduled);
+    }
+    public void sendError(HttpResponseStatus status, String error) {
+        /*
+         * We can load the models based on the configuration file.Since this Job is
+         * not driven by the external connections, we could have a empty context for
+         * this job. We shouldn't try to send a response to ctx if this is not triggered
+         * by external clients.
+         */
+        if (ctx != null) {
+            NettyUtils.sendError(ctx, status, new InternalServerException(error));
+        }
+        logger.debug(
+                "Waiting time: {}, Inference time: {}",
+                scheduled - begin,
+                System.currentTimeMillis() - begin);
+    }
+}
+package com.amazonaws.ml.mms.http;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.archive.ModelNotFoundException;
+import com.amazonaws.ml.mms.servingsdk.impl.ModelServerContext;
+import com.amazonaws.ml.mms.servingsdk.impl.ModelServerRequest;
+import com.amazonaws.ml.mms.servingsdk.impl.ModelServerResponse;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.amazonaws.ml.mms.wlm.ModelManager;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.QueryStringDecoder;
+import java.io.IOException;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import software.amazon.ai.mms.servingsdk.ModelServerEndpoint;
+import software.amazon.ai.mms.servingsdk.ModelServerEndpointException;
+public abstract class HttpRequestHandlerChain {
+    private static final Logger logger = LoggerFactory.getLogger(HttpRequestHandler.class);
+    protected Map<String, ModelServerEndpoint> endpointMap;
+    protected HttpRequestHandlerChain chain;
+    public HttpRequestHandlerChain() {}
+    public HttpRequestHandlerChain(Map<String, ModelServerEndpoint> map) {
+        endpointMap = map;
+    }
+    public HttpRequestHandlerChain setNextHandler(HttpRequestHandlerChain nextHandler) {
+        chain = nextHandler;
+        return chain;
+    }
+    protected abstract void handleRequest(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelNotFoundException, ModelException;
+    private void run(
+            ModelServerEndpoint endpoint,
+            FullHttpRequest req,
+            FullHttpResponse rsp,
+            QueryStringDecoder decoder,
+            String method)
+            throws IOException {
+        switch (method) {
+            case "GET":
+                endpoint.doGet(
+                        new ModelServerRequest(req, decoder),
+                        new ModelServerResponse(rsp),
+                        new ModelServerContext());
+                break;
+            case "PUT":
+                endpoint.doPut(
+                        new ModelServerRequest(req, decoder),
+                        new ModelServerResponse(rsp),
+                        new ModelServerContext());
+                break;
+            case "DELETE":
+                endpoint.doDelete(
+                        new ModelServerRequest(req, decoder),
+                        new ModelServerResponse(rsp),
+                        new ModelServerContext());
+                break;
+            case "POST":
+                endpoint.doPost(
+                        new ModelServerRequest(req, decoder),
+                        new ModelServerResponse(rsp),
+                        new ModelServerContext());
+                break;
+            default:
+                throw new ServiceUnavailableException("Invalid HTTP method received");
+        }
+    }
+    protected void handleCustomEndpoint(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            String[] segments,
+            QueryStringDecoder decoder) {
+        ModelServerEndpoint endpoint = endpointMap.get(segments[1]);
+        Runnable r =
+                () -> {
+                    Long start = System.currentTimeMillis();
+                    FullHttpResponse rsp =
+                            new DefaultFullHttpResponse(
+                                    HttpVersion.HTTP_1_1,
+                                    HttpResponseStatus.OK,
+                                    Unpooled.directBuffer(),
+                                    DefaultHttpHeadersFactory.headersFactory(),
+                                    DefaultHttpHeadersFactory.trailersFactory());
+                    try {
+                        run(endpoint, req, rsp, decoder, req.method().toString());
+                        NettyUtils.sendHttpResponse(ctx, rsp, true);
+                        logger.info(
+                                "Running \"{}\" endpoint took {} ms",
+                                segments[0],
+                                System.currentTimeMillis() - start);
+                    } catch (ModelServerEndpointException me) {
+                        NettyUtils.sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, me);
+                        logger.error("Error thrown by the model endpoint plugin.", me);
+                    } catch (OutOfMemoryError oom) {
+                        NettyUtils.sendError(
+                                ctx, HttpResponseStatus.INSUFFICIENT_STORAGE, oom, "Out of memory");
+                    } catch (IOException ioe) {
+                        NettyUtils.sendError(
+                                ctx,
+                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                ioe,
+                                "I/O error while running the custom endpoint");
+                        logger.error("I/O error while running the custom endpoint.", ioe);
+                    } catch (Throwable e) {
+                        NettyUtils.sendError(
+                                ctx,
+                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                e,
+                                "Unknown exception");
+                        logger.error("Unknown exception", e);
+                    }
+                };
+        ModelManager.getInstance().submitTask(r);
+    }
+}
+/*
+ * Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.http.messages;
+import com.amazonaws.ml.mms.util.ConfigManager;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import com.google.gson.annotations.SerializedName;
+import io.netty.handler.codec.http.QueryStringDecoder;
+/** Register Model Request for Model server */
+public class RegisterModelRequest {
+    @SerializedName("model_name")
+    private String modelName;
+    @SerializedName("runtime")
+    private String runtime;
+    @SerializedName("handler")
+    private String handler;
+    @SerializedName("batch_size")
+    private int batchSize;
+    @SerializedName("max_batch_delay")
+    private int maxBatchDelay;
+    @SerializedName("initial_workers")
+    private int initialWorkers;
+    @SerializedName("synchronous")
+    private boolean synchronous;
+    @SerializedName("response_timeout")
+    private int responseTimeoutSeconds;
+    @SerializedName("url")
+    private String modelUrl;
+    @SerializedName("preload_model")
+    private String preloadModel;
+    public RegisterModelRequest(QueryStringDecoder decoder) {
+        modelName = NettyUtils.getParameter(decoder, "model_name", null);
+        runtime = NettyUtils.getParameter(decoder, "runtime", null);
+        handler = NettyUtils.getParameter(decoder, "handler", null);
+        batchSize = NettyUtils.getIntParameter(decoder, "batch_size", 1);
+        maxBatchDelay = NettyUtils.getIntParameter(decoder, "max_batch_delay", 100);
+        initialWorkers =
+                NettyUtils.getIntParameter(
+                        decoder,
+                        "initial_workers",
+                        ConfigManager.getInstance().getConfiguredDefaultWorkersPerModel());
+        synchronous = Boolean.parseBoolean(NettyUtils.getParameter(decoder, "synchronous", "true"));
+        // TODO Fix this so it matches the documentation, where timeouts are specified in seconds.
+        // For now, we're being extra careful about backwards compatibility.
+        // So, assume parameter is in minutes, and convert to seconds internally.
+        responseTimeoutSeconds = 60 * NettyUtils.getIntParameter(decoder, "response_timeout", -1);
+        if (responseTimeoutSeconds < 0) {
+            responseTimeoutSeconds = -1;
+        }
+        modelUrl = NettyUtils.getParameter(decoder, "url", null);
+        preloadModel = NettyUtils.getParameter(decoder, "preload_model", null);
+    }
+    public RegisterModelRequest() {
+        batchSize = 1;
+        maxBatchDelay = 100;
+        synchronous = true;
+        initialWorkers = ConfigManager.getInstance().getConfiguredDefaultWorkersPerModel();
+        responseTimeoutSeconds = -1;
+        preloadModel = null;
+    }
+    public String getModelName() {
+        return modelName;
+    }
+    public String getRuntime() {
+        return runtime;
+    }
+    public String getHandler() {
+        return handler;
+    }
+    public Integer getBatchSize() {
+        return batchSize;
+    }
+    public Integer getMaxBatchDelay() {
+        return maxBatchDelay;
+    }
+    public Integer getInitialWorkers() {
+        return initialWorkers;
+    }
+    public Boolean isSynchronous() {
+        return synchronous;
+    }
+    public Integer getResponseTimeoutSeconds() {
+        return responseTimeoutSeconds;
+    }
+    public String getModelUrl() {
+        return modelUrl;
+    }
+    public String getPreloadModel() {
+        return preloadModel;
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.metrics;
+import com.google.gson.annotations.SerializedName;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+public class Metric {
+    private static final Pattern PATTERN =
+            Pattern.compile(
+                    "\\s*(\\w+)\\.(\\w+):([0-9\\-,.e]+)\\|#([^|]*)\\|#hostname:([^,]+),([^,]+)(,(.*))?");
+    @SerializedName("MetricName")
+    private String metricName;
+    @SerializedName("Value")
+    private String value;
+    @SerializedName("Unit")
+    private String unit;
+    @SerializedName("Dimensions")
+    private List<Dimension> dimensions;
+    @SerializedName("Timestamp")
+    private String timestamp;
+    @SerializedName("RequestId")
+    private String requestId;
+    @SerializedName("HostName")
+    private String hostName;
+    public Metric() {}
+    public Metric(
+            String metricName,
+            String value,
+            String unit,
+            String hostName,
+            Dimension... dimensions) {
+        this.metricName = metricName;
+        this.value = value;
+        this.unit = unit;
+        this.hostName = hostName;
+        this.dimensions = Arrays.asList(dimensions);
+    }
+    public String getHostName() {
+        return hostName;
+    }
+    public void setHostName(String hostName) {
+        this.hostName = hostName;
+    }
+    public String getRequestId() {
+        return requestId;
+    }
+    public void setRequestId(String requestId) {
+        this.requestId = requestId;
+    }
+    public String getMetricName() {
+        return metricName;
+    }
+    public void setMetricName(String metricName) {
+        this.metricName = metricName;
+    }
+    public String getValue() {
+        return value;
+    }
+    public void setValue(String value) {
+        this.value = value;
+    }
+    public String getUnit() {
+        return unit;
+    }
+    public void setUnit(String unit) {
+        this.unit = unit;
+    }
+    public List<Dimension> getDimensions() {
+        return dimensions;
+    }
+    public void setDimensions(List<Dimension> dimensions) {
+        this.dimensions = dimensions;
+    }
+    public String getTimestamp() {
+        return timestamp;
+    }
+    public void setTimestamp(String timestamp) {
+        this.timestamp = timestamp;
+    }
+    public static Metric parse(String line) {
+        // DiskAvailable.Gigabytes:311|#Level:Host,hostname:localhost
+        Matcher matcher = PATTERN.matcher(line);
+        if (!matcher.matches()) {
+            return null;
+        }
+        Metric metric = new Metric();
+        metric.setMetricName(matcher.group(1));
+        metric.setUnit(matcher.group(2));
+        metric.setValue(matcher.group(3));
+        String dimensions = matcher.group(4);
+        metric.setHostName(matcher.group(5));
+        metric.setTimestamp(matcher.group(6));
+        metric.setRequestId(matcher.group(8));
+        if (dimensions != null) {
+            String[] dimension = dimensions.split(",");
+            List<Dimension> list = new ArrayList<>(dimension.length);
+            for (String dime : dimension) {
+                String[] pair = dime.split(":");
+                if (pair.length == 2) {
+                    list.add(new Dimension(pair[0], pair[1]));
+                }
+            }
+            metric.setDimensions(list);
+        }
+        return metric;
+    }
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder(128);
+        sb.append(metricName).append('.').append(unit).append(':').append(getValue()).append("|#");
+        boolean first = true;
+        for (Dimension dimension : getDimensions()) {
+            if (first) {
+                first = false;
+            } else {
+                sb.append(',');
+            }
+            sb.append(dimension.getName()).append(':').append(dimension.getValue());
+        }
+        sb.append("|#hostname:").append(hostName);
+        if (requestId != null) {
+            sb.append(",requestID:").append(requestId);
+        }
+        sb.append(",timestamp:").append(timestamp);
+        return sb.toString();
+    }
+}
+/*
+ * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
+ * with the License. A copy of the License is located at
+ *
+ * http://aws.amazon.com/apache2.0/
+ *
+ * or in the "license" file accompanying this file. This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions
+ * and limitations under the License.
+ */
+package com.amazonaws.ml.mms.http;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.archive.ModelNotFoundException;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.QueryStringDecoder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+/**
+ * A class handling inbound HTTP requests.
+ *
+ * <p>This class
+ */
+public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+    private static final Logger logger = LoggerFactory.getLogger(HttpRequestHandler.class);
+    HttpRequestHandlerChain handlerChain;
+    /** Creates a new {@code HttpRequestHandler} instance. */
+    public HttpRequestHandler() {}
+    public HttpRequestHandler(HttpRequestHandlerChain chain) {
+        handlerChain = chain;
+    }
+    /** {@inheritDoc} */
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest req) {
+        try {
+            NettyUtils.requestReceived(ctx.channel(), req);
+            if (!req.decoderResult().isSuccess()) {
+                throw new BadRequestException("Invalid HTTP message.");
+            }
+            QueryStringDecoder decoder = new QueryStringDecoder(req.uri());
+            String path = decoder.path();
+            String[] segments = path.split("/");
+            handlerChain.handleRequest(ctx, req, decoder, segments);
+        } catch (ResourceNotFoundException | ModelNotFoundException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.NOT_FOUND, e);
+        } catch (BadRequestException | ModelException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.BAD_REQUEST, e);
+        } catch (ConflictStatusException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.CONFLICT, e);
+        } catch (RequestTimeoutException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.REQUEST_TIMEOUT, e);
+        } catch (MethodNotAllowedException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.METHOD_NOT_ALLOWED, e);
+        } catch (ServiceUnavailableException e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.SERVICE_UNAVAILABLE, e);
+        } catch (OutOfMemoryError e) {
+            logger.trace("", e);
+            NettyUtils.sendError(ctx, HttpResponseStatus.INSUFFICIENT_STORAGE, e);
+        } catch (Throwable t) {
+            logger.error("", t);
+            NettyUtils.sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, t);
+        }
+    }
+    /** {@inheritDoc} */
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        logger.error("", cause);
+        if (cause instanceof OutOfMemoryError) {
+            NettyUtils.sendError(ctx, HttpResponseStatus.INSUFFICIENT_STORAGE, cause);
+        }
+        ctx.close();
+    }
+}
+package com.amazonaws.ml.mms.http;
+import com.amazonaws.ml.mms.archive.ModelException;
+import com.amazonaws.ml.mms.openapi.OpenApiUtils;
+import com.amazonaws.ml.mms.util.ConnectorType;
+import com.amazonaws.ml.mms.util.NettyUtils;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.QueryStringDecoder;
+public class ApiDescriptionRequestHandler extends HttpRequestHandlerChain {
+    private ConnectorType connectorType;
+    public ApiDescriptionRequestHandler(ConnectorType type) {
+        connectorType = type;
+    }
+    @Override
+    protected void handleRequest(
+            ChannelHandlerContext ctx,
+            FullHttpRequest req,
+            QueryStringDecoder decoder,
+            String[] segments)
+            throws ModelException {
+        if (isApiDescription(segments)) {
+            String path = decoder.path();
+            if (("/".equals(path) && HttpMethod.OPTIONS.equals(req.method()))
+                    || (segments.length == 2 && segments[1].equals("api-description"))) {
+                handleApiDescription(ctx);
+                return;
+            }
+            throw new MethodNotAllowedException();
+        } else {
+            chain.handleRequest(ctx, req, decoder, segments);
+        }
+    }
+    private boolean isApiDescription(String[] segments) {
+        return segments.length == 0 || segments[1].equals("api-description");
+    }
+    private void handleApiDescription(ChannelHandlerContext ctx) {
+        NettyUtils.sendJsonResponse(ctx, OpenApiUtils.listApis(connectorType));
+    }
+}

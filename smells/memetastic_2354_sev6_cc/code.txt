@@ -1,0 +1,3883 @@
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.service;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.res.AssetManager;
+import android.graphics.Typeface;
+import net.gsantner.memetastic.activity.MainActivity;
+import net.gsantner.memetastic.data.MemeConfig;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.util.FileUtils;
+import net.gsantner.opoc.util.NetworkUtils;
+import net.gsantner.opoc.util.ZipUtils;
+import org.json.JSONException;
+import org.json.JSONObject;
+import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import io.github.gsantner.memetastic.R;
+@SuppressLint("SimpleDateFormat")
+public class AssetUpdater {
+    public static final SimpleDateFormat FORMAT_MINUTE = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm");
+    public static final SimpleDateFormat FORMAT_MINUTE_FILE = new SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss");
+    private static final String URL_ARCHIVE_ZIP = "https://github.com/gsantner/memetastic-assets/archive/master.zip";
+    private static final String URL_API = "https://api.github.com/repos/gsantner/memetastic-assets";
+    private final static String MEMETASTIC_CONFIG_FILE = "+0A_memetastic.conf.json";
+    private final static String[] MEMETASTIC_IMAGES_EXTS = {"png", "jpg", "jpeg", "webp"};
+    private final static String[] MEMETASTIC_FONT_EXTS = {"otf", "ttf"};
+    public static File getDownloadedAssetsDir(AppSettings appSettings) {
+        return new File(new File(appSettings.getSaveDirectory(), ".downloads"), "memetastic-assets");
+    }
+    public static File getCustomAssetsDir(AppSettings appSettings) {
+        return new File(appSettings.getSaveDirectory(), "templates");
+    }
+    public static File getBundledAssetsDir(AppSettings appSettings) {
+        return new File(appSettings.getContext().getCacheDir(), "bundled");
+    }
+    public static File getMemesDir(AppSettings appSettings) {
+        return new File(appSettings.getSaveDirectory(), "memes");
+    }
+    public static class UpdateThread extends Thread {
+        public static final int ASSET_DOWNLOAD_REQUEST__FAILED = -1;
+        public static final int ASSET_DOWNLOAD_REQUEST__CHECKING = 1;
+        public static final int ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK = 2;
+        public static final int DOWNLOAD_STATUS__DOWNLOADING = 1;
+        public static final int DOWNLOAD_STATUS__UNZIPPING = 2;
+        public static final int DOWNLOAD_STATUS__FINISHED = 3;
+        public static final int DOWNLOAD_STATUS__FAILED = -1;
+        private static boolean _isAlreadyDownloading = false;
+        private boolean _doDownload;
+        private Context _context;
+        private AppSettings _appSettings;
+        private int _lastPercent = -1;
+        public UpdateThread(Context context, boolean doDownload) {
+            _doDownload = doDownload;
+            _context = context;
+            _appSettings = AppSettings.get();
+        }
+        @Override
+        public void run() {
+            if (PermissionChecker.hasExtStoragePerm(_context)) {
+                if (MainActivity.LOCAL_ONLY_MODE || MainActivity.DISABLE_ONLINE_ASSETS) {
+                    return;
+                }
+                AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__CHECKING);
+                String apiJsonS = NetworkUtils.performCall(URL_API, NetworkUtils.GET);
+                try {
+                    JSONObject apiJson = new JSONObject(apiJsonS);
+                    String lastUpdate = apiJson.getString("pushed_at");
+                    int datesubstrindex = lastUpdate.indexOf(":", lastUpdate.indexOf(":") + 1);
+                    Date date = FORMAT_MINUTE.parse(lastUpdate.substring(0, datesubstrindex));
+                    if (date.after(_appSettings.getLastAssetArchiveDate())) {
+                        _appSettings.setLastArchiveCheckDate(new Date(System.currentTimeMillis()));
+                        if (!_doDownload) {
+                            AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK);
+                        } else {
+                            doDownload(date);
+                            new LoadAssetsThread(_context).start();
+                        }
+                    }
+                    return;
+                } catch (JSONException | ParseException e) {
+                    e.printStackTrace();
+                }
+            }
+            AppCast.ASSET_DOWNLOAD_REQUEST.send(_context, ASSET_DOWNLOAD_REQUEST__FAILED);
+        }
+        @SuppressWarnings("ResultOfMethodCallIgnored")
+        private synchronized void doDownload(Date date) throws ParseException {
+            if (_isAlreadyDownloading || date.before(_appSettings.getLastAssetArchiveDate())) {
+                return;
+            }
+            _isAlreadyDownloading = true;
+            File templatesDir = getDownloadedAssetsDir(_appSettings);
+            File file = new File(_appSettings.getSaveDirectory(), ".downloads");
+            MemeData.getFonts().clear();
+            MemeData.getImages().clear();
+            MemeData.clearImagesWithTags();
+            FileUtils.deleteRecursive(file);
+            boolean ok = false;
+            if ((file.exists() || file.mkdirs()) && (templatesDir.exists() || templatesDir.mkdirs())) {
+                // Download
+                _lastPercent = -1;
+                AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__DOWNLOADING, 0);
+                file = new File(file, FORMAT_MINUTE_FILE.format(date) + ".memetastic.zip");
+                ok = NetworkUtils.downloadFile(URL_ARCHIVE_ZIP, file, (aFloat) -> {
+                    int perc = (int) (aFloat * 100);
+                    if (_lastPercent != perc) {
+                        _lastPercent = (perc);
+                        AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__DOWNLOADING, _lastPercent * 3 / 4);
+                    }
+                });
+                // Unpack
+                _lastPercent = -1;
+                AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__UNZIPPING, 75);
+                if (ok) {
+                    ok = ZipUtils.unzip(file, templatesDir, true, (aFloat) -> {
+                        int perc = (int) (aFloat * 100);
+                        if (_lastPercent != perc) {
+                            _lastPercent = perc;
+                            AppCast.DOWNLOAD_STATUS.send(_context, DOWNLOAD_STATUS__UNZIPPING, 75 + _lastPercent / 4);
+                        }
+                    });
+                }
+                AppCast.DOWNLOAD_STATUS.send(_context, ok ? DOWNLOAD_STATUS__FINISHED : DOWNLOAD_STATUS__FAILED, 100);
+                _appSettings.setLastArchiveDate(date);
+                _isAlreadyDownloading = false;
+            }
+        }
+    }
+    public static class LoadAssetsThread extends Thread {
+        private static boolean _isAlreadyLoading = false;
+        private Context _context;
+        private AppSettings _appSettings;
+        private String[] _tagKeys;
+        public LoadAssetsThread(Context context) {
+            _context = context.getApplicationContext();
+            _appSettings = AppSettings.get();
+            _tagKeys = context.getResources().getStringArray(R.array.meme_tags__keys);
+        }
+        @Override
+        public void run() {
+            if (_isAlreadyLoading) {
+                return;
+            }
+            _isAlreadyLoading = true;
+            List<MemeData.Font> fonts = MemeData.getFonts();
+            List<MemeData.Image> images = MemeData.getImages();
+            fonts.clear();
+            images.clear();
+            MemeData.setWasInit(false);
+            boolean permGranted = PermissionChecker.hasExtStoragePerm(_context);
+            if (permGranted) {
+                loadConfigFromFolder(getMemesDir(_appSettings), new ArrayList<MemeData.Font>(), MemeData.getCreatedMemes());
+                loadConfigFromFolder(getDownloadedAssetsDir(_appSettings), fonts, images);
+                loadConfigFromFolder(getCustomAssetsDir(_appSettings), fonts, images);
+            }
+            if (!permGranted || fonts.isEmpty() || images.isEmpty()) {
+                loadBundledAssets(fonts, images);
+                loadConfigFromFolder(getBundledAssetsDir(_appSettings), fonts, images);
+            }
+            MemeData.clearImagesWithTags();
+            guessLastUsedFont(fonts);
+            MemeData.setWasInit(true);
+            _isAlreadyLoading = false;
+            AppCast.ASSETS_LOADED.send(_context);
+        }
+        private void guessLastUsedFont(final List<MemeData.Font> fonts) {
+            String lastFont = _appSettings.getLastUsedFont();
+            if (lastFont.startsWith(_context.getFilesDir().getAbsolutePath())) {
+                lastFont = "";
+            }
+            if (lastFont.isEmpty() || !(new File(lastFont).exists())) {
+                _appSettings.setLastUsedFont(fonts.get(0).fullPath.getAbsolutePath());
+            }
+        }
+        private void loadConfigFromFolder(File folder, List<MemeData.Font> dataFonts, List<MemeData.Image> dataImages) {
+            if (!folder.exists() && !folder.mkdirs()) {
+                return;
+            }
+            if (folder.list().length == 0) {
+                return;
+            }
+            MemeConfig.Config conf = null;
+            File configFile = new File(folder, MEMETASTIC_CONFIG_FILE);
+            if (configFile.exists()) {
+                try {
+                    String contents = FileUtils.readTextFile(configFile);
+                    JSONObject json = new JSONObject(contents);
+                    conf = new MemeConfig.Config().fromJson(json);
+                } catch (Exception ignored) {
+                }
+            }
+            // Create new if empty
+            if (conf == null) {
+                conf = new MemeConfig.Config();
+                conf.setFonts(new ArrayList<MemeConfig.Font>());
+                conf.setImages(new ArrayList<MemeConfig.Image>());
+            }
+            boolean assetsChanged = checkForNewAssets(folder, conf);
+            for (MemeConfig.Font confFont : conf.getFonts()) {
+                MemeData.Font dataFont = new MemeData.Font();
+                dataFont.conf = confFont;
+                dataFont.fullPath = new File(folder, confFont.getFilename());
+                dataFont.typeFace = Typeface.createFromFile(dataFont.fullPath);
+                if (dataFont.fullPath.exists()) {
+                    if (!dataFonts.contains(dataFont)) {
+                        dataFonts.add(dataFont);
+                    }
+                } else {
+                    assetsChanged = true;
+                }
+            }
+            for (MemeConfig.Image confImage : conf.getImages()) {
+                MemeData.Image dataImage = new MemeData.Image();
+                dataImage.conf = confImage;
+                dataImage.fullPath = new File(folder, confImage.getFilename());
+                dataImage.isTemplate = true;
+                if (dataImage.fullPath.exists()) {
+                    if (!dataImages.contains(dataImage)) {
+                        dataImages.add(dataImage);
+                    }
+                } else {
+                    assetsChanged = true;
+                }
+            }
+            if (assetsChanged) {
+                try {
+                    FileUtils.writeFile(configFile, conf.toJson().toString());
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        private boolean checkForNewAssets(File folder, MemeConfig.Config conf) {
+            boolean assetsChanged = false;
+            final ArrayList<String> extensions = new ArrayList<>();
+            extensions.addAll(Arrays.asList(MEMETASTIC_IMAGES_EXTS));
+            extensions.addAll(Arrays.asList(MEMETASTIC_FONT_EXTS));
+            // Get all files that are maybe compatible
+            ArrayList<String> files = new ArrayList<>(Arrays.asList(
+                    folder.list(new FilenameFilter() {
+                        @Override
+                        public boolean accept(File file, String s) {
+                            String flc = s.toLowerCase();
+                            for (String extension : extensions) {
+                                if (flc.endsWith("." + extension.toLowerCase())) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    })
+            ));
+            // Check if all fonts and images are indexed
+            for (MemeConfig.Font data : conf.getFonts()) {
+                if (files.contains(data.getFilename())) {
+                    files.remove(data.getFilename());
+                }
+            }
+            for (MemeConfig.Image data : conf.getImages()) {
+                if (files.contains(data.getFilename())) {
+                    files.remove(data.getFilename());
+                }
+            }
+            // Index everything not indexed yet
+            for (String filename : files) {
+                String flc = filename.toLowerCase();
+                for (String ext : MEMETASTIC_IMAGES_EXTS) {
+                    if (flc.endsWith("." + ext)) {
+                        MemeConfig.Image image = generateImageEntry(folder, filename, _tagKeys);
+                        if (image != null) {
+                            conf.getImages().add(image);
+                            assetsChanged = true;
+                        }
+                    }
+                }
+                for (String ext : MEMETASTIC_FONT_EXTS) {
+                    if (flc.endsWith("." + ext)) {
+                        MemeConfig.Font font = generateFontEntry(folder, filename);
+                        if (font != null) {
+                            conf.getFonts().add(font);
+                            assetsChanged = true;
+                        }
+                    }
+                }
+            }
+            return assetsChanged;
+        }
+        @SuppressWarnings("ResultOfMethodCallIgnored")
+        private void loadBundledAssets(List<MemeData.Font> fonts, List<MemeData.Image> images) {
+            AssetManager assetManager = _context.getAssets();
+            File config = new File(getBundledAssetsDir(_appSettings), MEMETASTIC_CONFIG_FILE);
+            config.delete();
+            try {
+                File cacheDir = getBundledAssetsDir(_appSettings);
+                if (cacheDir.exists() || cacheDir.mkdirs()) {
+                    for (String assetFilename : assetManager.list("bundled")) {
+                        InputStream is = assetManager.open("bundled/" + assetFilename);
+                        byte[] data = FileUtils.readCloseBinaryStream(is);
+                        FileUtils.writeFile(new File(cacheDir, assetFilename), data);
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+        }
+    }
+    public static MemeConfig.Font generateFontEntry(File folder, String filename) {
+        MemeConfig.Font confFont = new MemeConfig.Font();
+        confFont.setFilename(filename);
+        confFont.setTitle(filename.substring(0, filename.lastIndexOf(".")).replace("_", " "));
+        return confFont;
+    }
+    public static MemeConfig.Image generateImageEntry(File folder, String filename, String[] tagKeys) {
+        ArrayList<String> tags = new ArrayList<>();
+        // animals__advice_mallard.jpg --> tag animals recognized
+        String[] nameSplits = filename.split("__");
+        for (String tagKey : tagKeys) {
+            for (String nameSplit : nameSplits) {
+                if (nameSplit.equals(tagKey)) {
+                    tags.add(tagKey);
+                }
+            }
+        }
+        if (tags.isEmpty()) {
+            tags.add(MemeConfig.Image.IMAGE_TAG_OTHER);
+        }
+        MemeConfig.Image confImage = new MemeConfig.Image();
+        confImage.setCaptions(new ArrayList<MemeConfig.Caption>());
+        confImage.setFilename(filename);
+        confImage.setTags(tags);
+        confImage.setTitle(filename.substring(0, filename.lastIndexOf(".")).replace("_", " "));
+        return confImage;
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.util;
+import android.content.Context;
+import android.os.Environment;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.MemeItemAdapter;
+import net.gsantner.opoc.preference.SharedPreferencesPropertyBackend;
+import java.io.File;
+import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import io.github.gsantner.memetastic.BuildConfig;
+import io.github.gsantner.memetastic.R;
+public class AppSettings extends SharedPreferencesPropertyBackend {
+    private static final int MAX_FAVS = 50;
+    private static boolean PACKAGE_CHECKED = false;
+    //#####################
+    //## Methods
+    //#####################
+    public AppSettings(Context context) {
+        super(context);
+        /*
+         * Check if a MemeTastic package ID was used to build the app.
+         * If you release something based on MemeTastic you will want to remove the lines below.
+         * In any case: You MUST release the full source code.
+         *
+         * If you publish an app based on MemeTastic you MUST
+         *   Comply with the terms of GPLv3 - See https://www.gnu.org/licenses/gpl-3.0.html
+         *   Keep existing copyright notices in the app and publish full source code
+         *   Show that the app is `based on MemeTastic by MemeTastic developers and contributors`. Include a link to https://github.com/gsantner/memetastic
+         *   Show that the app is not MemeTastic but an modified/custom version, and the original app developers or contributors are not responsible for modified versions
+         *   Not use MemeTastic as app name
+         *
+         *  See more details at
+         *  https://github.com/gsantner/memetastic/blob/master/README.md#licensing
+         */
+        if (!PACKAGE_CHECKED) {
+            PACKAGE_CHECKED = true;
+            String pkg = _context.getPackageName();
+            if (!pkg.startsWith("io.github.gsantner.") && !pkg.startsWith("net.gsantner.")) {
+                String message = "\n\n\n" +
+                        "++++  WARNING: MemeTastic is licensed GPLv3.\n" +
+                        "++++  If you distribute the app you MUST publish the full source code.\n" +
+                        "++++  See https://github.com/gsantner/memetastic for more details.\n" +
+                        "++++  This warning is placed in util/AppSettings.java\n\n\n";
+                throw new RuntimeException(message);
+            }
+        }
+    }
+    public static AppSettings get() {
+        return new AppSettings(App.get());
+    }
+    // Adds a String to a String array and cuts of the last values to match a maximal size
+    private static String[] insertAndMaximize(String[] values, String value, int maxSize) {
+        List<String> list;
+        if (values == null)
+            list = new ArrayList<>();
+        else
+            list = new ArrayList<>(Arrays.asList(values));
+        list.add(0, value);
+        while (list.size() > maxSize) {
+            list.remove(maxSize - 1);
+        }
+        return list.toArray(new String[list.size()]);
+    }
+    public int getRenderQualityReal() {
+        int val = getInt(R.string.pref_key__render_quality__percent, 24);
+        return (int) (400 + (2100.0 * (val / 100.0)));
+    }
+    public int getThumbnailQualityReal() {
+        // 24 should be 225. Mostly 3 will be on a phone, so 1080/3=360
+        // Additional reduction of quality to ~2/3 is roughly 225
+        // 150 is very fast loaded, but blurry, 200 is still a little blurry, 225 seems to be
+        // a good tradeoff between quality (400-600) and speed (-125)
+        int val = getInt(R.string.pref_key__thumbnail_quality__percent, 19);
+        return (int) (100 + (939 * (val / 100.0)));
+    }
+    public void setLastUsedFont(String value) {
+        setString(R.string.pref_key__last_used_font, value);
+    }
+    public String getLastUsedFont() {
+        return getString(R.string.pref_key__last_used_font, "");
+    }
+    public void setFavoriteMemes(String[] value) {
+        setStringArray(R.string.pref_key__favourite_meme_templates, value);
+    }
+    public String[] getFavoriteMemeTemplates() {
+        return getStringArray(R.string.pref_key__favourite_meme_templates);
+    }
+    public void appendFavoriteMeme(String filepath) {
+        String[] memes = insertAndMaximize(getFavoriteMemeTemplates(), filepath, MAX_FAVS);
+        setFavoriteMemes(memes);
+    }
+    public boolean isFavorite(String filepath) {
+        if (getFavoriteMemeTemplates() == null)
+            return false;
+        for (String s : getFavoriteMemeTemplates()) {
+            if (s.equals(filepath))
+                return true;
+        }
+        return false;
+    }
+    public boolean toggleFavorite(String filepath) {
+        if (!isFavorite(filepath)) {
+            appendFavoriteMeme(filepath);
+            return true;
+        }
+        removeFavorite(filepath);
+        return false;
+    }
+    public void removeFavorite(String filepath) {
+        String[] favs = getFavoriteMemeTemplates();
+        ArrayList<String> newFavs = new ArrayList<String>();
+        for (String fav : favs) {
+            if (!fav.equals(filepath))
+                newFavs.add(fav);
+        }
+        setFavoriteMemes(newFavs.toArray(new String[newFavs.size()]));
+    }
+    private void setHiddenMemes(String[] hiddenMemes) {
+        setStringArray(R.string.pref_key__hidden_meme_templates, hiddenMemes);
+    }
+    public String[] getHiddenMemesTemplate() {
+        return getStringArray(R.string.pref_key__hidden_meme_templates);
+    }
+    private void appendHiddenMeme(String filepath) {
+        String[] hiddenMeme = insertAndMaximize(getHiddenMemesTemplate(),
+                filepath, MAX_FAVS);
+        setHiddenMemes(hiddenMeme);
+    }
+    public boolean isHidden(String filePath) {
+        String[] hiddenMemes = getHiddenMemesTemplate();
+        if (hiddenMemes == null)
+            return false;
+        for (String hiddenPath : hiddenMemes) {
+            if (filePath.equals(hiddenPath))
+                return true;
+        }
+        return false;
+    }
+    public boolean toggleHiddenMeme(String filePath) {
+        if (!isHidden(filePath)) {
+            appendHiddenMeme(filePath);
+            return true;
+        }
+        removeHiddenMeme(filePath);
+        return false;
+    }
+    private void removeHiddenMeme(String filePath) {
+        String[] hiddenMeme = getHiddenMemesTemplate();
+        List<String> newHiddenMemes = new ArrayList<>();
+        for (String hiddenPath : hiddenMeme) {
+            if (!hiddenPath.equals(filePath)) {
+                newHiddenMemes.add(hiddenPath);
+            }
+        }
+        setHiddenMemes(newHiddenMemes.toArray(new String[newHiddenMemes.size()]));
+    }
+    public void setLastSelectedTab(int value) {
+        setInt(R.string.pref_key__last_selected_tab, value);
+    }
+    public int getLastSelectedTab() {
+        return getInt(R.string.pref_key__last_selected_tab, 0);
+    }
+    public int getMemeListViewType() {
+        return getIntOfStringPref(R.string.pref_key__memelist_view_type, MemeItemAdapter.VIEW_TYPE__PICTURE_GRID);
+    }
+    public int getGridColumnCountPortrait() {
+        int count = getInt(R.string.pref_key__grid_column_count_portrait, -1);
+        if (count == -1) {
+            count = 3 + (int) Math.max(0, 0.5 * (ContextUtils.get().getEstimatedScreenSizeInches() - 5.0));
+            setGridColumnCountPortrait(count);
+        }
+        return count;
+    }
+    public void setGridColumnCountPortrait(int value) {
+        setInt(R.string.pref_key__grid_column_count_portrait, value);
+    }
+    public int getGridColumnCountLandscape() {
+        int count = getInt(R.string.pref_key__grid_column_count_landscape, -1);
+        if (count == -1) {
+            count = (int) (getGridColumnCountPortrait() * 1.8);
+            setGridColumnCountLandscape(count);
+        }
+        return count;
+    }
+    public void setGridColumnCountLandscape(int value) {
+        setInt(R.string.pref_key__grid_column_count_landscape, value);
+    }
+    public boolean isAppFirstStart(boolean doSet) {
+        boolean value = getBool(R.string.pref_key__app_first_start, true);
+        if (doSet) {
+            setBool(R.string.pref_key__app_first_start, false);
+        }
+        return value;
+    }
+    public boolean isAppCurrentVersionFirstStart(boolean doSet) {
+        int value = getInt(R.string.pref_key__app_first_start_current_version, -1);
+        boolean isFirstStart = value != BuildConfig.VERSION_CODE && !BuildConfig.IS_TEST_BUILD;
+        if (doSet) {
+            setInt(R.string.pref_key__app_first_start_current_version, BuildConfig.VERSION_CODE);
+        }
+        if (isFirstStart) {
+            setLastArchiveCheckDate(new Date(0));
+        }
+        return isFirstStart;
+    }
+    public boolean isAutoSaveMeme() {
+        return getBool(R.string.pref_key__auto_save_meme, false);
+    }
+    public int getDefaultMainMode() {
+        return getIntOfStringPref(R.string.pref_key__default_main_mode, 0);
+    }
+    public boolean isShuffleTagLists() {
+        return getBool(R.string.pref_key__is_shuffle_meme_tags, true);
+    }
+    public boolean isEditorStatusBarHidden() {
+        return getBool(R.string.pref_key__is_editor_statusbar_hidden, false);
+    }
+    public boolean isOverviewStatusBarHidden() {
+        return getBool(R.string.pref_key__is_overview_statusbar_hidden, false);
+    }
+    public String getLanguage() {
+        return getString(R.string.pref_key__language, "");
+    }
+    public void setSaveDirectory(String value) {
+        setString(R.string.pref_key__save_directory, value);
+    }
+    public File getSaveDirectory() {
+        String dir = getString(R.string.pref_key__save_directory, "");
+        if (dir.isEmpty()) {
+            dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                    , rstr(R.string.app_name).toLowerCase())
+                    .getAbsolutePath();
+            setSaveDirectory(dir);
+        }
+        return new File(dir);
+    }
+    public Date getLastAssetArchiveDate() throws ParseException {
+        String date = getString(R.string.pref_key__latest_asset_archive_date, "");
+        if (date.isEmpty()) {
+            return new Date(0);
+        }
+        return AssetUpdater.FORMAT_MINUTE.parse(date);
+    }
+    public void setLastArchiveCheckDate(Date value) {
+        setString(R.string.pref_key__latest_asset_archive_check_date, AssetUpdater.FORMAT_MINUTE.format(value));
+    }
+    public Date getLastAssetArchiveCheckDate() {
+        String date = getString(R.string.pref_key__latest_asset_archive_check_date, "");
+        if (date.isEmpty()) {
+            return new Date(0);
+        }
+        try {
+            return AssetUpdater.FORMAT_MINUTE.parse(date);
+        } catch (ParseException e) {
+            return new Date(0);
+        }
+    }
+    public void setLastArchiveDate(Date value) {
+        setString(R.string.pref_key__latest_asset_archive_date, AssetUpdater.FORMAT_MINUTE.format(value));
+    }
+    public boolean isMigrated() {
+        return getBool(R.string.pref_key__is_migrated, false);
+    }
+    public void setMigrated(boolean value) {
+        setBool(R.string.pref_key__is_migrated, value);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.annotation.SuppressLint;
+import android.app.SearchManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.database.Cursor;
+import android.graphics.PorterDuff;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.ParcelFileDescriptor;
+import android.provider.MediaStore;
+import android.support.annotation.DrawableRes;
+import android.support.annotation.NonNull;
+import android.support.annotation.StringRes;
+import android.support.design.widget.BottomNavigationView;
+import android.support.design.widget.NavigationView;
+import android.support.design.widget.TabLayout;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.content.FileProvider;
+import android.support.v4.content.LocalBroadcastManager;
+import android.support.v4.view.ViewPager;
+import android.support.v7.app.AlertDialog;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.GridLayoutManager;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
+import android.support.v7.widget.SearchView;
+import android.support.v7.widget.Toolbar;
+import android.text.TextUtils;
+import android.util.Base64;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.GridDecoration;
+import net.gsantner.memetastic.ui.MemeItemAdapter;
+import net.gsantner.memetastic.util.ActivityUtils;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.format.markdown.SimpleMarkdownParser;
+import net.gsantner.opoc.ui.LinearSplitLayout;
+import net.gsantner.opoc.util.FileUtils;
+import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import io.github.gsantner.memetastic.R;
+public class MainActivity extends AppCompatActivity
+        implements NavigationView.OnNavigationItemSelectedListener, ViewPager.OnPageChangeListener, BottomNavigationView.OnNavigationItemSelectedListener {
+    public static final int REQUEST_LOAD_GALLERY_IMAGE = 50;
+    public static final int REQUEST_TAKE_CAMERA_PICTURE = 51;
+    public static final int REQUEST_SHOW_IMAGE = 52;
+    public static final String IMAGE_PATH = "imagePath";
+    public static final String IMAGE_POS = "image_pos";
+    public static final boolean LOCAL_ONLY_MODE = true;
+    public static final boolean DISABLE_ONLINE_ASSETS = true;
+    private static boolean _isShowingFullscreenImage = false;
+    @BindView(R.id.toolbar)
+    Toolbar _toolbar;
+    @BindView(R.id.bottom_navigation_bar)
+    BottomNavigationView _bottomNav;
+    private MenuItem _lastBottomMenuItem;
+    @BindView(R.id.main__tabs)
+    TabLayout _tabLayout;
+    @BindView(R.id.main__more_info_fragment_container)
+    LinearLayout _moreInfoContainer;
+    @BindView(R.id.main_activity__placeholder)
+    FrameLayout _placeholder;
+    @BindView(R.id.main_activity__view_pager)
+    ViewPager _viewPager;
+    @BindView(R.id.main__activity__recycler_view)
+    RecyclerView _recyclerMemeList;
+    @BindView(R.id.main__activity__list_empty__layout)
+    LinearSplitLayout _emptylistLayout;
+    @BindView(R.id.main__activity__list_empty__text)
+    TextView _emptylistText;
+    @BindView(R.id.main__activity__infobar)
+    LinearLayout _infoBar;
+    @BindView(R.id.main__activity__infobar__progress)
+    ProgressBar _infoBarProgressBar;
+    @BindView(R.id.main__activity__infobar__image)
+    ImageView _infoBarImage;
+    @BindView(R.id.main__activity__infobar__text)
+    TextView _infoBarText;
+    App app;
+    private AppSettings _appSettings;
+    private ActivityUtils _activityUtils;
+    private String cameraPictureFilepath = "";
+    String[] _tagKeys, _tagValues;
+    private int _currentMainMode = 0;
+    private long _lastInfoBarTextShownAt = 0;
+    private SearchView _searchView;
+    private MenuItem _searchItem;
+    private String _currentSearch = "";
+    private static final String BOTTOM_NAV_POSITION = "bottom_nav_position";
+    @SuppressLint("ClickableViewAccessibility")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            _currentMainMode = savedInstanceState.getInt(BOTTOM_NAV_POSITION);
+        }
+        _appSettings = new AppSettings(this);
+        _activityUtils = new ActivityUtils(this);
+        _activityUtils.setAppLanguage(_appSettings.getLanguage());
+        if (_appSettings.isOverviewStatusBarHidden()) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+        setContentView(R.layout.main__activity);
+        // Bind UI
+        app = (App) getApplication();
+        ButterKnife.bind(this);
+        // Setup _toolbar
+        setSupportActionBar(_toolbar);
+        _tagKeys = getResources().getStringArray(R.array.meme_tags__keys);
+        _tagValues = getResources().getStringArray(R.array.meme_tags__titles);
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            for (int i = 0; i < _tagKeys.length; i++) {
+                _tagKeys[i] = "other";
+            }
+            _tagKeys = new String[]{_tagKeys[0]};
+            _tagValues = new String[]{_tagValues[0]};
+        }
+        _recyclerMemeList.setHasFixedSize(true);
+        _recyclerMemeList.setItemViewCacheSize(_appSettings.getGridColumnCountPortrait() * _appSettings.getGridColumnCountLandscape() * 2);
+        _recyclerMemeList.setDrawingCacheEnabled(true);
+        _recyclerMemeList.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_LOW);
+        _recyclerMemeList.addItemDecoration(new GridDecoration(1.7f));
+        if (_appSettings.getMemeListViewType() == MemeItemAdapter.VIEW_TYPE__ROWS_WITH_TITLE) {
+            RecyclerView.LayoutManager recyclerLinearLayout = new LinearLayoutManager(this, LinearLayoutManager.VERTICAL, false);
+            _recyclerMemeList.setLayoutManager(recyclerLinearLayout);
+        } else {
+            int gridColumns = _activityUtils.isInPortraitMode()
+                    ? _appSettings.getGridColumnCountPortrait()
+                    : _appSettings.getGridColumnCountLandscape();
+            RecyclerView.LayoutManager recyclerGridLayout = new GridLayoutManager(this, gridColumns);
+            _recyclerMemeList.setLayoutManager(recyclerGridLayout);
+        }
+        for (String cat : _tagValues) {
+            TabLayout.Tab tab = _tabLayout.newTab();
+            tab.setText(cat);
+            _tabLayout.addTab(tab);
+        }
+        // Basically enable "other" only mode
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            _tabLayout.setVisibility(View.GONE);
+        }
+        // END
+        _viewPager.setOffscreenPageLimit(5);
+        _viewPager.setAdapter(new MemePagerAdapter(getSupportFragmentManager(), _tagKeys.length, _tagValues));
+        _tabLayout.setupWithViewPager(_viewPager);
+        selectTab(app.settings.getLastSelectedTab(), app.settings.getDefaultMainMode());
+        _infoBarProgressBar.getProgressDrawable().setColorFilter(ContextCompat.getColor(this, R.color.accent), PorterDuff.Mode.SRC_IN);
+        // Show first start dialog / changelog
+        try {
+            if (_appSettings.isAppCurrentVersionFirstStart(true)) {
+                SimpleMarkdownParser smp = SimpleMarkdownParser.get().setDefaultSmpFilter(SimpleMarkdownParser.FILTER_ANDROID_TEXTVIEW);
+                String html = "";
+                html += smp.parse(getString(R.string.copyright_license_text_official).replace("\n", "  \n"), "").getHtml();
+                html += "<br/><br/><br/><big><big>" + getString(R.string.changelog) + "</big></big><br/>" + smp.parse(getResources().openRawResource(R.raw.changelog), "", SimpleMarkdownParser.FILTER_ANDROID_TEXTVIEW, SimpleMarkdownParser.FILTER_CHANGELOG);
+                html += "<br/><br/><br/><big><big>" + getString(R.string.licenses) + "</big></big><br/>" + smp.parse(getResources().openRawResource(R.raw.licenses_3rd_party), "").getHtml();
+                _activityUtils.showDialogWithHtmlTextView(R.string.licenses, html);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        new AssetUpdater.LoadAssetsThread(this).start();
+        if (PermissionChecker.doIfPermissionGranted(this)) {
+            ContextUtils.checkForAssetUpdates(this);
+        }
+        _bottomNav.setOnNavigationItemSelectedListener(this);
+    }
+    public void updateHiddenNavOption() {
+        MenuItem hiddenItem = _bottomNav.getMenu().findItem(R.id.nav_mode_hidden);
+        for (String hidden : app.settings.getHiddenMemesTemplate()) {
+            MemeData.Image image = MemeData.findImage(new File(hidden));
+            if (image != null) {
+                hiddenItem.setVisible(true);
+                return;
+            }
+        }
+        hiddenItem.setVisible(false);
+    }
+    @SuppressWarnings("ConstantConditions")
+    private void selectTab(int pos, int mainMode) {
+        MenuItem navItem = null;
+        switch (mainMode) {
+            case 0:
+                pos = pos >= 0 ? pos : _tabLayout.getTabCount() - 1;
+                pos = pos < _tabLayout.getTabCount() ? pos : 0;
+                _tabLayout.getTabAt(pos).select();
+                break;
+            case 1:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_favs);
+                break;
+            case 2:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_saved);
+                break;
+            case 3:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_mode_hidden);
+                break;
+            case 4:
+                navItem = _bottomNav.getMenu().findItem(R.id.nav_more);
+                break;
+        }
+        if (navItem != null) {
+            navItem.setChecked(true);
+            onNavigationItemSelected(navItem);
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (MainActivity.LOCAL_ONLY_MODE) {
+            _tabLayout.setVisibility(View.GONE);
+        }
+        if (_isShowingFullscreenImage) {
+            _isShowingFullscreenImage = false;
+            overridePendingTransition(R.anim.fadein, R.anim.fadeout);
+        }
+        LocalBroadcastManager.getInstance(this).registerReceiver(_localBroadcastReceiver, AppCast.getLocalBroadcastFilter());
+        if (SettingsActivity.activityRetVal == SettingsActivity.RESULT.CHANGE_RESTART) {
+            SettingsActivity.activityRetVal = SettingsActivity.RESULT.NOCHANGE;
+            recreate();
+        }
+        try {
+            if (new Random().nextInt(10) > 2) {
+                Method m = getClass().getMethod(new String(Base64.decode("Z2V0UGFja2FnZU5hbWU=", Base64.DEFAULT)));
+                String ret = (String) m.invoke(this);
+                if (!ret.startsWith(new String(Base64.decode("bmV0LmdzYW50bmVyLg==", Base64.DEFAULT))) && !ret.startsWith(new String(Base64.decode("aW8uZ2l0aHViLmdzYW50bmVyLg==", Base64.DEFAULT)))) {
+                    m = System.class.getMethod(new String(Base64.decode("ZXhpdA==", Base64.DEFAULT)), int.class);
+                    m.invoke(null, 0);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        _viewPager.addOnPageChangeListener(this);
+    }
+    @Override
+    protected void onPause() {
+        super.onPause();
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(_localBroadcastReceiver);
+        _viewPager.removeOnPageChangeListener(this);
+    }
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (PermissionChecker.checkPermissionResult(this, requestCode, permissions, grantResults)) {
+            ContextUtils.checkForAssetUpdates(this);
+        }
+        new AssetUpdater.LoadAssetsThread(this).start();
+        selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+    }
+    @Override
+    public void onBackPressed() {
+        if (!_searchView.isIconified()) {
+            _searchView.setIconified(true);
+            updateSearchFilter("");
+        } else {
+            super.onBackPressed();
+        }
+    }
+    @SuppressWarnings("ResultOfMethodCallIgnored")
+    public boolean handleBarClick(MenuItem item) {
+        List<MemeData.Image> imageList = null;
+        switch (item.getItemId()) {
+            case R.id.action_picture_from_gallery: {
+                if (PermissionChecker.doIfPermissionGranted(this)) {
+                    Intent i = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                    ActivityUtils.get(this).animateToActivity(i, false, REQUEST_LOAD_GALLERY_IMAGE);
+                }
+                return true;
+            }
+            case R.id.action_picture_from_camera: {
+                showCameraDialog();
+                return true;
+            }
+            case R.id.nav_mode_create: {
+                _currentMainMode = 0;
+                selectTab(app.settings.getLastSelectedTab(), app.settings.getDefaultMainMode());
+                _toolbar.setTitle(R.string.app_name);
+                break;
+            }
+            case R.id.nav_mode_favs: {
+                _currentMainMode = 1;
+                imageList = new ArrayList<>();
+                _emptylistText.setText(R.string.no_favourites_description__appspecific);
+                for (String fav : app.settings.getFavoriteMemeTemplates()) {
+                    MemeData.Image img = MemeData.findImage(new File(fav));
+                    if (img != null) {
+                        imageList.add(img);
+                    }
+                }
+                _toolbar.setTitle(R.string.favs);
+                break;
+            }
+            case R.id.nav_mode_saved: {
+                _currentMainMode = 2;
+                _emptylistText.setText(R.string.no_memes_saved_description__appspecific);
+                if (PermissionChecker.hasExtStoragePerm(this)) {
+                    File folder = AssetUpdater.getMemesDir(AppSettings.get());
+                    folder.mkdirs();
+                    imageList = MemeData.getCreatedMemes();
+                }
+                _toolbar.setTitle(R.string.saved);
+                break;
+            }
+            case R.id.nav_mode_hidden: {
+                _currentMainMode = 3;
+                imageList = new ArrayList<>();
+                for (String hidden : app.settings.getHiddenMemesTemplate()) {
+                    MemeData.Image image = MemeData.findImage(new File(hidden));
+                    if (image != null) {
+                        imageList.add(image);
+                    }
+                }
+                _toolbar.setTitle(R.string.hidden);
+                break;
+            }
+            case R.id.nav_more: {
+                _currentMainMode = 4;
+                _toolbar.setTitle(R.string.more);
+                break;
+            }
+        }
+        // Change mode
+        //_tabLayout.setVisibility(item.getItemId() == R.id.nav_mode_create ? View.VISIBLE : View.GONE);
+        _moreInfoContainer.setVisibility(View.GONE);
+        if (item.getItemId() == R.id.nav_more) {
+            _placeholder.setVisibility(View.GONE);
+            _viewPager.setVisibility(View.GONE);
+            _moreInfoContainer.setVisibility(View.VISIBLE);
+        } else if (item.getItemId() != R.id.nav_mode_create) {
+            _viewPager.setVisibility(View.GONE);
+            _placeholder.setVisibility(View.VISIBLE);
+            if (imageList != null) {
+                MemeItemAdapter recyclerMemeAdapter = new MemeItemAdapter(imageList, this, AppSettings.get().getMemeListViewType());
+                setRecyclerMemeListAdapter(recyclerMemeAdapter);
+                return true;
+            }
+        } else {
+            _viewPager.setVisibility(View.VISIBLE);
+            _placeholder.setVisibility(View.GONE);
+        }
+        return true;
+    }
+    private void setRecyclerMemeListAdapter(MemeItemAdapter adapter) {
+        adapter.setFilter(_currentSearch);
+        _recyclerMemeList.setAdapter(adapter);
+        boolean isEmpty = adapter.getItemCount() == 0;
+        _emptylistLayout.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+        _recyclerMemeList.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+    }
+    private void updateSearchFilter(String newFilter) {
+        if (_currentMainMode != 0) {
+            _currentSearch = newFilter;
+            if (_recyclerMemeList.getAdapter() != null) {
+                ((MemeItemAdapter) _recyclerMemeList.getAdapter()).setFilter(newFilter);
+            }
+        } else {
+            MemeFragment page = ((MemeFragment) getSupportFragmentManager().findFragmentByTag("android:switcher:" + R.id.main_activity__view_pager + ":" + _viewPager.getCurrentItem()));
+            if (page != null && page._recyclerMemeList.getAdapter() != null) {
+                ((MemeItemAdapter) page._recyclerMemeList.getAdapter()).setFilter(newFilter);
+            }
+        }
+    }
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_LOAD_GALLERY_IMAGE) {
+            if (resultCode == RESULT_OK && data != null) {
+                Uri selectedImage = data.getData();
+                String[] filePathColumn = {MediaStore.Images.Media.DATA};
+                String picturePath = null;
+                Cursor cursor = getContentResolver().query(selectedImage, filePathColumn, null, null, null);
+                if (cursor != null && cursor.moveToFirst()) {
+                    for (String column : filePathColumn) {
+                        int curColIndex = cursor.getColumnIndex(column);
+                        if (curColIndex == -1) {
+                            continue;
+                        }
+                        picturePath = cursor.getString(curColIndex);
+                        if (!TextUtils.isEmpty(picturePath)) {
+                            break;
+                        }
+                    }
+                    cursor.close();
+                }
+                // Retrieve image from file descriptor / Cloud, e.g.: Google Drive, Picasa
+                if (picturePath == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                    try {
+                        ParcelFileDescriptor parcelFileDescriptor = getContentResolver().openFileDescriptor(selectedImage, "r");
+                        if (parcelFileDescriptor != null) {
+                            FileDescriptor fileDescriptor = parcelFileDescriptor.getFileDescriptor();
+                            FileInputStream input = new FileInputStream(fileDescriptor);
+                            // Create temporary file in cache directory
+                            picturePath = File.createTempFile("image", "tmp", getCacheDir()).getAbsolutePath();
+                            FileUtils.writeFile(
+                                    new File(picturePath),
+                                    FileUtils.readCloseBinaryStream(input)
+                            );
+                        }
+                    } catch (IOException e) {
+                        // nothing we can do here, null value will be handled below
+                    }
+                }
+                // Finally check if we got something
+                if (picturePath == null) {
+                    ActivityUtils.get(this).showSnackBar(R.string.error_couldnot_load_picture_from_storage, false);
+                } else {
+                    onImageTemplateWasChosen(picturePath);
+                }
+            }
+        }
+        if (requestCode == REQUEST_TAKE_CAMERA_PICTURE) {
+            if (resultCode == RESULT_OK) {
+                onImageTemplateWasChosen(cameraPictureFilepath);
+            } else {
+                ActivityUtils.get(this).showSnackBar(R.string.error_picture_selection, false);
+            }
+        }
+        if (requestCode == REQUEST_SHOW_IMAGE) {
+            selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+        }
+    }
+    /**
+     * Show the camera picker via intent
+     * Source: http://developer.android.com/training/camera/photobasics.html
+     */
+    public void showCameraDialog() {
+        if (!PermissionChecker.doIfPermissionGranted(this)) {
+            return;
+        }
+        Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        if (takePictureIntent.resolveActivity(getPackageManager()) != null) {
+            File photoFile = null;
+            try {
+                // Create an image file name
+                String imageFileName = getString(R.string.app_name) + "_" + System.currentTimeMillis();
+                File storageDir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DCIM), "Camera");
+                photoFile = File.createTempFile(imageFileName, ".jpg", storageDir);
+                // Save a file: path for use with ACTION_VIEW intents
+                cameraPictureFilepath = photoFile.getAbsolutePath();
+            } catch (IOException ex) {
+                ActivityUtils.get(this).showSnackBar(R.string.error_cannot_start_camera, false);
+            }
+            // Continue only if the File was successfully created
+            if (photoFile != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    Uri uri = FileProvider.getUriForFile(this, _activityUtils.getFileProvider(), photoFile);
+                    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
+                } else {
+                    takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(photoFile));
+                }
+                ActivityUtils.get(this).animateToActivity(takePictureIntent, false, REQUEST_TAKE_CAMERA_PICTURE);
+            }
+        }
+    }
+    public void onImageTemplateWasChosen(String filePath) {
+        final Intent intent = new Intent(this, MemeCreateActivity.class);
+        intent.putExtra(MemeCreateActivity.EXTRA_IMAGE_PATH, filePath);
+        ActivityUtils.get(this).animateToActivity(intent, false, MemeCreateActivity.RESULT_MEME_EDITING_FINISHED);
+    }
+    public void openImageViewActivityWithImage(int pos, String imagePath) {
+        _isShowingFullscreenImage = true;
+        Intent intent = new Intent(this, ImageViewActivity.class);
+        intent.putExtra(IMAGE_PATH, imagePath);
+        intent.putExtra(IMAGE_POS, pos);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        ActivityUtils.get(this).animateToActivity(intent, false, REQUEST_SHOW_IMAGE);
+    }
+    private BroadcastReceiver _localBroadcastReceiver = new BroadcastReceiver() {
+        @SuppressWarnings("unchecked")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case AppCast.ASSET_DOWNLOAD_REQUEST.ACTION: {
+                    switch (intent.getIntExtra(AppCast.ASSET_DOWNLOAD_REQUEST.EXTRA_RESULT, AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__FAILED)) {
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__CHECKING: {
+                            updateInfoBar(0, R.string.download_latest_assets_checking_description, R.drawable.ic_file_download_white_32dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__FAILED: {
+                            updateInfoBar(0, R.string.downloading_failed, R.drawable.ic_file_download_white_32dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.ASSET_DOWNLOAD_REQUEST__DO_DOWNLOAD_ASK: {
+                            updateInfoBar(0, R.string.download_latest_assets_checking_description, R.drawable.ic_file_download_white_32dp, false);
+                            showDownloadDialog();
+                            break;
+                        }
+                    }
+                    return;
+                }
+                case AppCast.DOWNLOAD_STATUS.ACTION: {
+                    int percent = intent.getIntExtra(AppCast.DOWNLOAD_STATUS.EXTRA_PERCENT, 100);
+                    switch (intent.getIntExtra(AppCast.DOWNLOAD_STATUS.EXTRA_STATUS, AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FAILED)) {
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__DOWNLOADING: {
+                            updateInfoBar(percent, R.string.downloading, R.drawable.ic_file_download_white_32dp, true);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FAILED: {
+                            updateInfoBar(percent, R.string.downloading_failed, R.drawable.ic_mood_bad_black_256dp, false);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__UNZIPPING: {
+                            updateInfoBar(percent, R.string.unzipping, R.drawable.ic_file_download_white_32dp, true);
+                            break;
+                        }
+                        case AssetUpdater.UpdateThread.DOWNLOAD_STATUS__FINISHED: {
+                            updateInfoBar(percent, R.string.successfully_downloaded, R.drawable.ic_gavel_white_48px, false);
+                            break;
+                        }
+                    }
+                    return;
+                }
+                case AppCast.ASSETS_LOADED.ACTION: {
+                    selectTab(_tabLayout.getSelectedTabPosition(), _currentMainMode);
+                    updateHiddenNavOption();
+                    break;
+                }
+            }
+        }
+    };
+    private void showDownloadDialog() {
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.download_latest_assets)
+                .setMessage(R.string.download_latest_assets_message__appspecific)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.yes, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        new AssetUpdater.UpdateThread(MainActivity.this, true).start();
+                    }
+                });
+        dialog.show();
+    }
+    public void updateInfoBar(Integer percent, @StringRes Integer textResId, @DrawableRes Integer image, final boolean showlong) {
+        _lastInfoBarTextShownAt = System.currentTimeMillis();
+        _infoBar.setVisibility(View.VISIBLE);
+        Handler handler = new Handler();
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if ((System.currentTimeMillis() - _lastInfoBarTextShownAt) > (showlong ? 20 : 2) * 1000) {
+                    _infoBar.setVisibility(View.GONE);
+                }
+            }
+        }, (showlong ? 20 : 2) * 1000 + 100);
+        if (percent != null) {
+            _infoBarProgressBar.setProgress(percent);
+        }
+        if (textResId != null) {
+            _infoBarText.setText(textResId);
+        }
+        if (image != null) {
+            _infoBarImage.setImageResource(image);
+        }
+    }
+//########################
+//## Single line overrides
+//########################
+    @Override
+    public boolean onCreateOptionsMenu(final Menu menu) {
+        getMenuInflater().inflate(R.menu.main__menu, menu);
+        updateSearchFilter("");
+        boolean isCreateTab = _bottomNav.getSelectedItemId() == R.id.nav_mode_create;
+        menu.findItem(R.id.action_picture_from_camera).setVisible(isCreateTab);
+        menu.findItem(R.id.action_picture_from_gallery).setVisible(isCreateTab);
+        menu.findItem(R.id.action_search_meme).setVisible(isCreateTab);
+        _searchItem = menu.findItem(R.id.action_search_meme);
+        _searchView = (SearchView) _searchItem.getActionView();
+        SearchManager searchManager = (SearchManager) getSystemService(SEARCH_SERVICE);
+        _searchView.setSearchableInfo(searchManager.getSearchableInfo(getComponentName()));
+        _searchView.setQueryHint(getString(R.string.search_meme__appspecific));
+        if (_searchView != null) {
+            _searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+                @Override
+                public boolean onQueryTextSubmit(String query) {
+                    if (query != null) {
+                        updateSearchFilter(query);
+                    }
+                    return false;
+                }
+                @Override
+                public boolean onQueryTextChange(String newText) {
+                    if (newText != null) {
+                        updateSearchFilter(newText);
+                    }
+                    return false;
+                }
+            });
+            _searchView.setOnQueryTextFocusChangeListener((v, hasFocus) -> {
+                if (!hasFocus) {
+                    _searchItem.collapseActionView();
+                    updateSearchFilter("");
+                }
+            });
+        }
+        return true;
+    }
+    @Override
+    public boolean onNavigationItemSelected(@NonNull MenuItem item) {
+        invalidateOptionsMenu();
+        return handleBarClick(item);
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        return handleBarClick(item);
+    }
+    @Override
+    public void onPageScrolled(int i, float v, int i1) {
+    }
+    @Override
+    public void onPageSelected(int i) {
+        app.settings.setLastSelectedTab(i);
+    }
+    @Override
+    public void onPageScrollStateChanged(int i) {
+    }
+    public void selectCreateMainMode() {
+        MenuItem createItem = _bottomNav.getMenu().findItem(R.id.nav_mode_create);
+        onNavigationItemSelected(createItem);
+        createItem.setChecked(true);
+    }
+    public void recreateFragmentsAfterUnhiding() {
+        _viewPager.getAdapter().notifyDataSetChanged();
+    }
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putInt(BOTTOM_NAV_POSITION, _currentMainMode);
+        super.onSaveInstanceState(outState);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: Apache 2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *     https://github.com/gsantner/opoc/#licensing
+ *
+#########################################################*/
+package net.gsantner.opoc.util;
+import static android.content.Context.VIBRATOR_SERVICE;
+import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
+import static android.graphics.Bitmap.CompressFormat;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
+import android.content.ContentResolver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
+import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.drawable.AdaptiveIconDrawable;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.VectorDrawable;
+import android.media.MediaScannerConnection;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.support.annotation.ColorInt;
+import android.support.annotation.ColorRes;
+import android.support.annotation.DrawableRes;
+import android.support.annotation.Nullable;
+import android.support.annotation.RawRes;
+import android.support.annotation.StringRes;
+import android.support.graphics.drawable.VectorDrawableCompat;
+import android.support.v4.app.ActivityManagerCompat;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.graphics.drawable.DrawableCompat;
+import android.support.v4.text.TextUtilsCompat;
+import android.support.v4.util.Pair;
+import android.support.v4.view.ViewCompat;
+import android.text.Html;
+import android.text.InputFilter;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.TextUtils;
+import android.text.method.LinkMovementMethod;
+import android.util.DisplayMetrics;
+import android.util.Log;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.Surface;
+import android.view.View;
+import android.view.WindowManager;
+import android.webkit.MimeTypeMap;
+import android.widget.ImageView;
+import android.widget.TextView;
+import net.gsantner.opoc.format.markdown.SimpleMarkdownParser;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+@SuppressWarnings({"WeakerAccess", "unused", "SameParameterValue", "ObsoleteSdkInt", "deprecation", "SpellCheckingInspection", "TryFinallyCanBeTryWithResources", "UnusedAssignment", "UnusedReturnValue"})
+public class ContextUtils {
+    //
+    // Members, Constructors
+    //
+    protected Context _context;
+    public ContextUtils(Context context) {
+        _context = context;
+    }
+    public Context context() {
+        return _context;
+    }
+    public void freeContextRef() {
+        _context = null;
+    }
+    //
+    // Class Methods
+    //
+    public enum ResType {
+        ID, BOOL, INTEGER, COLOR, STRING, ARRAY, DRAWABLE, PLURALS,
+        ANIM, ATTR, DIMEN, LAYOUT, MENU, RAW, STYLE, XML,
+    }
+    /**
+     * Find out the nuermical ressource id by given {@link ResType}
+     *
+     * @return A valid id if the id could be found, else 0
+     */
+    public int getResId(final ResType resType, final String name) {
+        try {
+            return _context.getResources().getIdentifier(name, resType.name().toLowerCase(), _context.getPackageName());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+    /**
+     * Get String by given string ressource id (nuermic)
+     */
+    public String rstr(@StringRes final int strResId) {
+        try {
+            return _context.getString(strResId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /**
+     * Get String by given string ressource identifier (textual)
+     */
+    public String rstr(final String strResKey, Object... a0getResKeyAsFallback) {
+        try {
+            return rstr(getResId(ResType.STRING, strResKey));
+        } catch (Resources.NotFoundException e) {
+            return a0getResKeyAsFallback != null && a0getResKeyAsFallback.length > 0 ? strResKey : null;
+        }
+    }
+    /**
+     * Get drawable from given ressource identifier
+     */
+    public Drawable rdrawable(@DrawableRes final int resId) {
+        try {
+            return ContextCompat.getDrawable(_context, resId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /**
+     * Get color by given color ressource id
+     */
+    public int rcolor(@ColorRes final int resId) {
+        if (resId == 0) {
+            Log.e(getClass().getName(), "ContextUtils::rcolor: resId is 0!");
+            return Color.BLACK;
+        }
+        return ContextCompat.getColor(_context, resId);
+    }
+    /**
+     * Checks if all given (textual) ressource ids are available
+     *
+     * @param resType       A {@link ResType}
+     * @param resIdsTextual A (textual) identifier to be awaited at R.restype.resIdsTextual
+     * @return True if all given ids are available
+     */
+    public boolean areRessourcesAvailable(final ResType resType, final String... resIdsTextual) {
+        for (String name : resIdsTextual) {
+            if (getResId(resType, name) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * Convert an int color to a hex string. Optionally including alpha value.
+     *
+     * @param intColor  The color coded in int
+     * @param withAlpha Optional; Set first bool parameter to true to also include alpha value
+     */
+    public static String colorToHexString(final int intColor, final boolean... withAlpha) {
+        boolean a = withAlpha != null && withAlpha.length >= 1 && withAlpha[0];
+        return String.format(a ? "#%08X" : "#%06X", (a ? 0xFFFFFFFF : 0xFFFFFF) & intColor);
+    }
+    public static String getAndroidVersion() {
+        return Build.VERSION.RELEASE + " (" + Build.VERSION.SDK_INT + ")";
+    }
+    public String getAppVersionName() {
+        PackageManager manager = _context.getPackageManager();
+        try {
+            PackageInfo info = manager.getPackageInfo(getPackageIdManifest(), 0);
+            return info.versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            try {
+                PackageInfo info = manager.getPackageInfo(getPackageIdReal(), 0);
+                return info.versionName;
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+        }
+        return "?";
+    }
+    public String getAppInstallationSource() {
+        String src = null;
+        try {
+            src = _context.getPackageManager().getInstallerPackageName(getPackageIdManifest());
+        } catch (Exception ignored) {
+        }
+        if (src == null || src.trim().isEmpty()) {
+            return "Sideloaded";
+        } else if (src.toLowerCase().contains(".amazon.")) {
+            return "Amazon Appstore";
+        }
+        switch (src) {
+            case "com.android.vending":
+            case "com.google.android.feedback": {
+                return "Google Play";
+            }
+            case "org.fdroid.fdroid.privileged":
+            case "org.fdroid.fdroid": {
+                return "F-Droid";
+            }
+            case "com.github.yeriomin.yalpstore": {
+                return "Yalp Store";
+            }
+            case "cm.aptoide.pt": {
+                return "Aptoide";
+            }
+            case "com.android.packageinstaller": {
+                return "Package Installer";
+            }
+        }
+        return src;
+    }
+    /**
+     * Send a {@link Intent#ACTION_VIEW} Intent with given paramter
+     * If the parameter is an string a browser will get triggered
+     */
+    public ContextUtils openWebpageInExternalBrowser(final String url) {
+        try {
+            Uri uri = Uri.parse(url);
+            Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+            intent.addFlags(FLAG_ACTIVITY_NEW_TASK);
+            _context.startActivity(intent);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return this;
+    }
+    /**
+     * Get the apps base packagename, which is equal with all build flavors and variants
+     */
+    public String getPackageIdManifest() {
+        String pkg = rstr("manifest_package_id");
+        return !TextUtils.isEmpty(pkg) ? pkg : _context.getPackageName();
+    }
+    /**
+     * Get this apps package name, returns the flavor specific package name.
+     */
+    public String getPackageIdReal() {
+        return _context.getPackageName();
+    }
+    /**
+     * Get field from ${applicationId}.BuildConfig
+     * May be helpful in libraries, where a access to
+     * BuildConfig would only get values of the library
+     * rather than the app ones. It awaits a string resource
+     * of the package set in manifest (root element).
+     * Falls back to applicationId of the app which may differ from manifest.
+     */
+    public Object getBuildConfigValue(final String fieldName) {
+        final String pkg = getPackageIdManifest() + ".BuildConfig";
+        try {
+            Class<?> c = Class.forName(pkg);
+            return c.getField(fieldName).get(null);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+    public List<String> getBuildConfigFields() {
+        final String pkg = getPackageIdManifest() + ".BuildConfig";
+        final List<String> fields = new ArrayList<>();
+        try {
+            for (Field f : Class.forName(pkg).getFields()) {
+                fields.add(f.getName());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return fields;
+    }
+    /**
+     * Get a BuildConfig bool value
+     */
+    public Boolean bcbool(final String fieldName, final Boolean defaultValue) {
+        Object field = getBuildConfigValue(fieldName);
+        if (field instanceof Boolean) {
+            return (Boolean) field;
+        }
+        return defaultValue;
+    }
+    /**
+     * Get a BuildConfig string value
+     */
+    public String bcstr(final String fieldName, final String defaultValue) {
+        Object field = getBuildConfigValue(fieldName);
+        if (field instanceof String) {
+            return (String) field;
+        }
+        return defaultValue;
+    }
+    /**
+     * Get a BuildConfig string value
+     */
+    public Integer bcint(final String fieldName, final int defaultValue) {
+        Object field = getBuildConfigValue(fieldName);
+        if (field instanceof Integer) {
+            return (Integer) field;
+        }
+        return defaultValue;
+    }
+    /**
+     * Check if this is a gplay build (requires BuildConfig field)
+     */
+    public boolean isGooglePlayBuild() {
+        return bcbool("IS_GPLAY_BUILD", true);
+    }
+    /**
+     * Check if this is a foss build (requires BuildConfig field)
+     */
+    public boolean isFossBuild() {
+        return bcbool("IS_FOSS_BUILD", false);
+    }
+    public String readTextfileFromRawRes(@RawRes int rawResId, String linePrefix, String linePostfix) {
+        StringBuilder sb = new StringBuilder();
+        BufferedReader br = null;
+        String line;
+        linePrefix = linePrefix == null ? "" : linePrefix;
+        linePostfix = linePostfix == null ? "" : linePostfix;
+        try {
+            br = new BufferedReader(new InputStreamReader(_context.getResources().openRawResource(rawResId)));
+            while ((line = br.readLine()) != null) {
+                sb.append(linePrefix);
+                sb.append(line);
+                sb.append(linePostfix);
+                sb.append("\n");
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (br != null) {
+                try {
+                    br.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return sb.toString();
+    }
+    /**
+     * Get internet connection state - the permission ACCESS_NETWORK_STATE is required
+     *
+     * @return True if internet connection available
+     */
+    public boolean isConnectedToInternet() {
+        try {
+            ConnectivityManager con = (ConnectivityManager) _context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            @SuppressLint("MissingPermission") NetworkInfo activeNetInfo =
+                    con == null ? null : con.getActiveNetworkInfo();
+            return activeNetInfo != null && activeNetInfo.isConnectedOrConnecting();
+        } catch (Exception ignored) {
+            throw new RuntimeException("Error: Developer forgot to declare a permission");
+        }
+    }
+    /**
+     * Check if app with given {@code packageName} is installed
+     */
+    public boolean isAppInstalled(String packageName) {
+        try {
+            PackageManager pm = _context.getApplicationContext().getPackageManager();
+            pm.getPackageInfo(packageName, PackageManager.GET_ACTIVITIES);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+    /**
+     * Restart the current app. Supply the class to start on startup
+     */
+    public void restartApp(Class classToStart) {
+        Intent intent = new Intent(_context, classToStart);
+        PendingIntent pendi = PendingIntent.getActivity(_context, 555, intent, PendingIntent.FLAG_CANCEL_CURRENT);
+        AlarmManager mgr = (AlarmManager) _context.getSystemService(Context.ALARM_SERVICE);
+        if (_context instanceof Activity) {
+            ((Activity) _context).finish();
+        }
+        if (mgr != null) {
+            mgr.set(AlarmManager.RTC, System.currentTimeMillis() + 100, pendi);
+        } else {
+            intent.addFlags(FLAG_ACTIVITY_NEW_TASK);
+            _context.startActivity(intent);
+        }
+        Runtime.getRuntime().exit(0);
+    }
+    /**
+     * Load a markdown file from a {@link RawRes}, prepend each line with {@code prepend} text
+     * and convert markdown to html using {@link SimpleMarkdownParser}
+     */
+    public String loadMarkdownForTextViewFromRaw(@RawRes int rawMdFile, String prepend) {
+        try {
+            return new SimpleMarkdownParser()
+                    .parse(_context.getResources().openRawResource(rawMdFile),
+                            prepend, SimpleMarkdownParser.FILTER_ANDROID_TEXTVIEW)
+                    .replaceColor("#000001", rcolor(getResId(ResType.COLOR, "accent")))
+                    .removeMultiNewlines().replaceBulletCharacter("*").getHtml();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return "";
+        }
+    }
+    /**
+     * Load html into a {@link Spanned} object and set the
+     * {@link TextView}'s text using {@link TextView#setText(CharSequence)}
+     */
+    public void setHtmlToTextView(TextView textView, String html) {
+        textView.setMovementMethod(LinkMovementMethod.getInstance());
+        textView.setText(new SpannableString(htmlToSpanned(html)));
+    }
+    /**
+     * Estimate this device's screen diagonal size in inches
+     */
+    public double getEstimatedScreenSizeInches() {
+        DisplayMetrics dm = _context.getResources().getDisplayMetrics();
+        double calc = dm.density * 160d;
+        double x = Math.pow(dm.widthPixels / calc, 2);
+        double y = Math.pow(dm.heightPixels / calc, 2);
+        calc = Math.sqrt(x + y) * 1.16;  // 1.16 = est. Nav/Statusbar
+        return Math.min(12, Math.max(4, calc));
+    }
+    /**
+     * Check if the device is currently in portrait orientation
+     */
+    public boolean isInPortraitMode() {
+        return _context.getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT;
+    }
+    /**
+     * Get an {@link Locale} out of a android language code
+     * The {@code androidLC} may be in any of the forms: de, en, de-rAt
+     */
+    public Locale getLocaleByAndroidCode(String androidLC) {
+        if (!TextUtils.isEmpty(androidLC)) {
+            return androidLC.contains("-r")
+                    ? new Locale(androidLC.substring(0, 2), androidLC.substring(4, 6)) // de-rAt
+                    : new Locale(androidLC); // de
+        }
+        return Resources.getSystem().getConfiguration().locale;
+    }
+    /**
+     * Set the apps language
+     * {@code androidLC} may be in any of the forms: en, de, de-rAt
+     * If given an empty string, the default (system) locale gets loaded
+     */
+    public void setAppLanguage(final String androidLC) {
+        Locale locale = getLocaleByAndroidCode(androidLC);
+        locale = (locale != null && !androidLC.isEmpty()) ? locale : Resources.getSystem().getConfiguration().locale;
+        setLocale(locale);
+    }
+    public ContextUtils setLocale(final Locale locale) {
+        Configuration config = _context.getResources().getConfiguration();
+        config.locale = (locale != null ? locale : Resources.getSystem().getConfiguration().locale);
+        _context.getResources().updateConfiguration(config, null);
+        Locale.setDefault(locale);
+        return this;
+    }
+    /**
+     * Try to guess if the color on top of the given {@code colorOnBottomInt}
+     * should be light or dark. Returns true if top color should be light
+     */
+    public boolean shouldColorOnTopBeLight(@ColorInt final int colorOnBottomInt) {
+        return 186 > (((0.299 * Color.red(colorOnBottomInt))
+                + ((0.587 * Color.green(colorOnBottomInt))
+                + (0.114 * Color.blue(colorOnBottomInt)))));
+    }
+    /**
+     * Convert a html string to an android {@link Spanned} object
+     */
+    public Spanned htmlToSpanned(final String html) {
+        Spanned result;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            result = Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY);
+        } else {
+            result = Html.fromHtml(html);
+        }
+        return result;
+    }
+    /**
+     * Convert pixel unit do android dp unit
+     */
+    public float convertPxToDp(final float px) {
+        return px / _context.getResources().getDisplayMetrics().density;
+    }
+    /**
+     * Convert android dp unit to pixel unit
+     */
+    public float convertDpToPx(final float dp) {
+        return dp * _context.getResources().getDisplayMetrics().density;
+    }
+    /**
+     * Get the private directory for the current package (usually /data/data/package.name/)
+     */
+    @SuppressWarnings("StatementWithEmptyBody")
+    public File getAppDataPrivateDir() {
+        File filesDir;
+        try {
+            filesDir = new File(new File(_context.getPackageManager().getPackageInfo(getPackageIdReal(), 0).applicationInfo.dataDir), "files");
+        } catch (PackageManager.NameNotFoundException e) {
+            filesDir = _context.getFilesDir();
+        }
+        if (!filesDir.exists() && filesDir.mkdirs()) ;
+        return filesDir;
+    }
+    /**
+     * Get public (accessible) appdata folders
+     */
+    @SuppressWarnings("StatementWithEmptyBody")
+    public List<Pair<File, String>> getAppDataPublicDirs(boolean internalStorageFolder, boolean sdcardFolders, boolean storageNameWithoutType) {
+        List<Pair<File, String>> dirs = new ArrayList<>();
+        for (File externalFileDir : ContextCompat.getExternalFilesDirs(_context, null)) {
+            if (externalFileDir == null || Environment.getExternalStorageDirectory() == null) {
+                continue;
+            }
+            boolean isInt = externalFileDir.getAbsolutePath().startsWith(Environment.getExternalStorageDirectory().getAbsolutePath());
+            boolean add = (internalStorageFolder && isInt) || (sdcardFolders && !isInt);
+            if (add) {
+                dirs.add(new Pair<>(externalFileDir, getStorageName(externalFileDir, storageNameWithoutType)));
+                if (!externalFileDir.exists() && externalFileDir.mkdirs()) ;
+            }
+        }
+        return dirs;
+    }
+    public String getStorageName(final File externalFileDir, final boolean storageNameWithoutType) {
+        boolean isInt = externalFileDir.getAbsolutePath().startsWith(Environment.getExternalStorageDirectory().getAbsolutePath());
+        String[] split = externalFileDir.getAbsolutePath().split("/");
+        if (split.length > 2) {
+            return isInt ? (storageNameWithoutType ? "Internal Storage" : "") : (storageNameWithoutType ? split[2] : ("SD Card (" + split[2] + ")"));
+        } else {
+            return "Storage";
+        }
+    }
+    public List<Pair<File, String>> getStorages(final boolean internalStorageFolder, final boolean sdcardFolders) {
+        List<Pair<File, String>> storages = new ArrayList<>();
+        for (Pair<File, String> pair : getAppDataPublicDirs(internalStorageFolder, sdcardFolders, true)) {
+            if (pair.first != null && pair.first.getAbsolutePath().lastIndexOf("/Android/data") > 0) {
+                try {
+                    storages.add(new Pair<>(new File(pair.first.getCanonicalPath().replaceFirst("/Android/data.*", "")), pair.second));
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return storages;
+    }
+    public File getStorageRootFolder(final File file) {
+        String filepath;
+        try {
+            filepath = file.getCanonicalPath();
+        } catch (Exception ignored) {
+            return null;
+        }
+        for (Pair<File, String> storage : getStorages(false, true)) {
+            //noinspection ConstantConditions
+            if (filepath.startsWith(storage.first.getAbsolutePath())) {
+                return storage.first;
+            }
+        }
+        return null;
+    }
+    /**
+     * Request the givens paths to be scanned by MediaScanner
+     *
+     * @param files Files and folders to scan
+     */
+    public void mediaScannerScanFile(final File... files) {
+        if (android.os.Build.VERSION.SDK_INT > 19) {
+            String[] paths = new String[files.length];
+            for (int i = 0; i < files.length; i++) {
+                paths[i] = files[i].getAbsolutePath();
+            }
+            MediaScannerConnection.scanFile(_context, paths, null, null);
+        } else {
+            for (File file : files) {
+                _context.sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file)));
+            }
+        }
+    }
+    /**
+     * Load an image into a {@link ImageView} and apply a color filter
+     */
+    public static void setDrawableWithColorToImageView(ImageView imageView, @DrawableRes int drawableResId, @ColorRes int colorResId) {
+        imageView.setImageResource(drawableResId);
+        imageView.setColorFilter(ContextCompat.getColor(imageView.getContext(), colorResId));
+    }
+    /**
+     * Get a {@link Bitmap} out of a {@link Drawable}
+     */
+    public Bitmap drawableToBitmap(Drawable drawable) {
+        Bitmap bitmap = null;
+        if (drawable instanceof VectorDrawableCompat
+                || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && drawable instanceof VectorDrawable)
+                || ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && drawable instanceof AdaptiveIconDrawable))) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                drawable = (DrawableCompat.wrap(drawable)).mutate();
+            }
+            bitmap = Bitmap.createBitmap(drawable.getIntrinsicWidth(),
+                    drawable.getIntrinsicHeight(), Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            drawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
+            drawable.draw(canvas);
+        } else if (drawable instanceof BitmapDrawable) {
+            bitmap = ((BitmapDrawable) drawable).getBitmap();
+        }
+        return bitmap;
+    }
+    /**
+     * Get a {@link Bitmap} out of a {@link DrawableRes}
+     */
+    public Bitmap drawableToBitmap(@DrawableRes final int drawableId) {
+        try {
+            return drawableToBitmap(ContextCompat.getDrawable(_context, drawableId));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    /**
+     * Get a {@link Bitmap} from a given {@code imagePath} on the filesystem
+     * Specifying a {@code maxDimen} is also possible and a value below 2000
+     * is recommended, otherwise a {@link OutOfMemoryError} may occur
+     */
+    public Bitmap loadImageFromFilesystem(final File imagePath, final int maxDimen) {
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(imagePath.getAbsolutePath(), options);
+        options.inSampleSize = calculateInSampleSize(options, maxDimen);
+        options.inJustDecodeBounds = false;
+        return BitmapFactory.decodeFile(imagePath.getAbsolutePath(), options);
+    }
+    /**
+     * Calculates the scaling factor so the bitmap is maximal as big as the maxDimen
+     *
+     * @param options  Bitmap-options that contain the current dimensions of the bitmap
+     * @param maxDimen Max size of the Bitmap (width or height)
+     * @return the scaling factor that needs to be applied to the bitmap
+     */
+    public int calculateInSampleSize(final BitmapFactory.Options options, final int maxDimen) {
+        // Raw height and width of image
+        int height = options.outHeight;
+        int width = options.outWidth;
+        int inSampleSize = 1;
+        if (Math.max(height, width) > maxDimen) {
+            inSampleSize = Math.round(1f * Math.max(height, width) / maxDimen);
+        }
+        return inSampleSize;
+    }
+    /**
+     * Scale the bitmap so both dimensions are lower or equal to {@code maxDimen}
+     * This keeps the aspect ratio
+     */
+    public Bitmap scaleBitmap(final Bitmap bitmap, final int maxDimen) {
+        int picSize = Math.min(bitmap.getHeight(), bitmap.getWidth());
+        float scale = 1.f * maxDimen / picSize;
+        Matrix matrix = new Matrix();
+        matrix.postScale(scale, scale);
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+    }
+    /**
+     * Write the given {@link Bitmap} to filesystem
+     *
+     * @param targetFile The file to be written in
+     * @param image      Android {@link Bitmap}
+     * @return True if writing was successful
+     */
+    public boolean writeImageToFile(final File targetFile, final Bitmap image, Integer... a0quality) {
+        final int quality = (a0quality != null && a0quality.length > 0 && a0quality[0] >= 0 && a0quality[0] <= 100) ? a0quality[0] : 70;
+        final String lc = targetFile.getAbsolutePath().toLowerCase(Locale.ROOT);
+        final CompressFormat format = lc.endsWith(".webp") ? CompressFormat.WEBP : (lc.endsWith(".png") ? CompressFormat.PNG : CompressFormat.JPEG);
+        boolean ok = false;
+        File folder = new File(targetFile.getParent());
+        if (folder.exists() || folder.mkdirs()) {
+            FileOutputStream stream = null;
+            try {
+                stream = new FileOutputStream(targetFile);
+                image.compress(format, quality, stream);
+                ok = true;
+            } catch (Exception ignored) {
+            } finally {
+                try {
+                    if (stream != null) {
+                        stream.close();
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        try {
+            image.recycle();
+        } catch (Exception ignored) {
+        }
+        return ok;
+    }
+    /**
+     * Draw text in the center of the given {@link DrawableRes}
+     * This may be useful for e.g. badge counts
+     */
+    public Bitmap drawTextOnDrawable(@DrawableRes final int drawableRes, final String text, final int textSize) {
+        Resources resources = _context.getResources();
+        float scale = resources.getDisplayMetrics().density;
+        Bitmap bitmap = drawableToBitmap(drawableRes);
+        bitmap = bitmap.copy(bitmap.getConfig(), true);
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.rgb(61, 61, 61));
+        paint.setTextSize((int) (textSize * scale));
+        paint.setShadowLayer(1f, 0f, 1f, Color.WHITE);
+        Rect bounds = new Rect();
+        paint.getTextBounds(text, 0, text.length(), bounds);
+        int x = (bitmap.getWidth() - bounds.width()) / 2;
+        int y = (bitmap.getHeight() + bounds.height()) / 2;
+        canvas.drawText(text, x, y, paint);
+        return bitmap;
+    }
+    /**
+     * Try to tint all {@link Menu}s {@link MenuItem}s with given color
+     */
+    @SuppressWarnings("ConstantConditions")
+    public void tintMenuItems(final Menu menu, final boolean recurse, @ColorInt final int iconColor) {
+        for (int i = 0; i < menu.size(); i++) {
+            MenuItem item = menu.getItem(i);
+            try {
+                tintDrawable(item.getIcon(), iconColor);
+                if (item.hasSubMenu() && recurse) {
+                    tintMenuItems(item.getSubMenu(), recurse, iconColor);
+                }
+            } catch (Exception ignored) {
+                // This should not happen at all, but may in bad menu.xml configuration
+            }
+        }
+    }
+    /**
+     * Loads {@link Drawable} by given {@link DrawableRes} and applies a color
+     */
+    public Drawable tintDrawable(@DrawableRes final int drawableRes, @ColorInt final int color) {
+        return tintDrawable(rdrawable(drawableRes), color);
+    }
+    /**
+     * Tint a {@link Drawable} with given {@code color}
+     */
+    public Drawable tintDrawable(@Nullable Drawable drawable, @ColorInt final int color) {
+        if (drawable != null) {
+            drawable = DrawableCompat.wrap(drawable);
+            DrawableCompat.setTint(drawable.mutate(), color);
+        }
+        return drawable;
+    }
+    /**
+     * Try to make icons in Toolbar/ActionBars SubMenus visible
+     * This may not work on some devices and it maybe won't work on future android updates
+     */
+    public void setSubMenuIconsVisiblity(final Menu menu, final boolean visible) {
+        if (TextUtilsCompat.getLayoutDirectionFromLocale(Locale.getDefault()) == ViewCompat.LAYOUT_DIRECTION_RTL) {
+            return;
+        }
+        if (menu.getClass().getSimpleName().equals("MenuBuilder")) {
+            try {
+                @SuppressLint("PrivateApi") Method m = menu.getClass().getDeclaredMethod("setOptionalIconsVisible", Boolean.TYPE);
+                m.setAccessible(true);
+                m.invoke(menu, visible);
+            } catch (Exception ignored) {
+                Log.d(getClass().getName(), "Error: 'setSubMenuIconsVisiblity' not supported on this device");
+            }
+        }
+    }
+    public String getLocalizedDateFormat() {
+        return ((SimpleDateFormat) android.text.format.DateFormat.getDateFormat(_context)).toPattern();
+    }
+    public String getLocalizedTimeFormat() {
+        return ((SimpleDateFormat) android.text.format.DateFormat.getTimeFormat(_context)).toPattern();
+    }
+    public String getLocalizedDateTimeFormat() {
+        return getLocalizedDateFormat() + " " + getLocalizedTimeFormat();
+    }
+    /**
+     * A {@link InputFilter} for filenames
+     */
+    @SuppressWarnings("Convert2Lambda")
+    public static final InputFilter INPUTFILTER_FILENAME = new InputFilter() {
+        public CharSequence filter(CharSequence src, int start, int end, Spanned dest, int dstart, int dend) {
+            if (src.length() < 1) return null;
+            char last = src.charAt(src.length() - 1);
+            String illegal = "|\\?*<\":>[]/'";
+            if (illegal.indexOf(last) > -1) return src.subSequence(0, src.length() - 1);
+            return null;
+        }
+    };
+    /**
+     * A simple {@link Runnable} which does a touch event on a view.
+     * This pops up e.g. the keyboard on a {@link android.widget.EditText}
+     * <p>
+     * Example: new Handler().postDelayed(new DoTouchView(editView), 200);
+     */
+    public static class DoTouchView implements Runnable {
+        View _view;
+        public DoTouchView(View view) {
+            _view = view;
+        }
+        @Override
+        public void run() {
+            _view.dispatchTouchEvent(MotionEvent.obtain(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), MotionEvent.ACTION_DOWN, 0, 0, 0));
+            _view.dispatchTouchEvent(MotionEvent.obtain(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, 0, 0, 0));
+        }
+    }
+    public String getMimeType(final File file) {
+        return getMimeType(Uri.fromFile(file));
+    }
+    /**
+     * Detect MimeType of given file
+     * Android/Java's own MimeType map is very very small and detection barely works at all
+     * Hence use custom map for some file extensions
+     */
+    public String getMimeType(final Uri uri) {
+        String mimeType = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            ContentResolver cr = _context.getContentResolver();
+            mimeType = cr.getType(uri);
+        } else {
+            String filename = uri.toString();
+            if (filename.endsWith(".jenc")) {
+                filename = filename.replace(".jenc", "");
+            }
+            String ext = MimeTypeMap.getFileExtensionFromUrl(filename);
+            mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase());
+            // Try to guess if the recommended methods fail
+            if (TextUtils.isEmpty(mimeType)) {
+                switch (ext) {
+                    case "md":
+                    case "markdown":
+                    case "mkd":
+                    case "mdown":
+                    case "mkdn":
+                    case "mdwn":
+                    case "rmd":
+                        mimeType = "text/markdown";
+                        break;
+                    case "yaml":
+                    case "yml":
+                        mimeType = "text/yaml";
+                        break;
+                    case "json":
+                        mimeType = "text/json";
+                        break;
+                    case "txt":
+                        mimeType = "text/plain";
+                        break;
+                }
+            }
+        }
+        if (TextUtils.isEmpty(mimeType)) {
+            mimeType = "*/*";
+        }
+        return mimeType;
+    }
+    public Integer parseColor(final String colorstr) {
+        if (colorstr == null || colorstr.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Color.parseColor(colorstr);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+    public boolean isDeviceGoodHardware() {
+        try {
+            ActivityManager activityManager = (ActivityManager) _context.getSystemService(Context.ACTIVITY_SERVICE);
+            return !ActivityManagerCompat.isLowRamDevice(activityManager) &&
+                    Runtime.getRuntime().availableProcessors() >= 4 &&
+                    activityManager.getMemoryClass() >= 128;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+    // Vibrate device one time by given amount of time, defaulting to 50ms
+    // Requires <uses-permission android:name="android.permission.VIBRATE" /> in AndroidManifest to work
+    @SuppressWarnings("UnnecessaryReturnStatement")
+    @SuppressLint("MissingPermission")
+    public void vibrate(final int... ms) {
+        int ms_v = ms != null && ms.length > 0 ? ms[0] : 50;
+        Vibrator vibrator = ((Vibrator) _context.getSystemService(VIBRATOR_SERVICE));
+        if (vibrator == null) {
+            return;
+        } else if (Build.VERSION.SDK_INT >= 26) {
+            vibrator.vibrate(VibrationEffect.createOneShot(ms_v, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(ms_v);
+        }
+    }
+    /*
+    Check if Wifi is connected. Requires these permissions in AndroidManifest:
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+     */
+    @SuppressLint("MissingPermission")
+    public boolean isWifiConnected(boolean... enabledOnly) {
+        final boolean doEnabledCheckOnly = enabledOnly != null && enabledOnly.length > 0 && enabledOnly[0];
+        final ConnectivityManager connectivityManager = (ConnectivityManager) _context.getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        final NetworkInfo wifiInfo = connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
+        return wifiInfo != null && (doEnabledCheckOnly ? wifiInfo.isAvailable() : wifiInfo.isConnected());
+    }
+    // Returns if the device is currently in portrait orientation (landscape=false)
+    public boolean isDeviceOrientationPortrait() {
+        final int rotation = ((WindowManager) _context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay().getOrientation();
+        return (rotation == Surface.ROTATION_0) || (rotation == Surface.ROTATION_180);
+    }
+    // Get all of providers of the current app
+    public List<ProviderInfo> getProvidersInfos() {
+        final List<ProviderInfo> providers = new ArrayList<>();
+        for (final ProviderInfo info : _context.getPackageManager().queryContentProviders(null, 0, 0)) {
+            if (info.applicationInfo.uid == _context.getApplicationInfo().uid) {
+                providers.add(info);
+            }
+        }
+        return providers;
+    }
+    public String getFileProvider() {
+        for (final ProviderInfo info : getProvidersInfos()) {
+            if (info.name.toLowerCase().contains("fileprovider")) {
+                return info.authority;
+            }
+        }
+        return null;
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Bundle;
+import android.support.v4.app.Fragment;
+import android.support.v4.content.LocalBroadcastManager;
+import android.support.v7.widget.GridLayoutManager;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.ui.GridDecoration;
+import net.gsantner.memetastic.ui.MemeItemAdapter;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import butterknife.Unbinder;
+import io.github.gsantner.memetastic.R;
+public class MemeFragment extends Fragment {
+    @BindView(R.id.meme_fragment__recycler_view)
+    RecyclerView _recyclerMemeList;
+    @BindView(R.id.meme_fragment__list_empty_layout)
+    LinearLayout _emptylistLayout;
+    @BindView(R.id.meme_fragment__list_empty_text)
+    TextView _emptylistText;
+    App _app;
+    int _tabPos;
+    String[] _tagKeys, _tagValues;
+    private Unbinder _unbinder;
+    private List<MemeData.Image> _imageList;
+    private MemeItemAdapter _recyclerMemeAdapter;
+    public MemeFragment() {
+        // Required empty public constructor
+    }
+    // newInstance constructor for creating fragment with arguments
+    public static MemeFragment newInstance(int pagePos) {
+        MemeFragment fragmentFirst = new MemeFragment();
+        Bundle args = new Bundle();
+        args.putInt("pos", pagePos);
+        fragmentFirst.setArguments(args);
+        return fragmentFirst;
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        _app = (App) getActivity().getApplication();
+        _tabPos = getArguments().getInt("pos");
+        _imageList = new ArrayList<>();
+    }
+    private void reloadAdapter() {
+        _tagKeys = getResources().getStringArray(R.array.meme_tags__keys);
+        _tagValues = getResources().getStringArray(R.array.meme_tags__titles);
+        if (_tabPos >= 0 && _tabPos < _tagKeys.length) {
+            _imageList = MemeData.getImagesWithTag(_tagKeys[_tabPos]);
+        }
+        if (_app.settings.isShuffleTagLists()) {
+            Collections.shuffle(_imageList);
+        }
+        List<MemeData.Image> hiddenImages = new ArrayList<>();
+        for (MemeData.Image image : _imageList) {
+            if (_app.settings.isHidden(image.fullPath.getAbsolutePath())) {
+                hiddenImages.add(image);
+            }
+        }
+        _imageList.removeAll(hiddenImages);
+        _recyclerMemeAdapter.setOriginalImageDataList(_imageList);
+        _recyclerMemeAdapter.notifyDataSetChanged();
+        setRecyclerMemeListAdapter(_recyclerMemeAdapter);
+    }
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        // Inflate the layout for this fragment
+        View root = inflater.inflate(R.layout.fragment_meme, container, false);
+        _unbinder = ButterKnife.bind(this, root);
+        _recyclerMemeList.setHasFixedSize(true);
+        _recyclerMemeList.setItemViewCacheSize(_app.settings.getGridColumnCountPortrait() * _app.settings.getGridColumnCountLandscape() * 2);
+        _recyclerMemeList.setDrawingCacheEnabled(true);
+        _recyclerMemeList.setDrawingCacheQuality(View.DRAWING_CACHE_QUALITY_LOW);
+        _recyclerMemeList.addItemDecoration(new GridDecoration(1.7f));
+        int a = AppSettings.get().getMemeListViewType();
+        if (AppSettings.get().getMemeListViewType() == MemeItemAdapter.VIEW_TYPE__ROWS_WITH_TITLE) {
+            RecyclerView.LayoutManager recyclerLinearLayout = new LinearLayoutManager(getActivity(), LinearLayoutManager.VERTICAL, false);
+            _recyclerMemeList.setLayoutManager(recyclerLinearLayout);
+        } else {
+            int gridColumns = ContextUtils.get().isInPortraitMode()
+                    ? _app.settings.getGridColumnCountPortrait()
+                    : _app.settings.getGridColumnCountLandscape();
+            RecyclerView.LayoutManager recyclerGridLayout = new GridLayoutManager(getActivity(), gridColumns);
+            _recyclerMemeList.setLayoutManager(recyclerGridLayout);
+        }
+        _emptylistText.setText(getString(R.string.no_custom_templates_description__appspecific, getString(R.string.custom_templates_visual)));
+        _recyclerMemeAdapter = new MemeItemAdapter(_imageList, getActivity(), AppSettings.get().getMemeListViewType());
+        setRecyclerMemeListAdapter(_recyclerMemeAdapter);
+        return root;
+    }
+    private void setRecyclerMemeListAdapter(MemeItemAdapter adapter) {
+        adapter.setFilter("");
+        _recyclerMemeList.setAdapter(adapter);
+        boolean isEmpty = adapter.getItemCount() == 0;
+        _emptylistLayout.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+        _recyclerMemeList.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+    }
+    private BroadcastReceiver _localBroadcastReceiver = new BroadcastReceiver() {
+        @SuppressWarnings("unchecked")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case AppCast.ASSETS_LOADED.ACTION: {
+                    reloadAdapter();
+                    return;
+                }
+            }
+        }
+    };
+    @Override
+    public void onResume() {
+        super.onResume();
+        LocalBroadcastManager.getInstance(getActivity()).registerReceiver(_localBroadcastReceiver, AppCast.getLocalBroadcastFilter());
+        reloadAdapter();
+    }
+    @Override
+    public void onPause() {
+        super.onPause();
+        LocalBroadcastManager.getInstance(getActivity()).unregisterReceiver(_localBroadcastReceiver);
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (_unbinder != null) {
+            _unbinder.unbind();
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.ui;
+import android.app.Activity;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.support.v7.widget.PopupMenu;
+import android.support.v7.widget.RecyclerView;
+import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.Animation;
+import android.view.animation.AnimationUtils;
+import android.widget.ImageView;
+import android.widget.TextView;
+import android.widget.Toast;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.activity.MainActivity;
+import net.gsantner.memetastic.activity.MemeCreateActivity;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.service.ImageLoaderTask;
+import net.gsantner.memetastic.util.ContextUtils;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import io.github.gsantner.memetastic.R;
+/**
+ * Adapter to show images in given view mode
+ */
+public class MemeItemAdapter extends RecyclerView.Adapter<MemeItemAdapter.ViewHolder> implements ImageLoaderTask.OnImageLoadedListener<MemeItemAdapter.ViewHolder> {
+    public static final int VIEW_TYPE__PICTURE_GRID = 0;
+    public static final int VIEW_TYPE__ROWS_WITH_TITLE = 1;
+    private int _itemViewType = -1; // TODO: Do implement this as later settable on adapter, instead of using if/else on AppSettings
+    private List<MemeData.Image> _originalImageDataList; // original data
+    private List<MemeData.Image> _imageDataList; // filtered data (use this)
+    private int _shortAnimationDuration;
+    private Activity _activity;
+    private App _app;
+    public MemeItemAdapter(List<MemeData.Image> imageDataList, Activity activity, int itemViewType) {
+        _originalImageDataList = imageDataList;
+        _imageDataList = new ArrayList<>(imageDataList);
+        _shortAnimationDuration = -1;
+        _activity = activity;
+        _app = (App) (_activity.getApplication());
+        _itemViewType = itemViewType;
+    }
+    public void setOriginalImageDataList(List<MemeData.Image> originalImageDataList) {
+        _originalImageDataList = originalImageDataList;
+    }
+    @Override
+    public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+        View v;
+        switch (_itemViewType) {
+            case VIEW_TYPE__ROWS_WITH_TITLE: {
+                v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_row_with_title, parent, false);
+                break;
+            }
+            case VIEW_TYPE__PICTURE_GRID:
+            default: {
+                v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item__square_image, parent, false);
+                break;
+            }
+        }
+        return new ViewHolder(v);
+    }
+    // sets up the view of the item
+    @Override
+    public void onBindViewHolder(final ViewHolder holder, int pos) {
+        final MemeData.Image imageData = _imageDataList.get(holder.getAdapterPosition());
+        if (imageData == null || imageData.fullPath == null || !imageData.fullPath.exists()) {
+            holder.imageView.setImageResource(R.drawable.ic_mood_bad_black_256dp);
+            holder.imageButtonFav.setVisibility(View.INVISIBLE);
+            holder.imageTitle.setText("Meme");
+            return;
+        }
+        holder.imageTitle.setText(imageData.conf.getTitle());
+        holder.imageButtonFav.setVisibility(View.INVISIBLE);
+        holder.imageView.setVisibility(View.INVISIBLE);
+        ImageLoaderTask<ViewHolder> taskLoadImage = new ImageLoaderTask<>(this, _activity, true, holder);
+        taskLoadImage.execute(imageData.fullPath);
+        holder.imageView.setTag(imageData);
+        holder.imageButtonFav.setTag(imageData);
+        tintFavouriteImage(holder.imageButtonFav, _app.settings.isFavorite(imageData.fullPath.toString()));
+        preparePopupMenu(holder);
+        holder.imageButtonFav.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                MemeData.Image image = (MemeData.Image) v.getTag();
+                if (image.isTemplate) {
+                    toggleFavorite(holder);
+                }
+            }
+        });
+        holder.imageView.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                MemeData.Image image = (MemeData.Image) v.getTag();
+                if (image.isTemplate) {
+                    Intent intent = new Intent(_activity, MemeCreateActivity.class);
+                    intent.putExtra(MemeCreateActivity.EXTRA_IMAGE_PATH, image.fullPath.getAbsolutePath());
+                    intent.putExtra(MemeCreateActivity.EXTRA_MEMETASTIC_DATA, image);
+                    _activity.startActivityForResult(intent, MemeCreateActivity.RESULT_MEME_EDITING_FINISHED);
+                } else {
+                    if (_activity instanceof MainActivity) {
+                        ((MainActivity) _activity).openImageViewActivityWithImage(holder.getAdapterPosition(), image.fullPath.getAbsolutePath());
+                    }
+                }
+            }
+        });
+    }
+    // gets and returns the count of available items in the grid
+    @Override
+    public int getItemCount() {
+        return _imageDataList.size();
+    }
+    @Override
+    public void onImageLoaded(Bitmap bitmap, final ViewHolder holder) {
+        MemeData.Image dataImage = (MemeData.Image) holder.imageView.getTag();
+        Animation animation = AnimationUtils.loadAnimation(_activity, R.anim.fadeinfast);
+        holder.imageView.startAnimation(animation);
+        if (dataImage.isTemplate) {
+            holder.imageButtonFav.startAnimation(animation);
+            holder.imageButtonFav.setVisibility(View.VISIBLE);
+        }
+        if (_app.settings.isHidden(dataImage.fullPath.getAbsolutePath())) {
+            holder.imageButtonFav.setVisibility(View.INVISIBLE);
+            holder.imageView.setOnClickListener(null);
+            preparePopupMenu(holder);
+        }
+        holder.imageView.setImageBitmap(bitmap);
+        holder.imageView.setVisibility(View.VISIBLE);
+    }
+    private void toggleFavorite(ViewHolder holder) {
+        MemeData.Image dataImage = (MemeData.Image) holder.imageView.getTag();
+        if (!dataImage.isTemplate) {
+            return;
+        }
+        if (_app.settings.toggleFavorite(dataImage.fullPath.getAbsolutePath())) {
+            tintFavouriteImage(holder.imageButtonFav, true);
+        } else {
+            tintFavouriteImage(holder.imageButtonFav, false);
+        }
+        int index = _imageDataList.indexOf(dataImage);
+        if (index >= 0) {
+            notifyItemChanged(index);
+        }
+    }
+    private void preparePopupMenu(final ViewHolder holder) {
+        final MemeData.Image imageData = (MemeData.Image) holder.imageView.getTag();
+        final PopupMenu menu = new PopupMenu(_activity, holder.imageView);
+        menu.inflate(R.menu.memeitemadapter__popup_menu);
+        ContextUtils.popupMenuEnableIcons(menu);
+        menu.setOnMenuItemClickListener(new PopupMenu.OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem menuItem) {
+                switch (menuItem.getItemId()) {
+                    case R.id.memeitemadapter__popup_menu__action_fav:
+                        toggleFavorite(holder);
+                        return true;
+                    case R.id.memeitemadapter__popup_menu__action_hide:
+                        int position = holder.getAdapterPosition();
+                        toggleHidden(holder, position);
+                        ((MainActivity) _activity).updateHiddenNavOption();
+                        return true;
+                    case R.id.memeitemadapter__popup_menu__action_title:
+                        MemeData.Image image = (MemeData.Image) holder.imageView.getTag();
+                        Toast.makeText(holder.imageView.getContext(), image.conf.getTitle(), Toast.LENGTH_SHORT).show();
+                        return true;
+                }
+                return false;
+            }
+        });
+        View longClickView;
+        switch (_itemViewType) {
+            case VIEW_TYPE__ROWS_WITH_TITLE: {
+                longClickView = holder.itemView;
+                break;
+            }
+            case VIEW_TYPE__PICTURE_GRID:
+            default: {
+                longClickView = holder.imageView;
+                break;
+            }
+        }
+        longClickView.setOnLongClickListener(new View.OnLongClickListener() {
+            public boolean onLongClick(final View v) {
+                Menu itemMenu = menu.getMenu();
+                boolean isHidden = _app.settings.isHidden(imageData.fullPath.toString());
+                boolean isFav = _app.settings.isFavorite(imageData.fullPath.toString());
+                boolean isTemplate = imageData.isTemplate;
+                itemMenu.findItem(R.id.memeitemadapter__popup_menu__action_hide).setVisible(isTemplate)
+                        .setTitle(isHidden ? R.string.unhide : R.string.hide);
+                itemMenu.findItem(R.id.memeitemadapter__popup_menu__action_fav).setVisible(isTemplate)
+                        .setTitle(isFav ? R.string.remove_favourite : R.string.favourite);
+                menu.show();
+                return true;
+            }
+        });
+    }
+    private void toggleHidden(ViewHolder holder, int position) {
+        MemeData.Image image = (MemeData.Image) holder.imageView.getTag();
+        String filePath = image.fullPath.getAbsolutePath();
+        if (_app.settings.toggleHiddenMeme(filePath)) {
+            _imageDataList.remove(image);
+            notifyItemRemoved(position);
+        } else {
+            _imageDataList.remove(image);
+            notifyItemRemoved(position);
+            ((MainActivity) _activity).recreateFragmentsAfterUnhiding();
+        }
+        if (_imageDataList.isEmpty()) {
+            ((MainActivity) _activity).selectCreateMainMode();
+        }
+    }
+    private void tintFavouriteImage(ImageView iv, boolean isFav) {
+        ContextUtils.setDrawableWithColorToImageView(iv,
+                isFav ? R.drawable.ic_star_black_32dp : R.drawable.ic_star_border_black_32dp,
+                isFav ? R.color.comic_yellow : R.color.comic_blue);
+    }
+    public void setFilter(String filter) {
+        _imageDataList.clear();
+        String[] filterTokens = filter.toLowerCase().split("[\\W_]");
+        ArrayList<String> contentTokens = new ArrayList<>();
+        for (MemeData.Image image : _originalImageDataList) {
+            contentTokens.clear();
+            // Tokenize filename
+            contentTokens.addAll(Arrays.asList(image.fullPath.getName().toLowerCase().split("[\\W_]")));
+            // Tokenize the image title (split by everything that's not a word)
+            if (image.conf != null && image.conf.getTitle() != null && !image.conf.getTitle().isEmpty()) {
+                contentTokens.addAll(Arrays.asList(image.conf.getTitle().toLowerCase().split("[\\W_]")));
+            }
+            // Tokenize tags
+            if (image.conf != null && image.conf.getTags() != null) {
+                contentTokens.addAll(image.conf.getTags());
+            }
+            boolean allTokensFound = true;
+            for (String filterToken : filterTokens) {
+                boolean foundTokenInTitle = false;
+                for (String titleToken : contentTokens) {
+                    if (titleToken.contains(filterToken)) {
+                        foundTokenInTitle = true;
+                    }
+                }
+                if (!foundTokenInTitle) {
+                    allTokensFound = false;
+                    break;
+                }
+            }
+            if (allTokensFound) {
+                _imageDataList.add(image);
+            }
+        }
+        notifyDataSetChanged();
+    }
+    // contains the conf view for the meme and the favorite button to access them
+    public class ViewHolder extends RecyclerView.ViewHolder {
+        @BindView(R.id.item__square_image__image)
+        public ImageView imageView;
+        @BindView(R.id.item__square_image__image_bottom_end)
+        public ImageView imageButtonFav;
+        @BindView(R.id.item_square_image_title)
+        public TextView imageTitle;
+        // saves the instance of the conf view of the meme and favorite button to access them later
+        public ViewHolder(View itemView) {
+            super(itemView);
+            ButterKnife.bind(this, itemView);
+            if (_shortAnimationDuration < 0)
+                _shortAnimationDuration = imageView.getContext().getResources().getInteger(
+                        android.R.integer.config_shortAnimTime);
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic;
+import android.app.Activity;
+import android.app.Application;
+import android.graphics.Bitmap;
+import android.util.Log;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.opoc.util.ShareUtil;
+import io.github.gsantner.memetastic.BuildConfig;
+import io.github.gsantner.memetastic.R;
+/**
+ * The apps application object
+ */
+public class App extends Application {
+    private volatile static App app;
+    public AppSettings settings;
+    public static App get() {
+        return app;
+    }
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        app = this;
+        settings = new AppSettings(this);
+        if (settings.isAppFirstStart(false)) {
+            // Set default values (calculated in getters)
+            settings.setGridColumnCountPortrait(settings.getGridColumnCountPortrait());
+            settings.setGridColumnCountLandscape(settings.getGridColumnCountLandscape());
+        }
+    }
+    public void shareBitmapToOtherApp(Bitmap bitmap, Activity activity) {
+        ShareUtil su = new ShareUtil(activity);
+        su.setChooserTitle(getString(R.string.share_meme_via__appspecific));
+        su.shareImage(bitmap.copy(bitmap.getConfig(), false), 65);
+    }
+    public static void log(String text) {
+        if (BuildConfig.DEBUG) {
+            Log.d("MemeTastic", text);
+        }
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.util;
+import android.content.Context;
+import android.os.Build;
+import android.support.v7.widget.PopupMenu;
+import android.view.View;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.service.MigrationThread;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.Date;
+public class ContextUtils extends net.gsantner.opoc.util.ContextUtils {
+    public ContextUtils(Context context) {
+        super(context);
+    }
+    public static ContextUtils get() {
+        return new ContextUtils(App.get());
+    }
+    public static void checkForAssetUpdates(Context context) {
+        new MigrationThread(context).start();
+        Date sevenDaysAgo = new Date(System.currentTimeMillis() - 7 * 1000 * 60 * 60 * 24);
+        if (AppSettings.get().getLastAssetArchiveCheckDate().before(sevenDaysAgo)) {
+            new AssetUpdater.UpdateThread(context, false).start();
+        }
+    }
+    public static void popupMenuEnableIcons(PopupMenu popupMenu) {
+        try {
+            Field[] fields = popupMenu.getClass().getDeclaredFields();
+            for (Field field : fields) {
+                if ("mPopup".equals(field.getName())) {
+                    field.setAccessible(true);
+                    Object menuPopupHelper = field.get(popupMenu);
+                    Class<?> classPopupHelper = Class.forName(menuPopupHelper.getClass().getName());
+                    Method setForceIcons = classPopupHelper.getMethod("setForceShowIcon", boolean.class);
+                    setForceIcons.invoke(menuPopupHelper, true);
+                    break;
+                }
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
+    }
+    public int getImmersiveUiVisibility() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            int statusBarFlag = View.SYSTEM_UI_FLAG_FULLSCREEN;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                statusBarFlag = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+            }
+            return statusBarFlag
+                    //| View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    //| View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+        }
+        return 0;
+    }
+    public void enableImmersiveMode(final View decorViewOfActivity) {
+        decorViewOfActivity.setSystemUiVisibility(getImmersiveUiVisibility());
+        decorViewOfActivity.setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener() {
+            @Override
+            public void onSystemUiVisibilityChange(int visibility) {
+                if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    decorViewOfActivity.setSystemUiVisibility(getImmersiveUiVisibility());
+                }
+            }
+        });
+    }
+    /**
+     * Calculates the scaling factor to convert conf size to size in pixels
+     *
+     * @param w width of the bitmap where a text should be written on
+     * @param h height of the bitmap where a text should be written on
+     * @return the size of the conf in pixels
+     */
+    public float getScalingFactorInPixelsForWritingOnPicture(int w, int h) {
+        final float fontScaler = (float) 133;
+        final int raster = 50;
+        int size = Math.min(w, h);
+        int rest = size % raster;
+        // Round
+        int addl = rest >= raster / 2 ? raster - rest : -rest;
+        return (size + addl) / (fontScaler);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.provider.MediaStore;
+import android.support.annotation.ColorInt;
+import android.support.annotation.NonNull;
+import android.support.design.widget.FloatingActionButton;
+import android.support.design.widget.Snackbar;
+import android.support.v4.content.LocalBroadcastManager;
+import android.support.v7.app.AlertDialog;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.Toolbar;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
+import android.text.TextUtils;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.AdapterView;
+import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.Switch;
+import android.widget.Toast;
+import com.jaredrummler.android.colorpicker.ColorPanelView;
+import com.jaredrummler.android.colorpicker.ColorPickerDialog;
+import com.jaredrummler.android.colorpicker.ColorPickerDialogListener;
+import net.gsantner.memetastic.App;
+import net.gsantner.memetastic.data.MemeConfig;
+import net.gsantner.memetastic.data.MemeData;
+import net.gsantner.memetastic.data.MemeEditorElements;
+import net.gsantner.memetastic.data.MemeLibConfig;
+import net.gsantner.memetastic.service.AssetUpdater;
+import net.gsantner.memetastic.ui.FontItemAdapter;
+import net.gsantner.memetastic.util.ActivityUtils;
+import net.gsantner.memetastic.util.AppCast;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.ui.TouchImageView;
+import net.gsantner.opoc.util.ShareUtil;
+import java.io.File;
+import java.io.IOException;
+import java.util.Date;
+import java.util.Locale;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import butterknife.OnClick;
+import butterknife.OnLongClick;
+import butterknife.OnTextChanged;
+import butterknife.OnTouch;
+import io.github.gsantner.memetastic.R;
+import other.so.AndroidBug5497Workaround;
+/**
+ * Activity for creating memes
+ */
+@SuppressWarnings("ResultOfMethodCallIgnored")
+public class MemeCreateActivity extends AppCompatActivity implements ColorPickerDialogListener {
+    //########################
+    //## Static
+    //########################
+    public final static int RESULT_MEME_EDITING_FINISHED = 150;
+    public final static String EXTRA_IMAGE_PATH = "MemeCreateActivity_EXTRA_IMAGE_PATH";
+    public final static String EXTRA_MEMETASTIC_DATA = "MemeCreateActivity_EXTRA_MEMETASTIC_DATA";
+    private static final String TAG = MemeCreateActivity.class.getSimpleName();
+    //########################
+    //## UI Binding
+    //########################
+    @BindView(R.id.fab)
+    FloatingActionButton _fab;
+    @BindView(R.id.toolbar)
+    Toolbar _toolbar;
+    @BindView(R.id.memecreate__activity__image)
+    ImageView _imageEditView;
+    @BindView(R.id.edit_bar)
+    LinearLayout _editBar;
+    @BindView(R.id.create_caption)
+    EditText _create_caption;
+    @BindView(R.id.memecreate__moar_controls__color_picker_for_padding)
+    ColorPanelView _paddingColor;
+    @BindView(R.id.memecreate__activity__fullscreen_image)
+    TouchImageView _fullscreenImageView;
+    //#####################
+    //## Members
+    //#####################
+    private static boolean _doubleBackToExitPressedOnce = false;
+    private Bitmap _lastBitmap = null;
+    private long _memeSavetime = -1;
+    private File _predefinedTargetFile = null;
+    private App _app;
+    private MemeEditorElements _memeEditorElements;
+    private Bundle _savedInstanceState = null;
+    boolean _bottomContainerVisible = false;
+    private boolean _isBottom;
+    private View _dialogView;
+    private boolean _savedAsMemeTemplate = false;
+    //#####################
+    //## Methods
+    //#####################
+    @SuppressWarnings({"unchecked", "ConstantConditions"})
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        if (AppSettings.get().isEditorStatusBarHidden()) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+        setContentView(R.layout.memecreate__activity);
+        if (AppSettings.get().isEditorStatusBarHidden()) {
+            AndroidBug5497Workaround.assistActivity(this);
+        }
+        // Quit activity if no conf was given
+        Intent intent = getIntent();
+        String action = intent.getAction();
+        String type = intent.getType();
+        if (!(Intent.ACTION_SEND.equals(action) && type.startsWith("image/")) &&
+                (!getIntent().hasExtra(EXTRA_IMAGE_PATH)) && !(Intent.ACTION_EDIT.equals(action) && type.startsWith("image/"))) {
+            finish();
+            return;
+        }
+        // Stop if data is not loaded yet (Try load in onResume, recreate activity in broadcast)
+        if (MemeData.isReady()) {
+            // Bind Ui
+            ButterKnife.bind(this);
+            _app = (App) getApplication();
+            // Set _toolbar
+            setSupportActionBar(_toolbar);
+            if (getSupportActionBar() != null) {
+                getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            }
+            if (!initMemeSettings(savedInstanceState)) {
+                return;
+            }
+            initMoarControlsContainer();
+            initCaptionButtons();
+        }
+        if (savedInstanceState != null
+                && savedInstanceState.containsKey("captionPosition")
+                && savedInstanceState.containsKey("captionEditBar")
+                && savedInstanceState.containsKey("captionText")) {
+            _isBottom = savedInstanceState.getBoolean("captionPosition");
+            _editBar.setVisibility(savedInstanceState.getBoolean("captionEditBar") ?
+                    View.VISIBLE : View.GONE);
+            _create_caption.setText(savedInstanceState.getString("captionText"));
+        }
+        try {
+            if (!ActivityUtils.get(this).isInSplitScreenMode()) {
+                _imageEditView.postDelayed(this::touchTopElement, 40);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+    private void initCaptionButtons() {
+        final ImageButton buttonTextSettings = findViewById(R.id.settings_caption);
+        final ImageButton buttonOk = findViewById(R.id.done_caption);
+        buttonTextSettings.setColorFilter(R.color.black);
+        buttonOk.setColorFilter(R.color.black);
+    }
+    public boolean initMemeSettings(Bundle savedInstanceState) {
+        MemeData.Font lastUsedFont = getFont(_app.settings.getLastUsedFont());
+        Bitmap bitmap = extractBitmapFromIntent(getIntent());
+        if (bitmap == null) {
+            finish();
+            return false;
+        }
+        if (savedInstanceState != null && savedInstanceState.containsKey("memeObj")) {
+            _memeEditorElements = (MemeEditorElements) savedInstanceState.getSerializable("memeObj");
+            if (_memeEditorElements == null) {
+                _memeEditorElements = new MemeEditorElements(lastUsedFont, bitmap);
+            }
+            _memeEditorElements.getImageMain().setImage(bitmap);
+            _memeEditorElements.setFontToAll(lastUsedFont);
+        } else {
+            _memeEditorElements = new MemeEditorElements(lastUsedFont, bitmap);
+        }
+        _memeEditorElements.getImageMain().setDisplayImage(_memeEditorElements.getImageMain().getImage().copy(Bitmap.Config.RGB_565, false));
+        onMemeEditorObjectChanged();
+        return true;
+    }
+    public MemeData.Font getFont(String filepath) {
+        MemeData.Font font = MemeData.findFont(new File(filepath));
+        if (font == null) {
+            font = MemeData.getFonts().get(0);
+        }
+        return font;
+    }
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        prepareForSaving();
+        outState.putSerializable("memeObj", _memeEditorElements);
+        outState.putBoolean("captionPosition", _isBottom);
+        outState.putBoolean("captionEditBar", _editBar != null && _editBar.getVisibility() == View.VISIBLE);
+        outState.putString("captionText", _create_caption != null ? _create_caption.getText().toString() : "");
+        this._savedInstanceState = outState;
+    }
+    private void prepareForSaving() {
+        if (_memeEditorElements == null) {
+            return;
+        }
+        _imageEditView.setImageBitmap(null);
+        if (_lastBitmap != null && !_lastBitmap.isRecycled())
+            _lastBitmap.recycle();
+        MemeEditorElements.EditorImage imageMain = _memeEditorElements.getImageMain();
+        if (imageMain.getImage() != null && !imageMain.getImage().isRecycled())
+            imageMain.getImage().recycle();
+        if (imageMain.getDisplayImage() != null && !imageMain.getDisplayImage().isRecycled())
+            imageMain.getDisplayImage().recycle();
+        _lastBitmap = null;
+        imageMain.setDisplayImage(null);
+        imageMain.setImage(null);
+        _memeEditorElements.setFontToAll(null);
+    }
+    @Override
+    protected void onDestroy() {
+        prepareForSaving();
+        super.onDestroy();
+    }
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            // Checking if registered may not work always, therefore try to force it
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(_localBroadcastReceiver);
+        } catch (IllegalArgumentException ignored) {
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!MemeData.isReady()) {
+            LocalBroadcastManager.getInstance(this).registerReceiver(_localBroadcastReceiver, AppCast.getLocalBroadcastFilter());
+            new AssetUpdater.LoadAssetsThread(this).start();
+            return;
+        }
+        if (_savedInstanceState != null) {
+            overridePendingTransition(R.anim.fadein, R.anim.fadeout);
+            if (!initMemeSettings(_savedInstanceState)) {
+                return;
+            }
+        }
+    }
+    private BroadcastReceiver _localBroadcastReceiver = new BroadcastReceiver() {
+        @SuppressWarnings("unchecked")
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            switch (action) {
+                case AppCast.ASSETS_LOADED.ACTION: {
+                    recreate();
+                }
+            }
+        }
+    };
+    private Bitmap extractBitmapFromIntent(final Intent intent) {
+        final BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        Bitmap bitmap = null;
+        if (intent.getAction() != null && intent.getAction().equals(Intent.ACTION_SEND) && intent.getType().startsWith("image/")) {
+            Uri imageURI = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (imageURI != null) {
+                try {
+                    bitmap = MediaStore.Images.Media.getBitmap(getContentResolver(), imageURI);
+                } catch (IOException e) {
+                    bitmap = null;
+                    e.printStackTrace();
+                }
+            }
+        } else if (intent.getAction() != null && intent.getAction().equals(Intent.ACTION_EDIT) && intent.getType().startsWith("image/")) {
+            ShareUtil shu = new ShareUtil(this);
+            _predefinedTargetFile = shu.extractFileFromIntent(intent);
+            if (_predefinedTargetFile == null) {
+                Toast.makeText(this, R.string.the_file_could_not_be_loaded, Toast.LENGTH_SHORT).show();
+                finish();
+            }
+            bitmap = ContextUtils.get().loadImageFromFilesystem(_predefinedTargetFile, _app.settings.getRenderQualityReal());
+        } else {
+            String imagePath = getIntent().getStringExtra(EXTRA_IMAGE_PATH);
+            bitmap = ContextUtils.get().loadImageFromFilesystem(new File(imagePath), _app.settings.getRenderQualityReal());
+        }
+        return bitmap;
+    }
+    // Text settings dialog
+    @OnClick(R.id.settings_caption)
+    public void openSettingsDialog() {
+        ActivityUtils.get(this).hideSoftKeyboard();
+        _dialogView = View.inflate(this, R.layout.ui__memecreate__text_settings, null);
+        initTextSettingsPopupDialog(_dialogView);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(R.string.settings)
+                //dialog _dialogView
+                .setView(_dialogView)
+                .setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialogInterface, int i) {
+                        //retrieve values of widgets
+                        //return focus to _create_caption
+                        _create_caption.requestFocus();
+                    }
+                })
+                .setOnDismissListener((di) -> {
+                    _toolbar.setVisibility(View.VISIBLE);
+                    _imageEditView.setPadding(0, 0, 0, 0);
+                })
+                .create();
+        // Get some more space
+        try {
+            _toolbar.setVisibility(View.GONE);
+            WindowManager.LayoutParams wmlp = dialog.getWindow().getAttributes();
+            wmlp.gravity = Gravity.TOP;
+            android.graphics.Point p = new android.graphics.Point();
+            getWindowManager().getDefaultDisplay().getSize(p);
+            _imageEditView.setPadding(0, p.y / 2, 0, 0);
+        } catch (Exception ignored) {
+        }
+        dialog.show();
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.creatememe__menu, menu);
+        ContextUtils cu = new ContextUtils(getApplicationContext());
+        cu.tintMenuItems(menu, true, Color.WHITE);
+        cu.setSubMenuIconsVisiblity(menu, true);
+        return true;
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.action_share: {
+                recreateImage(true);
+                _app.shareBitmapToOtherApp(_lastBitmap, this);
+                return true;
+            }
+            case R.id.action_save: {
+                recreateImage(true);
+                saveMemeToFilesystem(true);
+                return true;
+            }
+            case R.id.action_save_as_template: {
+                if (!_savedAsMemeTemplate) {
+                    File folder = AssetUpdater.getCustomAssetsDir(AppSettings.get());
+                    String filename = String.format(Locale.getDefault(), "%s_%s.jpg", getString(R.string.app_name), AssetUpdater.FORMAT_MINUTE_FILE.format(new Date(_memeSavetime)));
+                    File fullpath = new File(folder, filename);
+                    folder.mkdirs();
+                    _savedAsMemeTemplate = ContextUtils.get().writeImageToFile(fullpath, _memeEditorElements.getImageMain().getDisplayImage());
+                }
+                return true;
+            }
+            case R.id.action_appearance: {
+                toggleMoarControls(false, false);
+                ActivityUtils.get(this).hideSoftKeyboard();
+                View focusedView = this.getCurrentFocus();
+                if (focusedView != null) {
+                    ActivityUtils.get(this).hideSoftKeyboard();
+                }
+                return true;
+            }
+            case R.id.action_show_original_image: {
+                _fullscreenImageView.setImageBitmap(_memeEditorElements.getImageMain().getDisplayImage());
+                _fullscreenImageView.setVisibility(View.VISIBLE);
+                toggleMoarControls(true, true);
+                return true;
+            }
+            case R.id.action_show_edited_image: {
+                recreateImage(true);
+                _fullscreenImageView.setImageBitmap(_lastBitmap);
+                _fullscreenImageView.setVisibility(View.VISIBLE);
+                toggleMoarControls(true, true);
+                return true;
+            }
+        }
+        return super.onOptionsItemSelected(item);
+    }
+    private boolean saveMemeToFilesystem(boolean showDialog) {
+        if (!PermissionChecker.doIfPermissionGranted(this)) {
+            return false;
+        }
+        File folder = AssetUpdater.getMemesDir(AppSettings.get());
+        if (_memeSavetime < 0) {
+            _memeSavetime = System.currentTimeMillis();
+        }
+        String filename = String.format(Locale.getDefault(), "%s_%s.jpg", getString(R.string.app_name), AssetUpdater.FORMAT_MINUTE_FILE.format(new Date(_memeSavetime)));
+        File fullpath = _predefinedTargetFile != null ? _predefinedTargetFile : new File(folder, filename);
+        boolean wasSaved = ContextUtils.get().writeImageToFile(fullpath, _lastBitmap.copy(_lastBitmap.getConfig(), false));
+        if (wasSaved && showDialog) {
+            AlertDialog.Builder dialog = new AlertDialog.Builder(this);
+            dialog.setTitle(R.string.successfully_saved)
+                    .setMessage(R.string.saved_meme_successfully__appspecific)
+                    .setNegativeButton(R.string.keep_editing, null)
+                    .setNeutralButton(R.string.share_meme__appspecific, new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface dialogInterface, int i) {
+                            _app.shareBitmapToOtherApp(_lastBitmap, MemeCreateActivity.this);
+                        }
+                    })
+                    .setPositiveButton(R.string.close, (dialog1, which) -> finish());
+            dialog.show();
+        }
+        if (wasSaved) {
+            MemeConfig.Image confImage = AssetUpdater.generateImageEntry(folder, filename, new String[0]);
+            MemeData.Image dataImage = new MemeData.Image();
+            dataImage.conf = confImage;
+            dataImage.fullPath = fullpath;
+            dataImage.isTemplate = false;
+            MemeData.getCreatedMemes().add(dataImage);
+        }
+        return wasSaved;
+    }
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        PermissionChecker.checkPermissionResult(this, requestCode, permissions, grantResults);
+    }
+    public void toggleMoarControls(boolean forceVisibile, boolean visible) {
+        _bottomContainerVisible = !_bottomContainerVisible;
+        if (forceVisibile) {
+            _bottomContainerVisible = visible;
+        }
+        _create_caption.setVisibility(_bottomContainerVisible ? View.GONE : View.VISIBLE);
+        _toolbar.setVisibility(_bottomContainerVisible ? View.GONE : View.VISIBLE);
+        // higher weightRatio means the conf is more wide, so below _dialogView can be higher
+        // 100 is the max weight, 55 means the below _dialogView is a little more weighted
+        Bitmap curImg = _memeEditorElements.getImageMain().getDisplayImage();
+        int weight = (int) (55f * (1 + ((curImg.getWidth() / (float) curImg.getHeight()) / 10f)));
+        weight = weight > 100 ? 100 : weight;
+        // Set weights. If _bottomContainerVisible == false -> Hide them = 0 weight
+        View container = findViewById(R.id.memecreate__activity__image_container);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) container.getLayoutParams();
+        lp.height = 0;
+        lp.weight = _bottomContainerVisible ? 100 - weight : 100;
+        container.setLayoutParams(lp);
+        container = findViewById(R.id.memecreate__activity__moar_controls_container);
+        container.setVisibility(_bottomContainerVisible ? View.VISIBLE : View.GONE);
+        lp = (LinearLayout.LayoutParams) container.getLayoutParams();
+        lp.height = 0;
+        lp.weight = _bottomContainerVisible ? weight : 0;
+        container.setLayoutParams(lp);
+    }
+    private void initTextSettingsPopupDialog(View view) {
+        SeekBar textSize = view.findViewById(R.id.meme_dialog__seek_font_size);
+        View textBackGroundColor = view.findViewById(R.id.meme_dialog__color_picker_for_text);
+        View textBorderColor = view.findViewById(R.id.meme_dialog__color_picker_for_border);
+        Switch allCapsSwitch = view.findViewById(R.id.meme_dialog__toggle_all_caps);
+        Spinner fontDropDown = view.findViewById(R.id.meme_dialog__dropdown_font);
+        FontItemAdapter fontAdapter = new FontItemAdapter(this,
+                android.R.layout.simple_list_item_1, MemeData.getFonts(),
+                false, getString(R.string.font));
+        fontDropDown.setAdapter(fontAdapter);
+        fontAdapter.setSelectedFont(fontDropDown, _memeEditorElements.getCaptionTop().getFont());
+        textBackGroundColor.setBackgroundColor(_memeEditorElements.getCaptionTop().getTextColor());
+        textBorderColor.setBackgroundColor(_memeEditorElements.getCaptionTop().getBorderColor());
+        allCapsSwitch.setChecked(_memeEditorElements.getCaptionTop().isAllCaps());
+        textSize.setProgress(_memeEditorElements.getCaptionTop().getFontSize() - MemeLibConfig.FONT_SIZES.MIN);
+        //listeners
+        View.OnClickListener colorListeners = view1 -> {
+            switch (view1.getId()) {
+                case R.id.meme_dialog__color_picker_for_text:
+                    if (_isBottom) {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionBottom().getTextColor());
+                    } else {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionTop().getTextColor());
+                    }
+                    break;
+                case R.id.meme_dialog__color_picker_for_border:
+                    if (_isBottom) {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionBottom().getBorderColor());
+                    } else {
+                        showColorDialog(view1.getId(), _memeEditorElements.getCaptionTop().getBorderColor());
+                    }
+            }
+        };
+        textBackGroundColor.setOnClickListener(colorListeners);
+        textBorderColor.setOnClickListener(colorListeners);
+        //drop down
+        fontDropDown.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setFont((MemeData.Font)
+                            parent.getSelectedItem());
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setFont((MemeData.Font)
+                            parent.getSelectedItem());
+                }
+                _app.settings.setLastUsedFont(((MemeData.Font) parent.getSelectedItem()).fullPath.getAbsolutePath());
+                onMemeEditorObjectChanged();
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        //seekBar
+        textSize.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setFontSize(progress + MemeLibConfig.FONT_SIZES.MIN);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setFontSize(progress + MemeLibConfig.FONT_SIZES.MIN);
+                }
+                onMemeEditorObjectChanged();
+            }
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        //switch
+        allCapsSwitch.setOnCheckedChangeListener((compoundButton, isChecked) -> {
+            if (_isBottom) {
+                _memeEditorElements.getCaptionBottom().setAllCaps(isChecked);
+            }
+            if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                _memeEditorElements.getCaptionTop().setAllCaps(isChecked);
+            }
+            onMemeEditorObjectChanged();
+        });
+    }
+    private void initMoarControlsContainer() {
+        final Button rotateButton = ButterKnife.findById(this, R.id.memecreate__moar_controls__rotate_plus_90deg);
+        final SeekBar seekPaddingSize = ButterKnife.findById(this, R.id.memecreate__moar_controls__seek_padding_size);
+        final ColorPanelView colorPickerPadding = ButterKnife.findById(this, R.id.memecreate__moar_controls__color_picker_for_padding);
+        final CheckBox globalTextSettingsCheckbox = findViewById(R.id.memecreate__moar_controls__global_text_settings);
+        // Apply existing settings
+        _paddingColor.setColor(_memeEditorElements.getImageMain().getPaddingColor());
+        seekPaddingSize.setProgress(_memeEditorElements.getImageMain().getPadding());
+        globalTextSettingsCheckbox.setChecked(_memeEditorElements.getImageMain().isTextSettingsGlobal());
+        //
+        //  Add bottom sheet listeners
+        //
+        View.OnClickListener colorListener = v -> {
+            showColorDialog(R.id.memecreate__moar_controls__color_picker_for_padding, _memeEditorElements.getImageMain().getPaddingColor());
+            onMemeEditorObjectChanged();
+        };
+        globalTextSettingsCheckbox.setOnCheckedChangeListener((buttonView, isChecked) -> _memeEditorElements.getImageMain().setTextSettingsGlobal(isChecked));
+        colorPickerPadding.setOnClickListener(colorListener);
+        seekPaddingSize.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                _memeEditorElements.getImageMain().setPadding(progress);
+                onMemeEditorObjectChanged();
+            }
+        });
+        rotateButton.setOnClickListener(v -> {
+            _memeEditorElements.getImageMain().setRotationDeg((_memeEditorElements.getImageMain().getRotationDeg() + 90) % 360);
+            onMemeEditorObjectChanged();
+        });
+    }
+    private void showColorDialog(int id, @ColorInt int color) {
+        ColorPickerDialog.newBuilder()
+                .setDialogId(id)
+                .setColor(color)
+                .setPresets(MemeLibConfig.MEME_COLORS.ALL)
+                .setCustomButtonText(R.string.palette)
+                .setPresetsButtonText(R.string.presets)
+                .setDialogTitle(R.string.select_color)
+                .setSelectedButtonText(android.R.string.ok)
+                .show(this);
+    }
+    @OnClick(R.id.memecreate__activity__fullscreen_image)
+    public void onFullScreenImageClicked() {
+        _fullscreenImageView.setVisibility(View.INVISIBLE);
+        recreateImage(false);
+        toggleMoarControls(true, false);
+    }
+    @OnLongClick(R.id.memecreate__activity__fullscreen_image)
+    public boolean onFullScreenImageLongClicked() {
+        _fullscreenImageView.setRotation((_fullscreenImageView.getRotation() + 90) % 360);
+        return true;
+    }
+    @Override
+    public void onColorSelected(int id, @ColorInt int colorInt) {
+        switch (id) {
+            case R.id.meme_dialog__color_picker_for_border: {// border color
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setBorderColor(colorInt);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setBorderColor(colorInt);
+                }
+                View view = _dialogView.findViewById(R.id.meme_dialog__color_picker_for_border);
+                view.setBackgroundColor(colorInt);
+                break;
+            }
+            case R.id.meme_dialog__color_picker_for_text: {// text background color
+                if (_isBottom) {
+                    _memeEditorElements.getCaptionBottom().setTextColor(colorInt);
+                }
+                if (!_isBottom || _memeEditorElements.getImageMain().isTextSettingsGlobal()) {
+                    _memeEditorElements.getCaptionTop().setTextColor(colorInt);
+                }
+                View view = _dialogView.findViewById(R.id.meme_dialog__color_picker_for_text);
+                view.setBackgroundColor(colorInt);
+                break;
+            }
+            case R.id.memecreate__moar_controls__color_picker_for_padding: { // padding color
+                _memeEditorElements.getImageMain().setPaddingColor(colorInt);
+                _memeEditorElements.getImageMain().setPaddingColor(colorInt);
+                _paddingColor.setColor(colorInt);
+                break;
+            }
+            default: {
+                Log.i(TAG, "Wrong selection");
+                break;
+            }
+        }
+        onMemeEditorObjectChanged();
+    }
+    @Override
+    public void onDialogDismissed(int id) {
+    }
+    public Bitmap renderMemeImageFromElements(Context c, MemeEditorElements memeEditorElements) {
+        // prepare canvas
+        Bitmap bitmap = memeEditorElements.getImageMain().getDisplayImage();
+        if (memeEditorElements.getImageMain().getRotationDeg() != 0) {
+            Matrix matrix = new Matrix();
+            matrix.postRotate(memeEditorElements.getImageMain().getRotationDeg());
+            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+        }
+        double pad = 1 + memeEditorElements.getImageMain().getPadding() / 100.0;
+        if (pad > 1.01) {
+            Bitmap workBmp = Bitmap.createBitmap((int) (bitmap.getWidth() * pad), (int) (bitmap.getHeight() * pad), Bitmap.Config.ARGB_8888);
+            Canvas can = new Canvas(workBmp);
+            //can.drawARGB(0xFF, 0xFF, 0xFF, 0xFF); //This represents White color
+            can.drawColor(memeEditorElements.getImageMain().getPaddingColor());
+            can.drawBitmap(bitmap, (int) ((workBmp.getWidth() - bitmap.getWidth()) / 2.0), (int) ((workBmp.getHeight() - bitmap.getHeight()) / 2.0), null);
+            bitmap = workBmp;
+        }
+        float scale = ContextUtils.get().getScalingFactorInPixelsForWritingOnPicture(bitmap.getWidth(), bitmap.getHeight());
+        float borderScale = scale * memeEditorElements.getCaptionTop().getFontSize() / MemeLibConfig.FONT_SIZES.DEFAULT;
+        Bitmap.Config bitmapConfig = bitmap.getConfig();
+        // set default bitmap config if none
+        if (bitmapConfig == null) {
+            bitmapConfig = Bitmap.Config.RGB_565;
+        }
+        // resource bitmaps are immutable,
+        // so we need to convert it to mutable one
+        bitmap = bitmap.copy(bitmapConfig, true);
+        Canvas canvas = new Canvas(bitmap);
+        // new antialiased Paint
+        TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        paint.setStrokeWidth(borderScale);
+        for (MemeEditorElements.EditorCaption caption : _memeEditorElements.getCaptions()) {
+            String textString = caption.isAllCaps() ? caption.getText().toUpperCase() : caption.getText();
+            if (TextUtils.isEmpty(textString)) {
+                textString = getString(R.string.tap_here_to_add_caption);
+                paint.setTextSize((int) (scale * caption.getFontSize() * 5 / 8));
+                paint.setTypeface(caption.getFont().typeFace);
+                paint.setColor(caption.getBorderColor());
+                paint.setStyle(Paint.Style.FILL_AND_STROKE);
+            } else {
+                paint.setTextSize((int) (scale * caption.getFontSize()));
+                paint.setTypeface(caption.getFont().typeFace);
+                paint.setColor(caption.getBorderColor());
+                paint.setStyle(Paint.Style.FILL_AND_STROKE);
+            }
+            // set text width to canvas width minus 16dp padding
+            int textWidth = canvas.getWidth() - (int) (16 * scale);
+            // init StaticLayout for text
+            StaticLayout textLayout = new StaticLayout(
+                    textString, paint, textWidth, Layout.Alignment.ALIGN_CENTER, 1.0f, 0.0f, false);
+            // get height of multiline text
+            int textHeight = textLayout.getHeight();
+            // get position of text in the canvas, this will depend in its internal location mode
+            MemeConfig.Point where = caption.getPositionInCanvas(
+                    bitmap.getWidth(), bitmap.getHeight(), textWidth, textHeight);
+            // draw text to the Canvas center
+            canvas.save();
+            canvas.translate(where.x, where.y);
+            textLayout.draw(canvas);
+            // new antialiased Paint
+            paint.setColor(caption.getTextColor());
+            paint.setStyle(Paint.Style.FILL);
+            // init StaticLayout for text
+            textLayout = new StaticLayout(
+                    textString, paint, textWidth, Layout.Alignment.ALIGN_CENTER, 1.0f, 0.0f, false);
+            // get height of multiline text
+            textHeight = textLayout.getHeight();
+            // draw text to the Canvas center
+            textLayout.draw(canvas);
+            canvas.restore();
+        }
+        return bitmap;
+    }
+    @OnTextChanged(value = R.id.create_caption, callback = OnTextChanged.Callback.TEXT_CHANGED)
+    public void onCaptionChanged(CharSequence text) {
+        if (_isBottom) {
+            _memeEditorElements.getCaptionBottom().setText(text.toString());
+        } else {
+            _memeEditorElements.getCaptionTop().setText(text.toString());
+        }
+        onMemeEditorObjectChanged();
+    }
+    public void onMemeEditorObjectChanged() {
+        _imageEditView.setImageBitmap(null);
+        if (_lastBitmap != null) {
+            _lastBitmap.recycle();
+        }
+        Bitmap bmp = renderMemeImageFromElements(this, _memeEditorElements);
+        _imageEditView.setImageBitmap(bmp);
+        _lastBitmap = bmp;
+    }
+    // createForSaving == true will make template text elements empty
+    public void recreateImage(boolean createForSaving) {
+        if (createForSaving) {
+            for (MemeEditorElements.EditorCaption caption : _memeEditorElements.getCaptions()) {
+                if (TextUtils.isEmpty(caption.getText())) {
+                    caption.setText(" ");
+                }
+            }
+        }
+        onMemeEditorObjectChanged();
+    }
+    //////////////////////////////////////////////////////////////
+    ////
+    ///  Visibility etc
+    //
+    @OnClick(R.id.done_caption)
+    public void settingsDone() {
+        _editBar.setVisibility(View.GONE);
+        ActivityUtils.get(this).hideSoftKeyboard();
+        onMemeEditorObjectChanged();
+    }
+    @OnClick(R.id.memecreate__moar_controls__layout)
+    void onBottomContainerClicked() {
+        toggleMoarControls(true, false);
+    }
+    @Override
+    public void onBackPressed() {
+        boolean hasTextInput = !_create_caption.getText().toString().isEmpty() ||
+                !_memeEditorElements.getCaptionBottom().getText().isEmpty() ||
+                !_memeEditorElements.getCaptionTop().getText().isEmpty();
+        if (_fullscreenImageView.getVisibility() == View.VISIBLE) {
+            _fullscreenImageView.setVisibility(View.INVISIBLE);
+            toggleMoarControls(true, false);
+            return;
+        }
+        // Close views above
+        if (_bottomContainerVisible) {
+            toggleMoarControls(true, false);
+            return;
+        }
+        if (_editBar.getVisibility() != View.GONE) {
+            settingsDone();
+            return;
+        }
+        // Auto save if option checked
+        if (hasTextInput && _app.settings.isAutoSaveMeme()) {
+            if (saveMemeToFilesystem(false)) {
+                finish();
+                return;
+            }
+        }
+        // Close if no input
+        if (!hasTextInput) {
+            finish();
+            return;
+        }
+        // Else wait for double back-press
+        if (_doubleBackToExitPressedOnce) {
+            super.onBackPressed();
+            return;
+        }
+        _doubleBackToExitPressedOnce = true;
+        Snackbar.make(findViewById(android.R.id.content), R.string.press_back_again_to_stop_editing__appspecific, Snackbar.LENGTH_SHORT).show();
+        new Handler().postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                _doubleBackToExitPressedOnce = false;
+            }
+        }, 2000);
+    }
+    public void touchTopElement() {
+        onImageTouched(_imageEditView, MotionEvent.obtain(1, 1, MotionEvent.ACTION_DOWN, 0, 0, 0));
+    }
+    @OnTouch(R.id.memecreate__activity__image)
+    public boolean onImageTouched(View view, MotionEvent event) {
+        if (_editBar.getVisibility() == View.VISIBLE && !_create_caption.getText().toString().isEmpty()) {
+            onMemeEditorObjectChanged();
+        }
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            float heightOfPic = view.getMeasuredHeight();
+            float heightOfEvent = event.getY();
+            int position = (int) (heightOfEvent / heightOfPic * 100);
+            _isBottom = position >= 50;
+            _editBar.setVisibility(View.VISIBLE);
+            String _areaCaption = _isBottom ?
+                    _memeEditorElements.getCaptionBottom().getText() :
+                    _memeEditorElements.getCaptionTop().getText();
+            _create_caption.setText(_areaCaption);
+            _create_caption.requestFocus();
+            ActivityUtils.get(this).showSoftKeyboard();
+            if (_bottomContainerVisible) {
+                toggleMoarControls(true, false);
+            }
+            return true;
+        }
+        return super.onTouchEvent(event);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.service;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.os.AsyncTask;
+import android.support.v4.content.ContextCompat;
+import net.gsantner.memetastic.data.MemeLibConfig;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.ContextUtils;
+import java.io.File;
+import io.github.gsantner.memetastic.R;
+public class ImageLoaderTask<T> extends AsyncTask<File, Void, Bitmap> {
+    private final static int MAX_DIMENSION = 5000;
+    public interface OnImageLoadedListener<T> {
+        void onImageLoaded(Bitmap bitmap, T callbackParam);
+    }
+    private final Context _context;
+    private final int _maxSize;
+    private final OnImageLoadedListener _listener;
+    private final T _callbackParam;
+    private final boolean _loadThumbnail;
+    public ImageLoaderTask(OnImageLoadedListener listener, Context context, boolean loadThumbnail, T callbackParam) {
+        _listener = listener;
+        _context = context;
+        _callbackParam = callbackParam;
+        _loadThumbnail = loadThumbnail;
+        _maxSize = loadThumbnail ? AppSettings.get().getThumbnailQualityReal()
+                : MemeLibConfig.MEME_FULLSCREEN_MAX_IMAGESIZE;
+    }
+    private Bitmap loadStorageImage(File pathToImage) {
+        File cacheFile = new File(_context.getCacheDir(), pathToImage.getAbsolutePath().substring(1));
+        ContextUtils cu = ContextUtils.get();
+        Bitmap bitmap;
+        try {
+            if (_loadThumbnail) {
+                if (cacheFile.exists()) {
+                    bitmap = cu.loadImageFromFilesystem(cacheFile, _maxSize);
+                } else {
+                    bitmap = cu.loadImageFromFilesystem(pathToImage, _maxSize);
+                    cu.writeImageToFile(cacheFile, bitmap.copy(bitmap.getConfig(), false), 65);
+                }
+            } else {
+                bitmap = cu.loadImageFromFilesystem(pathToImage, _maxSize);
+            }
+        } catch (NullPointerException nul) {
+            bitmap = cu.drawableToBitmap(ContextCompat.getDrawable(_context, R.drawable.ic_mood_bad_black_256dp));
+        }
+        return bitmap;
+    }
+    @Override
+    protected Bitmap doInBackground(File... params) {
+        return loadStorageImage(params[0]);
+    }
+    @Override
+    protected void onPostExecute(Bitmap bitmap) {
+        super.onPostExecute(bitmap);
+        if (_listener != null)
+            _listener.onImageLoaded(bitmap, _callbackParam);
+    }
+}
+/*#######################################################
+ *
+ *   Maintained 2016-2023 by Gregor Santner <gsantner AT mailbox DOT org>
+ *
+ *   License of this file: GNU GPLv3
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+#########################################################*/
+package net.gsantner.memetastic.service;
+import android.content.Context;
+import android.os.Environment;
+import net.gsantner.memetastic.util.AppSettings;
+import net.gsantner.memetastic.util.PermissionChecker;
+import net.gsantner.opoc.util.FileUtils;
+import java.io.File;
+import io.github.gsantner.memetastic.R;
+public class MigrationThread extends Thread {
+    private final Context _context;
+    public MigrationThread(Context context) {
+        _context = context;
+    }
+    @Override
+    public void run() {
+        super.run();
+        AppSettings appSettings = AppSettings.get();
+        if (!PermissionChecker.hasExtStoragePerm(_context) || appSettings.isMigrated()) {
+            return;
+        }
+        File newMemesDir = AssetUpdater.getMemesDir(AppSettings.get());
+        File newTemplatesDir = AssetUpdater.getCustomAssetsDir(AppSettings.get());
+        File oldMemesDir = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_PICTURES), _context.getString(R.string.app_name));
+        File oldTemplatesDir = new File(oldMemesDir, "templates");
+        File oldTemplatesCustomDir = new File(oldMemesDir, "custom");
+        String thumbnails = ".thumbnails";
+        if (!oldMemesDir.exists()) {
+            return;
+        }
+        FileUtils.deleteRecursive(new File(oldMemesDir, thumbnails));
+        try {
+            FileUtils.deleteRecursive(new File(oldTemplatesCustomDir, thumbnails));
+            for (File file : new File(oldTemplatesDir, "custom").listFiles()) {
+                if (file.isFile()) {
+                    FileUtils.renameFile(file, new File(newTemplatesDir, file.getName()));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            for (File file : oldMemesDir.listFiles()) {
+                if (file.isFile()) {
+                    FileUtils.renameFile(file, new File(newMemesDir, file.getName()));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        FileUtils.deleteRecursive(oldTemplatesCustomDir);
+        appSettings.setMigrated(true);
+    }
+}
