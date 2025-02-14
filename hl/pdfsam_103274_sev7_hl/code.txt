@@ -1,0 +1,1225 @@
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 22 ott 2016
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import java.util.HashSet;
+import java.util.Set;
+import static java.util.Optional.ofNullable;
+/**
+ * Validates that a given String represent an integer in a given set
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+public class ContainedIntegerValidator implements Validator<String> {
+    private final Set<Integer> valid = new HashSet<>();
+    public ContainedIntegerValidator(Set<Integer> validValues) {
+        ofNullable(validValues).map(valid::addAll);
+    }
+    @Override
+    public boolean isValid(String input) {
+        try {
+            return valid.contains(Integer.parseInt(input));
+        } catch (NumberFormatException e) {
+            // not a valid integer
+            return false;
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 12/giu/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.split;
+import javafx.scene.control.RadioButton;
+import org.pdfsam.core.support.params.SplitParametersBuilder;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.commons.ValidableTextField;
+import org.pdfsam.ui.components.support.FXValidationSupport.ValidationState;
+import org.sejda.model.parameter.SplitByEveryXPagesParameters;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * {@link RadioButton} driving a text field that can accept an integer number.
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+public class SplitByEveryRadioButton extends RadioButton
+        implements SplitParametersBuilderCreator, RestorableView, ResettableView {
+    private final ValidableTextField field;
+    public SplitByEveryRadioButton(ValidableTextField field) {
+        super(i18n().tr("Split by every \"n\" pages"));
+        this.field = field;
+        this.field.setOnEnterValidation(true);
+        this.field.setEnableInvalidStyle(true);
+        this.field.setPromptText(i18n().tr("Number of pages"));
+        this.field.setValidator(Validators.positiveInteger());
+        this.field.setErrorMessage(i18n().tr("Invalid number of pages"));
+    }
+    @Override
+    public SplitByEveryXPagesParametersBuilder getBuilder(Consumer<String> onError) {
+        this.field.validate();
+        if (this.field.getValidationState() == ValidationState.VALID) {
+            return new SplitByEveryXPagesParametersBuilder(Integer.parseInt(this.field.getText()));
+        }
+        onError.accept(i18n().tr("Invalid number of pages"));
+        return null;
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        if (isSelected()) {
+            data.put("splitByEvery", Boolean.TRUE.toString());
+        }
+        data.put("splitByEvery.field", defaultString(field.getText()));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        Optional.ofNullable(data.get("splitByEvery")).map(Boolean::valueOf).ifPresent(this::setSelected);
+        field.setText(Optional.ofNullable(data.get("splitByEvery.field")).orElse(EMPTY));
+    }
+    void setMaxPages(Integer value) {
+        if (value > 1) {
+            this.field.setValidator(Validators.positiveIntRange(1, value - 1));
+        }
+    }
+    @Override
+    public void resetView() {
+        field.clear();
+    }
+    /**
+     * Builder for the {@link SplitByEveryXPagesParameters}
+     * 
+     * @author Andrea Vacondio
+     *
+     */
+    static class SplitByEveryXPagesParametersBuilder extends SplitParametersBuilder<SplitByEveryXPagesParameters> {
+        private final int step;
+        SplitByEveryXPagesParametersBuilder(int step) {
+            this.step = step;
+        }
+        @Override
+        public SplitByEveryXPagesParameters build() {
+            SplitByEveryXPagesParameters params = new SplitByEveryXPagesParameters(step);
+            params.setCompress(isCompress());
+            params.setExistingOutputPolicy(existingOutput());
+            params.setVersion(getVersion());
+            params.setOutput(getOutput());
+            params.setOutputPrefix(getPrefix());
+            params.addSource(getSource());
+            params.setOptimizationPolicy(getOptimizationPolicy());
+            params.discardOutline(isDiscardBookmarks());
+            return params;
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 16/nov/2012
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.model.io.FileType;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Set;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.apache.commons.lang3.StringUtils.isNotEmpty;
+/**
+ * Provides Factory methods to create validators
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+public final class Validators {
+    private Validators() {
+        // hide
+    }
+    /**
+     * @return a new instance of a validator that always returns false
+     */
+    public static Validator<String> alwaysFalse() {
+        return v -> false;
+    }
+    /**
+     * @return a new instance of a validator checking for a on blank input string
+     */
+    public static Validator<String> nonBlank() {
+        return StringUtils::isNotBlank;
+    }
+    /**
+     * @return a new instance of a validator checking for a input string representing a positive integer number
+     */
+    public static Validator<String> positiveInteger() {
+        return new PositiveIntegerStringValidator();
+    }
+    /**
+     * @return a new instance of a validator checking for a input string representing a positive integer number in the given range
+     */
+    public static Validator<String> positiveIntRange(int lower, int upper) {
+        return new PositiveIntRangeStringValidator(lower, upper);
+    }
+    /**
+     * @return a new instance of a validator checking for a input string representing an integer contained in the given set
+     */
+    public static Validator<String> containedInteger(Set<Integer> validValues) {
+        return new ContainedIntegerValidator(validValues);
+    }
+    /**
+     * @return a new instance of a validator checking for an input string representing an existing file. Blank string are invalid.
+     * @see Validators#validEmpty(Validator)
+     */
+    public static Validator<String> existingFile() {
+        return new FileValidator();
+    }
+    /**
+     * @return a new instance of a validator checking for an input string representing an existing file of the given type. Blank string are invalid.
+     * @param type
+     *            type of the file represented by the input string
+     * @see Validators#validEmpty(Validator)
+     */
+    public static Validator<String> existingFileType(FileType type) {
+        return new FileTypeValidator(type, true);
+    }
+    /**
+     * @return a new instance of a validator checking for an input string representing a file of the given type. Blank string are invalid.
+     * @param type
+     *            type of the file represented by the input string
+     * @param mustExist
+     *            if true the validator enforces an existing file
+     * @see Validators#validEmpty(Validator)
+     */
+    public static Validator<String> fileType(FileType type, boolean mustExist) {
+        return new FileTypeValidator(type, mustExist);
+    }
+    /**
+     * @return a new instance of a validator checking for an input string representing an existing directory. Blank string are invalid.
+     * @see Validators#validEmpty(Validator)
+     */
+    public static Validator<String> existingDirectory() {
+        return v -> isNotBlank(v) && Files.isDirectory(Paths.get(v));
+    }
+    /**
+     * @return a new instance of a validator checking for an input string matching the given regex.
+     * @see Validators#validEmpty(Validator)
+     */
+    public static Validator<String> regexMatching(String regex) {
+        return new RegexValidator(regex);
+    }
+    /**
+     * @param validator
+     * @return a new instance of the validator that considers empty string as valid, it delegates otherwise
+     */
+    public static Validator<String> validEmpty(Validator<String> validator) {
+        return v -> {
+            if (isNotEmpty(v)) {
+                return validator.isValid(v);
+            }
+            return true;
+        };
+    }
+    /**
+     * @param validator
+     * @return a new instance of a validator that negates the given one
+     */
+    public static Validator<String> not(Validator<String> validator) {
+        return v -> !validator.isValid(v);
+    }
+    /**
+     * @param validators
+     * @return a new instance of a validator that returns true if all the given validators return true
+     */
+    public static Validator<String> and(Validator<String>... validators) {
+        return v -> Arrays.stream(validators).allMatch(validator -> validator.isValid(v));
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 09/giu/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.split;
+import javafx.scene.control.RadioButton;
+import org.pdfsam.core.support.params.SplitParametersBuilder;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.commons.ValidableTextField;
+import org.pdfsam.ui.components.support.FXValidationSupport.ValidationState;
+import org.sejda.conversion.PageNumbersListAdapter;
+import org.sejda.model.parameter.SplitByPagesParameters;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * {@link RadioButton} driving a text field that can accept a comma separated list of integer numbers.
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+class SplitAfterRadioButton extends RadioButton
+        implements SplitParametersBuilderCreator, RestorableView, ResettableView {
+    private final ValidableTextField field;
+    public SplitAfterRadioButton(ValidableTextField field) {
+        super(i18n().tr("Split after the following page numbers"));
+        this.field = field;
+        this.field.setOnEnterValidation(true);
+        this.field.setEnableInvalidStyle(true);
+        this.field.setPromptText(i18n().tr("Page numbers to split at (n1,n2,n3..)"));
+        this.field.setValidator(Validators.regexMatching("^([1-9]\\d*(\\s*,\\s*)?)+$"));
+        this.field.setErrorMessage(i18n().tr("Invalid page numbers"));
+    }
+    @Override
+    public SplitByPageParametersBuilder getBuilder(Consumer<String> onError) {
+        this.field.validate();
+        if (this.field.getValidationState() == ValidationState.VALID) {
+            return new SplitByPageParametersBuilder(new PageNumbersListAdapter(this.field.getText()).getPageNumbers());
+        }
+        onError.accept(i18n().tr("Only valid positive page numbers are allowed"));
+        return null;
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        if (isSelected()) {
+            data.put("splitAfter", Boolean.TRUE.toString());
+        }
+        data.put("splitAfter.field", defaultString(field.getText()));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        Optional.ofNullable(data.get("splitAfter")).map(Boolean::valueOf).ifPresent(this::setSelected);
+        field.setText(Optional.ofNullable(data.get("splitAfter.field")).orElse(EMPTY));
+    }
+    @Override
+    public void resetView() {
+        field.clear();
+    }
+    /**
+     * Builder for the {@link SplitByPagesParameters}
+     * 
+     * @author Andrea Vacondio
+     *
+     */
+    static class SplitByPageParametersBuilder extends SplitParametersBuilder<SplitByPagesParameters> {
+        private final List<Integer> pages;
+        SplitByPageParametersBuilder(List<Integer> pages) {
+            this.pages = pages;
+        }
+        @Override
+        public SplitByPagesParameters build() {
+            SplitByPagesParameters params = new SplitByPagesParameters();
+            params.addPages(pages);
+            params.setCompress(isCompress());
+            params.setExistingOutputPolicy(existingOutput());
+            params.setVersion(getVersion());
+            params.setOutput(getOutput());
+            params.setOutputPrefix(getPrefix());
+            params.addSource(getSource());
+            params.setOptimizationPolicy(getOptimizationPolicy());
+            params.discardOutline(isDiscardBookmarks());
+            return params;
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 16/nov/2012
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+/**
+ * Validates that the input string is a valid positive integer value or empty
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+class PositiveIntegerStringValidator implements Validator<String> {
+    @Override
+    public boolean isValid(String input) {
+        try {
+            return Integer.parseInt(input) > 0;
+        } catch (NumberFormatException e) {
+            // not a valid integer
+            return false;
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 21/lug/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.gui.components.content.preference;
+import jakarta.inject.Named;
+import javafx.util.Subscription;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.gui.components.content.log.MaxLogRowsChangedEvent;
+import org.pdfsam.gui.theme.Themes;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.io.FileType;
+import org.pdfsam.model.io.OpenType;
+import org.pdfsam.model.ui.ComboItem;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.stream.IntStream;
+import static java.util.Comparator.comparing;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CHECK_FOR_NEWS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CHECK_UPDATES;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CLEAR_CONFIRMATION;
+import static org.pdfsam.core.context.BooleanPersistentProperty.DISCARD_BOOKMARKS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.DONATION_NOTIFICATION;
+import static org.pdfsam.core.context.BooleanPersistentProperty.OVERWRITE_OUTPUT;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PDF_COMPRESSION_ENABLED;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PLAY_SOUNDS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PREMIUM_MODULES;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SAVE_PWD_IN_WORKSPACE;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SAVE_WORKSPACE_ON_EXIT;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SMART_OUTPUT;
+import static org.pdfsam.core.context.IntegerPersistentProperty.LOGVIEW_ROWS_NUMBER;
+import static org.pdfsam.core.context.StringPersistentProperty.FONT_SIZE;
+import static org.pdfsam.core.context.StringPersistentProperty.PDF_VERSION;
+import static org.pdfsam.core.context.StringPersistentProperty.STARTUP_MODULE;
+import static org.pdfsam.core.context.StringPersistentProperty.THEME;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKSPACE_PATH;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.ui.ComboItem.keyWithEmptyValue;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+/**
+ * Configuration for the PDFsam preferences components
+ *
+ * @author Andrea Vacondio
+ */
+public class PreferenceConfig {
+    @Provides
+    @Named("localeCombo")
+    public PreferenceComboBox<ComboItem<String>> localeCombo() {
+        return new PreferenceComboBox<>(StringPersistentProperty.LOCALE);
+    }
+    @Provides
+    @Named("startupToolCombo")
+    public PreferenceComboBox<ComboItem<String>> startupToolCombo() {
+        PreferenceComboBox<ComboItem<String>> startupToolCombo = new PreferenceComboBox<>(STARTUP_MODULE);
+        startupToolCombo.setId("startupModuleCombo");
+        startupToolCombo.getItems().add(new ComboItem<>("", i18n().tr("Home")));
+        app().runtimeState().tools().values().stream().map(tool -> new ComboItem<>(tool.id(), tool.descriptor().name()))
+                .sorted(comparing(ComboItem::description)).forEach(startupToolCombo.getItems()::add);
+        startupToolCombo.setValue(keyWithEmptyValue(app().persistentSettings().get(STARTUP_MODULE).orElse("")));
+        return startupToolCombo;
+    }
+    @Provides
+    @Named("themeCombo")
+    public PreferenceComboBox<ComboItem<String>> themeCombo() {
+        PreferenceComboBox<ComboItem<String>> themeCombo = new PreferenceComboBox<>(THEME);
+        themeCombo.setId("themeCombo");
+        Themes.themes().entrySet().stream().sorted(Comparator.comparing(e -> e.getValue().name()))
+                .map(entry -> new ComboItem<>(entry.getKey(), entry.getValue().name()))
+                .forEach(themeCombo.getItems()::add);
+        final Subscription[] subscription = new Subscription[1];
+        subscription[0] = app().runtimeState().theme().subscribe(t -> {
+            if (nonNull(t)) {
+                themeCombo.setValue(new ComboItem<>(t.id(), t.name()));
+                themeCombo.valueProperty().addListener(
+                        (observable, oldVal, newVal) -> ofNullable(Themes.get(newVal.key())).ifPresent(
+                                theme -> app().runtimeState().theme(theme)));
+                ofNullable(subscription[0]).ifPresent(Subscription::unsubscribe);
+            }
+        });
+        return themeCombo;
+    }
+    @Provides
+    @Named("fontSizeCombo")
+    public PreferenceComboBox<ComboItem<String>> fontSizeCombo() {
+        PreferenceComboBox<ComboItem<String>> fontSizeCombo = new PreferenceComboBox<>(FONT_SIZE);
+        fontSizeCombo.setId("fontSizeCombo");
+        fontSizeCombo.getItems().add(new ComboItem<>("", i18n().tr("System default")));
+        IntStream.range(9, 22).forEach(i -> fontSizeCombo.getItems().add(new ComboItem<>(i + "px", i + "px")));
+        fontSizeCombo.setValue(keyWithEmptyValue(app().persistentSettings().get(FONT_SIZE).orElse("")));
+        return fontSizeCombo;
+    }
+    @Provides
+    @Named("pdfVersionCombo")
+    public PreferenceComboBox<ComboItem<PdfVersion>> pdfVersionCombo() {
+        PreferenceComboBox<ComboItem<PdfVersion>> pdfVersionCombo = new PreferenceComboBox<>(PDF_VERSION);
+        pdfVersionCombo.setId("pdfVersionCombo");
+        pdfVersionCombo.getItems().addAll(Arrays.stream(PdfVersion.values())
+                .filter(v -> v.getVersion() > PdfVersion.VERSION_1_2.getVersion()).map(DefaultPdfVersionComboItem::new)
+                .toList());
+        //select if present in the settings
+        app().persistentSettings().get(StringPersistentProperty.PDF_VERSION).map(PdfVersion::valueOf)
+                .flatMap(v -> pdfVersionCombo.getItems().stream().filter(i -> i.key() == v).findFirst())
+                .ifPresent(i -> pdfVersionCombo.getSelectionModel().select(i));
+        return pdfVersionCombo;
+    }
+    @Provides
+    @Named("checkForUpdates")
+    public PreferenceCheckBox checkForUpdates() {
+        var checkForUpdates = new PreferenceCheckBox(CHECK_UPDATES, i18n().tr("Check for updates at startup"),
+                app().persistentSettings().get(CHECK_UPDATES));
+        checkForUpdates.setId("checkForUpdates");
+        checkForUpdates.setGraphic(helpIcon(
+                i18n().tr("Set whether new version availability should be checked on startup (restart needed)")));
+        checkForUpdates.getStyleClass().addAll(Style.WITH_HELP.css());
+        checkForUpdates.getStyleClass().addAll(Style.VITEM.css());
+        return checkForUpdates;
+    }
+    @Provides
+    @Named("checkForNews")
+    public PreferenceCheckBox checkForNews() {
+        var checkForNews = new PreferenceCheckBox(CHECK_FOR_NEWS, i18n().tr("Check for news at startup"),
+                app().persistentSettings().get(CHECK_FOR_NEWS));
+        checkForNews.setId("checkForNews");
+        checkForNews.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should check for news availability on startup (restart needed)")));
+        checkForNews.getStyleClass().addAll(Style.WITH_HELP.css());
+        checkForNews.getStyleClass().addAll(Style.VITEM.css());
+        return checkForNews;
+    }
+    @Provides
+    @Named("compressionEnabled")
+    public PreferenceCheckBox compressionEnabled() {
+        var compressionEnabled = new PreferenceCheckBox(PDF_COMPRESSION_ENABLED, i18n().tr("Enabled PDF compression"),
+                app().persistentSettings().get(PDF_COMPRESSION_ENABLED));
+        compressionEnabled.setId("compressionEnabled");
+        compressionEnabled.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Compress output file\" should be enabled by default")));
+        compressionEnabled.getStyleClass().addAll(Style.WITH_HELP.css());
+        compressionEnabled.getStyleClass().addAll(Style.VITEM.css());
+        return compressionEnabled;
+    }
+    @Provides
+    @Named("discardBookmarks")
+    public PreferenceCheckBox discardBookmarks() {
+        var discardBookmarks = new PreferenceCheckBox(DISCARD_BOOKMARKS, i18n().tr("Discard bookmarks"),
+                app().persistentSettings().get(DISCARD_BOOKMARKS));
+        discardBookmarks.setId("discardBookmarks");
+        discardBookmarks.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Discard bookmarks\" should be enabled by default")));
+        discardBookmarks.getStyleClass().addAll(Style.WITH_HELP.css());
+        discardBookmarks.getStyleClass().addAll(Style.VITEM.css());
+        return discardBookmarks;
+    }
+    @Provides
+    @Named("prefixField")
+    public PreferencePrefixField prefixField() {
+        return new PreferencePrefixField();
+    }
+    @Provides
+    @Named("overwriteOutput")
+    public PreferenceCheckBox overwriteOutput() {
+        var overwriteOutput = new PreferenceCheckBox(OVERWRITE_OUTPUT, i18n().tr("Overwrite files"),
+                app().persistentSettings().get(OVERWRITE_OUTPUT));
+        overwriteOutput.setId("overwriteOutput");
+        overwriteOutput.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Overwrite if already exists\" should be enabled by default")));
+        overwriteOutput.getStyleClass().addAll(Style.WITH_HELP.css());
+        overwriteOutput.getStyleClass().addAll(Style.VITEM.css());
+        return overwriteOutput;
+    }
+    @Provides
+    @Named("playSounds")
+    public PreferenceCheckBox playSounds() {
+        var playSounds = new PreferenceCheckBox(PLAY_SOUNDS, i18n().tr("Play alert sounds"),
+                app().persistentSettings().get(PLAY_SOUNDS));
+        playSounds.setId("playSounds");
+        playSounds.setGraphic(helpIcon(i18n().tr("Turn on or off alert sounds")));
+        playSounds.getStyleClass().addAll(Style.WITH_HELP.css());
+        playSounds.getStyleClass().addAll(Style.VITEM.css());
+        return playSounds;
+    }
+    @Provides
+    @Named("savePwdInWorkspace")
+    public PreferenceCheckBox savePwdInWorkspace() {
+        var savePwdInWorkspace = new PreferenceCheckBox(SAVE_PWD_IN_WORKSPACE,
+                i18n().tr("Store passwords when saving a workspace file"),
+                app().persistentSettings().get(SAVE_PWD_IN_WORKSPACE));
+        savePwdInWorkspace.setId("savePwdInWorkspace");
+        savePwdInWorkspace.setGraphic(helpIcon(i18n().tr(
+                "If an encrypted PDF document has been opened with a password, save the password in the workspace file")));
+        savePwdInWorkspace.getStyleClass().addAll(Style.WITH_HELP.css());
+        savePwdInWorkspace.getStyleClass().addAll(Style.VITEM.css());
+        return savePwdInWorkspace;
+    }
+    @Provides
+    @Named("donationNotification")
+    public PreferenceCheckBox donationNotification() {
+        var donationNotification = new PreferenceCheckBox(DONATION_NOTIFICATION, i18n().tr("Show donation window"),
+                app().persistentSettings().get(DONATION_NOTIFICATION));
+        donationNotification.setId("donationNotification");
+        donationNotification.setGraphic(helpIcon(i18n().tr(
+                "Turn on or off the notification appearing once in a while and asking the user to support PDFsam with a donation")));
+        donationNotification.getStyleClass().addAll(Style.WITH_HELP.css());
+        donationNotification.getStyleClass().addAll(Style.VITEM.css());
+        return donationNotification;
+    }
+    @Provides
+    @Named("fetchPremiumModules")
+    public PreferenceCheckBox fetchPremiumModules() {
+        var fetchPremiumModules = new PreferenceCheckBox(PREMIUM_MODULES, i18n().tr("Show premium features"),
+                app().persistentSettings().get(PREMIUM_MODULES));
+        fetchPremiumModules.setId("fetchPremiumModules");
+        fetchPremiumModules.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should fetch and show premium features description in the modules dashboard")));
+        fetchPremiumModules.getStyleClass().addAll(Style.WITH_HELP.css());
+        fetchPremiumModules.getStyleClass().addAll(Style.VITEM.css());
+        return fetchPremiumModules;
+    }
+    @Provides
+    @Named("clearConfirmation")
+    public PreferenceCheckBox clearConfirmation() {
+        var clearConfirmation = new PreferenceCheckBox(CLEAR_CONFIRMATION,
+                i18n().tr("Ask for a confirmation when clearing the selection table"),
+                app().persistentSettings().get(CLEAR_CONFIRMATION));
+        clearConfirmation.setId("clearConfirmation");
+        clearConfirmation.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should ask for a confirmation when clearing the selection table")));
+        clearConfirmation.getStyleClass().addAll(Style.WITH_HELP.css());
+        clearConfirmation.getStyleClass().addAll(Style.VITEM.css());
+        return clearConfirmation;
+    }
+    @Provides
+    @Named("smartRadio")
+    public PreferenceRadioButton smartRadio() {
+        var smartRadio = new PreferenceRadioButton(SMART_OUTPUT,
+                i18n().tr("Use the selected PDF document directory as output directory"),
+                app().persistentSettings().get(SMART_OUTPUT));
+        smartRadio.setId("smartRadio");
+        return smartRadio;
+    }
+    @Provides
+    @Named("workingDirectory")
+    public PreferenceBrowsableDirectoryField workingDirectory() {
+        var workingDirectory = new PreferenceBrowsableDirectoryField(WORKING_PATH);
+        workingDirectory.getTextField().setText(app().persistentSettings().get(WORKING_PATH).orElse(""));
+        workingDirectory.setId("workingDirectory");
+        return workingDirectory;
+    }
+    @Provides
+    @Named("workspace")
+    public PreferenceBrowsableFileField workspace() {
+        var workspace = new PreferenceBrowsableFileField(WORKSPACE_PATH, FileType.JSON, OpenType.OPEN);
+        workspace.getTextField().setText(app().persistentSettings().get(WORKSPACE_PATH).orElse(""));
+        workspace.setId("workspace");
+        return workspace;
+    }
+    @Provides
+    @Named("saveWorkspaceOnExit")
+    public PreferenceCheckBox saveWorkspaceOnExit() {
+        var saveWorkspaceOnExit = new PreferenceCheckBox(SAVE_WORKSPACE_ON_EXIT,
+                i18n().tr("Save default workspace on exit"), app().persistentSettings().get(SAVE_WORKSPACE_ON_EXIT));
+        saveWorkspaceOnExit.setId("saveWorkspaceOnExit");
+        saveWorkspaceOnExit.setGraphic(
+                helpIcon(i18n().tr("If a default workspace is set, save it on application exit")));
+        saveWorkspaceOnExit.getStyleClass().addAll(Style.WITH_HELP.css());
+        saveWorkspaceOnExit.getStyleClass().add("spaced-vitem");
+        return saveWorkspaceOnExit;
+    }
+    @Provides
+    @Named("logViewRowsNumber")
+    public PreferenceIntTextField logViewRowsNumber() {
+        var logRowsNumber = new PreferenceIntTextField(LOGVIEW_ROWS_NUMBER, Validators.positiveInteger());
+        logRowsNumber.setText(Integer.toString(app().persistentSettings().get(LOGVIEW_ROWS_NUMBER)));
+        logRowsNumber.setErrorMessage(i18n().tr("Maximum number of rows mast be a positive number"));
+        logRowsNumber.setId("logViewRowsNumber");
+        logRowsNumber.validProperty().addListener((o, oldVal, newVal) -> {
+            if (newVal == FXValidationSupport.ValidationState.VALID) {
+                eventStudio().broadcast(new MaxLogRowsChangedEvent());
+            }
+        });
+        return logRowsNumber;
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 09/giu/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import java.util.regex.Pattern;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.sejda.commons.util.RequireUtils.requireNotBlank;
+/**
+ * Validator of a string against a given regex. null string is considered as valid.
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+class RegexValidator implements Validator<String> {
+    private final Pattern pattern;
+    public RegexValidator(String regex) {
+        requireNotBlank(regex, "Regex cannot be blank");
+        pattern = Pattern.compile(regex);
+    }
+    @Override
+    public boolean isValid(String input) {
+        return isNotBlank(input) && pattern.matcher(input).matches();
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 08/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.splitbysize;
+import javafx.scene.control.Label;
+import javafx.scene.control.ToggleGroup;
+import javafx.scene.layout.HBox;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.commons.ValidableTextField;
+import org.pdfsam.ui.components.support.FXValidationSupport.ValidationState;
+import org.pdfsam.ui.components.support.Style;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * Panel for the Split options
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+class SplitOptionsPane extends HBox
+        implements TaskParametersBuildStep<SplitBySizeParametersBuilder>, RestorableView, ResettableView {
+    private final ValidableTextField field = new ValidableTextField();
+    private final ToggleGroup group = new ToggleGroup();
+    SplitOptionsPane() {
+        this.field.setOnEnterValidation(true);
+        this.field.setEnableInvalidStyle(true);
+        this.field.setPromptText(i18n().tr("Set the size to split at"));
+        this.field.setValidator(Validators.positiveInteger());
+        this.field.setErrorMessage(i18n().tr("Size must be a number"));
+        this.field.setId("sizeField");
+        getStyleClass().addAll(Style.CONTAINER.css());
+        getStyleClass().addAll(Style.HCONTAINER.css());
+        getChildren().addAll(new Label(i18n().tr("Split at this size:")), this.field);
+        Arrays.stream(SizeUnit.values()).map(SizeUnitRadio::new).forEach(r -> {
+            r.setToggleGroup(group);
+            getChildren().add(r);
+        });
+        group.getToggles().stream().findFirst().ifPresent(t -> t.setSelected(true));
+    }
+    @Override
+    public void apply(SplitBySizeParametersBuilder builder, Consumer<String> onError) {
+        this.field.validate();
+        if (this.field.getValidationState() == ValidationState.VALID) {
+            builder.size(
+                    ((SizeUnitRadio) group.getSelectedToggle()).unit().toBytes(Integer.parseInt(this.field.getText())));
+        } else {
+            onError.accept(i18n().tr("Invalid split size"));
+        }
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put("size", defaultString(field.getText()));
+        group.getToggles().stream().map(t -> (SizeUnitRadio) t).forEach(s -> s.saveStateTo(data));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        field.setText(Optional.ofNullable(data.get("size")).orElse(EMPTY));
+        group.getToggles().stream().map(t -> (SizeUnitRadio) t).forEach(s -> s.restoreStateFrom(data));
+    }
+    @Override
+    public void resetView() {
+        field.clear();
+        group.getToggles().stream().findFirst().ifPresent(t -> t.setSelected(true));
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 30/ott/2013
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.ui.components.io;
+import javafx.event.ActionEvent;
+import javafx.event.EventHandler;
+import javafx.scene.control.Button;
+import javafx.scene.input.DragEvent;
+import javafx.scene.input.TransferMode;
+import org.apache.commons.lang3.ObjectUtils;
+import org.pdfsam.core.io.Choosers;
+import org.pdfsam.core.support.validation.Validator;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.model.io.FileType;
+import org.pdfsam.model.io.OpenType;
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.function.Consumer;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.apache.commons.lang3.StringUtils.trim;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * Component letting the user select a File of an expected type. By default, no validation is enforced and the filetype is used only in the file chooser but the component provides a
+ * method to initialize validation.
+ *
+ * @author Andrea Vacondio
+ */
+public class BrowsableFileField extends BrowsableField {
+    private FileType fileType = FileType.ALL;
+    private OpenType openType = OpenType.OPEN;
+    private final BrowseEventHandler handler = new BrowseEventHandler();
+    public BrowsableFileField(FileType fileType, OpenType openType) {
+        this.init(fileType, openType);
+    }
+    public BrowsableFileField(FileType fileType, OpenType openType, Button browseButton) {
+        super(browseButton);
+        this.init(fileType, openType);
+    }
+    private void init(FileType fileType, OpenType openType) {
+        setBrowseWindowTitle(i18n().tr("Select a file"));
+        getBrowseButton().setOnAction(handler);
+        getTextField().setOnAction(handler);
+        this.fileType = ObjectUtils.defaultIfNull(fileType, FileType.ALL);
+        this.openType = ObjectUtils.defaultIfNull(openType, OpenType.OPEN);
+        if (FileType.ALL != fileType) {
+            getTextField().setPromptText(
+                    String.format("%s: %s", i18n().tr("Select a file"), fileType.getFilter().getExtensions()));
+        } else {
+            getTextField().setPromptText(i18n().tr("Select a file"));
+        }
+        setOnDragOver(e -> dragConsume(e, this.onDragOverConsumer()));
+        setOnDragDropped(e -> dragConsume(e, this.onDragDropped()));
+    }
+    /**
+     * Configure validation for the field
+     */
+    public void enforceValidation(boolean selectedFileMustExists, boolean allowEmptyString) {
+        Validator<String> validator = Validators.fileType(fileType, selectedFileMustExists);
+        if (allowEmptyString) {
+            validator = Validators.validEmpty(validator);
+        }
+        getTextField().setValidator(validator);
+        getTextField().setErrorMessage(buildErrorMessage(selectedFileMustExists));
+    }
+    private String buildErrorMessage(boolean selectedFileMustExists) {
+        String errorMessage = selectedFileMustExists ? i18n().tr("The selected file must exist. ") : "";
+        if (FileType.ALL != fileType) {
+            errorMessage += i18n().tr("Allowed extensions are {0}", fileType.getFilter().getDescription());
+        }
+        return trim(errorMessage);
+    }
+    /**
+     * {@link EventHandler} opening the {@link javafx.stage.FileChooser} and letting the user select the input file populating the ValidableTextField.
+     *
+     * @author Andrea Vacondio
+     */
+    private class BrowseEventHandler implements EventHandler<ActionEvent> {
+        @Override
+        public void handle(ActionEvent event) {
+            var fileChooser = Choosers.fileChooser(getBrowseWindowTitle(), fileType);
+            String currentSelection = getTextField().getText();
+            if (isNotBlank(currentSelection)) {
+                var path = Paths.get(currentSelection);
+                //if not absolute, resolve against working path
+                if (!path.isAbsolute()) {
+                    path = app().runtimeState().workingPathValue().map(w -> w.resolve(currentSelection)).orElse(path);
+                }
+                if (Files.exists(path)) {
+                    fileChooser.setInitialDirectory(path.getParent());
+                    fileChooser.setInitialFileName(path.getFileName().toString());
+                }
+            }
+            switch (openType) {
+            case SAVE -> setTextFromFile(fileChooser.showSaveDialog(getTextField().getScene().getWindow()));
+            case OPEN -> setTextFromFile(fileChooser.showOpenSingleDialog(getTextField().getScene().getWindow()));
+            }
+        }
+    }
+    @Override
+    public void setTextFromFile(File inputFile) {
+        if (inputFile != null) {
+            getTextField().setText(inputFile.getAbsolutePath());
+            getTextField().validate();
+        }
+    }
+    private void dragConsume(DragEvent e, Consumer<DragEvent> c) {
+        if (e.getDragboard().hasFiles()) {
+            c.accept(e);
+        }
+        e.consume();
+    }
+    private Consumer<DragEvent> onDragOverConsumer() {
+        return (DragEvent e) -> e.acceptTransferModes(TransferMode.COPY_OR_MOVE);
+    }
+    private Consumer<DragEvent> onDragDropped() {
+        return (DragEvent e) -> {
+            e.getDragboard().getFiles().stream().filter(f -> fileType.matches(f.getName())).findFirst()
+                    .ifPresent(this::setTextFromFile);
+            e.setDropCompleted(true);
+        };
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 14/giu/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.splitbybookmarks;
+import javafx.beans.property.ReadOnlyObjectProperty;
+import javafx.scene.control.ComboBox;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.pdfsam.ui.components.support.FXValidationSupport.ValidationState;
+import org.pdfsam.ui.components.support.Style;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.SortedSet;
+import java.util.function.Consumer;
+import java.util.stream.IntStream;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * Combo box letting the user specify the filesize in the split by size task
+ * 
+ * @author Andrea Vacondio
+ *
+ */
+class BookmarksLevelComboBox extends ComboBox<String>
+        implements TaskParametersBuildStep<SplitByOutlineLevelParametersBuilder>, RestorableView, ResettableView {
+    private final FXValidationSupport<String> validationSupport = new FXValidationSupport<>();
+    BookmarksLevelComboBox() {
+        validationSupport.setValidator(Validators.alwaysFalse());
+        setEditable(true);
+        getSelectionModel().selectFirst();
+        valueProperty().addListener((o, oldVal, newVal) -> validate());
+        validationSupport.validationStateProperty().addListener(o -> {
+            if (validationSupport.validationStateProperty().get() == ValidationState.INVALID) {
+                getEditor().getStyleClass().addAll(Style.INVALID.css());
+            } else {
+                getEditor().getStyleClass().removeAll(Style.INVALID.css());
+            }
+        });
+      
+    }
+    public void setValidBookmarkLevels(SortedSet<Integer> levels) {
+        getItems().clear();
+        if (nonNull(levels)) {
+            validationSupport.setValidator(Validators.containedInteger(levels));
+            levels.stream().map(Object::toString).forEach(getItems()::add);
+        } else {
+            validationSupport.setValidator(Validators.alwaysFalse());
+        }
+    }
+    public final ValidationState getValidationState() {
+        return validationSupport.validationStateProperty().get();
+    }
+    public final ReadOnlyObjectProperty<ValidationState> validProperty() {
+        return validationSupport.validationStateProperty();
+    }
+    /**
+     * Triggers a validation programmatically
+     */
+    public void validate() {
+        validationSupport.validate(getValue());
+    }
+    @Override
+    public void resetView() {
+        getItems().clear();
+        getEditor().clear();
+    }
+    @Override
+    public void apply(SplitByOutlineLevelParametersBuilder builder, Consumer<String> onError) {
+        this.validate();
+        if (validationSupport.validationStateProperty().get() == ValidationState.VALID) {
+            builder.level(Integer.parseInt(getValue()));
+        } else {
+            onError.accept(i18n().tr("Invalid bookmarks level"));
+        }
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put("levelCombo.levels", String.join(",", getItems()));
+        data.put("levelCombo.selected", ofNullable(getValue()).orElse(""));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        getSelectionModel().selectFirst();
+        ofNullable(data.get("levelCombo.max")).map(Integer::valueOf).ifPresent(max -> IntStream.rangeClosed(1, max).mapToObj(Integer::toString).forEach(getItems()::add));
+        Arrays.stream(ofNullable(data.get("levelCombo.levels")).map(l -> l.split(",")).orElse(new String[0]))
+                .forEach(getItems()::add);
+        setValue(ofNullable(data.get("levelCombo.selected")).orElse(""));
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 26/ott/2013
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+/**
+ * Validates that the input String is an existing file or blank.
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+class FileValidator implements Validator<String> {
+    @Override
+    public boolean isValid(String input) {
+        return isNotBlank(input) && Files.exists(Paths.get(input));
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 27/ott/2013
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import org.pdfsam.model.io.FileType;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+/**
+ * Validates that a given file path is existing and of the expected type
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+class FileTypeValidator extends FileValidator {
+    private final FileType type;
+    private boolean mustExist = true;
+    public FileTypeValidator(FileType type, boolean mustExist) {
+        requireNotNullArg(type, "FileType cannot be null");
+        this.type = type;
+        this.mustExist = mustExist;
+    }
+    @Override
+    public boolean isValid(String input) {
+        return (!mustExist || super.isValid(input)) && type.matches(input);
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 16/nov/2012
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.support.validation;
+import static org.sejda.commons.util.RequireUtils.requireArg;
+/**
+ * Validates that the input string is a valid positive integer in the given range
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+class PositiveIntRangeStringValidator extends PositiveIntegerStringValidator {
+    private int upper = Integer.MAX_VALUE;
+    private int lower = Integer.MIN_VALUE;
+    public PositiveIntRangeStringValidator(int lower, int upper) {
+        requireArg(lower > 0 && upper > 0,
+                "Lower and upper limit cannot be negative numbers, lower=" + lower + " upper=" + upper);
+        this.upper = upper;
+        this.lower = lower;
+    }
+    @Override
+    public boolean isValid(String input) {
+        if (super.isValid(input)) {
+            int victim = Integer.parseInt(input);
+            return victim >= lower && victim <= upper;
+        }
+        return false;
+    }
+}

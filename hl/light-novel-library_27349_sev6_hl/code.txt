@@ -1,0 +1,3545 @@
+package org.mewx.wenku8.util;
+import androidx.test.filters.SmallTest;
+import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+@SmallTest
+public class LightUserSessionTest {
+    @Test
+    public void decodeThenEncodeUserInfo() {
+        final String src = "Z1NxZFhlPT0=|Z1dwUlhiPT0=";
+        LightUserSession.decAndSetUserFile(src);
+        assertEquals("abc", LightUserSession.getUsernameOrEmail());
+        assertEquals("123", LightUserSession.getPassword());
+        assertEquals(src, LightUserSession.encUserFile());
+    }
+    @Test
+    public void encodeThenDecodeUserInfo() {
+        LightUserSession.setUserInfo("xyz", "987");
+        LightUserSession.decAndSetUserFile(LightUserSession.encUserFile());
+        assertEquals("xyz", LightUserSession.getUsernameOrEmail());
+        assertEquals("987", LightUserSession.getPassword());
+    }
+}
+package org.mewx.wenku8.util;
+import android.content.Intent;
+import android.os.AsyncTask;
+import android.util.Log;
+import android.widget.Toast;
+import org.mewx.wenku8.MyApp;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.global.api.Wenku8Error;
+import org.mewx.wenku8.service.HeartbeatSessionKeeper;
+import java.io.UnsupportedEncodingException;
+/**
+ * Created by MewX on 2015/5/17.
+ * This file is secret. Not open-source.
+ */
+public class LightUserSession {
+    // open part
+    public static AsyncInitUserInfo aiui; // not exec
+    // Secret part
+    private static boolean logStatus = false; // true - logged in; false - not logged in.
+    private static String usernameOrEmail = null;
+    private static String password = null;
+    private static String SESSION = null;
+    // no null returned
+    public static String getLoggedAs() {
+        return ( logStatus && SESSION != null && SESSION.length() != 0 && isUserInfoSet()) ? usernameOrEmail : "";
+    }
+    public static String getUsernameOrEmail() {
+        return usernameOrEmail == null ? "" : usernameOrEmail;
+    }
+    public static String getPassword() {
+        return password == null ? "" : password;
+    }
+    // no null returned, default is ""
+    public static String getSession() {
+        if (SESSION != null) {
+            Log.d(LightUserSession.class.getSimpleName(), SESSION);
+        }
+        return SESSION == null ? "" : SESSION;
+    }
+    public static void setSession(String s) {
+        if(s != null && s.length() != 0) SESSION = s;
+    }
+    public static boolean getLogStatus() {
+        return logStatus;
+    }
+    public static boolean loadUserInfoSet() {
+        byte[] bytes;
+        if(LightCache.testFileExist(GlobalConfig.getFirstFullUserAccountSaveFilePath())) {
+            bytes = LightCache.loadFile(GlobalConfig.getFirstFullUserAccountSaveFilePath());
+        }
+        else if(LightCache.testFileExist(GlobalConfig.getSecondFullUserAccountSaveFilePath())) {
+            bytes = LightCache.loadFile(GlobalConfig.getSecondFullUserAccountSaveFilePath());
+        }
+        else {
+            return false; // file read failed
+        }
+        try {
+            Log.d("MewX", new String(bytes, "UTF-8"));
+            decAndSetUserFile(new String(bytes, "UTF-8"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false; // exception
+        }
+        return true;
+    }
+    public static boolean saveUserInfoSet() {
+        LightCache.saveFile(GlobalConfig.getFirstFullUserAccountSaveFilePath(), encUserFile().getBytes(), true);
+        if (!LightCache.testFileExist(GlobalConfig.getFirstFullUserAccountSaveFilePath())) {
+            LightCache.saveFile(GlobalConfig.getSecondFullUserAccountSaveFilePath(), encUserFile().getBytes(), true);
+            return LightCache.testFileExist(GlobalConfig.getSecondFullUserAccountSaveFilePath());
+        }
+        return true;
+    }
+    /**
+     * Send the login call to server.
+     * Must be called in async thread.
+     * @param usernameOrEmail the username or email string.
+     * @param password the password string.
+     * @return the returned bytes from server.
+     */
+    private static byte[] executeLoginRequest(String usernameOrEmail, String password){
+        if (usernameOrEmail == null || password == null) {
+            return null;
+        }
+        if (usernameOrEmail.contains("@")) {
+            // Assuming it's email.
+            return LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserLoginEmailParams(usernameOrEmail, password));
+        } else {
+            // Assuming it's username.
+            return LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserLoginParams(usernameOrEmail, password));
+        }
+    }
+    // async action
+    public static Wenku8Error.ErrorCode doLoginFromFile() {
+        // This function will read from file, if failed return false
+        if(!isUserInfoSet()) loadUserInfoSet();
+        if(!isUserInfoSet()) return Wenku8Error.ErrorCode.USER_INFO_EMPTY;
+        byte[] b = executeLoginRequest(usernameOrEmail, password);
+        if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+        try {
+            String result = new String(b, "UTF-8");
+            if(!LightTool.isInteger(result)) {
+                return Wenku8Error.ErrorCode.RETURNED_VALUE_EXCEPTION;
+            }
+            if(Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(result)) == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED)
+                logStatus = true;
+            return Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(result)); // get excepted returned value
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+            return Wenku8Error.ErrorCode.BYTE_TO_STRING_EXCEPTION;
+        }
+    }
+    // async action
+    public static Wenku8Error.ErrorCode doLoginFromGiven(String name, String pwd) {
+        // This function will test given name:pwd, if pass(receive '1'), save file, else return false
+        byte[] b = executeLoginRequest(name, pwd);
+        if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+        try {
+            String result = new String(b, "UTF-8");
+            if(!LightTool.isInteger(result)) {
+                return Wenku8Error.ErrorCode.RETURNED_VALUE_EXCEPTION;
+            }
+            if(Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(result)) == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) {
+                logStatus = true;
+                // save user info
+                setUserInfo(name, pwd);
+                saveUserInfoSet();
+                // TODO: activate session keeper
+            }
+            return Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(result)); // get excepted returned value
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+            return Wenku8Error.ErrorCode.BYTE_TO_STRING_EXCEPTION;
+        }
+    }
+    public static void logOut() {
+        logStatus = false;
+        setUserInfo("", "");
+        // delete files
+        if(!LightCache.deleteFile(GlobalConfig.getFirstFullUserAccountSaveFilePath())) {
+            LightCache.deleteFile(GlobalConfig.getSecondFullUserAccountSaveFilePath());
+        }
+        if(!LightCache.deleteFile(GlobalConfig.getFirstUserAvatarSaveFilePath())) {
+            LightCache.deleteFile(GlobalConfig.getSecondUserAvatarSaveFilePath());
+        }
+    }
+    // async action
+    public static Wenku8Error.ErrorCode heartbeatLogin() {
+        // call from HeartbeatSessionKeeper, send login operation
+        Toast.makeText(MyApp.getContext(), "Heartbeat test", Toast.LENGTH_SHORT).show();
+        return doLoginFromFile();
+    }
+    /**
+     * This function will only judge whether the username and the password var is set.
+     * Not judging what letters are they contains.
+     * @return true is okay.
+     */
+    public static boolean isUserInfoSet() {
+        return usernameOrEmail != null && password != null && usernameOrEmail.length() != 0 && password.length() != 0;
+    }
+    public static void setUserInfo(String username, String password) {
+        LightUserSession.usernameOrEmail = username;
+        LightUserSession.password = password;
+    }
+    /**
+     * Decrypt user file raw content, which is 0-F byte values, encoded in UTF-8.
+     * @param raw UTF-8 Charset raw file content.
+     */
+    public static void decAndSetUserFile(String raw) {
+        try {
+            String[] a = raw.split("\\|"); // a[0]: username; a[1]: password;
+            if (a.length != 2 || a[0].length() == 0 || a[1].length() == 0) {
+                setUserInfo("", "");
+                return; // fetch error to return
+            }
+            // dec once
+            char[] temp_username = LightBase64.DecodeBase64String(a[0]).toCharArray();
+            char[] temp_password = LightBase64.DecodeBase64String(a[1]).toCharArray();
+            // reverse main part
+            int equal_pos;
+            String result = new String(temp_username);
+            equal_pos = result.indexOf('=');
+            for (int i = 0, j = equal_pos == -1 ? temp_username.length - 1 : equal_pos - 1; i < j; i++, j--) {
+                char temp = temp_username[i];
+                temp_username[i] = temp_username[j];
+                temp_username[j] = temp;
+            }
+            result = new String(temp_password);
+            equal_pos = result.indexOf('=');
+            for (int i = 0, j = equal_pos == -1 ? temp_password.length - 1 : equal_pos - 1; i < j; i++, j--) {
+                char temp = temp_password[i];
+                temp_password[i] = temp_password[j];
+                temp_password[j] = temp;
+            }
+            // dec twice
+            temp_username = LightBase64.DecodeBase64String(new String(temp_username)).toCharArray();
+            temp_password = LightBase64.DecodeBase64String(new String(temp_password)).toCharArray();
+            // exchange caps and uncaps
+            for (int i = 0; i < temp_username.length; i++) {
+                if ('a' <= temp_username[i] && temp_username[i] <= 'z')
+                    temp_username[i] -= ('a' - 'A');
+                else if ('A' <= temp_username[i] && temp_username[i] <= 'Z')
+                    temp_username[i] += ('a' - 'A');
+            }
+            for (int i = 0; i < temp_password.length; i++) {
+                if ('a' <= temp_password[i] && temp_password[i] <= 'z')
+                    temp_password[i] -= ('a' - 'A');
+                else if ('A' <= temp_password[i] && temp_password[i] <= 'Z')
+                    temp_password[i] += ('a' - 'A');
+            }
+            // dec three times
+            setUserInfo(LightBase64.DecodeBase64String(new String(temp_username)),
+                    LightBase64.DecodeBase64String(new String(temp_password)));
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+    /**
+     * Encrypt user file to raw content.
+     * @return raw file content, fail to return "". (no null returned)
+     */
+    public static String encUserFile() {
+        // judge available
+        if(!isUserInfoSet())
+            return ""; // empty, not null
+        // username, password enc to base64
+        char[] temp_username = LightBase64.EncodeBase64(usernameOrEmail).toCharArray();
+        char[] temp_password = LightBase64.EncodeBase64(password).toCharArray();
+        // cap to uncap, uncap to cap
+        for(int i = 0; i < temp_username.length; i ++) {
+            if('a' <= temp_username[i] && temp_username[i] <= 'z' )
+                temp_username[i] -= ('a' - 'A');
+            else if('A' <= temp_username[i] && temp_username[i] <= 'Z')
+                temp_username[i] += ('a' - 'A');
+        }
+        for(int i = 0; i < temp_password.length; i ++) {
+            if('a' <= temp_password[i] && temp_password[i] <= 'z' )
+                temp_password[i] -= ('a' - 'A');
+            else if('A' <= temp_password[i] && temp_password[i] <= 'Z')
+                temp_password[i] += ('a' - 'A');
+        }
+        // twice base64, exchange char position, beg to end, end to beg
+        int equal_pos;
+        temp_username = LightBase64.EncodeBase64(new String(temp_username)).toCharArray();
+        String result = new String(temp_username);
+        equal_pos = result.indexOf('=');
+        for(int i = 0, j = equal_pos == -1 ? temp_username.length - 1 : equal_pos - 1; i < j; i ++, j --) {
+            char temp = temp_username[i];
+            temp_username[i] = temp_username[j];
+            temp_username[j] = temp;
+        }
+        temp_password = LightBase64.EncodeBase64(new String(temp_password)).toCharArray();
+        result = new String(temp_password);
+        equal_pos = result.indexOf('=');
+        for(int i = 0, j = equal_pos == -1 ? temp_password.length - 1 : equal_pos - 1; i < j; i ++, j --) {
+            char temp = temp_password[i];
+            temp_password[i] = temp_password[j];
+            temp_password[j] = temp;
+        }
+        // three times base64
+        result = LightBase64.EncodeBase64(new String(temp_username)) + "|" + LightBase64.EncodeBase64(new String(temp_password));
+        // return value
+        return result;
+    }
+    public static class AsyncInitUserInfo extends AsyncTask<Integer, Integer, Wenku8Error.ErrorCode> {
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(Integer... params) {
+            loadUserInfoSet();
+            return doLoginFromFile();
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode e) {
+            super.onPostExecute(e);
+            // if error code == UN error or PWD error, clear cert & avatar
+            if(e == Wenku8Error.ErrorCode.SYSTEM_2_ERROR_USERNAME || e == Wenku8Error.ErrorCode.SYSTEM_3_ERROR_PASSWORD) {
+                if(!LightCache.deleteFile(GlobalConfig.getFirstFullUserAccountSaveFilePath()))
+                    LightCache.deleteFile(GlobalConfig.getSecondFullUserAccountSaveFilePath());
+                if(!LightCache.deleteFile(GlobalConfig.getFirstUserAvatarSaveFilePath()))
+                    LightCache.deleteFile(GlobalConfig.getSecondUserAvatarSaveFilePath());
+                usernameOrEmail = "";
+                password = "";
+                Toast.makeText(MyApp.getContext(), MyApp.getContext().getResources().getString(R.string.system_log_info_outofdate), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if(LightUserSession.logStatus) {
+                // heart beat service
+                Intent intent = new Intent(MyApp.getContext(),HeartbeatSessionKeeper.class);
+                MyApp.getContext().startService(intent);
+            }
+        }
+    }
+}
+package org.mewx.wenku8.util;
+import android.content.ContentValues;
+import androidx.annotation.Nullable;
+import android.util.Log;
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.util.Objects;
+import java.util.zip.GZIPInputStream;
+/**
+ *  Light Network
+ **
+ *  This class achieve the basic network protocol:
+ *      HttpPost ...
+ **/
+public class LightNetwork {
+	/**
+	 * Encode UTF-8 character to http postable style. For example: "妹" = "%E5%A6%B9"
+	 * @param str input string
+	 * @return result encoded string or empty string
+	 */
+	public static String encodeToHttp(String str) {
+		return encodeToHttp(str, "UTF-8");
+	}
+	/**
+	 * Universal encoding to percent-encoding.
+	 * @param str the string to be encoded.
+	 * @param encoding the encoding in text form.
+	 * @return the percent-encoded text.
+	 */
+	public static String encodeToHttp(String str, String encoding) {
+		String enc;
+		try {
+			enc = URLEncoder.encode(str, encoding);
+		} catch (UnsupportedEncodingException e) {
+			e.printStackTrace();
+			Log.v("MewX-Net", Objects.requireNonNull(e.getMessage()));
+			enc = ""; // prevent crash
+		}
+		return enc;
+	}
+	/**
+	 * A post method, the values must to be <String, String> pair.
+	 * @param u base url
+	 * @param values <String, String> pair
+	 * @return raw bytes or null!
+	 */
+	@Nullable
+	public static byte[] LightHttpPostConnection(String u, ContentValues values) {
+		return LightHttpPostConnection(u, values, true);
+	}
+	@Nullable
+	public static byte[] LightHttpPostConnection(String u, ContentValues values, boolean withSession) {
+		// new API, initial
+		URL url;
+		HttpURLConnection http;
+		try {
+			url = new URL(u);
+			http = (HttpURLConnection) url.openConnection();
+            http.setRequestMethod("POST");
+			http.setRequestProperty("Accept-Encoding", "gzip"); // set gzip
+			if(withSession && LightUserSession.getSession().length() != 0) {
+				http.setRequestProperty("Cookie", "PHPSESSID=" + LightUserSession.getSession());
+			}
+			http.setConnectTimeout(3000);
+			http.setReadTimeout(5000);
+			http.setDoOutput(true); // has input name value pair
+			http.setInstanceFollowRedirects(true); // enable redirects
+		} catch (Exception e) {
+			e.printStackTrace();
+			return null; // null means failure
+		}
+		// make request args
+		StringBuilder params = new StringBuilder();
+		for( String key : values.keySet() ) {
+			if( !(values.get(key) instanceof String)) continue;
+			params.append("&").append(key).append("=").append(values.get(key)); // now, like "&a=1&b=1&c=1"
+		}
+		// request
+		byte[] bytes = params.toString().getBytes();
+		try {
+			http.getOutputStream().write(bytes); // set args
+			InputStream inStream=http.getInputStream(); // input stream
+			ByteArrayOutputStream outStream = new ByteArrayOutputStream(); // output stream
+			if(http.getContentEncoding() != null && http.getContentEncoding().toLowerCase().contains("gzip")) {
+				// using 'gzip'
+				inStream = new GZIPInputStream(new BufferedInputStream(inStream));
+			}
+			// get session, save it all the time, prevent getting new session id
+			if (http.getHeaderField("Set-Cookie") != null && http.getHeaderField("Set-Cookie").contains("PHPSESSID")) {
+				int index =http.getHeaderField("Set-Cookie").indexOf("PHPSESSID");
+				LightUserSession.setSession(
+						http.getHeaderField("Set-Cookie").substring(index + 9 + 1, http.getHeaderField("Set-Cookie").indexOf(";", index))
+				);
+			}
+			byte[] buffer = new byte[1024];
+			int len;
+			while( (len = inStream.read(buffer)) !=-1 )
+				outStream.write(buffer, 0, len); // read to outStream
+			byte[] data = outStream.toByteArray(); // copy to ByteArray
+			outStream.close();
+			inStream.close();
+			return data; // return value
+		} catch (IOException e) {
+			e.printStackTrace();
+			return null; // null means failure
+		}
+	}
+	/**
+	 * LightHttpDownload:
+	 * 
+	 * Give direct url to download file in one time, so this only fits small
+	 * size files.
+	 * 
+	 * @param url
+	 *            : direct file url with extension
+	 * @return return correct bytes or null
+	 */
+	@Nullable
+	public static byte[] LightHttpDownload(String url) {
+		InputStream inputStream;
+		try {
+			URL localURL = new URL(url);
+			HttpURLConnection httpURLConnection = (HttpURLConnection)localURL.openConnection();
+            httpURLConnection.setConnectTimeout(3000);
+            httpURLConnection.setReadTimeout(8000);
+			if (httpURLConnection.getResponseCode() != HttpURLConnection.HTTP_OK)
+				throw new Exception("HTTP Request is not success, Response code is " + httpURLConnection.getResponseCode());
+			inputStream = httpURLConnection.getInputStream();
+            byte[] b = new byte[1024];
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            int len;
+            while ((len = inputStream.read(b)) != -1) byteArrayOutputStream.write(b, 0, len);
+            byteArrayOutputStream.close();
+			inputStream.close();
+            byteArrayOutputStream.close();
+			return byteArrayOutputStream.toByteArray();
+		} catch (Exception e) {
+			e.printStackTrace();
+			return null;
+		}
+	}
+//	/**
+//	 * Download to file, part by part, prevent OOM error.
+//	 * @param url
+//	 * @param filepath
+//	 * @return
+//	 */
+//	public static boolean LightHttpDownloadToFile(String url, String filepath) {
+//
+//		// a replacer
+////		url = url.replace(fromEle, toEle);
+//
+//		return false;
+//	}
+}
+package org.mewx.wenku8.global.api;
+import android.content.ContentValues;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
+import org.mewx.wenku8.BuildConfig;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.util.LightBase64;
+import org.mewx.wenku8.util.LightNetwork;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+@SuppressWarnings("unused")
+public class Wenku8API {
+    /*
+     * Basic definitions
+     */
+    public static String NoticeString = "";
+    public static final String REGISTER_URL = "http://www.wenku8.com/register.php";
+    public static final String BASE_URL = "http://app.wenku8.com/android.php";
+    public static final String RELAY_URL = "https://wenku8-relay.mewx.org/";
+    private static final String NovelFinishedSC = "已完成", NovelFinishedTC = "已完成",
+            NovelNotFinishedSC = "连载中", NovelNotFinishedTC = "連載中";
+    public static String getCoverURL(int aid) {
+        return "http://img.wenku8.com/image/" + (aid / 1000) + "/" + aid + "/" + aid + "s.jpg";
+    }
+    // this only prevents good boys from doing bad things, and it's what we all know :-)
+    // and I know the mixed use for both simplified and traditional do not work in this case
+    public static final int MIN_REPLY_TEXT = 7;
+    private static final HashSet<String> badWords = new HashSet<>(Arrays.asList(
+            // Simplified
+            "共产党", "政府", "毛泽东", "邓小平", "江泽民", "胡锦涛", "温家宝", "习近平",
+            "李克强", "台独", "藏独", "反日", "反共", "反中", "达赖", "刘晓波", "毛主席", "愤青",
+            "反华", "右翼", "游行", "示威", "静坐", "公安", "李洪志", "法轮功", "刷分", "路过路过",
+            ".......", "。。。。", "色情", "吃屎", "你妈", "他妈", "她妈", "操你", "垃圾", "去死",
+            "迷魂药", "催情药", "毒品",
+            // Traditional
+            "共產黨", "政府", "毛澤東", "鄧小平", "江澤民", "胡錦濤", "溫家寶", "習近平",
+            "李克強", "臺獨", "藏獨", "反日", "反共", "反中", "達賴", "劉曉波", "毛主席", "憤青",
+            "反華", "右翼", "遊行", "示威", "靜坐", "公安", "李洪誌", "法輪功", "刷分", "路過路過",
+            ".......", "。。。。", "色情", "吃屎", "你媽", "他媽", "她媽", "操你", "垃圾", "去死",
+            "迷魂藥", "催情藥", "毒品",
+            // Testing
+            "blablabla"
+    ));
+    /*
+     * Basic converter functions
+     */
+    public enum LANG {
+        SC, // simplified Chinese
+        TC // traditional Chinese
+    }
+    private static int getLANG(LANG l) {
+        switch (l) {
+            case SC:
+                return 0;
+            case TC:
+                return 1;
+            default:
+                return 0; // for extended language
+        }
+    }
+    public enum STATUS {
+        FINISHED, // novel's publishing finished
+        NOT_FINISHED // novel's publishing not finished
+    }
+    public static STATUS getSTATUSByInt(int i) {
+        return i == 0 ? STATUS.NOT_FINISHED : STATUS.FINISHED;
+    }
+    public static STATUS getSTATUSByString(String s) {
+        return s.equals(NovelNotFinishedSC) || s.equals(NovelNotFinishedTC) ? STATUS.NOT_FINISHED : STATUS.FINISHED;
+    }
+    public static String getStatusBySTATUS(STATUS s) {
+        switch (GlobalConfig.getCurrentLang()) {
+            case TC:
+                if (s == STATUS.FINISHED)
+                    return NovelFinishedTC;
+                else
+                    return NovelNotFinishedTC;
+            case SC:
+            default:
+                // the default one
+                if (s == STATUS.FINISHED)
+                    return NovelFinishedSC;
+                else
+                    return NovelNotFinishedSC;
+        }
+    }
+    public enum NOVELSORTBY {
+        // sort arguments:
+        // allvisit 总排行榜; allvote 总推荐榜; monthvisit 月排行榜; monthvote 月推荐榜;
+        // weekvisit 周排行榜; weekvote 周推荐榜; dayvisit 日排行榜; dayvote 日推荐榜;
+        // postdate 最新入库; lastupdate 最近更新; goodnum 总收藏榜; size 字数排行;
+        // fullflag 完结列表
+        allVisit, allVote, monthVisit, monthVote, weekVisit, weekVote, dayVisit, dayVote, postDate, lastUpdate, goodNum, size, fullFlag
+    }
+    public static NOVELSORTBY getNOVELSORTBY(String n) {
+        switch (n) {
+            case "allvisit":
+                return NOVELSORTBY.allVisit;
+            case "monthvisit":
+                return NOVELSORTBY.monthVisit;
+            case "monthvote":
+                return NOVELSORTBY.monthVote;
+            case "weekvisit":
+                return NOVELSORTBY.weekVisit;
+            case "weekvote":
+                return NOVELSORTBY.weekVote;
+            case "dayvisit":
+                return NOVELSORTBY.dayVisit;
+            case "dayvote":
+                return NOVELSORTBY.dayVote;
+            case "postdate":
+                return NOVELSORTBY.postDate;
+            case "lastupdate":
+                return NOVELSORTBY.lastUpdate;
+            case "goodnum":
+                return NOVELSORTBY.goodNum;
+            case "size":
+                return NOVELSORTBY.size;
+            case "fullflag":
+                return NOVELSORTBY.fullFlag;
+            case "allvote":
+            default:
+                return NOVELSORTBY.allVote; // default
+        }
+    }
+    public static String getNOVELSORTBY(NOVELSORTBY n) {
+        switch (n) {
+            case allVisit:
+                return "allvisit";
+            case allVote:
+                return "allvote";
+            case monthVisit:
+                return "monthvisit";
+            case monthVote:
+                return "monthvote";
+            case weekVisit:
+                return "weekvisit";
+            case weekVote:
+                return "weekvote";
+            case dayVisit:
+                return "dayvisit";
+            case dayVote:
+                return "dayvote";
+            case postDate:
+                return "postdate";
+            case lastUpdate:
+                return "lastupdate";
+            case goodNum:
+                return "goodnum";
+            case size:
+                return "size";
+            case fullFlag:
+                return "fullflag";
+            default:
+                return "allvote"; // default
+        }
+    }
+    public static int getNOVELSORTBY_ChsId(NOVELSORTBY n) {
+        switch (n) {
+            case allVisit:
+                return R.string.tab_allvisit;
+            case monthVisit:
+                return R.string.tab_monthvisit;
+            case monthVote:
+                return R.string.tab_monthvote;
+            case weekVisit:
+                return R.string.tab_weekvisit;
+            case weekVote:
+                return R.string.tab_weekvote;
+            case dayVisit:
+                return R.string.tab_dayvisit;
+            case dayVote:
+                return R.string.tab_dayvote;
+            case postDate:
+                return R.string.tab_postdate;
+            case lastUpdate:
+                return R.string.tab_lastupdate;
+            case goodNum:
+                return R.string.tab_goodnum;
+            case size:
+                return R.string.tab_size;
+            case fullFlag:
+                return R.string.tab_fullflag;
+            case allVote:
+            default:
+                return R.string.tab_allvote; // default
+        }
+    }
+    public static int getErrorInfo_ResId(int errNo) {
+        switch (errNo) {
+            case 0:
+                // 请求发生错误
+                return R.string.error_00;
+            case 1:
+                // 成功(登陆、添加、删除、发帖)
+                return R.string.error_01;
+            case 2:
+                // 用户名错误
+                return R.string.error_02;
+            case 3:
+                // 密码错误
+                return R.string.error_03;
+            case 4:
+                // 请先登陆
+                return R.string.error_04;
+            case 5:
+                // 已经在书架
+                return R.string.error_05;
+            case 6:
+                // 书架已满
+                return R.string.error_06;
+            case 7:
+                // 小说不在书架
+                return R.string.error_07;
+            case 8:
+                // 回复帖子主题不存在
+                return R.string.error_08;
+            case 9:
+                // 签到失败
+                return R.string.error_09;
+            case 10:
+                // 推荐失败
+                return R.string.error_10;
+            case 11:
+                // 帖子发送失败
+                return R.string.error_11;
+            case 22:
+                // refer page 0
+                return R.string.error_22;
+            default:
+                // unknown
+                return R.string.error_unknown;
+        }
+    }
+    /**
+     * This part are the old API writing ways.
+     * It's not efficient enough, and maybe bug-hidden.
+     */
+    @VisibleForTesting
+    static Map<String, String> getEncryptedMAP(String str) {
+        Map<String, String> params = new HashMap<>();
+        params.put("appver", BuildConfig.VERSION_NAME);
+        params.put("request", LightBase64.EncodeBase64(str));
+        params.put("timetoken", "" + System.currentTimeMillis());
+        return params;
+    }
+    private static ContentValues getEncryptedCV(String str) {
+        ContentValues cv = new ContentValues();
+        Map<String, String> map = getEncryptedMAP(str);
+        for (String key : map.keySet()) {
+            // better than running encryption again
+            cv.put(key, map.get(key));
+        }
+        return cv;
+    }
+    public static ContentValues getNovelCover(int aid) {
+        // get the aid, and return a "jpg" file or other, in binary
+        // not using this because UIL does not support post to get image
+        return getEncryptedCV("action=book&do=cover&aid=" + aid);
+    }
+    public static ContentValues getNovelShortInfo(int aid, LANG l) {
+        // get short XML info of a novel, here is an example:
+        // --------------------------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <metadata>
+        // <data name="Title" aid="1305"><![CDATA[绝对双刃absolute duo]]></data>
+        // <data name="Author" value="柊★巧"/>
+        // <data name="BookStatus" value="0"/>
+        // <data name="LastUpdate" value="2014-10-01"/>
+        // <data
+        // name="IntroPreview"><![CDATA[　　「焰牙」——那是藉由超化之后的精神力将自身灵...]]></data>
+        // </metadata>
+        return getEncryptedCV("action=book&do=info&aid=" + aid + "&t=" + getLANG(l));
+    }
+    public static ContentValues getNovelShortInfoUpdate_CV(int aid, LANG l) {
+        // action=book&do=bookinfo&aid=3&t=1 //小说信息（升级版）
+        return getEncryptedCV("action=book&do=bookinfo&aid=" + aid + "&t=" + getLANG(l));
+    }
+    public static ContentValues getNovelFullIntro(int aid, LANG l) {
+        // get full XML intro of a novel, here is an example:
+        // --------------------------------------------------
+        // 　　在劍與魔法作為一股強大力量的世界裡，克雷歐過著只有繪畫是唯一生存意義的孤獨生活。
+        // 　　不過生於名門的他，為了取得繼承人資格必須踏上試煉之旅。
+        // 　　踏入禁忌森林的他，遇見一名半人半植物的魔物。
+        // 　　輕易被抓的克雷歐設法勾起少女的興趣得到幫助，卻又被她當成寵物一般囚禁起來。
+        // 　　兩人從此展開不可思議的同居時光，這樣的生活令他感到很安心。
+        // 　　但平靜的日子沒有持續太久……
+        // 　　描繪人與魔物的戀情，溫暖人心的奇幻故事。
+        return getEncryptedCV("action=book&do=intro&aid=" + aid + "&t="
+                + getLANG(l));
+    }
+    public static ContentValues getNovelFullMeta(int aid, LANG l) {
+        // get full XML metadata of a novel, here is an example:
+        // -----------------------------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <metadata>
+        // <data name="Title"
+        // aid="1306"><![CDATA[向森之魔物献上花束(向森林的魔兽少女献花)]]></data>
+        // <data name="Author" value="小木君人"/>
+        // <data name="DayHitsCount" value="26"/>
+        // <data name="TotalHitsCount" value="43984"/>
+        // <data name="PushCount" value="1735"/>
+        // <data name="FavCount" value="848"/>
+        // <data name="PressId" value="小学馆" sid="10"/>
+        // <data name="BookStatus" value="已完成"/>
+        // <data name="BookLength" value="105985"/>
+        // <data name="LastUpdate" value="2012-11-02"/>
+        // <data name="LatestSection" cid="41897"><![CDATA[第一卷 插图]]></data>
+        // </metadata>
+        return getEncryptedCV("action=book&do=meta&aid=" + aid + "&t="
+                + getLANG(l));
+    }
+    public static ContentValues getNovelIndex(int aid, LANG l) {
+        // get full XML index of a novel, here is an example:
+        // --------------------------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <package>
+        // <volume vid="41748"><![CDATA[第一卷 告白于苍刻之夜]]>
+        // <chapter cid="41749"><![CDATA[序章]]></chapter>
+        // <chapter cid="41750"><![CDATA[第一章「去对我的『楯』说吧——」]]></chapter>
+        // <chapter cid="41751"><![CDATA[第二章「我真的对你非常感兴趣」]]></chapter>
+        // <chapter cid="41752"><![CDATA[第三章「揍我吧！」]]></chapter>
+        // <chapter cid="41753"><![CDATA[第四章「下次，再来喝苹果茶」]]></chapter>
+        // <chapter cid="41754"><![CDATA[第五章「这是约定」]]></chapter>
+        // <chapter cid="41755"><![CDATA[第六章「你的背后——由我来守护！」]]></chapter>
+        // <chapter cid="41756"><![CDATA[第七章「茱莉——爱交给你！」]]></chapter>
+        // <chapter cid="41757"><![CDATA[尾声]]></chapter>
+        // <chapter cid="41758"><![CDATA[后记]]></chapter>
+        // <chapter cid="41759"><![CDATA[插图]]></chapter>
+        // </volume>
+        // <volume vid="45090"><![CDATA[第二卷 谎言、真相与赤红]]>
+        // <chapter cid="45091"><![CDATA[序章]]></chapter>
+        // <chapter cid="45092"><![CDATA[第一章「莉莉丝·布里斯托」]]></chapter>
+        // <chapter cid="45093"><![CDATA[第二章「借你的话来说就是……」]]></chapter>
+        // <chapter cid="45094"><![CDATA[第三章「这真是个好提议」]]></chapter>
+        // <chapter cid="45095"><![CDATA[第四章「如守护骑士一般」]]></chapter>
+        // <chapter cid="45096"><![CDATA[第五章「『咬龙战』，开始！」]]></chapter>
+        // <chapter cid="45097"><![CDATA[第六章「超越人类的存在」]]></chapter>
+        // <chapter cid="45098"><![CDATA[第七章「『灵魂』」]]></chapter>
+        // <chapter cid="45099"><![CDATA[尾声]]></chapter>
+        // <chapter cid="45100"><![CDATA[后记]]></chapter>
+        // <chapter cid="45105"><![CDATA[插图]]></chapter>
+        // </volume>
+        // ...... ......
+        // </package>
+        return getEncryptedCV("action=book&do=list&aid=" + aid + "&t="
+                + getLANG(l));
+    }
+    public static ContentValues getNovelContent(int aid, int cid, LANG l) {
+        // get full content of an article of a novel,
+        // the images should be processed then, here is an example:
+        // --------------------------------------------------------
+        // 第一卷 告白于苍刻之夜 插图
+        // ...... ......
+        // <!--image-->http://pic.wenku8.cn/pictures/1/1305/41759/50471.jpg<!--image-->
+        // <!--image-->http://pic.wenku8.cn/pictures/1/1305/41759/50472.jpg<!--image-->
+        // <!--image-->http://pic.wenku8.cn/pictures/1/1305/41759/50473.jpg<!--image-->
+        // ...... ......
+        return getEncryptedCV("action=book&do=text&aid=" + aid + "&cid=" + cid
+                + "&t=" + getLANG(l));
+    }
+    // ##########
+    // # Here test: action=book&do=vote&aid=1239 //推荐小说
+    // # (就是网站上面那个喜欢小说 就推一下那个，app日限制5次/需要登录账号)
+    // ##########
+    // ReqTest07 = ''
+    // #return getResult( ReqTest07, True );
+    public static ContentValues searchNovelByNovelName(String novelName, LANG l) {
+        // get a list of search results, here is an example:
+        // Note: there are extra line-break.
+        // -------------------------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <result>
+        // <item aid='1699'/>
+        // <item aid='1638'/>
+        // <item aid='1293'/>
+        // <item aid='977'/>
+        // <item aid='693'/>
+        // <item aid='993'/>
+        // <item aid='333'/>
+        // <item aid='499'/>
+        // <item aid='826'/>
+        // </result>
+        return getEncryptedCV("action=search&searchtype=articlename&searchkey="
+                + LightNetwork.encodeToHttp(novelName) + "&t=" + getLANG(l));
+    }
+    public static ContentValues searchNovelByAuthorName(String authorName,
+                                                        LANG l) {
+        // get a list of search results.
+        // Note: there are extra line-break.
+        return getEncryptedCV("action=search&searchtype=author&searchkey="
+                + LightNetwork.encodeToHttp(authorName) + "&t=" + getLANG(l));
+    }
+    public static ContentValues getNovelList(NOVELSORTBY n, int page) {
+        // here get a specific list of novels, sorted by NOVELSORTBY
+        // ---------------------------------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <result>
+        // <page num='166'/>
+        // <item aid='1143'/>
+        // <item aid='1034'/>
+        // <item aid='1213'/>
+        // <item aid='1'/>
+        // <item aid='1011'/>
+        // <item aid='1192'/>
+        // <item aid='433'/>
+        // <item aid='47'/>
+        // <item aid='7'/>
+        // <item aid='374'/>
+        // </result>
+        return getEncryptedCV("action=articlelist&sort=" + getNOVELSORTBY(n)
+                + "&page=" + page);
+    }
+    public static ContentValues getNovelListWithInfo(NOVELSORTBY n, int page, LANG l) {
+        // get novel list with info digest
+        // -------------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <result>
+        // <page num='166'/>
+        //
+        // <item aid='1034'>
+        // <data name='Title'><![CDATA[恶魔高校DxD(High School DxD)]]></data>
+        // <data name='TotalHitsCount' value='2316361'/>
+        // <data name='PushCount' value='153422'/>
+        // <data name='FavCount' value='14416'/>
+        // <data name='Author' value='xxx'/>
+        // <data name='BookStatus' value='xxx'/>
+        // <data name='LastUpdate' value='xxx'/>
+        // <data name='IntroPreview' value='xxx'/>
+        // </item>
+        // ...... ......
+        // </result>
+        return getEncryptedCV("action=novellist&sort=" + getNOVELSORTBY(n)
+                + "&page=" + page + "&t=" + getLANG(l));
+    }
+    public static ContentValues getLibraryList() {
+        // return an XML file, once get the "sort id",
+        // call getNovelListByLibrary
+        // --------------------------
+        // <?xml version="1.0" encoding="utf-8"?>
+        // <metadata>
+        // <item sort="1">电击文库</item>
+        // <item sort="2">富士见文库</item>
+        // <item sort="3">角川文库</item>
+        // <item sort="4">MF文库J</item>
+        // <item sort="5">Fami通文库</item>
+        // <item sort="6">GA文库</item>
+        // <item sort="7">HJ文库</item>
+        // <item sort="8">一迅社</item>
+        // <item sort="9">集英社</item>
+        // <item sort="10">小学馆</item>
+        // <item sort="11">讲谈社</item>
+        // <item sort="12">少女文库</item>
+        // <item sort="13">其他文库</item>
+        // <item sort="14">游戏剧本</item>
+        // </metadata> '''; # action=xml&item=sort&t=0
+        return getEncryptedCV("action=xml&item=sort&t=0");
+    }
+    public static ContentValues getNovelListByLibrary(int sortId, int page) {
+        // sortId is from "getLibraryList" above
+        return getEncryptedCV("action=articlelist&sort=" + sortId + "&page="
+                + page);
+    }
+    public static ContentValues getNovelListByLibraryWithInfo(int sortId,
+                                                              int page, LANG l) {
+        // sortId is from "getLibraryList" above
+        return getEncryptedCV("action=novellist&sort=" + sortId + "&page="
+                + page + "&t=" + getLANG(l));
+    }
+    /*
+     * I rewrite part of the APIs to get the best performance.
+     * The old APIs are above, and use HttpRequest.
+     * This part uses AFinal and that's more efficient.
+     */
+    public static ContentValues getUserLoginParams(String username, String password) {
+        // By username.
+        String temp = "action=login&username=" + LightNetwork.encodeToHttp(username) + "&password=" + LightNetwork.encodeToHttp(password);
+        return getEncryptedCV(temp);
+    }
+    public static ContentValues getUserLoginEmailParams(String email, String password) {
+        // By email.
+        String temp = "action=loginemail&username=" + LightNetwork.encodeToHttp(email) + "&password=" + LightNetwork.encodeToHttp(password);
+        return getEncryptedCV(temp);
+    }
+    public static ContentValues getUserAvatar( ) {
+        // return jpeg raw data
+        return getEncryptedCV("action=avatar");
+    }
+    public static ContentValues getUserLogoutParams( ) {
+        return getEncryptedCV("action=logout");
+    }
+    public static ContentValues getUserInfoParams( ) {
+        /*
+         * <?xml version="1.0" encoding="utf-8"?>
+         * <metadata>
+         * <item name="uname"><![CDATA[apptest]]></item>
+         * <item name="nickname"><![CDATA[apptest]]></item>
+         * <item name="score">10</item>
+         * <item name="experience">10</item>
+         * <item name="rank"><![CDATA[新手上路]]></item>
+         * </metadata>
+         */
+        return getEncryptedCV("action=userinfo");
+    }
+    public static ContentValues getUserSignParams( ) {
+        /*
+         * _cb({"ret":0});
+         */
+        return getEncryptedCV("action=block&do=sign"); // 增加一个积分/天
+    }
+    public static ContentValues getVoteNovelParams(int aid) {
+        // 推荐小说  (就是网站上面那个喜欢小说 就推一下那个，app日限制5次/需要登录账号)
+        return getEncryptedCV("action=book&do=vote&aid=" + aid);
+    }
+    public static ContentValues getBookshelfListAid(LANG l) {
+        // 查询书架列表，只含有aid
+        /*
+         * <?xml version="1.0" encoding="utf-8"?>
+         * <metadata>
+         *     <book aid="1499" />
+         *     <book aid="1754" />
+         *     <book aid="1605" />
+         *     <book aid="1483" />
+         *     <book aid="1469" />
+         *     <book aid="1087" />
+         * </metadata>
+         */
+        return getEncryptedCV("action=bookcase&do=list&t=" + getLANG(l));
+    }
+    public static ContentValues getBookshelfListParams(LANG l) {
+        // 查询书架列表
+        // find "aid", find first \" to second \"
+        /*
+         * <?xml version="1.0" encoding="utf-8"?>
+         * <metadata>
+         *
+         * <book aid="1499" date="2015-04-19">
+         * <name><![CDATA[時鐘機關之星Clockwork Planet]]></name>
+         * <chapter cid="64896"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * <book aid="1754" date="2014-12-05">
+         * <name><![CDATA[貓耳天使與戀愛蘋果]]></name>
+         * <chapter cid="60552"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * <book aid="1605" date="2014-05-06">
+         * <name><![CDATA[驚悚文集]]></name>
+         * <chapter cid="54722"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * <book aid="1483" date="2013-08-24">
+         * <name><![CDATA[茉建寺埃莉諾的非主流科學研究室]]></name>
+         * <chapter cid="49057"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * <book aid="1469" date="2013-08-05">
+         * <name><![CDATA[塔京靈魂術士]]></name>
+         * <chapter cid="48537"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * <book aid="1087" date="2013-05-15">
+         * <name><![CDATA[我的她是戰爭妖精]]></name>
+         * <chapter cid="46779"><![CDATA[插圖]]></chapter>
+         * </book>
+         *
+         * </metadata>
+         */
+        return getEncryptedCV("action=bookcase&t=" + getLANG(l));
+    }
+    public static ContentValues getAddToBookshelfParams(int aid) {
+        // 新增书架 aid为文章ID
+        return getEncryptedCV("action=bookcase&do=add&aid=" + aid);
+    }
+    public static ContentValues getDelFromBookshelfParams(int aid) {
+        // 删除书架 aid为文章ID
+        return getEncryptedCV("action=bookcase&do=del&aid=" + aid);
+    }
+    /**
+     * Search bad words from the input string
+     * @param source input string
+     * @return null if not found; otherwise the bad word is returned
+     */
+    @Nullable
+    public static String searchBadWords(String source) {
+        // remove all space
+        source = source.replaceAll("\\s", "");
+        // traverse bad words
+        for (String badWord : badWords) {
+            if (source.contains(badWord)) {
+                return badWord;
+            }
+        }
+        return null;
+    }
+    public static ContentValues getCommentListParams(int aid, int page) {
+        // 书评列表, aid为文章ID, page不得为空（从1开始）
+        if (page < 1) page = 1;
+        return getEncryptedCV("action=review&do=list&aid=" + aid + "&page=" + page + "&t=" + getLANG(GlobalConfig.getCurrentLang()));
+    }
+    public static ContentValues getCommentContentParams(int rid, int page) {
+        // 书评内容, rid为主题ID（不是aid）, page不得为空
+        if (page < 1) page = 1;
+        return getEncryptedCV("action=review&do=show&rid=" + rid + "&page=" + page + "&t=" + getLANG(GlobalConfig.getCurrentLang()));
+    }
+    public static ContentValues getCommentNewThreadParams(int aid, String title, String content) {
+        // 书评发帖 aid为文章ID
+        // 书评那边限制不少于7个中文字符才可发送，每次发送间隔10s以上
+        // 采用简体！
+        // 需要敏感词过滤，特殊符号处理
+        return getEncryptedCV("action=review&do=post&aid=" + aid
+                + "&title=" + LightBase64.EncodeBase64(LightNetwork.encodeToHttp(title, "GBK"))
+                + "&content=" + LightBase64.EncodeBase64(LightNetwork.encodeToHttp(content, "GBK")));
+    }
+    public static ContentValues getCommentReplyParams(int rid, String content) {
+        // 书评回帖 rid为主题ID
+        // 书评那边限制不少于7个中文字符才可发送，每次发送间隔10s以上
+        // 采用简体！
+        // 需要敏感词过滤，特殊符号处理
+        // Server-side bug, only GBK worked.
+        return getEncryptedCV("action=review&do=reply&rid=" + rid
+                + "&content=" + LightBase64.EncodeBase64(LightNetwork.encodeToHttp(content, "GBK")));
+    }
+}
+package org.mewx.wenku8.service;
+import android.app.Service;
+import android.content.Intent;
+import android.os.IBinder;
+import android.widget.Toast;
+import org.mewx.wenku8.MyApp;
+import org.mewx.wenku8.global.api.Wenku8Error;
+import org.mewx.wenku8.util.LightUserSession;
+import java.util.Timer;
+import java.util.TimerTask;
+/**
+ * Created by MewX on 2015/5/17.
+ * Heartbeat Session Keeper. Useless.
+ */
+public class HeartbeatSessionKeeper extends Service {
+    private int interval = 60 * 10 * 1000;
+    /**
+     * Set interval, must cancel it, then set & start.
+     * @param i time count
+     */
+    public void setInterval(int i) {
+        if(i > 0)
+            interval = i;
+    }
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                // frequently request
+                Wenku8Error.ErrorCode err = LightUserSession.heartbeatLogin();
+                Toast.makeText(MyApp.getContext(), err.toString(), Toast.LENGTH_SHORT).show();
+            }
+        }, 0, interval);
+        return super.onStartCommand(intent, flags, startId);
+    }
+}
+package org.mewx.wenku8.global;
+import android.content.ContentValues;
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.util.Log;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import com.nostra13.universalimageloader.cache.disc.impl.UnlimitedDiscCache;
+import com.nostra13.universalimageloader.core.DisplayImageOptions;
+import com.nostra13.universalimageloader.core.ImageLoader;
+import com.nostra13.universalimageloader.core.ImageLoaderConfiguration;
+import com.nostra13.universalimageloader.core.display.FadeInBitmapDisplayer;
+import org.mewx.wenku8.MyApp;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightNetwork;
+import org.mewx.wenku8.util.LightTool;
+import org.mewx.wenku8.util.SaveFileMigration;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+/**
+ * Created by MewX on 2015/1/20.
+ *
+ * 全局的设置类，负责所有设置的事务，以及全局的变量获取。
+ */
+@SuppressWarnings({"UnusedDeclaration"})
+public class GlobalConfig {
+    // online arguments
+    public static final String blogPageUrl = "https://wenku8.mewx.org/";
+    public static final String versionCheckUrl = "https://wenku8.mewx.org/version";
+    public static final String noticeCheckSc = "https://wenku8.mewx.org/args/notice_sc";
+    public static final String noticeCheckTc = "https://wenku8.mewx.org/args/notice_tc";
+    // constants
+    public static final String saveFolderName = "saves";
+    public static final String imgsSaveFolderName = "imgs";
+    public static final String customFolderName = "custom";
+    private static final String saveSearchHistoryFileName = "search_history.wk8";
+    private static final String saveReadSavesFileName = "read_saves.wk8";
+    private static final String saveReadSavesV1FileName = "read_saves_v1.wk8";
+    private static final String saveLocalBookshelfFileName = "bookshelf_local.wk8";
+    private static final String saveSetting = "settings.wk8";
+    private static final String saveUserAccountFileName = "cert.wk8"; // certification file
+    private static final String saveUserAvatarFileName = "avatar.jpg";
+    private static final String saveNoticeString = "notice.wk8"; // the notice cache from online
+    private static int maxSearchHistory = 20; // default
+    // reserved constants
+    public static final String UNKNOWN = "Unknown";
+    // vars
+    private static boolean lookupInternalStorageOnly = false;
+    private static boolean isInBookshelf = false;
+    private static boolean isInLatest = false;
+    private static boolean doLoadImage = true;
+    private static boolean externalStoragePathAvailable = true;
+    private static Wenku8API.LANG currentLang = Wenku8API.LANG.SC;
+    public static String pathPickedSave; // dir picker save path
+    // static variables
+    private static ArrayList<String> searchHistory = null;
+    private static ArrayList<ReadSaves> readSaves = null; // deprecated
+    private static ArrayList<Integer> bookshelf = null;
+    private static ArrayList<ReadSavesV1> readSavesV1 = null; // deprecated
+    private static ContentValues allSetting = null;
+    /** Structures */
+    public static class ReadSaves { // deprecated
+        public int cid;
+        public int pos; // last time scroll Y pos
+        public int height; // last time scroll Y height
+    }
+    public static class ReadSavesV1 { // deprecated
+        public int aid;
+        public int vid;
+        public int cid;
+        public int lineId;
+        public int wordId;
+    }
+    public enum SettingItems {
+        version, // (int) 1
+        language,
+        menu_bg_id, // (int) 1-5 by system, 0 for user
+        menu_bg_path, // (String) for user custom
+        reader_font_path, // (String) path to ttf, "0" means default
+        reader_font_size, // (int) sp (8 - 32)
+        reader_line_distance, // (int) dp (0 - 32)
+        reader_paragraph_distance, // (int) dp (0 - 48)
+        reader_paragraph_edge_distance, // (int) dp (0 - 32)
+        reader_background_path, // (String) path to an image, day mode only, "0" means default
+    }
+    // sets and gets
+    public static void setCurrentLang(Wenku8API.LANG l) {
+        currentLang = l;
+        setToAllSetting(SettingItems.language, currentLang.toString());
+    }
+    public static Wenku8API.LANG getCurrentLang() {
+        String temp = getFromAllSetting(SettingItems.language);
+        if(temp == null) {
+            setToAllSetting(SettingItems.language, currentLang.toString());
+        }
+        else if(!temp.equals(currentLang.toString())) {
+            if(temp.equals(Wenku8API.LANG.SC.toString()))
+                currentLang = Wenku8API.LANG.SC;
+            else if(temp.equals(Wenku8API.LANG.TC.toString()))
+                currentLang = Wenku8API.LANG.TC;
+            else
+                currentLang = Wenku8API.LANG.SC;
+        }
+        return currentLang;
+    }
+    public static void initImageLoader(Context context) {
+        UnlimitedDiscCache localUnlimitedDiscCache = new UnlimitedDiscCache(
+                new File(GlobalConfig.getDefaultStoragePath() + "cache"),
+                // FIXME: these imgs folders are actually no in use.
+                new File(context.getCacheDir() + File.separator + "imgs"));
+        DisplayImageOptions localDisplayImageOptions = new DisplayImageOptions.Builder()
+                .resetViewBeforeLoading(true)
+                .cacheOnDisk(true)
+                .cacheInMemory(true)
+                .bitmapConfig(Bitmap.Config.RGB_565)
+                .resetViewBeforeLoading(true)
+                .displayer(new FadeInBitmapDisplayer(250)).build();
+        ImageLoaderConfiguration localImageLoaderConfiguration = new ImageLoaderConfiguration.Builder(context)
+                .diskCache(localUnlimitedDiscCache)
+                .defaultDisplayImageOptions(localDisplayImageOptions).build();
+        ImageLoader.getInstance().init(localImageLoaderConfiguration);
+    }
+    // settings
+    public static String getOpensourceLicense() {
+        InputStream is = MyApp.getContext().getResources().openRawResource(R.raw.license);
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        try {
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                is.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return sb.toString();
+    }
+    /**
+     * 设置第一存储路径的合法性（第一路径可以只有设置）
+     * @param available true-合法可以使用; false-不能使用，只能只用第二路径
+     */
+    public static void setExternalStoragePathAvailable(boolean available) {
+        externalStoragePathAvailable = available;
+    }
+    public static String getDefaultStoragePath() {
+        // The lookupInternalStorageOnly flag has the highest priority.
+        if (lookupInternalStorageOnly || !externalStoragePathAvailable) {
+            return SaveFileMigration.getInternalSavePath();
+        }
+        return SaveFileMigration.getExternalStoragePath();
+    }
+    // TODO: get rid of this shortcut.
+    public static String getBackupStoragePath() {
+        String internalPath = SaveFileMigration.getInternalSavePath();
+        return getDefaultStoragePath().equals(internalPath) ?
+                SaveFileMigration.getExternalStoragePath() : internalPath;
+    }
+    public static boolean doCacheImage() {
+        // for non-image mode
+        return doLoadImage; // when cache, cache images
+    }
+    public static int getShowTextSize() {
+        return 18; // in "sp"
+    }
+    public static int getShowTextPaddingTop() {
+        return 48; // in "dp"
+    }
+    public static int getShowTextPaddingLeft() {
+        return 32; // in "dp"
+    }
+    public static int getShowTextPaddingRight() {
+        return 32; // in "dp"
+    }
+    public static int getTextLoadWay() {
+        // 0 - Always load from online, when WLAN available
+        // 1 - Load locally first, then considerate online
+        // 2 - In bookshelf do (1), else do (0)
+        return 2;
+    }
+    // TODO: get rid of those ugly shortcuts.
+    public static String getFirstFullSaveFilePath() {
+        return getDefaultStoragePath() + saveFolderName + File.separator;
+    }
+    public static String getSecondFullSaveFilePath() {
+        return getBackupStoragePath() + saveFolderName + File.separator;
+    }
+    public static String getFirstFullUserAccountSaveFilePath() {
+        return getFirstFullSaveFilePath() + saveUserAccountFileName;
+    }
+    public static String getSecondFullUserAccountSaveFilePath() {
+        return getSecondFullSaveFilePath() + saveUserAccountFileName;
+    }
+    public static String getFirstUserAvatarSaveFilePath() {
+        return getFirstFullSaveFilePath() + saveUserAvatarFileName;
+    }
+    public static String getSecondUserAvatarSaveFilePath() {
+        return getSecondFullSaveFilePath() + saveUserAvatarFileName;
+    }
+    /**
+     * Extract image name.
+     * @param url <!--image-->http://pic.wenku8.cn/pictures/1/1305/41759/50471.jpg<!--image-->
+     * @return pictures113054175950471.jpg
+     */
+    public static String generateImageFileNameByURL(String url) {
+        String[] s = url.split("/");
+        StringBuilder result = new StringBuilder();
+        boolean canStart = false;
+        for (String temp : s) {
+            if (!canStart && temp.contains("."))
+                canStart = true; // judge canStart first
+            else if (canStart)
+                result.append(temp);
+        }
+        return result.toString();
+    }
+    @NonNull
+    private static String loadFullSaveFileContent(@NonNull String FileName) {
+        // get full file in file save path
+        String h = "";
+        if (LightCache.testFileExist(getDefaultStoragePath() + saveFolderName + File.separator + FileName)) {
+            try {
+                byte[] b = LightCache.loadFile(getDefaultStoragePath() + saveFolderName + File.separator + FileName);
+                if(b == null) return "";
+                h = new String(b, "UTF-8");
+            } catch (UnsupportedEncodingException e) {
+                e.printStackTrace();
+            }
+        } else if (LightCache.testFileExist(getBackupStoragePath() + saveFolderName + File.separator + FileName)) {
+            try {
+                byte[] b = LightCache.loadFile(getBackupStoragePath() + saveFolderName + File.separator + FileName);
+                if(b == null) return "";
+                h = new String(b, "UTF-8");
+            } catch (UnsupportedEncodingException e) {
+                e.printStackTrace();
+            }
+        }
+        return h;
+    }
+    private static boolean writeFullSaveFileContent(String FileName, @NonNull String s) {
+        // process path and filename
+        String path = "", fileName = FileName;
+        if (FileName.contains(File.separator)) {
+            path = FileName.substring(0, FileName.lastIndexOf(File.separator));
+            fileName = FileName.substring(FileName.lastIndexOf(File.separator)
+                    + File.separator.length(), FileName.length());
+        }
+        // write save file in save path
+        if (!LightCache.saveFile(getDefaultStoragePath() + saveFolderName + File.separator + path, fileName, s.getBytes(), true)) // if not exist
+            return LightCache.saveFile(getBackupStoragePath() + saveFolderName
+                    + File.separator + path, fileName, s.getBytes(), true);
+        return true;
+    }
+    @NonNull
+    public static String loadFullFileFromSaveFolder(String subFolderName, String fileName) {
+        return loadFullSaveFileContent(subFolderName + File.separator
+                + fileName);
+    }
+    public static boolean writeFullFileIntoSaveFolder(String subFolderName, String fileName, String s) {
+        // input no separator
+        return writeFullSaveFileContent(subFolderName + File.separator
+                + fileName, s);
+    }
+    /** Book shelf */
+    public static void loadLocalBookShelf() {
+        // Format:
+        // aid||aid||aid
+        // the file just saves the aid list
+        bookshelf = new ArrayList<>();
+        String h = loadFullSaveFileContent(saveLocalBookshelfFileName);
+        String[] p = h.split("\\|\\|"); // regular expression
+        for (String t : p) {
+            if (t.equals(""))
+                continue;
+            bookshelf.add(Integer.valueOf(t));
+        }
+    }
+    public static void writeLocalBookShelf() {
+        if (bookshelf == null)
+            loadLocalBookShelf();
+        String s = "";
+        for (int i = 0; i < bookshelf.size(); i++) {
+            if (i != 0)
+                s += "||";
+            s += bookshelf.get(i);
+        }
+        writeFullSaveFileContent(saveLocalBookshelfFileName, s);
+    }
+    public static void addToLocalBookshelf(int aid) {
+        if (bookshelf == null)
+            loadLocalBookShelf();
+        if (bookshelf.indexOf(aid) == -1)
+            bookshelf.add(0, aid); // add to the first place
+        writeLocalBookShelf();
+    }
+    public static void removeFromLocalBookshelf(int aid) {
+        if (bookshelf == null) {
+            loadLocalBookShelf();
+        }
+        int i = bookshelf.indexOf(aid);
+        if (i != -1) {
+            bookshelf.remove(i);
+        }
+        writeLocalBookShelf();
+    }
+    public static ArrayList<Integer> getLocalBookshelfList() {
+        if (bookshelf == null)
+            loadLocalBookShelf();
+        return bookshelf;
+    }
+    public static boolean testInLocalBookshelf(int aid) {
+        if (bookshelf == null) {
+            loadLocalBookShelf();
+        }
+        return bookshelf.contains(aid);
+    }
+    public static void moveBookToTheTopOfBookshelf(int aid) {
+        int i = bookshelf.indexOf(aid);
+        if (i == -1) {
+            return;
+        }
+        bookshelf.remove(i);
+        bookshelf.add(0, aid);
+        writeLocalBookShelf();
+    }
+    public static boolean testInBookshelf() {
+        return isInBookshelf;
+    }
+    public static void EnterBookshelf() {
+        isInBookshelf = true;
+    }
+    public static void LeaveBookshelf() {
+        isInBookshelf = false;
+    }
+    public static boolean testInLatest() {
+        return isInLatest;
+    }
+    public static void EnterLatest() {
+        isInLatest = true;
+    }
+    public static void LeaveLatest() {
+        isInLatest = false;
+    }
+    /** search history */
+    public static void readSearchHistory() {
+        // always initial empty
+        searchHistory = new ArrayList<>();
+        // read history from file, if not exist, create.
+        String h = loadFullSaveFileContent(saveSearchHistoryFileName);
+        // separate the read string
+        int i = 0, temp;
+        while (true) {
+            temp = h.indexOf("[", i); // find '['
+            if (temp == -1)
+                break;
+            i = temp + 1;
+            temp = h.indexOf("]", i); // get ']'
+            if (temp == -1)
+                break;
+            // ok, get a part
+            searchHistory.add(h.substring(i, temp));
+        }
+    }
+    public static void writeSearchHistory() {
+        // [0what][1what]...
+        StringBuilder temp = new StringBuilder();
+        for (int i = 0; i < searchHistory.size(); i++) {
+            temp.append("[").append(searchHistory.get(i)).append("]");
+        }
+        // write file
+        writeFullSaveFileContent(saveSearchHistoryFileName, temp.toString());
+    }
+    public static ArrayList<String> getSearchHistory() {
+        if (searchHistory == null)
+            readSearchHistory();
+        return searchHistory;
+    }
+    public static void addSearchHistory(String record) {
+        // record begins with a number, which represent its type
+        if (searchHistory == null)
+            readSearchHistory();
+        if (searchHistory.indexOf("[") != -1)
+            return; // harmful
+        // remove same thing
+        while(true) {
+            int pos = searchHistory.indexOf(record);
+            if(pos < 0)
+                break;
+            else
+                searchHistory.remove(pos);
+        }
+        while (searchHistory.size() >= maxSearchHistory)
+            searchHistory.remove(maxSearchHistory - 1); // remove the last
+        searchHistory.add(0, record); // add to the first place
+        writeSearchHistory(); // save history file
+    }
+    public static void deleteSearchHistory(String record) {
+        // record begins with a number, which represent its type
+        if (searchHistory == null)
+            readSearchHistory();
+        if (searchHistory.indexOf("[") != -1)
+            return; // harmful
+        // remove same thing
+        while(true) {
+            int pos = searchHistory.indexOf(record);
+            if(pos < 0)
+                break;
+            else
+                searchHistory.remove(pos);
+        }
+        writeSearchHistory(); // save history file
+    }
+    @Deprecated
+    public static void onSearchClicked(int index) {
+        if (index >= searchHistory.size())
+            return;
+        String temp = searchHistory.get(index);
+        searchHistory.remove(index);
+        searchHistory.add(0, temp);
+        writeSearchHistory(); // save history file
+    }
+    public static void clearSearchHistory() {
+        searchHistory = new ArrayList<>();
+        writeSearchHistory(); // save history file
+    }
+    public static int getMaxSearchHistory( ) {
+        return maxSearchHistory;
+    }
+    public static void setMaxSearchHistory( int size ) {
+        if(size > 0)
+            maxSearchHistory = size;
+    }
+    /** Read Saves (Old) */
+    public static void loadReadSaves() {
+        // Format:
+        // cid,,pos,,height||cid,,pos,,height
+        // just use split function
+        readSaves = new ArrayList<>();
+        // read history from file, if not exist, create.
+        String h = loadFullSaveFileContent(saveReadSavesFileName);
+        // split string h
+        String[] p = h.split("\\|\\|"); // regular expression
+        for (String temp : p) {
+            Log.v("MewX", temp);
+            String[] parts = temp.split(",,");
+            if (parts.length != 3)
+                continue;
+            ReadSaves rs = new ReadSaves();
+            rs.cid = Integer.valueOf(parts[0]);
+            rs.pos = Integer.valueOf(parts[1]);
+            rs.height = Integer.valueOf(parts[2]);
+            readSaves.add(rs);
+        }
+    }
+    public static void writeReadSaves() {
+        if (readSaves == null)
+            loadReadSaves();
+        StringBuilder t = new StringBuilder();
+        for (int i = 0; i < readSaves.size(); i++) {
+            if (i != 0)
+                t.append("||");
+            t.append(readSaves.get(i).cid).append(",,")
+                    .append(readSaves.get(i).pos).append(",,")
+                    .append(readSaves.get(i).height);
+        }
+        writeFullSaveFileContent(saveReadSavesFileName, t.toString());
+    }
+    public static void addReadSavesRecord(int c, int p, int h) {
+        if (p < 100)
+            return; // no necessary to save it
+        if (readSaves == null)
+            loadReadSaves();
+        // judge if exist, and if legal, update it
+        for (int i = 0; i < readSaves.size(); i++) {
+            if (readSaves.get(i).cid == c) {
+                // judge if need to update
+                readSaves.get(i).pos = p;
+                readSaves.get(i).height = h;
+                writeReadSaves();
+                return;
+            }
+        }
+        // new record
+        ReadSaves rs = new ReadSaves();
+        rs.cid = c;
+        rs.pos = p;
+        rs.height = h;
+        readSaves.add(rs);
+        writeReadSaves();
+    }
+    public static int getReadSavesRecord(int c, int h) {
+        if (readSaves == null)
+            loadReadSaves();
+        for (int i = 0; i < readSaves.size(); i++) {
+            if (readSaves.get(i).cid == c) {
+                // return h * readSaves.get(i).pos / readSaves.get(i).height;
+                return readSaves.get(i).pos;
+            }
+        }
+        // by default
+        return 0;
+    }
+    /** Read Saves (V1) */
+    public static void loadReadSavesV1() {
+        // Format:
+        // cid,,pos,,height||cid,,pos,,height
+        // just use split function
+        readSavesV1 = new ArrayList<>();
+        // read history from file, if not exist, create.
+        String h = loadFullSaveFileContent(saveReadSavesV1FileName);
+        // split string h
+        String[] p = h.split("\\|\\|"); // regular expression
+        OutLoop:
+        for (String temp : p) {
+            Log.v("MewX", temp);
+            String[] parts = temp.split(":"); // \\:
+            if (parts.length != 5)
+                continue;
+            // judge legal
+            for(String str : parts) if(!LightTool.isInteger(str)) continue OutLoop;
+            // add to list
+            ReadSavesV1 rs = new ReadSavesV1();
+            rs.aid = Integer.valueOf(parts[0]);
+            rs.vid = Integer.valueOf(parts[1]);
+            rs.cid = Integer.valueOf(parts[2]);
+            rs.lineId = Integer.valueOf(parts[3]);
+            rs.wordId = Integer.valueOf(parts[4]);
+            readSavesV1.add(rs);
+        }
+    }
+    public static void writeReadSavesV1() {
+        if (readSavesV1 == null)
+            loadReadSavesV1();
+        StringBuilder t = new StringBuilder();
+        for (int i = 0; i < readSavesV1.size(); i++) {
+            if (i != 0)
+                t.append("||");
+            t.append(readSavesV1.get(i).aid).append(":")
+                    .append(readSavesV1.get(i).vid).append(":")
+                    .append(readSavesV1.get(i).cid).append(":")
+                    .append(readSavesV1.get(i).lineId).append(":")
+                    .append(readSavesV1.get(i).wordId);
+        }
+        writeFullSaveFileContent(saveReadSavesV1FileName, t.toString());
+    }
+    public static void addReadSavesRecordV1(int aid, int vid, int cid, int lineId, int wordId) {
+        if (readSavesV1 == null)
+            loadReadSavesV1();
+        // judge if exist, and if legal, update it
+        for (int i = 0; i < readSavesV1.size(); i ++) {
+            if (readSavesV1.get(i).aid == aid) {
+                // need to update
+                readSavesV1.get(i).vid = vid;
+                readSavesV1.get(i).cid = cid;
+                readSavesV1.get(i).lineId = lineId;
+                readSavesV1.get(i).wordId = wordId;
+                writeReadSavesV1();
+                return;
+            }
+        }
+        // new record
+        ReadSavesV1 rs = new ReadSavesV1();
+        rs.aid = aid;
+        rs.vid = vid;
+        rs.cid = cid;
+        rs.lineId = lineId;
+        rs.wordId = wordId;
+        readSavesV1.add(rs);
+        writeReadSavesV1();
+    }
+    public static void removeReadSavesRecordV1(int aid) {
+        if (readSavesV1 == null)
+            loadReadSavesV1();
+        int i = 0;
+        for( ; i < readSavesV1.size(); i ++) {
+            if(readSavesV1.get(i).aid == aid) break;
+        }
+        if(i < readSavesV1.size()) readSavesV1.remove(i);
+        writeReadSavesV1();
+    }
+    @Nullable
+    public static ReadSavesV1 getReadSavesRecordV1(int aid) {
+        if (readSavesV1 == null)
+            loadReadSavesV1();
+        for (int i = 0; i < readSavesV1.size(); i ++) {
+            if (readSavesV1.get(i).aid == aid) return readSavesV1.get(i);
+        }
+        return null;
+    }
+    /** All settings */
+    public static void loadAllSetting() {
+        // Verify which storage source to user.
+        lookupInternalStorageOnly = SaveFileMigration.migrationCompleted();
+        // Loads all settings.
+        allSetting = new ContentValues();
+        String h = loadFullSaveFileContent(saveSetting);
+        String[] sets = h.split("\\|\\|\\|\\|");
+        for(String set : sets) {
+            String[] temp = set.split("::::");
+            if(temp.length != 2 || temp[0] == null || temp[0].length() == 0 || temp[1] == null || temp[1].length() == 0) continue;
+            allSetting.put(temp[0], temp[1]);
+        }
+        // Updates settings version.
+        String version = getFromAllSetting(SettingItems.version);
+        if(version == null || version.isEmpty()) {
+            setToAllSetting(SettingItems.version, "1");
+        }
+        // Else, reserved for future settings migration.
+    }
+    public static void saveAllSetting() {
+        if(allSetting == null) loadAllSetting();
+        StringBuilder result = new StringBuilder();
+        for( String key : allSetting.keySet() ) {
+            if(!result.toString().equals("")) result.append("||||");
+            result.append(key).append("::::").append(allSetting.getAsString(key));
+        }
+        writeFullSaveFileContent(saveSetting, result.toString());
+    }
+    @Nullable
+    public static String getFromAllSetting(SettingItems name) {
+        if(allSetting == null) loadAllSetting();
+        return allSetting.getAsString(name.toString());
+    }
+    public static void setToAllSetting(SettingItems name, String value) {
+        if(allSetting == null) loadAllSetting();
+        if(name != null && value != null) {
+            allSetting.remove(name.toString());
+            allSetting.put(name.toString(), value);
+            saveAllSetting();
+        }
+    }
+    /* Novel content */
+    /**
+     * Async gets image url and download to save folder's image folder.
+     *
+     * @param url full http url of target image
+     * @return if file finally exist, if already exist before saving, still
+     *          return true; if finally the file does not exist, return false.
+     */
+    public static boolean saveNovelContentImage(String url) {
+        String imgFileName = generateImageFileNameByURL(url);
+        String defaultFullPath = getFirstFullSaveFilePath() + imgsSaveFolderName + File.separator + imgFileName;
+        String fallbackFullPath = getSecondFullSaveFilePath() + imgsSaveFolderName + File.separator + imgFileName;
+        if (!LightCache.testFileExist(defaultFullPath) && !LightCache.testFileExist(fallbackFullPath)) {
+            // neither of the file exist
+            byte[] fileContent = LightNetwork.LightHttpDownload(url);
+            if (fileContent == null)
+                return false; // network error
+            return LightCache.saveFile(defaultFullPath, fileContent, true)
+                    || LightCache.saveFile(fallbackFullPath, fileContent, true);
+        }
+        return true; // file exist
+    }
+    /**
+     * Gets available local saving path of target image.
+     *
+     * @param fileName just need the fileName
+     * @return direct fileName or just null
+     */
+    public static String getAvailableNovelContentImagePath(String fileName) {
+        String defaultFullPath = getFirstFullSaveFilePath() + imgsSaveFolderName + File.separator + fileName;
+        String fallbackFullPath = getSecondFullSaveFilePath() + imgsSaveFolderName + File.separator + fileName;
+        if (LightCache.testFileExist(defaultFullPath)) {
+            return defaultFullPath;
+        } else if (LightCache.testFileExist(fallbackFullPath)) {
+            return fallbackFullPath;
+        } else {
+            return null;
+        }
+    }
+    public static boolean isNetworkAvailable(Context context) {
+        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm != null) {
+            // connected
+            NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+            return activeNetwork != null;
+        }
+        return false; // not connected
+    }
+    /* notice */
+    @NonNull
+    public static String loadSavedNotice() {
+        return loadFullSaveFileContent(saveNoticeString);
+    }
+    public static void writeTheNotice(@NonNull String noticeStr) {
+        writeFullSaveFileContent(saveNoticeString, noticeStr);
+    }
+}
+package org.mewx.wenku8.fragment;
+import android.annotation.SuppressLint;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Point;
+import android.os.AsyncTask;
+import android.os.Build;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TableRow;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.widget.Toolbar;
+import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
+import com.afollestad.materialdialogs.MaterialDialog;
+import com.afollestad.materialdialogs.StackingBehavior;
+import com.afollestad.materialdialogs.Theme;
+import com.google.firebase.analytics.FirebaseAnalytics;
+import com.makeramen.roundedimageview.RoundedImageView;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.activity.MainActivity;
+import org.mewx.wenku8.activity.UserInfoActivity;
+import org.mewx.wenku8.activity.UserLoginActivity;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightTool;
+import org.mewx.wenku8.util.LightUserSession;
+public class NavigationDrawerFragment extends Fragment {
+    private static final String TAG = NavigationDrawerFragment.class.getSimpleName();
+    private FirebaseAnalytics mFirebaseAnalytics;
+    private View mFragmentContainerView;
+    private ImageView bgImage;
+    private MainActivity mainActivity = null;
+    private DrawerLayout mDrawerLayout;
+    private ActionBarDrawerToggle mActionBarDrawerToggle;
+    private TextView tvUserName;
+    private RoundedImageView rivUserAvatar;
+    private boolean fakeDarkSwitcher = false;
+    public NavigationDrawerFragment() {
+        // Required empty public constructor
+    }
+    @Nullable
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        return inflater.inflate(R.layout.layout_main_menu, container, false);
+    }
+    private View.OnClickListener generateNavigationButtonOnClickListener(
+            @NonNull MainActivity.FragmentMenuOption targetFragment, @NonNull Fragment fragment) {
+        return v -> {
+            if (mainActivity.getCurrentFragment() == targetFragment) {
+                // Already selected, so just ignore.
+                return;
+            }
+            clearAllButtonColor();
+            setHighLightButton(targetFragment);
+            mainActivity.setCurrentFragment(targetFragment);
+            mainActivity.changeFragment(fragment);
+            closeDrawer();
+            // Analysis.
+            Bundle bundle = new Bundle();
+            bundle.putString(FirebaseAnalytics.Param.SCREEN_NAME, fragment.getClass().getSimpleName());
+            bundle.putString(FirebaseAnalytics.Param.SCREEN_CLASS, fragment.getClass().getSimpleName());
+            mFirebaseAnalytics.logEvent(FirebaseAnalytics.Event.SCREEN_VIEW, bundle);
+        };
+    }
+    @Override
+    public void onActivityCreated(Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        // set button clicked listener, mainly working on change fragment in MainActivity.
+        try {
+            mainActivity.findViewById(R.id.main_menu_rklist).setOnClickListener(
+                    generateNavigationButtonOnClickListener(
+                            MainActivity.FragmentMenuOption.RKLIST, new RKListFragment())
+            );
+            mainActivity.findViewById(R.id.main_menu_latest).setOnClickListener(
+                    generateNavigationButtonOnClickListener(
+                            MainActivity.FragmentMenuOption.LATEST, new LatestFragment())
+            );
+            mainActivity.findViewById(R.id.main_menu_fav).setOnClickListener(
+                    generateNavigationButtonOnClickListener(
+                            MainActivity.FragmentMenuOption.FAV, new FavFragment())
+            );
+            mainActivity.findViewById(R.id.main_menu_config).setOnClickListener(
+                    generateNavigationButtonOnClickListener(
+                            MainActivity.FragmentMenuOption.CONFIG, new ConfigFragment())
+            );
+            mainActivity.findViewById(R.id.main_menu_open_source).setOnClickListener(v -> {
+                        FragmentActivity fragmentActivity = getActivity();
+                        if (fragmentActivity == null) return;
+                        new MaterialDialog.Builder(fragmentActivity)
+                                .theme(Theme.LIGHT)
+                                .title(R.string.main_menu_statement)
+                                .content(GlobalConfig.getOpensourceLicense())
+                                .stackingBehavior(StackingBehavior.ALWAYS)
+                                .positiveColorRes(R.color.dlgPositiveButtonColor)
+                                .positiveText(R.string.dialog_positive_known)
+                                .show();
+                    }
+            );
+            mainActivity.findViewById(R.id.main_menu_dark_mode_switcher).setOnClickListener(v -> openOrCloseDarkMode());
+        } catch (NullPointerException e) {
+            Toast.makeText(mainActivity, "NullPointerException in onActivityCreated();", Toast.LENGTH_SHORT).show();
+            e.printStackTrace();
+        }
+        // User Account
+        FragmentActivity activity = getActivity();
+        if (activity != null) {
+            rivUserAvatar = activity.findViewById(R.id.user_avatar);
+            tvUserName = activity.findViewById(R.id.user_name);
+        }
+        View.OnClickListener ocl = v -> {
+            if(!LightUserSession.getLogStatus() && GlobalConfig.isNetworkAvailable(getActivity())) {
+                if(!LightUserSession.isUserInfoSet()) {
+                    Intent intent = new Intent(getActivity(), UserLoginActivity.class);
+                    startActivity(intent);
+                }
+                else {
+                    // show dialog to login, error to jump to login activity
+                    if(LightUserSession.aiui.getStatus() == AsyncTask.Status.FINISHED) {
+                        Toast.makeText(getActivity(), "Relogged.", Toast.LENGTH_SHORT).show();
+                        LightUserSession.aiui = new LightUserSession.AsyncInitUserInfo();
+                        LightUserSession.aiui.execute();
+                    }
+                }
+            }
+            else if(!GlobalConfig.isNetworkAvailable(getActivity())) {
+                // no network, no log in
+                Toast.makeText(getActivity(), getResources().getString(R.string.system_network_error), Toast.LENGTH_SHORT).show();
+            }
+            else {
+                // Logged, click to info page
+                Intent intent = new Intent(getActivity(), UserInfoActivity.class);
+                startActivity(intent);
+            }
+        };
+        rivUserAvatar.setOnClickListener(ocl);
+        tvUserName.setOnClickListener(ocl);
+        // Initial: set color states here ...
+        // get net work status, no net -> FAV
+        if(activity != null && !GlobalConfig.isNetworkAvailable(activity)) {
+            clearAllButtonColor();
+            setHighLightButton(MainActivity.FragmentMenuOption.FAV);
+            mainActivity.setCurrentFragment(MainActivity.FragmentMenuOption.FAV);
+            mainActivity.changeFragment(new FavFragment());
+        }
+        else {
+            clearAllButtonColor();
+            setHighLightButton(mainActivity.getCurrentFragment());
+            mainActivity.changeFragment(new LatestFragment());
+        }
+        // TODO: need to track the initial fragment.
+        // set menu background
+        if (activity != null) {
+            bgImage = activity.findViewById(R.id.bg_img);
+            updateMenuBackground();
+        }
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+    }
+    public void setup(int fragmentId, DrawerLayout drawerLayout, Toolbar toolbar) {
+        // get MainActivity
+        mainActivity = (MainActivity) getActivity();
+        if (mainActivity == null)
+            Toast.makeText(getActivity(), "mainActivity == null !!! in setup()", Toast.LENGTH_SHORT).show();
+        // Init Firebase Analytics on GA4.
+        mFirebaseAnalytics = FirebaseAnalytics.getInstance(mainActivity);
+        mFragmentContainerView = mainActivity.findViewById(fragmentId);
+        mDrawerLayout = drawerLayout;
+        mActionBarDrawerToggle = new ActionBarDrawerToggle(mainActivity, mDrawerLayout, toolbar, R.string.drawer_open, R.string.drawer_close) {
+            @Override
+            public void onDrawerClosed(View drawerView) {
+                super.onDrawerClosed(drawerView);
+                if (!isAdded()) return;
+                mainActivity.invalidateOptionsMenu();
+            }
+            @Override
+            public void onDrawerOpened(View drawerView) {
+                super.onDrawerOpened(drawerView);
+                if (!isAdded()) return;
+                mainActivity.invalidateOptionsMenu();
+                updateNavigationBar();
+            }
+        };
+        mDrawerLayout.post(() -> mActionBarDrawerToggle.syncState());
+        mDrawerLayout.addDrawerListener(mActionBarDrawerToggle);
+        updateNavigationBar();
+    }
+    private void clearOneButtonColor(int iconId, int textId, int backgroundId) {
+        // Clear icon color.
+        ImageButton imageButton = mainActivity.findViewById(iconId);
+        if (imageButton != null) {
+            imageButton.setColorFilter(getResources().getColor(R.color.menu_text_color));
+        }
+        // Clear text color.
+        TextView textView = mainActivity.findViewById(textId);
+        if (textView != null) {
+            textView.setTextColor(getResources().getColor(R.color.menu_text_color));
+        }
+        // Clear view background color (only works for API 16+).
+        TableRow tableRow = mainActivity.findViewById(backgroundId);
+        if (tableRow != null) {
+            tableRow.setBackground(getResources().getDrawable(R.drawable.btn_menu_item));
+        }
+    }
+    /**
+     * This function clear all the effects on button, and it needs API Level 16.
+     * So if the device is between 4.0-4.1, it will appear no effects.
+     *
+     * Notice:
+     * Once the enum MainActivity.FRAGMENT_LIST changes, this function show be edited.
+     */
+    private void clearAllButtonColor() {
+        clearOneButtonColor(R.id.main_menu_ic_rklist, R.id.main_menu_text_rklist, R.id.main_menu_rklist);
+        clearOneButtonColor(R.id.main_menu_ic_latest, R.id.main_menu_text_latest, R.id.main_menu_latest);
+        clearOneButtonColor(R.id.main_menu_ic_fav, R.id.main_menu_text_fav, R.id.main_menu_fav);
+        clearOneButtonColor(R.id.main_menu_ic_config, R.id.main_menu_text_config, R.id.main_menu_config);
+    }
+    @SuppressLint("NewApi")
+    private void setHighLightButton(int iconId, int textId, int backgroundId) {
+        ImageButton icon = mainActivity.findViewById(iconId);
+        if (icon != null) {
+            icon.setColorFilter(getResources().getColor(R.color.menu_text_color_selected));
+        }
+        TextView textView = mainActivity.findViewById(textId);
+        if (textView != null) {
+            textView.setTextColor(getResources().getColor(R.color.menu_item_white));
+        }
+        // Set view background color (only works for API 16+).
+        TableRow tableRow = mainActivity.findViewById(backgroundId);
+        if (tableRow != null) {
+            tableRow.setBackground(getResources().getDrawable(R.drawable.btn_menu_item_selected));
+        }
+    }
+    /**
+     * This function will highlight the button selected, and switch to the fragment in MainActivity.
+     *
+     * @param f the target fragment, type MainActivity.FRAGMENT_LIST.
+     */
+    private void setHighLightButton(MainActivity.FragmentMenuOption f) {
+        switch (f) {
+            case RKLIST:
+                setHighLightButton(R.id.main_menu_ic_rklist, R.id.main_menu_text_rklist, R.id.main_menu_rklist);
+                break;
+            case LATEST:
+                setHighLightButton(R.id.main_menu_ic_latest, R.id.main_menu_text_latest, R.id.main_menu_latest);
+                break;
+            case FAV:
+                setHighLightButton(R.id.main_menu_ic_fav, R.id.main_menu_text_fav, R.id.main_menu_fav);
+                break;
+            case CONFIG:
+                setHighLightButton(R.id.main_menu_ic_config, R.id.main_menu_text_config, R.id.main_menu_config);
+                break;
+        }
+    }
+    /**
+     * Judge whether the dark mode is open. If is open, close it; else open it.
+     */
+    private void openOrCloseDarkMode() {
+        TextView darkModeSwitcherText = mainActivity.findViewById(R.id.main_menu_dark_mode_switcher);
+        if (darkModeSwitcherText != null) {
+            // Set view background color (only works for API 16+).
+            darkModeSwitcherText.setTextColor(getResources().getColor(
+                    fakeDarkSwitcher ?/*switch off*/ R.color.menu_text_color :/*switch on*/ R.color.menu_text_color_selected
+            ));
+            darkModeSwitcherText.setBackground(getResources().getDrawable(
+                    fakeDarkSwitcher ?/*switch off*/R.drawable.btn_menu_item :/*switch on*/R.drawable.btn_menu_item_selected
+            ));
+        }
+        fakeDarkSwitcher = !fakeDarkSwitcher;
+        Toast.makeText(getActivity(), "夜间模式到阅读界面去试试~", Toast.LENGTH_SHORT).show();
+    }
+    private void updateNavigationBar() {
+        if (Build.VERSION.SDK_INT < 19) {
+            // Transparency is not supported in below KitKat.
+            return;
+        }
+        // test navigation bar exist
+        FragmentActivity activity = getActivity();
+        Point navBar = LightTool.getNavigationBarSize(getActivity());
+        // TODO: fix this margin for screen cutout.
+        LinearLayout ll = mainActivity.findViewById(R.id.main_menu_bottom_layout);
+        if (activity != null && navBar.y == 0) {
+            ll.setPadding(0, 0, 0, 0); // hide
+        }
+        else if (activity != null && (navBar.y < 10 || navBar.y >= LightTool.getAppUsableScreenSize(activity).y)) {
+            ll.setPadding(0, 0, 0, LightTool.getAppUsableScreenSize(activity).y / 10);
+        }
+        else {
+            ll.setPadding(0, 0, 0, navBar.y); // show
+        }
+    }
+    @Override
+    public void onResume() {
+        super.onResume();
+        // user info update
+        if(LightUserSession.isUserInfoSet() && !tvUserName.getText().toString().equals(LightUserSession.getUsernameOrEmail())
+                && (LightCache.testFileExist(GlobalConfig.getFirstUserAvatarSaveFilePath())
+                || LightCache.testFileExist(GlobalConfig.getSecondUserAvatarSaveFilePath()))) {
+            tvUserName.setText(LightUserSession.getUsernameOrEmail());
+            String avatarPath;
+            if(LightCache.testFileExist(GlobalConfig.getFirstUserAvatarSaveFilePath()))
+                avatarPath = GlobalConfig.getFirstUserAvatarSaveFilePath();
+            else
+                avatarPath = GlobalConfig.getSecondUserAvatarSaveFilePath();
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 2;
+            Bitmap bm = BitmapFactory.decodeFile(avatarPath, options);
+            if(bm != null)
+                rivUserAvatar.setImageBitmap(bm);
+        }
+        else if(!LightUserSession.isUserInfoSet()) {
+            tvUserName.setText(getResources().getString(R.string.main_menu_not_login));
+            rivUserAvatar.setImageDrawable(getResources().getDrawable(R.drawable.ic_noavatar));
+        }
+        // update menu background
+        updateMenuBackground();
+    }
+    private void updateMenuBackground() {
+        String settingMenuBgId = GlobalConfig.getFromAllSetting(GlobalConfig.SettingItems.menu_bg_id);
+        if(settingMenuBgId != null) {
+            switch (settingMenuBgId) {
+                case "0":
+                    Bitmap bmMenuBackground;
+                    try {
+                        bmMenuBackground = BitmapFactory.decodeFile(GlobalConfig.getFromAllSetting(GlobalConfig.SettingItems.menu_bg_path));
+                    } catch (OutOfMemoryError oome) {
+                        try {
+                            BitmapFactory.Options options = new BitmapFactory.Options();
+                            options.inSampleSize = 2;
+                            bmMenuBackground = BitmapFactory.decodeFile(GlobalConfig.getFromAllSetting(GlobalConfig.SettingItems.menu_bg_path), options);
+                            if(bmMenuBackground == null) throw new Exception("PictureLoadFailureException");
+                        } catch(Exception e) {
+                            e.printStackTrace();
+                            Toast.makeText(getActivity(), "Exception: " + e.toString() + "\n可能的原因有：图片不在内置SD卡；图片格式不正确；图片像素尺寸太大，请使用小一点的图，谢谢，此功能为试验性功能；", Toast.LENGTH_SHORT).show();
+                            bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_04));
+                            return;
+                        }
+                    }
+                    bgImage.setImageBitmap(bmMenuBackground);
+                    break;
+                case "1":
+                    bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_01));
+                    break;
+                case "2":
+                    bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_02));
+                    break;
+                case "3":
+                    bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_03));
+                    break;
+                case "4":
+                    bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_04));
+                    break;
+                case "5":
+                    bgImage.setImageDrawable(getResources().getDrawable(R.drawable.bg_avatar_05));
+                    break;
+            }
+        }
+    }
+    public void openDrawer() {
+        mDrawerLayout.openDrawer(mFragmentContainerView);
+    }
+    public void closeDrawer() {
+        mDrawerLayout.closeDrawer(mFragmentContainerView);
+    }
+    @Override
+    public void onDetach() {
+        super.onDetach();
+    }
+    public boolean isDrawerOpen() {
+        return mDrawerLayout != null && mDrawerLayout.isDrawerOpen(mFragmentContainerView);
+    }
+    @Override
+    public void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+    }
+}
+package org.mewx.wenku8.fragment;
+import android.content.ContentValues;
+import android.content.Intent;
+import android.os.AsyncTask;
+import android.os.Build;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.ActivityOptionsCompat;
+import androidx.core.util.Pair;
+import androidx.fragment.app.Fragment;
+import androidx.recyclerview.widget.DefaultItemAnimator;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import com.afollestad.materialdialogs.GravityEnum;
+import com.afollestad.materialdialogs.MaterialDialog;
+import com.afollestad.materialdialogs.Theme;
+import org.mewx.wenku8.MyApp;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.activity.NovelInfoActivity;
+import org.mewx.wenku8.adapter.NovelItemAdapterUpdate;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.global.api.NovelItemInfoUpdate;
+import org.mewx.wenku8.global.api.NovelItemMeta;
+import org.mewx.wenku8.global.api.VolumeList;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.global.api.Wenku8Error;
+import org.mewx.wenku8.global.api.Wenku8Parser;
+import org.mewx.wenku8.listener.MyItemClickListener;
+import org.mewx.wenku8.listener.MyItemLongClickListener;
+import org.mewx.wenku8.listener.MyOptionClickListener;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightNetwork;
+import org.mewx.wenku8.util.LightTool;
+import org.mewx.wenku8.util.LightUserSession;
+import java.io.File;
+import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+public class FavFragment extends Fragment implements MyItemClickListener, MyItemLongClickListener, MyOptionClickListener {
+    // local vars
+    private SwipeRefreshLayout mSwipeRefreshLayout;
+    private RecyclerView mRecyclerView = null;
+    private int timecount;
+    // novel list info
+    private final List<Integer> listNovelItemAid = new ArrayList<>(); // aid list
+    private final List<NovelItemInfoUpdate> listNovelItemInfo = new ArrayList<>(); // info list
+    public static FavFragment newInstance() {
+        return new FavFragment();
+    }
+    public FavFragment() {
+        // Required empty public constructor
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container,
+                             Bundle savedInstanceState) {
+        // Inflate the layout for this fragment
+        View rootView = inflater.inflate(R.layout.fragment_fav, container, false);
+        // find view
+        mSwipeRefreshLayout = rootView.findViewById(R.id.swipe_refresh_layout);
+        // init values
+        timecount = 0;
+        // view setting
+        LinearLayoutManager mLayoutManager = new LinearLayoutManager(getActivity());
+        mLayoutManager.setOrientation(LinearLayoutManager.VERTICAL);
+        mRecyclerView = rootView.findViewById(R.id.novel_item_list);
+        mRecyclerView.setHasFixedSize(false); // set variable size
+        mRecyclerView.setItemAnimator(new DefaultItemAnimator());
+        mRecyclerView.setLayoutManager(mLayoutManager);
+        mSwipeRefreshLayout.setColorSchemeColors(getResources().getColor(R.color.myAccentColor));
+        mSwipeRefreshLayout.setOnRefreshListener(() -> new AsyncLoadAllFromCloud().execute(1));
+        return rootView;
+    }
+    @Override
+    public void onItemClick(View view, int position) {
+        // go to detail activity
+        Intent intent = new Intent(getActivity(), NovelInfoActivity.class);
+        intent.putExtra("aid", listNovelItemAid.get(position));
+        intent.putExtra("from", "fav");
+        intent.putExtra("title", ((TextView) view.findViewById(R.id.novel_title)).getText());
+        GlobalConfig.moveBookToTheTopOfBookshelf(listNovelItemAid.get(position)); // sort event
+        if(Build.VERSION.SDK_INT < 21) {
+            startActivity(intent);
+        }
+        else {
+            ActivityOptionsCompat options = ActivityOptionsCompat.makeSceneTransitionAnimation(getActivity(),
+                    Pair.create(view.findViewById(R.id.novel_cover), "novel_cover"),
+                    Pair.create(view.findViewById(R.id.novel_title), "novel_title"));
+            ActivityCompat.startActivity(getActivity(), intent, options.toBundle());
+        }
+    }
+    @Override
+    public void onOptionButtonClick(View view, final int position) {
+        new MaterialDialog.Builder(getActivity())
+                .theme(Theme.LIGHT)
+                .title(R.string.dialog_title_choose_delete_option)
+                .backgroundColorRes(R.color.dlgBackgroundColor)
+                .titleColorRes(R.color.dlgTitleColor)
+                .negativeText(R.string.dialog_negative_pass)
+                .negativeColorRes(R.color.dlgNegativeButtonColor)
+                .itemsGravity(GravityEnum.CENTER)
+                .items(R.array.cleanup_option)
+                .itemsCallback(new MaterialDialog.ListCallback() {
+                    @Override
+                    public void onSelection(MaterialDialog dialog, View view, int which, CharSequence text) {
+                        /*
+                         * 0 <string name="dialog_clear_cache">清除缓存</string>
+                         * 1 <string name="dialog_delete_book">删除这本书</string>
+                         */
+                        switch (which) {
+                            case 0:
+                                new MaterialDialog.Builder(getActivity())
+                                        .callback(new MaterialDialog.ButtonCallback() {
+                                            @Override
+                                            public void onPositive(MaterialDialog dialog) {
+                                                super.onPositive(dialog);
+                                                int aid = listNovelItemAid.get(position);
+                                                String novelFullVolume = GlobalConfig.loadFullFileFromSaveFolder("intro", aid + "-volume.xml");
+                                                if(novelFullVolume.isEmpty()) return;
+                                                List<VolumeList> listVolume = Wenku8Parser.getVolumeList(novelFullVolume);
+                                                if(listVolume.isEmpty()) return;
+                                                cleanVolumesCache(listVolume);
+                                            }
+                                        })
+                                        .theme(Theme.LIGHT)
+                                        .content(R.string.dialog_sure_to_clear_cache)
+                                        .contentGravity(GravityEnum.CENTER)
+                                        .positiveText(R.string.dialog_positive_sure)
+                                        .negativeText(R.string.dialog_negative_preferno)
+                                        .show();
+                                break;
+                            case 1:
+                                new MaterialDialog.Builder(getActivity())
+                                        .callback(new MaterialDialog.ButtonCallback() {
+                                            @Override
+                                            public void onPositive(MaterialDialog dialog) {
+                                                super.onPositive(dialog);
+                                                // Delete operation: delete from in-memory index and cloud first.
+                                                // Then, the async task will remove the deleted book from local bookshelf.
+                                                int aid = listNovelItemAid.get(position);
+                                                listNovelItemAid.remove(position);
+                                                new AsyncRemoveBookFromCloud().execute(aid);
+                                                refreshList(timecount ++);
+                                            }
+                                        })
+                                        .theme(Theme.LIGHT)
+                                        .content(R.string.dialog_content_want_to_delete)
+                                        .contentGravity(GravityEnum.CENTER)
+                                        .positiveText(R.string.dialog_positive_sure)
+                                        .negativeText(R.string.dialog_negative_preferno)
+                                        .show();
+                                break;
+                        }
+                    }
+                })
+                .show();
+    }
+    @Override
+    public void onItemLongClick(View view, int position) {
+    }
+    private void cleanVolumesCache(List<VolumeList> listVolume) {
+        // remove from local bookshelf, already in bookshelf
+        for (VolumeList vl : listVolume) {
+            vl.cleanLocalCache();
+        }
+    }
+    private void refreshList(int time) {
+        if(time == 0) {
+            mSwipeRefreshLayout.setRefreshing(true);
+            new AsyncLoadAllFromCloud().execute();
+        }
+        else {
+            loadAllLocal();
+        }
+    }
+    private void loadAllLocal() {
+        int retValue = 0;
+        boolean datasetChanged = false;
+        // init
+        listNovelItemAid.clear();
+        listNovelItemAid.addAll(GlobalConfig.getLocalBookshelfList());
+        // load all metadata file
+        aids:
+        for (int j = 0; j < listNovelItemAid.size(); j++) {
+            int aid = listNovelItemAid.get(j);
+            // See if it's in the list already. Expecting the list will not be more than 100.
+            for (int i = j; i < listNovelItemInfo.size(); i++) {
+                final NovelItemInfoUpdate info = listNovelItemInfo.get(i);
+                if (info.aid == aid) {
+                    // Found but in the same place.
+                    if (i == j) continue aids;
+                    // Found, not in the same place remove and re-insert.
+                    listNovelItemInfo.remove(i);
+                    listNovelItemInfo.add(j, info);
+                    datasetChanged = true;
+                    continue aids;
+                }
+            }
+            // Not found.
+            final String xml = GlobalConfig.loadFullFileFromSaveFolder("intro", aid + "-intro.xml");
+            NovelItemInfoUpdate info;
+            if (xml.isEmpty()) {
+                // the intro file was deleted
+                retValue = -1;
+                info = new NovelItemInfoUpdate(aid);
+            }
+            else {
+                info = NovelItemInfoUpdate.convertFromMeta(Objects.requireNonNull(Wenku8Parser.parseNovelFullMeta(xml)));
+            }
+            datasetChanged = true;
+            listNovelItemInfo.add(j, info);
+        }
+        // Trim everything after aid.size().
+        if (listNovelItemInfo.size() > listNovelItemAid.size()) {
+            listNovelItemInfo.subList(listNovelItemAid.size(), listNovelItemInfo.size()).clear();
+        }
+        // result
+        if(retValue != 0) {
+            Toast.makeText(getActivity(), getResources().getString(R.string.bookshelf_intro_load_failed), Toast.LENGTH_SHORT).show();
+        }
+        // Reuse the adapter and datasets.
+        if (mRecyclerView.getAdapter() == null) {
+            NovelItemAdapterUpdate adapter = new NovelItemAdapterUpdate();
+            adapter.refreshDataset(listNovelItemInfo);
+            adapter.setOnItemClickListener(FavFragment.this);
+            adapter.setOnDeleteClickListener(FavFragment.this);
+            adapter.setOnItemLongClickListener(FavFragment.this);
+            mRecyclerView.setAdapter(adapter);
+        }
+        if (datasetChanged) {
+            mRecyclerView.getAdapter().notifyDataSetChanged();
+        }
+        mSwipeRefreshLayout.setRefreshing(false);
+    }
+    private class AsyncLoadAllFromCloud extends AsyncTask<Integer, Integer, Wenku8Error.ErrorCode> {
+        private MaterialDialog md;
+        private boolean isLoading; // check in "doInBackground" to make sure to continue or not
+        private boolean forceLoad = false;
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            loadAllLocal();
+            isLoading = true;
+            md = new MaterialDialog.Builder(getActivity())
+                    .theme(Theme.LIGHT)
+                    .content(R.string.dialog_content_sync)
+                    .progress(false, 1, true)
+                    .cancelable(true)
+                    .cancelListener(dialog -> {
+                        isLoading = false;
+                        md.dismiss();
+                    })
+                    .show();
+            md.setProgress(0);
+            md.setMaxProgress(0);
+            md.show();
+        }
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(Integer... params) {
+            // if params.length != 0, force async
+            if(params != null && params.length != 0) forceLoad = true;
+            // ! any network problem will interrupt this procedure
+            // load bookshelf list, don't save
+            byte[] b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getBookshelfListAid(GlobalConfig.getCurrentLang()));
+            if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+            if(LightTool.isInteger(new String(b))) {
+                if(Wenku8Error.getSystemDefinedErrorCode(Integer.parseInt(new String(b))) == Wenku8Error.ErrorCode.SYSTEM_4_NOT_LOGGED_IN) {
+                    // do log in
+                    Wenku8Error.ErrorCode temp = LightUserSession.doLoginFromFile();
+                    if(temp != Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) return temp; // return an error code
+                    // request again
+                    b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getBookshelfListAid(GlobalConfig.getCurrentLang()));
+                    if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                }
+            }
+            // purify returned data
+            List<Integer> listResultList = new ArrayList<>(); // result list
+            try {
+                Log.d("MewX", new String(b, "UTF-8"));
+                Pattern p = Pattern.compile("aid=\"(.*)\""); // match content between "aid=\"" and "\""
+                Matcher m = p.matcher(new String(b, "UTF-8"));
+                while (m.find()) {
+                    try {
+                        listResultList.add(Integer.valueOf(m.group(1)));
+                    } catch (NumberFormatException e) {
+                        Log.e(FavFragment.class.getSimpleName(), "Found and skipped broken aid.");
+                    }
+                }
+            } catch (UnsupportedEncodingException e) {
+                e.printStackTrace();
+            }
+            // calc difference
+            List<Integer> listAll = new ArrayList<>();
+            listAll.addAll(GlobalConfig.getLocalBookshelfList()); // make a copy
+            listAll.addAll(listResultList);
+            List<Integer> localOnly = new ArrayList<>();
+            localOnly.addAll(listAll);
+            localOnly.removeAll(listResultList); // local only
+            List<Integer> listDiff = new ArrayList<>();
+            listDiff.addAll(listAll);
+            if(!forceLoad) {
+                // cloud only
+                listDiff.removeAll(GlobalConfig.getLocalBookshelfList());
+            }
+            else {
+                // local and cloud together
+                HashSet<Integer> hs = new HashSet<>(listDiff);
+                listDiff.clear();
+                listDiff.addAll(hs);
+            }
+            if(listDiff.size() == 0 && localOnly.size() == 0) {
+                // equal, so exit
+                return Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED;
+            }
+            // load all cloud only book
+            int count = 0;
+            md.setMaxProgress(listDiff.size());
+            for(Integer aid : listDiff) {
+                if(!isLoading) return Wenku8Error.ErrorCode.USER_CANCELLED_TASK;
+                // download general file
+                String volumeXml, introXml;
+                List<VolumeList> vl;
+                NovelItemMeta ni;
+                try {
+                    // fetch volumes
+                    ContentValues cv = Wenku8API.getNovelIndex(aid, GlobalConfig.getCurrentLang());
+                    byte[] tempVolumeXml = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, cv);
+                    if(!isLoading) return Wenku8Error.ErrorCode.USER_CANCELLED_TASK;
+                    if(tempVolumeXml == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                    volumeXml = new String(tempVolumeXml, "UTF-8");
+                    // fetch intro
+                    if(!isLoading) return Wenku8Error.ErrorCode.USER_CANCELLED_TASK;
+                    // use short intro
+                    byte[] tempIntroXml = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL,
+                            Wenku8API.getNovelFullMeta(aid, GlobalConfig.getCurrentLang()));
+                    if (tempIntroXml == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                    introXml = new String(tempIntroXml, "UTF-8");
+                    // parse into structures
+                    vl = Wenku8Parser.getVolumeList(volumeXml);
+                    ni = Wenku8Parser.parseNovelFullMeta(introXml);
+                    if (vl.isEmpty() || ni == null) return Wenku8Error.ErrorCode.XML_PARSE_FAILED;
+                    if(!isLoading) return Wenku8Error.ErrorCode.USER_CANCELLED_TASK;
+                    cv = Wenku8API.getNovelFullIntro(ni.aid, GlobalConfig.getCurrentLang());
+                    byte[] tempFullIntro = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, cv);
+                    if (tempFullIntro == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                    ni.fullIntro = new String(tempFullIntro, "UTF-8");
+                    // write into saved file, save from volum -> meta -> add2bookshelf
+                    GlobalConfig.writeFullFileIntoSaveFolder("intro", aid + "-volume.xml", volumeXml);
+                    GlobalConfig.writeFullFileIntoSaveFolder("intro", aid + "-introfull.xml", ni.fullIntro);
+                    GlobalConfig.writeFullFileIntoSaveFolder("intro", aid + "-intro.xml", introXml);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                // last, add to local
+                GlobalConfig.addToLocalBookshelf(aid);
+                publishProgress(++ count);
+            }
+            // sync local bookshelf, and set ribbon, sync one, delete one
+            List<Integer> copy = new ArrayList<>(localOnly); // make a copy
+            for(Integer aid : copy) {
+                b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getAddToBookshelfParams(aid));
+                if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                try {
+                    if(LightTool.isInteger(new String(b, "UTF-8"))) {
+                        Wenku8Error.ErrorCode result = Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(new String(b, "UTF-8")));
+                        if(result == Wenku8Error.ErrorCode.SYSTEM_6_BOOKSHELF_FULL) {
+                            return result;
+                        }
+                        else if(result == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED || result == Wenku8Error.ErrorCode.SYSTEM_5_ALREADY_IN_BOOKSHELF) {
+                            localOnly.remove(aid); // remove Obj
+                        }
+                    }
+                } catch (UnsupportedEncodingException e) {
+                    e.printStackTrace();
+                }
+            }
+            return Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED;
+        }
+        @Override
+        protected void onProgressUpdate(Integer... values) {
+            super.onProgressUpdate(values);
+            md.setProgress(values[0]);
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode errorCode) {
+            super.onPostExecute(errorCode);
+            isLoading = false;
+            md.dismiss();
+            if(errorCode != Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) {
+                Toast.makeText(MyApp.getContext(), errorCode.toString(), Toast.LENGTH_SHORT).show();
+                refreshList(timecount ++);
+            }
+            else {
+                loadAllLocal();
+            }
+        }
+    }
+    class AsyncRemoveBookFromCloud extends AsyncTask<Integer, Integer, Wenku8Error.ErrorCode> {
+        MaterialDialog md;
+        int aid;
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            md = new MaterialDialog.Builder(getActivity())
+                    .theme(Theme.LIGHT)
+                    .content(R.string.dialog_content_novel_remove_from_cloud)
+                    .contentColorRes(R.color.dlgContentColor)
+                    .progress(true, 0)
+                    .show();
+        }
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(Integer... params) {
+            // params: aid
+            aid = params[0];
+            byte[] bytes = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getDelFromBookshelfParams(aid));
+            if(bytes == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+            String result;
+            try {
+                result = new String(bytes, "UTF-8");
+                Log.d("MewX", result);
+                if (!LightTool.isInteger(result))
+                    return Wenku8Error.ErrorCode.RETURNED_VALUE_EXCEPTION;
+                if(Wenku8Error.getSystemDefinedErrorCode(Integer.parseInt(result)) != Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED
+                        && Wenku8Error.getSystemDefinedErrorCode(Integer.parseInt(result)) != Wenku8Error.ErrorCode.SYSTEM_4_NOT_LOGGED_IN
+                        && Wenku8Error.getSystemDefinedErrorCode(Integer.parseInt(result)) != Wenku8Error.ErrorCode.SYSTEM_7_NOVEL_NOT_IN_BOOKSHELF) {
+                    return Wenku8Error.getSystemDefinedErrorCode(Integer.parseInt(result));
+                }
+                else {
+                    // load volume first
+                    // get novel chapter list
+                    List<VolumeList> listVolume;
+                    String novelFullVolume;
+                    novelFullVolume = GlobalConfig.loadFullFileFromSaveFolder("intro", aid + "-volume.xml");
+                    if(novelFullVolume.isEmpty()) return Wenku8Error.ErrorCode.ERROR_DEFAULT;
+                    listVolume = Wenku8Parser.getVolumeList(novelFullVolume);
+                    if(listVolume.isEmpty()) return Wenku8Error.ErrorCode.XML_PARSE_FAILED;
+                    cleanVolumesCache(listVolume);
+                    // delete files
+                    LightCache.deleteFile(GlobalConfig.getFirstFullSaveFilePath(), "intro" + File.separator + aid + "-intro.xml");
+                    LightCache.deleteFile(GlobalConfig.getFirstFullSaveFilePath(), "intro" + File.separator + aid + "-introfull.xml");
+                    LightCache.deleteFile(GlobalConfig.getFirstFullSaveFilePath(), "intro" + File.separator + aid + "-volume.xml");
+                    LightCache.deleteFile(GlobalConfig.getSecondFullSaveFilePath(), "intro" + File.separator + aid + "-intro.xml");
+                    LightCache.deleteFile(GlobalConfig.getSecondFullSaveFilePath(), "intro" + File.separator + aid + "-introfull.xml");
+                    LightCache.deleteFile(GlobalConfig.getSecondFullSaveFilePath(), "intro" + File.separator + aid + "-volume.xml");
+                    // remove from bookshelf
+                    GlobalConfig.removeFromLocalBookshelf(aid);
+                    if (!GlobalConfig.testInLocalBookshelf(aid)) { // not in
+                        return Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED;
+                    } else {
+                        return Wenku8Error.ErrorCode.LOCAL_BOOK_REMOVE_FAILED;
+                    }
+                }
+            } catch (UnsupportedEncodingException e) {
+                return Wenku8Error.ErrorCode.BYTE_TO_STRING_EXCEPTION;
+            }
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode err) {
+            super.onPostExecute(err);
+            md.dismiss();
+            if (err == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) {
+                Toast.makeText(getActivity(), getResources().getString(R.string.bookshelf_removed), Toast.LENGTH_SHORT).show();
+                loadAllLocal();
+            } else {
+                Toast.makeText(getActivity(), err.toString(), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+    @Override
+    public void onPause() {
+        super.onPause();
+        GlobalConfig.LeaveBookshelf();
+    }
+    @Override
+    public void onResume() {
+        super.onResume();
+        GlobalConfig.EnterBookshelf();
+        // refresh list
+        refreshList(timecount ++);
+    }
+}
+package org.mewx.wenku8.activity;
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.Menu;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentTransaction;
+import com.afollestad.materialdialogs.MaterialDialog;
+import com.afollestad.materialdialogs.Theme;
+import com.google.firebase.analytics.FirebaseAnalytics;
+import com.nostra13.universalimageloader.core.ImageLoader;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.async.CheckAppNewVersion;
+import org.mewx.wenku8.async.UpdateNotificationMessage;
+import org.mewx.wenku8.fragment.NavigationDrawerFragment;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightUserSession;
+import org.mewx.wenku8.util.SaveFileMigration;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.util.List;
+import java.util.Locale;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+public class MainActivity extends BaseMaterialActivity {
+    private static final String TAG = MainActivity.class.getSimpleName();
+    private static final int EXTERNAL_SAVE_MIGRATION_API = Build.VERSION_CODES.Q; // Decrease only.
+    // Below request codes can be any value.
+    private static final int REQUEST_WRITE_EXTERNAL = 100;
+    private static final int REQUEST_READ_EXTERNAL = 101;
+    private static final int REQUEST_READ_MEDIA_IMAGES = 102;
+    private static final int REQUEST_READ_EXTERNAL_SAVES = 103;
+    private static final AtomicBoolean NEW_VERSION_CHECKED = new AtomicBoolean(false);
+    // This is for fragment switch
+    public enum FragmentMenuOption {
+        RKLIST, LATEST, FAV, CONFIG
+    }
+    private FragmentMenuOption status = FragmentMenuOption.LATEST;
+    public FragmentMenuOption getCurrentFragment() {
+        return status;
+    }
+    public void setCurrentFragment(FragmentMenuOption f) {
+        status = f;
+    }
+    private NavigationDrawerFragment mNavigationDrawerFragment;
+    private FirebaseAnalytics mFirebaseAnalytics;
+    private static Boolean isExit = false; // used for exit by twice
+    private void initialApp() {
+        // load language
+        Locale locale;
+        switch (GlobalConfig.getCurrentLang()) {
+            case TC:
+                locale = Locale.TRADITIONAL_CHINESE;
+                break;
+            case SC:
+            default:
+                locale = Locale.SIMPLIFIED_CHINESE;
+                break;
+        }
+        Configuration config = new Configuration();
+        config.locale = locale;
+        Locale.setDefault(locale);
+        getBaseContext().getResources().updateConfiguration(config, getBaseContext().getResources().getDisplayMetrics());
+        // Requests storage RW permissions only when save file migration is not done.
+        if (SaveFileMigration.migrationCompleted()) {
+            Log.i(TAG, "Save file migration has completed.");
+        } else {
+            // Write permission.
+            if (missingPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_EXTERNAL);
+            }
+        }
+        // Read permissions.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // FIXME: this doesn't work on the first launch yet (it works on the second+ launch somehow).
+            if (missingPermission(Manifest.permission.READ_MEDIA_IMAGES)) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.READ_MEDIA_IMAGES}, REQUEST_READ_MEDIA_IMAGES);
+            }
+        } else {
+            if (missingPermission(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, REQUEST_READ_EXTERNAL);
+            }
+        }
+        // Create save folder.
+        if (Build.VERSION.SDK_INT >= EXTERNAL_SAVE_MIGRATION_API) {
+            // Does not support external storage if the file isn't already created.
+            if (!LightCache.testFileExist(SaveFileMigration.getExternalStoragePath())) {
+                GlobalConfig.setExternalStoragePathAvailable(false);
+            }
+            // Else, start migration.
+        } else {
+            // FIXME: these imgs folders are actually no in use.
+            LightCache.saveFile(GlobalConfig.getDefaultStoragePath() + "imgs", ".nomedia", "".getBytes(), false);
+            LightCache.saveFile(GlobalConfig.getDefaultStoragePath() + GlobalConfig.customFolderName, ".nomedia", "".getBytes(), false);
+            LightCache.saveFile(GlobalConfig.getBackupStoragePath() + "imgs", ".nomedia", "".getBytes(), false);
+            LightCache.saveFile(GlobalConfig.getBackupStoragePath() + GlobalConfig.customFolderName, ".nomedia", "".getBytes(), false);
+            GlobalConfig.setExternalStoragePathAvailable(LightCache.testFileExist(SaveFileMigration.getExternalStoragePath() + "imgs" + File.separator + ".nomedia", true));
+        }
+        // execute background action
+        LightUserSession.aiui = new LightUserSession.AsyncInitUserInfo();
+        LightUserSession.aiui.execute();
+        GlobalConfig.loadAllSetting();
+        // check new version and load notice text
+        Wenku8API.NoticeString = GlobalConfig.loadSavedNotice();
+    }
+    /**
+     * For API 29+, migrate saves from external storage to internal storage.
+     */
+    private void startOldSaveMigration() {
+        if (Build.VERSION.SDK_INT < EXTERNAL_SAVE_MIGRATION_API || SaveFileMigration.migrationCompleted()
+                || (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                && missingPermission(Manifest.permission.READ_EXTERNAL_STORAGE))) {
+            return;
+        }
+        // The permission issue for Android API 33+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && SaveFileMigration.migrationEligible()) {
+            Log.d(TAG, "startOldSaveMigration: Eligible");
+            new MaterialDialog.Builder(MainActivity.this)
+                    .theme(Theme.LIGHT)
+                    .backgroundColorRes(R.color.dlgBackgroundColor)
+                    .contentColorRes(R.color.dlgContentColor)
+                    .positiveColorRes(R.color.dlgPositiveButtonColor)
+                    .neutralColorRes(R.color.dlgNegativeButtonColor)
+                    .negativeColorRes(R.color.myAccentColor)
+                    .content(R.string.system_save_need_to_migrate)
+                    .positiveText(R.string.dialog_positive_upgrade)
+                    // This neutral text is needed because some users couldn't get system file picker.
+                    .neutralText(R.string.dialog_negative_pass_for_now)
+                    .negativeText(R.string.dialog_negative_never)
+                    .onPositive((unused1, unused2) -> {
+                        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                        intent.addCategory(Intent.CATEGORY_DEFAULT);
+                        startActivityForResult(Intent.createChooser(intent, "Choose directory"), REQUEST_READ_EXTERNAL_SAVES);
+                    })
+                    // Do nothing for onNeutral.
+                    .onNegative((dialog, which) -> SaveFileMigration.markMigrationCompleted())
+                    .cancelable(false)
+                    .show();
+            // Return early to wait for the permissions grant on the directory.
+            return;
+        }
+        // The rest Android Q+ devices.
+        runExternalSaveMigration();
+    }
+    private void runExternalSaveMigration() {
+        MaterialDialog progressDialog = new MaterialDialog.Builder(MainActivity.this)
+                .theme(Theme.LIGHT)
+                .content(R.string.system_save_upgrading)
+                .progress(false, 1, false)
+                .cancelable(false)
+                .show();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Handler handler = new Handler(Looper.getMainLooper()); // Handles the UI works.
+        executor.execute(() -> {
+            // Generate the migration plan in async path.
+            List<Uri> filesToCopy = SaveFileMigration.generateMigrationPlan();
+            // Analysis.
+            Bundle saveMigrationFilesTotalParams = new Bundle();
+            saveMigrationFilesTotalParams.putString("count", "" + filesToCopy.size());
+            mFirebaseAnalytics.logEvent("save_migration_files_total", saveMigrationFilesTotalParams);
+            if (filesToCopy.isEmpty()) {
+                Log.d(TAG, "Empty list of files to copy");
+                handler.post(progressDialog::dismiss);
+                SaveFileMigration.markMigrationCompleted();
+                return;
+            }
+            // Update max in the progress UI.
+            handler.post(() -> progressDialog.setMaxProgress(filesToCopy.size()));
+            // Start migration.
+            int progress = 0;
+            int failedFiles = 0;
+            for (Uri filePath : filesToCopy) {
+                try {
+                    String targetFilePath = SaveFileMigration.migrateFile(filePath);
+                    if (!LightCache.testFileExist(targetFilePath, true)) {
+                        Log.d(TAG, String.format("Failed migrating: %s (from %s)", targetFilePath, filePath));
+                        failedFiles++;
+                    }
+                } catch (FileNotFoundException e) {
+                    failedFiles++;
+                    e.printStackTrace();
+                }
+                progress++;
+                int finalProgress = progress;
+                handler.post(() -> progressDialog.setProgress(finalProgress));
+            }
+            // Adding some delay to prevent UI crashing at the time of reloading.
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            int finalFailedFiles = failedFiles;
+            // Analysis.
+            Bundle saveMigrationFilesFailedParams = new Bundle();
+            saveMigrationFilesFailedParams.putString("failed", "" + finalFailedFiles);
+            mFirebaseAnalytics.logEvent("save_migration_files_failed", saveMigrationFilesFailedParams);
+            handler.post(() -> {
+                SaveFileMigration.markMigrationCompleted();
+                progressDialog.dismiss();
+                new MaterialDialog.Builder(MainActivity.this)
+                        .theme(Theme.LIGHT)
+                        .backgroundColorRes(R.color.dlgBackgroundColor)
+                        .contentColorRes(R.color.dlgContentColor)
+                        .positiveColorRes(R.color.dlgPositiveButtonColor)
+                        .content(R.string.system_save_migrated, filesToCopy.size(), finalFailedFiles)
+                        .positiveText(R.string.dialog_positive_sure)
+                        .onPositive((unused1, unused2) -> reloadApp())
+                        .cancelable(false)
+                        .show();
+            });
+        });
+    }
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        initMaterialStyle(R.layout.layout_main, HomeIndicatorStyle.HAMBURGER);
+        initialApp();
+        // Init Firebase Analytics on GA4.
+        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
+        // UIL setting
+        if (ImageLoader.getInstance() == null || !ImageLoader.getInstance().isInited()) {
+            GlobalConfig.initImageLoader(this);
+        }
+        // Updates old save files.
+        startOldSaveMigration();
+        // set Tool button
+        mNavigationDrawerFragment = (NavigationDrawerFragment) getSupportFragmentManager().findFragmentById(R.id.fragment_drawer);
+        if (mNavigationDrawerFragment != null) {
+            mNavigationDrawerFragment.setup(R.id.fragment_drawer, findViewById(R.id.drawer), getToolbar());
+        }
+        // find search box
+        getToolbar().setOnMenuItemClickListener(item -> {
+            //Toast.makeText(MyApp.getContext(),"called button",Toast.LENGTH_SHORT).show();
+            if (item.getItemId() == R.id.action_search) {
+                // start search activity
+                startActivity(new Intent(MainActivity.this, SearchActivity.class));
+                overridePendingTransition(R.anim.fade_in, R.anim.hold); // fade in animation
+            }
+            return true;
+        });
+    }
+    /**
+     * Hard menu button works like the soft menu button.
+     * And this will control all the menu appearance,
+     * I can handle the button list by edit this function.
+     *
+     * @param menu The options menu in which you place your items, but I ignore this.
+     * @return True if shown successfully, False if failed.
+     */
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        // only when the navigation draw closed, I draw the menu bar.
+        // the menu items will be drawn automatically
+        if (!mNavigationDrawerFragment.isDrawerOpen()) {
+            // change title of toolbar
+            switch (status) {
+                case LATEST:
+                    if (getSupportActionBar() != null)
+                        getSupportActionBar().setTitle(getResources().getString(R.string.main_menu_latest));
+                    getMenuInflater().inflate(R.menu.menu_latest, menu);
+                    break;
+                case RKLIST:
+                    if (getSupportActionBar() != null)
+                        getSupportActionBar().setTitle(getResources().getString(R.string.main_menu_rklist));
+                    break;
+                case FAV:
+                    if (getSupportActionBar() != null)
+                        getSupportActionBar().setTitle(getResources().getString(R.string.main_menu_fav));
+                    break;
+                case CONFIG:
+                    if (getSupportActionBar() != null)
+                        getSupportActionBar().setTitle(getResources().getString(R.string.main_menu_config));
+                    break;
+            }
+        } else {
+            if (getSupportActionBar() != null)
+                getSupportActionBar().setTitle(getResources().getString(R.string.app_name));
+        }
+        return true;
+    }
+    /**
+     * This function will be called by NavigationDrawerFragment,
+     * once called, change fragment.
+     *
+     * @param targetFragment target fragment.
+     */
+    public void changeFragment(Fragment targetFragment) {
+        // temporarily set elevation to remove rank list toolbar shadow
+        if (getSupportActionBar() != null) {
+            if (status == FragmentMenuOption.RKLIST)
+                getSupportActionBar().setElevation(0);
+            else
+                getSupportActionBar().setElevation(getResources().getDimension(R.dimen.toolbar_elevation));
+        }
+        getSupportFragmentManager().beginTransaction()
+                .replace(R.id.container, targetFragment, "fragment")
+                .setTransitionStyle(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
+                .commit();
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // load only the first time this activity is created
+        if (!NEW_VERSION_CHECKED.getAndSet(true)) {
+            new CheckAppNewVersion(MainActivity.this).execute();
+            new UpdateNotificationMessage().execute();
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        switch (requestCode) {
+            case REQUEST_WRITE_EXTERNAL:
+            case REQUEST_READ_EXTERNAL:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    // The result will fall through.
+                    break;
+                }
+            case REQUEST_READ_MEDIA_IMAGES:
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    reloadApp();
+                } else {
+                    Toast.makeText(this, getResources().getText(R.string.missing_permission), Toast.LENGTH_LONG).show();
+                }
+        }
+    }
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_READ_EXTERNAL_SAVES && resultCode == Activity.RESULT_OK && data != null) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
+                return;
+            }
+            Uri wenku8Uri = data.getData();
+            String wenku8Path = wenku8Uri.getPath();
+            if (!wenku8Uri.getLastPathSegment().endsWith("wenku8") || wenku8Path.contains("DCIM") || wenku8Path.contains("Picture")) {
+                Log.i(TAG, "LastPathSegment: " + wenku8Uri.getLastPathSegment());
+                Log.i(TAG, "Selected path for save migration doesn't look right: " + wenku8Uri);
+                Bundle saveMigrationParams = new Bundle();
+                saveMigrationParams.putString("path", wenku8Path);
+                saveMigrationParams.putString("valid_path", "false");
+                mFirebaseAnalytics.logEvent("save_migration_path_selection", saveMigrationParams);
+                new MaterialDialog.Builder(MainActivity.this)
+                        .theme(Theme.LIGHT)
+                        .backgroundColorRes(R.color.dlgBackgroundColor)
+                        .contentColorRes(R.color.dlgContentColor)
+                        .positiveColorRes(R.color.dlgPositiveButtonColor)
+                        .neutralColorRes(R.color.dlgNegativeButtonColor)
+                        .negativeColorRes(R.color.myAccentColor)
+                        .content(R.string.dialog_content_wrong_path, wenku8Path.replace("/tree/primary:", "/"))
+                        .positiveText(R.string.dialog_positive_retry)
+                        .neutralText(R.string.dialog_negative_pass_for_now)
+                        .negativeText(R.string.dialog_negative_never)
+                        .onPositive((unused1, unused2) -> reloadApp())
+                        // Do nothing for onNeutral.
+                        .onNegative((dialog, which) -> SaveFileMigration.markMigrationCompleted())
+                        .cancelable(false)
+                        .show();
+                return;
+            } else {
+                Bundle saveMigrationParams = new Bundle();
+                saveMigrationParams.putString("path", wenku8Path);
+                saveMigrationParams.putString("valid_path", "true");
+                mFirebaseAnalytics.logEvent("save_migration_path_selection", saveMigrationParams);
+            }
+            getContentResolver().takePersistableUriPermission(wenku8Uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Log.i(TAG, "Selected the right directory: " + wenku8Path);
+            // Overriding the external path is needed to help generating new paths.
+            SaveFileMigration.overrideExternalPath(wenku8Uri);
+            runExternalSaveMigration();
+        }
+    }
+    @Override
+    public void onBackPressed() {
+        if (mNavigationDrawerFragment.isDrawerOpen())
+            mNavigationDrawerFragment.closeDrawer();
+        else
+            exitBy2Click();
+    }
+    private void exitBy2Click() {
+        // press twice to exit
+        Timer tExit;
+        if (!isExit) {
+            isExit = true; // ready to exit
+            Toast.makeText(
+                    this,
+                    this.getResources().getString(R.string.press_twice_to_exit),
+                    Toast.LENGTH_SHORT).show();
+            tExit = new Timer();
+            tExit.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    isExit = false; // cancel exit
+                }
+            }, 2000); // 2 seconds cancel exit task
+        } else {
+            finish();
+        }
+    }
+    private boolean missingPermission(String permissionName) {
+        return ContextCompat.checkSelfPermission(this, permissionName) != PackageManager.PERMISSION_GRANTED;
+    }
+    private void reloadApp() {
+        //reload my activity with permission granted or use the features what required the permission
+        Intent i = getBaseContext().getPackageManager().getLaunchIntentForPackage(getBaseContext().getPackageName());
+        if (i != null) {
+            i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(i);
+        }
+    }
+}
+package org.mewx.wenku8.activity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.os.AsyncTask;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.widget.TextView;
+import android.widget.Toast;
+import com.afollestad.materialdialogs.GravityEnum;
+import com.afollestad.materialdialogs.MaterialDialog;
+import com.afollestad.materialdialogs.Theme;
+import com.google.firebase.analytics.FirebaseAnalytics;
+import com.makeramen.roundedimageview.RoundedImageView;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.global.api.UserInfo;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.global.api.Wenku8Error;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightNetwork;
+import org.mewx.wenku8.util.LightTool;
+import org.mewx.wenku8.util.LightUserSession;
+import java.io.UnsupportedEncodingException;
+/**
+ * Created by MewX on 2015/6/14.
+ * User Info Activity.
+ */
+public class UserInfoActivity extends BaseMaterialActivity {
+    // private vars
+    private FirebaseAnalytics mFirebaseAnalytics;
+    private RoundedImageView rivAvatar;
+    private TextView tvUserName, tvNickyName, tvScore, tvExperience, tvRank;
+    private TextView tvLogout;
+    private UserInfo ui;
+    private AsyncGetUserInfo agui;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        initMaterialStyle(R.layout.layout_account_info);
+        // Init Firebase Analytics on GA4.
+        mFirebaseAnalytics = FirebaseAnalytics.getInstance(this);
+        // get views
+        rivAvatar = findViewById(R.id.user_avatar);
+        tvUserName = findViewById(R.id.username);
+        tvNickyName = findViewById(R.id.nickname);
+        tvScore = findViewById(R.id.score);
+        tvExperience = findViewById(R.id.experience);
+        tvRank = findViewById(R.id.rank);
+        tvLogout = findViewById(R.id.btn_logout);
+        // sync get info
+        agui = new AsyncGetUserInfo();
+        agui.execute();
+    }
+    private class AsyncGetUserInfo extends AsyncTask<Integer, Integer, Wenku8Error.ErrorCode> {
+        private int operation; // 0 is fetch data, 1 is sign
+        MaterialDialog md;
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            operation = 0; // init
+            md = new MaterialDialog.Builder(UserInfoActivity.this)
+                    .theme(Theme.LIGHT)
+                    .content(R.string.system_fetching)
+                    .progress(true, 0)
+                    .cancelable(false)
+                    .show();
+        }
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(Integer... params) {
+            if(params.length == 1 && params[0] == 1) {
+                // do sign, then fetch all data
+                operation = 1;
+                byte[] b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserSignParams());
+                if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                try {
+                    if(!LightTool.isInteger(new String(b))) return Wenku8Error.ErrorCode.STRING_CONVERSION_ERROR;
+                    else if(Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(new String(b))) == Wenku8Error.ErrorCode.SYSTEM_9_SIGN_FAILED)
+                        return Wenku8Error.ErrorCode.SYSTEM_9_SIGN_FAILED;
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+            try {
+                // try fetch
+                byte[] b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserInfoParams());
+                if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                String xml = new String(b, "UTF-8");
+                if(LightTool.isInteger(xml)) {
+                    if(Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(xml)) == Wenku8Error.ErrorCode.SYSTEM_4_NOT_LOGGED_IN) {
+                        // do log in
+                        Wenku8Error.ErrorCode temp = LightUserSession.doLoginFromFile();
+                        if(temp != Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) return temp; // return an error code
+                        // rquest again
+                        b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserInfoParams());
+                        if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+                        xml = new String(b, "UTF-8");
+                    }
+                    else return Wenku8Error.getSystemDefinedErrorCode(Integer.valueOf(xml));
+                }
+                Log.d("MewX", xml);
+                ui = UserInfo.parseUserInfo(xml);
+                if(ui == null) return Wenku8Error.ErrorCode.XML_PARSE_FAILED;
+                return Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED;
+            } catch (Exception e) {
+                e.printStackTrace();
+                return Wenku8Error.ErrorCode.STRING_CONVERSION_ERROR;
+            }
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode errorCode) {
+            super.onPostExecute(errorCode);
+            md.dismiss();
+            if(operation == 1) {
+                // Analysis.
+                Bundle checkInParams = new Bundle();
+                checkInParams.putString("effective_click", "" + (errorCode != Wenku8Error.ErrorCode.SYSTEM_9_SIGN_FAILED));
+                mFirebaseAnalytics.logEvent("daily_check_in", checkInParams);
+                // fetch from sign
+                if(errorCode == Wenku8Error.ErrorCode.SYSTEM_9_SIGN_FAILED)
+                    Toast.makeText(UserInfoActivity.this, getResources().getString(R.string.userinfo_sign_failed), Toast.LENGTH_SHORT).show();
+                else
+                    Toast.makeText(UserInfoActivity.this, getResources().getString(R.string.userinfo_sign_successful), Toast.LENGTH_SHORT).show();
+                return; // just return
+            }
+            if(errorCode == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) {
+                // show avatar
+                String avatarPath;
+                if(LightCache.testFileExist(GlobalConfig.getFirstUserAvatarSaveFilePath()))
+                    avatarPath = GlobalConfig.getFirstUserAvatarSaveFilePath();
+                else
+                    avatarPath = GlobalConfig.getSecondUserAvatarSaveFilePath();
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = 2;
+                Bitmap bm = BitmapFactory.decodeFile(avatarPath, options);
+                if(bm != null)
+                    rivAvatar.setImageBitmap(bm);
+                // set texts
+                tvUserName.setText(ui.username);
+                tvNickyName.setText(ui.nickyname);
+                tvScore.setText(Integer.toString(ui.score));
+                tvExperience.setText(Integer.toString(ui.experience));
+                tvRank.setText(ui.rank);
+                tvLogout.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        new MaterialDialog.Builder(UserInfoActivity.this)
+                                .callback(new MaterialDialog.ButtonCallback() {
+                                    @Override
+                                    public void onPositive(MaterialDialog dialog) {
+                                        super.onPositive(dialog);
+                                        AsyncLogout al = new AsyncLogout();
+                                        al.execute();
+                                    }
+                                })
+                                .theme(Theme.LIGHT)
+                                .titleColorRes(R.color.default_text_color_black)
+                                .backgroundColorRes(R.color.dlgBackgroundColor)
+                                .contentColorRes(R.color.dlgContentColor)
+                                .positiveColorRes(R.color.dlgPositiveButtonColor)
+                                .negativeColorRes(R.color.dlgNegativeButtonColor)
+                                .content(R.string.dialog_content_sure_to_logout)
+                                .contentGravity(GravityEnum.CENTER)
+                                .positiveText(R.string.dialog_positive_ok)
+                                .negativeText(R.string.dialog_negative_biao)
+                                .show();
+                    }
+                });
+            }
+            else {
+                Toast.makeText(UserInfoActivity.this, errorCode.toString(), Toast.LENGTH_SHORT).show();
+                UserInfoActivity.this.finish(); // end dialog
+            }
+        }
+    }
+    private class AsyncLogout extends AsyncTask<Integer, Integer, Wenku8Error.ErrorCode> {
+        MaterialDialog md;
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            md = new MaterialDialog.Builder(UserInfoActivity.this)
+                    .theme(Theme.LIGHT)
+                    .content(R.string.system_fetching)
+                    .progress(true, 0)
+                    .cancelable(false)
+                    .show();
+        }
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(Integer... params) {
+            byte[] b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserLogoutParams());
+            if(b == null) return Wenku8Error.ErrorCode.NETWORK_ERROR;
+            try {
+                String result = new String(b, "UTF-8");
+                if(!LightTool.isInteger(result)) {
+                    return Wenku8Error.ErrorCode.RETURNED_VALUE_EXCEPTION;
+                }
+                return Wenku8Error.getSystemDefinedErrorCode(new Integer(result)); // get 1 or 4 exceptions
+            } catch (UnsupportedEncodingException e) {
+                e.printStackTrace();
+                return Wenku8Error.ErrorCode.BYTE_TO_STRING_EXCEPTION;
+            }
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode errorCode) {
+            super.onPostExecute(errorCode);
+            if(errorCode == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED || errorCode == Wenku8Error.ErrorCode.SYSTEM_4_NOT_LOGGED_IN) {
+                LightUserSession.logOut();
+                Toast.makeText(UserInfoActivity.this, "Logged out!", Toast.LENGTH_SHORT).show();
+            }
+            else
+                Toast.makeText(UserInfoActivity.this, errorCode.toString(), Toast.LENGTH_SHORT).show();
+            // terminate this activity
+            md.dismiss();
+            UserInfoActivity.this.finish();
+        }
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.menu_user_info, menu);
+        return true;
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem menuItem) {
+        if (menuItem.getItemId() == android.R.id.home) {
+            onBackPressed();
+        }
+        else if(menuItem.getItemId() == R.id.action_sign) {
+            if(agui != null && agui.getStatus() == AsyncTask.Status.FINISHED) {
+                // do sign operation
+                agui = new AsyncGetUserInfo();
+                agui.execute(1);
+            }
+            else
+                Toast.makeText(this, "Please wait...", Toast.LENGTH_SHORT).show();
+        }
+        return super.onOptionsItemSelected(menuItem);
+    }
+}
+package org.mewx.wenku8.activity;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
+import android.os.AsyncTask;
+import android.os.Bundle;
+import android.view.MenuItem;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.widget.Toast;
+import com.afollestad.materialdialogs.GravityEnum;
+import com.afollestad.materialdialogs.MaterialDialog;
+import com.afollestad.materialdialogs.Theme;
+import com.google.firebase.analytics.FirebaseAnalytics;
+import org.mewx.wenku8.MyApp;
+import org.mewx.wenku8.R;
+import org.mewx.wenku8.global.GlobalConfig;
+import org.mewx.wenku8.global.api.Wenku8API;
+import org.mewx.wenku8.global.api.Wenku8Error;
+import org.mewx.wenku8.util.LightCache;
+import org.mewx.wenku8.util.LightNetwork;
+import org.mewx.wenku8.util.LightUserSession;
+import java.io.ByteArrayOutputStream;
+/**
+ * Created by MewX on 2015/6/12.
+ * User Login Activity.
+ */
+public class UserLoginActivity extends BaseMaterialActivity {
+    // private vars
+    private EditText etUserNameOrEmail = null;
+    private EditText etPassword = null;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        initMaterialStyle(R.layout.layout_user_login);
+        // Init Firebase Analytics on GA4.
+        FirebaseAnalytics.getInstance(this);
+        // get views
+        etUserNameOrEmail = findViewById(R.id.edit_username_or_email);
+        etPassword = findViewById(R.id.edit_password);
+        TextView tvLogin = findViewById(R.id.btn_login);
+        TextView tvRegister = findViewById(R.id.btn_register);
+        // listeners
+        tvLogin.setOnClickListener(v -> {
+            if(etUserNameOrEmail.getText().toString().length() == 0 || etUserNameOrEmail.getText().toString().length() > 30
+                    || etPassword.getText().toString().length() == 0 || etPassword.getText().toString().length() > 30) {
+                Toast.makeText(UserLoginActivity.this, getResources().getString(R.string.system_info_fill_not_complete), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            // async login
+            AsyncLoginTask alt = new AsyncLoginTask();
+            alt.execute(etUserNameOrEmail.getText().toString(), etPassword.getText().toString());
+        });
+        tvRegister.setOnClickListener(v -> new MaterialDialog.Builder(UserLoginActivity.this)
+                .onPositive((dialog, which) -> {
+                    // show browser list
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setData(Uri.parse(Wenku8API.REGISTER_URL));
+                    String title = getResources().getString(R.string.system_choose_browser);
+                    Intent chooser = Intent.createChooser(intent, title);
+                    startActivity(chooser);
+                })
+                .theme(Theme.LIGHT)
+                .backgroundColorRes(R.color.dlgBackgroundColor)
+                .contentColorRes(R.color.dlgContentColor)
+                .positiveColorRes(R.color.dlgPositiveButtonColor)
+                .negativeColorRes(R.color.dlgNegativeButtonColor)
+                .content(R.string.dialog_content_verify_register)
+                .contentGravity(GravityEnum.CENTER)
+                .positiveText(R.string.dialog_positive_ok)
+                .negativeText(R.string.dialog_negative_pass)
+                .show());
+    }
+    private class AsyncLoginTask extends AsyncTask<String, Integer, Wenku8Error.ErrorCode> {
+        private MaterialDialog md = null;
+        private Wenku8Error.ErrorCode we = Wenku8Error.ErrorCode.ERROR_DEFAULT;
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            md = new MaterialDialog.Builder(UserLoginActivity.this)
+                    .theme(Theme.LIGHT)
+                    .content(R.string.system_logging_in)
+                    .progress(true, 0)
+                    .show();
+        }
+        @Override
+        protected Wenku8Error.ErrorCode doInBackground(String[] params) {
+            // sleep to show dialog
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            we = LightUserSession.doLoginFromGiven(params[0], params[1]);
+            if(we == Wenku8Error.ErrorCode.SYSTEM_1_SUCCEEDED) {
+                // fetch avatar
+                byte[] b = LightNetwork.LightHttpPostConnection(Wenku8API.BASE_URL, Wenku8API.getUserAvatar());
+                if(b == null) {
+                    Bitmap bmp = BitmapFactory.decodeResource(getResources(), R.drawable.ic_noavatar);
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 100, baos);
+                    if(!LightCache.saveFile(GlobalConfig.getFirstUserAvatarSaveFilePath(), baos.toByteArray(), true))
+                        LightCache.saveFile(GlobalConfig.getSecondUserAvatarSaveFilePath(), baos.toByteArray(), true);
+                }
+                else {
+                    if(!LightCache.saveFile(GlobalConfig.getFirstUserAvatarSaveFilePath(), b, true))
+                        LightCache.saveFile(GlobalConfig.getSecondUserAvatarSaveFilePath(), b, true);
+                }
+            }
+            return we;
+        }
+        @Override
+        protected void onPostExecute(Wenku8Error.ErrorCode i) {
+            super.onPostExecute(i);
+            md.dismiss();
+            switch(i) {
+                case SYSTEM_1_SUCCEEDED:
+                    Toast.makeText(MyApp.getContext(), getResources().getString(R.string.system_logged), Toast.LENGTH_SHORT).show();
+                    UserLoginActivity.this.finish();
+                    break;
+                case SYSTEM_2_ERROR_USERNAME:
+                    Toast.makeText(MyApp.getContext(), getResources().getString(R.string.system_username_error), Toast.LENGTH_SHORT).show();
+                    break;
+                case SYSTEM_3_ERROR_PASSWORD:
+                    Toast.makeText(MyApp.getContext(), getResources().getString(R.string.system_password_error), Toast.LENGTH_SHORT).show();
+                    break;
+            }
+        }
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem menuItem) {
+        if (menuItem.getItemId() == android.R.id.home) {
+            onBackPressed();
+        }
+        return super.onOptionsItemSelected(menuItem);
+    }
+}

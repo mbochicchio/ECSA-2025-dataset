@@ -1,0 +1,2261 @@
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LabeledData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {
+    JqPlotResources.DateAxisRenderer,
+    JqPlotResources.CanvasTextRenderer,
+    JqPlotResources.CategoryAxisRenderer,
+    JqPlotResources.DateAxisRenderer,
+    JqPlotResources.CanvasAxisLabelRenderer,
+    JqPlotResources.CanvasAxisTickRenderer
+})
+public class LabeledLineChart<T extends Number> extends AbstractChart<LabeledData<T>,String> {
+	private static final long serialVersionUID = -6833884146696085085L;
+	private final ChartConfiguration<String> chartConfig;
+	private LabeledData<T> labeledData = new LabeledData<>();
+    public LabeledLineChart() {
+        this(null, null, null, 15);
+    }
+    public LabeledLineChart(String title, String labelX, String labelY) {
+        this(title, labelX, labelY, 15);
+    }
+    public LabeledLineChart(String title, String labelX, String labelY,
+            Integer tickAngle) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.setLabelX(labelX)
+    		.setLabelY(labelY)
+    		.axesInstance()
+    		.xAxisInstance()
+    		.setRenderer(JqPlotResources.DateAxisRenderer)
+    		.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer)
+    		.tickOptionsInstance()
+    		.setAngle(tickAngle);
+    	chartConfig
+    		.axesInstance()
+    		.yAxisInstance()
+    		.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer);
+    }
+    public void addValue(LabeledItem<T> value) {
+        labeledData.addValue(value);
+    }
+    public void addValues(@SuppressWarnings("unchecked") LabeledItem<T>... values) {
+        labeledData.addValues(values);
+    }
+    @Override
+	public LabeledData<T> getChartData() {
+        return labeledData;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.axis.X2Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.Y2Axis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+public class Axes<T extends Serializable> implements Element {
+    private static final long serialVersionUID = -1464182411022493685L;
+    private XAxis<T> xaxis;
+    private YAxis<T> yaxis;
+    private X2Axis<T> x2axis;
+    private Y2Axis<T> y2axis;
+    public XAxis<T> xAxisInstance() {
+	if (xaxis==null) {
+	    xaxis = new XAxis<T>();
+	}
+	return xaxis;
+    }
+    public YAxis<T> yAxisInstance() {
+	if (yaxis==null) {
+	    yaxis = new YAxis<T>();
+	}
+	return yaxis;
+    }
+    public X2Axis<T> x2axisInstance() {
+	if (x2axis==null) {
+	    x2axis = new X2Axis<T>();
+	}
+	return x2axis;
+    }
+    public Y2Axis<T> y2axisInstance() {
+	if (y2axis==null) {
+	    y2axis = new Y2Axis<T>();
+	}
+	return y2axis;
+    }
+    public XAxis<T> getXaxis() {
+	return xaxis;
+    }
+    public Axes<T> setXaxis(XAxis<T> xaxis) {
+	this.xaxis = xaxis;
+	return this;
+    }
+    public YAxis<T> getYaxis() {
+	return yaxis;
+    }
+    public Axes<T> setYaxis(YAxis<T> yaxis) {
+	this.yaxis = yaxis;
+	return this;
+    }
+    public X2Axis<T> getX2axis() {
+	return x2axis;
+    }
+    public Axes<T> setX2axis(X2Axis<T> x2axis) {
+	this.x2axis = x2axis;
+	return this;
+    }
+    public Y2Axis<T> getY2axis() {
+	return y2axis;
+    }
+    public Axes<T> setY2axis(Y2Axis<T> y2axis) {
+	this.y2axis = y2axis;
+	return this;
+    }
+}
+package org.wicketstuff.jqplot.lib.elements;
+public class Title implements Element {
+    private static final long serialVersionUID = -277067293084389272L;
+    private String text;
+    private Boolean show;
+    private String fontFamily;
+    private String fontSize;
+    private String fontWeight;
+    private String textAlign;
+    private String textColor;
+    private String renderer;
+    private String rendererOptions;
+    private String escapeHtml;
+    public Title() {
+    }
+    public Title(String text) {
+        this.text = text;
+    }
+    public String getText() {
+        return text;
+    }
+    public Title setShow(boolean show) {
+        this.setShow((Boolean) show);
+        return this;
+    }
+    public String getFontFamily() {
+        return fontFamily;
+    }
+    public Title setFontFamily(String fontFamily) {
+        this.fontFamily = fontFamily;
+        return this;
+    }
+    public String getFontSize() {
+        return fontSize;
+    }
+    public Title setFontSize(String fontSize) {
+        this.fontSize = fontSize;
+        return this;
+    }
+    public String getFontWeight() {
+        return fontWeight;
+    }
+    public Title setFontWeight(String fontWeight) {
+        this.fontWeight = fontWeight;
+        return this;
+    }
+    public String getTextAlign() {
+        return textAlign;
+    }
+    public Title setTextAlign(String textAlign) {
+        this.textAlign = textAlign;
+        return this;
+    }
+    public String getTextColor() {
+        return textColor;
+    }
+    public Title setTextColor(String textColor) {
+        this.textColor = textColor;
+        return this;
+    }
+    public String getRenderer() {
+        return renderer;
+    }
+    public Title setRenderer(String renderer) {
+        this.renderer = renderer;
+        return this;
+    }
+    public String getRendererOptions() {
+        return rendererOptions;
+    }
+    public Title setRendererOptions(String rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+    public String getEscapeHtml() {
+        return escapeHtml;
+    }
+    public Title setEscapeHtml(String escapeHtml) {
+        this.escapeHtml = escapeHtml;
+        return this;
+    }
+    public Boolean getShow() {
+        return show;
+    }
+    public Title setShow(Boolean show) {
+        this.show = show;
+        return this;
+    }
+    public Title setText(String text) {
+        this.text = text;
+        return this;
+    }
+}
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.elements.RendererOptions;
+import org.wicketstuff.jqplot.lib.elements.TickOptions;
+public class Axis<T extends Serializable> implements Serializable {
+	private static final long serialVersionUID = -5426777530263336010L;
+	private Boolean show;
+	private JqPlotResources renderer;
+    private RendererOptions rendererOptions;
+	private Boolean autoScale;
+	private TickOptions tickOptions;
+	private String[] ticks;
+	private JqPlotResources labelRenderer;
+	private JqPlotResources tickRenderer;
+	private String label;
+	private Float pad;
+	private Float padMin;
+	private Float padMax;
+	private Serializable min;
+	private Serializable max;
+	private Serializable tickInterval;
+	public Serializable getTickInterval() {
+		return tickInterval;
+	}
+	public void setTickInterval(Serializable tickInterval) {
+		this.tickInterval = tickInterval;
+	}
+	public Float getPadMin() {
+		return padMin;
+	}
+	public void setPadMin(Float padMin) {
+		this.padMin = padMin;
+	}
+	public Float getPadMax() {
+		return padMax;
+	}
+	public void setPadMax(Float padMax) {
+		this.padMax = padMax;
+	}
+	public Boolean getShow() {
+		return show;
+	}
+	public void setShow(Boolean show) {
+		this.show = show;
+	}
+	public Boolean getAutoScale() {
+		return autoScale;
+	}
+	public Axis<T> setAutoScale(Boolean autoScale) {
+		this.autoScale = autoScale;
+		return this;
+	}
+	public TickOptions getTickOptions() {
+		return tickOptions;
+	}
+	public Axis<T> setTickOptions(TickOptions tickOptions) {
+		this.tickOptions = tickOptions;
+		return this;
+	}
+	public JqPlotResources getLabelRenderer() {
+		return labelRenderer;
+	}
+	public Axis<T> setLabelRenderer(JqPlotResources labelRenderer) {
+		this.labelRenderer = labelRenderer;
+		return this;
+	}
+	public JqPlotResources getTickRenderer() {
+		return tickRenderer;
+	}
+	public Axis<T> setTickRenderer(JqPlotResources tickRenderer) {
+		this.tickRenderer = tickRenderer;
+		return this;
+	}
+    public Axis<T> rendererOptions(RendererOptions rendererOptions) {
+    	this.rendererOptions = rendererOptions;
+    	return this;
+    }
+    public RendererOptions getRendererOptions() {
+        return rendererOptions;
+    }
+    public Axis<T> setRendererOptions(RendererOptions rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+	public String getLabel() {
+		return label;
+	}
+	public Axis<T> setLabel(String label) {
+		this.label = label;
+		return this;
+	}
+	public Float getPad() {
+		return pad;
+	}
+	public Axis<T> setPad(Float pad) {
+		this.pad = pad;
+		return this;
+	}
+	public JqPlotResources getRenderer() {
+		return renderer;
+	}
+	public Axis<T> setRenderer(JqPlotResources renderer) {
+		this.renderer = renderer;
+		return this;
+	}
+	public String[] getTicks() {
+		return ticks;
+	}
+	public Axis<T> setTicks(String... ticks) {
+		this.ticks = ticks;
+		return this;
+	}
+	public Serializable getMin() {
+		return min;
+	}
+	public Axis<T> setMin(Serializable min) {
+		this.min = min;
+		return this;
+	}
+	public Serializable getMax() {
+		return max;
+	}
+	public Axis<T> setMax(Serializable max) {
+		this.max = max;
+		return this;
+	}
+	public TickOptions tickOptionsInstance() {
+		if (tickOptions==null) {
+			tickOptions = new TickOptions();
+		}
+		return tickOptions;
+	}
+	public RendererOptions rendererOptionsInstance() {
+		if (rendererOptions==null) {
+			this.rendererOptions = new RendererOptions();
+		}
+		return rendererOptions;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LineSeriesData;
+import org.wicketstuff.jqplot.lib.data.item.LineSeriesItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = { JqPlotResources.CanvasTextRenderer,
+	JqPlotResources.CategoryAxisRenderer,
+	JqPlotResources.CanvasAxisLabelRenderer,
+	JqPlotResources.CanvasAxisTickRenderer,
+	JqPlotResources.CanvasOverlay,
+	JqPlotResources.DateAxisRenderer })
+public class LineSeriesChart<I extends Number, V extends Number> extends
+		AbstractChart<LineSeriesData<I, V>, String> {
+	private static final long serialVersionUID = -563079287340319412L;
+	private final ChartConfiguration<String> chartConfig;
+	private LineSeriesData<I, V> data = new LineSeriesData<>();
+	public LineSeriesChart(String title) {
+		this(title, null, null);
+	}
+	public LineSeriesChart(String title, String labelX, String labelY) {
+		this.chartConfig = new ChartConfiguration<>();
+		chartConfig.setTitle(new Title(title))
+			.setLabelX(labelX)
+			.setLabelY(labelY);
+	}
+	@Override
+	public LineSeriesData<I, V> getChartData() {
+		return data;
+	}
+	public void addValue(Collection<LineSeriesItem<I, V>> value) {
+		data.addValue(value);
+	}
+	public void addValues(@SuppressWarnings("unchecked") Collection<LineSeriesItem<I, V>>... values) {
+		data.addValues(values);
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+import org.wicketstuff.jqplot.lib.elements.Axes;
+import org.wicketstuff.jqplot.lib.elements.CanvasOverlay;
+import org.wicketstuff.jqplot.lib.elements.Cursor;
+import org.wicketstuff.jqplot.lib.elements.Grid;
+import org.wicketstuff.jqplot.lib.elements.GridPadding;
+import org.wicketstuff.jqplot.lib.elements.Highlighter;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Serie;
+import org.wicketstuff.jqplot.lib.elements.SeriesDefaults;
+import org.wicketstuff.jqplot.lib.elements.Title;
+public class ChartConfiguration<T extends Serializable> implements Serializable {
+	private static final long serialVersionUID = 7082325039222592701L;
+	protected Collection<Serie> series;
+	protected Axes<T> axes;
+	protected Title title;
+	protected Axis<T> axesDefaults;
+	private SeriesDefaults seriesDefaults;
+	private Boolean stackSeries;
+	private Boolean showMarker;
+	private Legend legend;
+	private Boolean captureRightClick = null;
+	private Collection<String> seriesColors;
+	private Boolean animate;
+	private Highlighter highlighter;
+	private Grid<T> grid;
+	private Cursor cursor;
+	private GridPadding gridPadding;
+	private CanvasOverlay canvasOverlay;
+	public Boolean isCaptureRightClick() {
+		return captureRightClick;
+	}
+	public ChartConfiguration<T> setCaptureRightClick(Boolean captureRightClick) {
+		this.captureRightClick = captureRightClick;
+		return this;
+	}
+	public Legend getLegend() {
+		return legend;
+	}
+	public ChartConfiguration<T> setLegend(Legend legend) {
+		this.legend = legend;
+		return this;
+	}
+	public ChartConfiguration<T> setSimpleTitle(String title) {
+		if (title == null) {
+			this.title = new Title(title);
+		} else {
+			this.title.setText(title);
+		}
+		return this;
+	}
+	public Cursor cursorInstance() {
+		if (cursor == null) {
+			cursor = new Cursor();
+		}
+		return cursor;
+	}
+	public Grid<T> gridInstance() {
+		if (grid == null) {
+			grid = new Grid<>();
+		}
+		return grid;
+	}
+	public Axes<T> axesInstance() {
+		if (axes == null) {
+			this.axes = new Axes<>();
+		}
+		return this.axes;
+	}
+	public Axis<T> axesDefaultsInstance() {
+		if (axesDefaults == null) {
+			axesDefaults = new Axis<>();
+		}
+		return axesDefaults;
+	}
+	public XAxis<T> xAxisInstance() {
+		return axesInstance().xAxisInstance();
+	}
+	public YAxis<T> yAxisInstance() {
+		return axesInstance().yAxisInstance();
+	}
+	public Collection<Serie> seriesInstance() {
+		if (series == null) {
+			series = new ArrayList<>();
+		}
+		return series;
+	}
+	public SeriesDefaults seriesDefaultsInstance() {
+		if (seriesDefaults == null) {
+			seriesDefaults = new SeriesDefaults();
+		}
+		return seriesDefaults;
+	}
+	public Collection<String> seriesColorsInstance() {
+		if (this.seriesColors == null) {
+			this.seriesColors = new ArrayList<>();
+		}
+		return seriesColors;
+	}
+	public Highlighter highlighterInstance() {
+		if (highlighter == null) {
+			highlighter = new Highlighter();
+		}
+		return highlighter;
+	}
+	public ChartConfiguration<T> setLabelX(String label) {
+		if (label != null) {
+			axesInstance().xAxisInstance().setLabel(label);
+		}
+		return this;
+	}
+	public ChartConfiguration<T> setLabelY(String label) {
+		if (label != null) {
+			axesInstance().yAxisInstance().setLabel(label);
+		}
+		return this;
+	}
+	public Collection<Serie> getSeries() {
+		return series;
+	}
+	public ChartConfiguration<T> setSeries(Collection<Serie> series) {
+		this.series = series;
+		return this;
+	}
+	public ChartConfiguration<T> addSeries(Serie serie) {
+		this.seriesInstance().add(serie);
+		return this;
+	}
+	public Title getTitle() {
+		return title;
+	}
+	public ChartConfiguration<T> setTitle(Title title) {
+		this.title = title;
+		return this;
+	}
+	public Axis<T> getAxesDefaults() {
+		return axesDefaults;
+	}
+	public ChartConfiguration<T> setAxesDefaults(Axis<T> axesDefaults) {
+		this.axesDefaults = axesDefaults;
+		return this;
+	}
+	public Axes<T> getAxes() {
+		return axes;
+	}
+	public ChartConfiguration<T> setAxes(Axes<T> axes) {
+		this.axes = axes;
+		return this;
+	}
+	public SeriesDefaults getSeriesDefaults() {
+		return seriesDefaults;
+	}
+	public ChartConfiguration<T> setSeriesDefaults(SeriesDefaults seriesDefaults) {
+		this.seriesDefaults = seriesDefaults;
+		return this;
+	}
+	public Boolean getStackSeries() {
+		return stackSeries;
+	}
+	public ChartConfiguration<T> setStackSeries(Boolean stackSeries) {
+		this.stackSeries = stackSeries;
+		return this;
+	}
+	public Boolean getShowMarker() {
+		return showMarker;
+	}
+	public ChartConfiguration<T> setShowMarker(Boolean showMarker) {
+		this.showMarker = showMarker;
+		return this;
+	}
+	public Collection<String> getSeriesColors() {
+		return seriesColors;
+	}
+	public ChartConfiguration<T> setSeriesColors(Collection<String> seriesColor) {
+		this.seriesColors = seriesColor;
+		return this;
+	}
+	public Boolean getAnimate() {
+		return animate;
+	}
+	public ChartConfiguration<T> setAnimate(Boolean animate) {
+		this.animate = animate;
+		return this;
+	}
+	public Highlighter getHighlighter() {
+		return highlighter;
+	}
+	public ChartConfiguration<T> setHighlighter(Highlighter highlighter) {
+		this.highlighter = highlighter;
+		return this;
+	}
+	public Grid<T> getGrid() {
+		return grid;
+	}
+	public ChartConfiguration<T> setGrid(Grid<T> grid) {
+		this.grid = grid;
+		return this;
+	}
+	public Cursor getCursor() {
+		return cursor;
+	}
+	public ChartConfiguration<T> setCursor(Cursor cursor) {
+		this.cursor = cursor;
+		return this;
+	}
+	public GridPadding getGridPadding() {
+		return gridPadding;
+	}
+	public ChartConfiguration<T> setGridPadding(GridPadding gridPadding) {
+		this.gridPadding = gridPadding;
+		return this;
+	}
+	public GridPadding gridPaddingInstance() {
+		if (gridPadding == null) {
+			gridPadding = new GridPadding();
+		}
+		return gridPadding;
+	}
+	public CanvasOverlay canvasOverlayInstance() {
+		if (canvasOverlay == null) {
+			this.canvasOverlay = new CanvasOverlay();
+		}
+		return this.canvasOverlay;
+	}
+	public CanvasOverlay getCanvasOverlay() {
+		return canvasOverlay;
+	}
+	public ChartConfiguration<T> setCanvasOverlay(CanvasOverlay canvasOverlay) {
+		this.canvasOverlay = canvasOverlay;
+		return this;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.Chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+import org.wicketstuff.jqplot.lib.data.ChartData;
+import org.wicketstuff.jqplot.lib.elements.Axes;
+import org.wicketstuff.jqplot.lib.elements.CanvasOverlay;
+import org.wicketstuff.jqplot.lib.elements.GridPadding;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Serie;
+import org.wicketstuff.jqplot.lib.elements.SeriesDefaults;
+import org.wicketstuff.jqplot.lib.elements.Title;
+public abstract class AbstractChart<T extends ChartData<?>, S extends Serializable>
+		implements Chart<T> {
+	private static final long serialVersionUID = -5744130130488157491L;
+	public AbstractChart<T, S> addSeriesColors(String... colors) {
+		getChartConfiguration().seriesColorsInstance().addAll(
+				Arrays.asList(colors));
+		return this;
+	}
+	public AbstractChart<T, S> addSeriesColors(Collection<String> colors) {
+		getChartConfiguration().seriesColorsInstance().addAll(colors);
+		return this;
+	}
+	public AbstractChart<T, S> setSeriesColors(Collection<String> colors) {
+		getChartConfiguration().setSeriesColors(colors);
+		return this;
+	}
+	public Collection<String> getSeriesColors() {
+		return getChartConfiguration().seriesColorsInstance();
+	}
+	public AbstractChart<T, S> addSerie(Serie serie) {
+		Collection<Serie> series = getSeries();
+		if (series == null) {
+			series = new ArrayList<>();
+		}
+		series.add(serie);
+		return this;
+	}
+	public AbstractChart<T, S> addSeries(Serie... series) {
+		Collection<Serie> chartSeries = getSeries();
+		if (chartSeries == null) {
+			chartSeries = new ArrayList<>();
+		}
+		for (int i = series.length - 1; i >= 0; i--) {
+			chartSeries.add(series[i]);
+		}
+		return this;
+	}
+	@Override
+	public abstract ChartConfiguration<S> getChartConfiguration();
+	public AbstractChart<T, S> setSimpleTitle(String title) {
+		getChartConfiguration().setSimpleTitle(title);
+		return this;
+	}
+	public AbstractChart<T, S> setLabelX(String label) {
+		getChartConfiguration().setLabelX(label);
+		return this;
+	}
+	public AbstractChart<T, S> setLabelY(String label) {
+		getChartConfiguration().setLabelY(label);
+		return this;
+	}
+	public Collection<Serie> getSeries() {
+		return getChartConfiguration().seriesInstance();
+	}
+	public AbstractChart<T, S> setSeries(Collection<Serie> series) {
+		this.getChartConfiguration().setSeries(series);
+		return this;
+	}
+	public Title getTitle() {
+		return getChartConfiguration().getTitle();
+	}
+	public AbstractChart<T, S> setTitle(Title title) {
+		getChartConfiguration().setTitle(title);
+		return this;
+	}
+	public Axis<S> getAxesDefaults() {
+		return getChartConfiguration().axesDefaultsInstance();
+	}
+	public AbstractChart<T, S> setAxesDefaults(Axis<S> axesDefaults) {
+		getChartConfiguration().setAxesDefaults(axesDefaults);
+		return this;
+	}
+	public SeriesDefaults getSeriesDefaults() {
+		return getChartConfiguration().seriesDefaultsInstance();
+	}
+	public AbstractChart<T, S> setSeriesDefaults(SeriesDefaults seriesDefaults) {
+		getChartConfiguration().setSeriesDefaults(seriesDefaults);
+		return this;
+	}
+	public AbstractChart<T, S> addIntervalColors(String... values) {
+		getChartConfiguration().seriesDefaultsInstance().getRendererOptions()
+				.getIntervalColors().addAll(Arrays.asList(values));
+		return this;
+	}
+	public AbstractChart<T, S> addIntervals(Integer... values) {
+		getChartConfiguration().seriesDefaultsInstance().getRendererOptions()
+				.getIntervals().addAll(Arrays.asList(values));
+		return this;
+	}
+	public AbstractChart<T, S> setStackSeries(Boolean stackSeries) {
+		getChartConfiguration().setStackSeries(stackSeries);
+		return this;
+	}
+	public AbstractChart<T, S> setCaptureRightClick(Boolean captureRightClick) {
+		getChartConfiguration().setCaptureRightClick(captureRightClick);
+		return this;
+	}
+	public AbstractChart<T, S> setHighlightMouseDown(Boolean highlightMouseDown) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setHighlightMouseDown(highlightMouseDown);
+		return this;
+	}
+	public AbstractChart<T, S> setBarMargin(Integer margin) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setBarMargin(margin);
+		return this;
+	}
+	public AbstractChart<T, S> setSliceMargin(Integer margin) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setSliceMargin(margin);
+		return this;
+	}
+	public AbstractChart<T, S> setDataLabels(String dataLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setDataLabels(dataLabels);
+		return this;
+	}
+	public AbstractChart<T, S> setLineWidth(Integer width) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setLineWidth(width);
+		return this;
+	}
+	public AbstractChart<T, S> setShowDataLabels(Boolean showDataLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setShowDataLabels(showDataLabels);
+		return this;
+	}
+	public AbstractChart<T, S> setFill(Boolean fill) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setFill(fill);
+		return this;
+	}
+	public AbstractChart<T, S> setBubbleAlpha(Float alpha) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setBubbleAlpha(alpha);
+		return this;
+	}
+	public AbstractChart<T, S> setHighlightAlpha(Float alpha) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setHighlightAlpha(alpha);
+		return this;
+	}
+	public AbstractChart<T, S> setShowLabels(Boolean showLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setShowLables(showLabels);
+		return this;
+	}
+	public AbstractChart<T, S> setShadowAlpha(String alpha) {
+		getChartConfiguration().seriesDefaultsInstance().setShadowAlpha(alpha);
+		return this;
+	}
+	public AbstractChart<T, S> setFillZero(Boolean fillZero) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setFillZero(fillZero);
+		return this;
+	}
+	public AbstractChart<T, S> setShadow(Boolean shadow) {
+		getChartConfiguration().getSeriesDefaults().setShadow(shadow);
+		return this;
+	}
+	public AbstractChart<T, S> setLegend(Legend legend) {
+		getChartConfiguration().setLegend(legend);
+		return this;
+	}
+	public AbstractChart<T, S> setGridPadding(GridPadding gridPadding) {
+		getChartConfiguration().setGridPadding(gridPadding);
+		return this;
+	}
+	public GridPadding getGridPadding() {
+		return getChartConfiguration().getGridPadding();
+	}
+	public Axes<S> getAxes() {
+		return getChartConfiguration().axesInstance();
+	}
+	public AbstractChart<T, S> setAxes(Axes<S> axes) {
+		getChartConfiguration().setAxes(axes);
+		return this;
+	}
+	public XAxis<S> getXAxis() {
+		return getChartConfiguration().xAxisInstance();
+	}
+	public YAxis<S> getYAxis() {
+		return getChartConfiguration().yAxisInstance();
+	}
+	public CanvasOverlay getCanvasOverlay() {
+		return getChartConfiguration().canvasOverlayInstance();
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+public class GridPadding implements Element {
+    private static final long serialVersionUID = 5716187389339583925L;
+    private Integer top;
+    private Integer bottom;
+    private Integer right;
+    private Integer left;
+    public GridPadding(Integer top, Integer bottom, Integer left, Integer right) {
+	this.top = top;
+	this.bottom = bottom;
+	this.left = left;
+	this.right = right;
+    }
+    public GridPadding() {
+    }
+    public Integer getTop() {
+	return top;
+    }
+    public void setTop(Integer top) {
+	this.top = top;
+    }
+    public Integer getBottom() {
+	return bottom;
+    }
+    public void setBottom(Integer bottom) {
+	this.bottom = bottom;
+    }
+    public Integer getRight() {
+	return right;
+    }
+    public void setRight(Integer right) {
+	this.right = right;
+    }
+    public Integer getLeft() {
+	return left;
+    }
+    public void setLeft(Integer left) {
+	this.left = left;
+    }
+}
+package org.wicketstuff.jqplot.lib.elements;
+public class SeriesDefaults extends Serie {
+	private static final long serialVersionUID = -7921968769382552293L;
+	private PointLabels pointLabels;
+	private Trendline trendline;
+	public PointLabels getPointLabels() {
+		return pointLabels;
+	}
+	public SeriesDefaults setPointLabels(PointLabels pointLabels) {
+		this.pointLabels = pointLabels;
+		return this;
+	}
+	public Trendline getTrendline() {
+		return trendline;
+	}
+	public SeriesDefaults setTrendline(Trendline trendline) {
+		this.trendline = trendline;
+		return this;
+	}
+	public Trendline trendlineInstance() {
+		if (trendline == null) {
+			trendline = new Trendline();
+		}
+		return trendline;
+	}
+	public PointLabels pointLabelsInstance() {
+		if (pointLabels == null) {
+			pointLabels = new PointLabels();
+		}
+		return pointLabels;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+public class Legend implements Element {
+    private static final long serialVersionUID = 7228235274262615669L;
+    private String options;
+    private String placement;
+    private Location location;
+    private String border;
+    private String background;
+    private String fontFamily;
+    private String marginTop;
+    private String marginRight;
+    private String marginBottom;
+    private String marginLeft;
+    private JqPlotResources renderer;
+    private Double xoffset;
+    private Double yoffset;
+    private Boolean show;
+    private Boolean showLables;
+    private Boolean showSwatches;
+    private Boolean preDraw;
+    private Boolean escapeHtml;
+    private String[] lables;
+    private LegendRenderer rendererOptions;
+    public Legend() {
+    }
+    public Legend(boolean show, Location location) {
+        this.show = show;
+        this.location = location;
+    }
+    public Legend(String options) {
+        this.options = options;
+    }
+    public String getBackground() {
+        return background;
+    }
+    public void setBackground(String background) {
+        this.background = background;
+    }
+    public String getBorder() {
+        return border;
+    }
+    public void setBorder(String border) {
+        this.border = border;
+    }
+    public Boolean getEscapeHtml() {
+        return escapeHtml;
+    }
+    public void setEscapeHtml(Boolean escapeHtml) {
+        this.escapeHtml = escapeHtml;
+    }
+    public String getFontFamily() {
+        return fontFamily;
+    }
+    public void setFontFamily(String fontFamily) {
+        this.fontFamily = fontFamily;
+    }
+    public String[] getLables() {
+        return lables;
+    }
+    public void setLables(String[] lables) {
+        this.lables = lables;
+    }
+    public Location getLocation() {
+        return location;
+    }
+    public void setLocation(Location location) {
+        this.location = location;
+    }
+    public String getMarginBottom() {
+        return marginBottom;
+    }
+    public void setMarginBottom(String marginBottom) {
+        this.marginBottom = marginBottom;
+    }
+    public String getMarginLeft() {
+        return marginLeft;
+    }
+    public void setMarginLeft(String marginLeft) {
+        this.marginLeft = marginLeft;
+    }
+    public String getMarginRight() {
+        return marginRight;
+    }
+    public void setMarginRight(String marginRight) {
+        this.marginRight = marginRight;
+    }
+    public String getMarginTop() {
+        return marginTop;
+    }
+    public void setMarginTop(String marginTop) {
+        this.marginTop = marginTop;
+    }
+    public String getPlacement() {
+        return placement;
+    }
+    public void setPlacement(String placement) {
+        this.placement = placement;
+    }
+    public Boolean getPreDraw() {
+        return preDraw;
+    }
+    public void setPreDraw(Boolean preDraw) {
+        this.preDraw = preDraw;
+    }
+    public JqPlotResources getRenderer() {
+        return renderer;
+    }
+    public void setRenderer(JqPlotResources renderer) {
+        this.renderer = renderer;
+    }
+    public Boolean getShow() {
+        return show;
+    }
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    public Boolean getShowLables() {
+        return showLables;
+    }
+    public void setShowLables(Boolean showLables) {
+        this.showLables = showLables;
+    }
+    public Boolean getShowSwatches() {
+        return showSwatches;
+    }
+    public void setShowSwatches(Boolean showSwatches) {
+        this.showSwatches = showSwatches;
+    }
+    public Double getXoffset() {
+        return xoffset;
+    }
+    public void setXoffset(Double xoffset) {
+        this.xoffset = xoffset;
+    }
+    public Double getYoffset() {
+        return yoffset;
+    }
+    public void setYoffset(Double yoffset) {
+        this.yoffset = yoffset;
+    }
+    public String getOptions() {
+        return options;
+    }
+    public void setOptions(String options) {
+        this.options = options;
+    }
+	public LegendRenderer getRendererOptions()
+	{
+		return rendererOptions;
+	}
+	public void setRendererOptions(LegendRenderer rendererOptions)
+	{
+		this.rendererOptions = rendererOptions;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import java.util.ArrayList;
+import java.util.Collection;
+public class CanvasOverlay implements Element {
+    private static final long serialVersionUID = 7228237274262615669L;
+    private String name;
+    private Boolean show;
+    private Integer lineWidth;
+    private String lineCap;
+    private String color;
+    private Boolean shadow;
+    private Boolean showTooltip;
+    private Float showTooltipPrecision;
+    private String tooltipLocation;
+    private Boolean fadeTooltip;
+    private String tooltipFadeSpeed;
+    private Integer tooltipOffset;
+    private String tooltipFormatString;
+    private String xOffset;
+    private Collection<LineObject> objects;
+    public CanvasOverlay() {
+    }
+    public CanvasOverlay(String name) {
+        this.name = name;
+    }
+    public String getName() {
+        return name;
+    }
+    public void setName(String name) {
+        this.name = name;
+    }
+    public Boolean getShow() {
+        return show;
+    }
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    public Integer getLineWidth() {
+        return lineWidth;
+    }
+    public CanvasOverlay setLineWidth(Integer lineWidth) {
+        this.lineWidth = lineWidth;
+        return this;
+    }
+    public String getLineCap() {
+        return lineCap;
+    }
+    public CanvasOverlay setLineCap(String lineCap) {
+        this.lineCap = lineCap;
+        return this;
+    }
+    public String getColor() {
+        return color;
+    }
+    public CanvasOverlay setColor(String color) {
+        this.color = color;
+        return this;
+    }
+    public Boolean getShadow() {
+        return shadow;
+    }
+    public CanvasOverlay setShadow(Boolean shadow) {
+        this.shadow = shadow;
+        return this;
+    }
+    public Boolean getShowTooltip() {
+        return showTooltip;
+    }
+    public void setShowTooltip(Boolean showTooltip) {
+        this.showTooltip = showTooltip;
+    }
+    public Float getShowTooltipPrecision() {
+        return showTooltipPrecision;
+    }
+    public void setShowTooltipPrecision(Float showTooltipPrecision) {
+        this.showTooltipPrecision = showTooltipPrecision;
+    }
+    public String getTooltipLocation() {
+        return tooltipLocation;
+    }
+    public void setTooltipLocation(String tooltipLocation) {
+        this.tooltipLocation = tooltipLocation;
+    }
+    public Boolean getFadeTooltip() {
+        return fadeTooltip;
+    }
+    public void setFadeTooltip(Boolean fadeTooltip) {
+        this.fadeTooltip = fadeTooltip;
+    }
+    public String getTooltipFadeSpeed() {
+        return tooltipFadeSpeed;
+    }
+    public void setTooltipFadeSpeed(String tooltipFadeSpeed) {
+        this.tooltipFadeSpeed = tooltipFadeSpeed;
+    }
+    public Integer getTooltipOffset() {
+        return tooltipOffset;
+    }
+    public void setTooltipOffset(Integer tooltipOffset) {
+        this.tooltipOffset = tooltipOffset;
+    }
+    public String getTooltipFormatString() {
+        return tooltipFormatString;
+    }
+    public void setTooltipFormatString(String tooltipFormatString) {
+        this.tooltipFormatString = tooltipFormatString;
+    }
+    public String getXOffset() {
+        return xOffset;
+    }
+    public CanvasOverlay setXOffset(String xOffset) {
+        this.xOffset = xOffset;
+        return this;
+    }
+	public Collection<LineObject> objectsInstance() {
+		if (objects == null) {
+			this.objects = new ArrayList<LineObject>();
+		}
+		return this.objects;
+	}
+	public Collection<LineObject> getObjects() {
+		return objects;
+	}
+	public CanvasOverlay setObjects(Collection<LineObject> objects) {
+		this.objects = objects;
+		return this;
+	}
+	public DashedHorizontalLine dashedHorizontalLineInstance() {
+           LineObject lineObject = new LineObject();
+           DashedHorizontalLine dashedHorizontalLine = lineObject.dashedHorizontalLineInstance();
+		objectsInstance().add(lineObject);
+		return dashedHorizontalLine;
+	}
+	public DashedVerticalLine dashedVerticalLineInstance() {
+           LineObject lineObject = new LineObject();
+           DashedVerticalLine dashedVerticalLine = lineObject.dashedVerticalLineInstance();
+		objectsInstance().add(lineObject);
+		return dashedVerticalLine;
+	}
+	public HorizontalLine horizontalLineInstance() {
+           LineObject lineObject = new LineObject();
+           HorizontalLine horizontalLine = lineObject.horizontalLineInstance();
+		objectsInstance().add(lineObject);
+		return horizontalLine;
+	}
+	public VerticalLine verticalLineInstance() {
+           LineObject lineObject = new LineObject();
+           VerticalLine verticalLine = lineObject.verticalLineInstance();
+		objectsInstance().add(lineObject);
+		return verticalLine;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+public class Serie implements Element {
+    private static final long serialVersionUID = 7138260563176853708L;
+    private String label;
+    private JqPlotResources renderer;
+    private RendererOptions rendererOptions;
+    private Boolean fill;
+    private Integer lineWidth;
+    private MarkerOptions markerOptions;
+    private Boolean showMarker;
+    private Boolean showAlpha;
+    private Boolean shadow;
+    private String shadowAlpha;
+    private Integer shadowDepth;
+    private Boolean showLine;
+    private String color;
+    public Serie() {
+    }  
+    public Serie(String label) {
+    	this.label = label;
+    }
+    public Serie lineWidth(Integer lineWidth) {
+    	this.lineWidth = lineWidth;
+    	return this;
+    }
+    public Serie markerOptions(MarkerOptions markerOptions) {
+    	this.markerOptions = markerOptions;
+    	return this;
+    }
+    public Serie showLine(Boolean showLine) {
+    	this.setShowLine(showLine);
+    	return this;
+    }
+    public Serie rendererOptions(RendererOptions rendererOptions) {
+    	this.rendererOptions = rendererOptions;
+    	return this;
+    }
+    public Serie renderer(JqPlotResources renderer) {
+    	this.renderer = renderer;
+    	return this;
+    }
+    public String getShadowAlpha() {
+        return shadowAlpha;
+    }
+    public Serie setShadowAlpha(String shadowAlpha) {
+        this.shadowAlpha = shadowAlpha;
+        return this;
+    }
+    public Integer getShadowDepth() {
+        return shadowDepth;
+    }
+    public Serie setShadowDepth(Integer shadowDepth) {
+        this.shadowDepth = shadowDepth;
+        return this;
+    }
+    public Boolean getShowAlpha() {
+        return showAlpha;
+    }
+    public Serie setShowAlpha(Boolean showAlpha) {
+        this.showAlpha = showAlpha;
+        return this;
+    }
+    public Boolean getShadow() {
+        return shadow;
+    }
+    public Serie setShadow(Boolean shadow) {
+        this.shadow = shadow;
+        return this;
+    }
+    public Boolean getShowMarker() {
+        return showMarker;
+    }
+    public Serie setShowMarker(Boolean showMarker) {
+        this.showMarker = showMarker;
+        return this;
+    }
+    public MarkerOptions getMarkerOptions() {
+        return markerOptions;
+    }
+    public Serie setMarkerOptions(MarkerOptions markerOptions) {
+        this.markerOptions = markerOptions;
+        return this;
+    }
+    public Integer getLineWidth() {
+        return lineWidth;
+    }
+    public Serie setLineWidth(Integer lineWidth) {
+        this.lineWidth = lineWidth;
+        return this;
+    }
+    public RendererOptions getRendererOptions() {
+        return rendererOptions;
+    }
+    public Serie setRendererOptions(RendererOptions rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+    public String getLabel() {
+        return label;
+    }
+    public Serie setLabel(String label) {
+        this.label = label;
+        return this;
+    }
+    public JqPlotResources getRenderer() {
+        return renderer;
+    }
+    public Serie setRenderer(JqPlotResources renderer) {
+        this.renderer = renderer;
+        return this;
+    }
+    public Boolean getFill() {
+        return fill;
+    }
+    public Serie setFill(Boolean fill) {
+        this.fill = fill;
+        return this;
+    }
+    public String getColor() {
+        return color;
+    }
+    public Serie setColor(String color) {
+        this.color = color;
+        return this;
+    }
+	public Boolean getShowLine() {
+		return showLine;
+	}
+	public Serie setShowLine(Boolean showLine) {
+		this.showLine = showLine;
+		return this;
+	}
+	public RendererOptions rendererOptionsInstance() {
+		if (rendererOptions==null) {
+			this.rendererOptions = new RendererOptions();
+		}
+		return rendererOptions;
+	}
+	public MarkerOptions markerOptionsInstance() {
+		if (markerOptions==null) {
+			markerOptions = new MarkerOptions();
+		}
+		return markerOptions;
+	}
+}
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+public class XAxis<T extends Serializable> extends Axis<T> {
+	private static final long serialVersionUID = -6656658483757126503L;
+}
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+public class YAxis<T extends Serializable> extends Axis<T> {
+    private static final long serialVersionUID = 1964421050362233742L;
+}
+package org.wicketstuff.jqplot.lib;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.data.ChartData;
+public interface Chart<T extends ChartData<?>> extends Serializable {
+	ChartConfiguration<?> getChartConfiguration();
+	T getChartData();
+}
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.BubbleData;
+import org.wicketstuff.jqplot.lib.data.item.BubbleItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = { JqPlotResources.BubbleRenderer })
+public class BubbleChart extends AbstractChart<BubbleData<BubbleItem>, String> {
+	private static final long serialVersionUID = -8122703368130701972L;
+	private final ChartConfiguration<String> chartConfig;
+	private BubbleData<BubbleItem> bubbleData = new BubbleData<BubbleItem>();
+	public BubbleChart() {
+		this(null);
+	}
+	public BubbleChart(String title) {
+		this.chartConfig = new ChartConfiguration<String>();
+		chartConfig
+			.setTitle(new Title(title))
+			.seriesDefaultsInstance()
+			.setRenderer((JqPlotResources.BubbleRenderer));
+	}
+	public BubbleData<BubbleItem> getChartData() {
+		return bubbleData;
+	}
+	public void addValue(BubbleItem item) {
+		bubbleData.addValue(item);
+	}
+	public void addValue(Float x, Float y, Float radius, String label) {
+		bubbleData.addValue(new BubbleItem(x, y, radius, label));
+	}
+	public void addValue(Integer x, Integer y, Integer radius, String label) {
+		bubbleData.addValue(new BubbleItem(x, y, radius, label));
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return null;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+public class Grid<T extends Serializable> implements Element {
+    private static final long serialVersionUID = 5478580499167992682L;
+    private Boolean drawGridLines;
+    private String gridLineColor;
+    private Double gridLineWidth;    
+    private String background;
+    private String borderColor;
+    private Double borderWidth;
+    private Boolean drawBorder;
+    private Boolean shadow;
+    private Double shadowAngle;
+    private Double shadowOffset;
+    private Double shadowWidth;
+    private Double shadowDepth;
+    private String shadowColor;
+    private String shadowAlpha;
+    private Float left;
+    private Float top;
+    private Float right;
+    private Float bottom;
+    private Float width;
+    private Float height;
+    private Axis<T>[] axis;
+    private String[] rendererOptions;
+    public Axis<T>[] getAxis() {
+        return axis;
+    }
+    public void setAxis(Axis<T>[] axis) {
+        this.axis = axis;
+    }
+    public String getBackground() {
+        return background;
+    }
+    public void setBackground(String background) {
+        this.background = background;
+    }
+    public String getBorderColor() {
+        return borderColor;
+    }
+    public void setBorderColor(String borderColor) {
+        this.borderColor = borderColor;
+    }
+    public Double getBorderWidth() {
+        return borderWidth;
+    }
+    public void setBorderWidth(Double borderWidth) {
+        this.borderWidth = borderWidth;
+    }
+    public Float getBottom() {
+        return bottom;
+    }
+    public void setBottom(Float bottom) {
+        this.bottom = bottom;
+    }
+    public Boolean getDrawBorder() {
+        return drawBorder;
+    }
+    public void setDrawBorder(Boolean drawBorder) {
+        this.drawBorder = drawBorder;
+    }
+    public Boolean getDrawGridLines() {
+        return drawGridLines;
+    }
+    public void setDrawGridLines(Boolean drawGridLines) {
+        this.drawGridLines = drawGridLines;
+    }
+    public String getGridLineColor() {
+        return gridLineColor;
+    }
+    public void setGridLineColer(String gridLineColor) {
+        this.gridLineColor = gridLineColor;
+    }
+    public Double getGridLineWidth() {
+        return gridLineWidth;
+    }
+    public void setGridLineWidth(Double gridLineWidth) {
+        this.gridLineWidth = gridLineWidth;
+    }
+    public Float getHeight() {
+        return height;
+    }
+    public void setHeight(Float height) {
+        this.height = height;
+    }
+    public Float getLeft() {
+        return left;
+    }
+    public void setLeft(Float left) {
+        this.left = left;
+    }
+    public String[] getRendererOptions() {
+        return rendererOptions;
+    }
+    public void setRendererOptions(String[] rendererOptions) {
+        this.rendererOptions = rendererOptions;
+    }
+    public Float getRight() {
+        return right;
+    }
+    public void setRight(Float right) {
+        this.right = right;
+    }
+    public Boolean getShadow() {
+        return shadow;
+    }
+    public void setShadow(Boolean shadow) {
+        this.shadow = shadow;
+    }
+    public String getShadowAlpha() {
+        return shadowAlpha;
+    }
+    public void setShadowAlpha(String shadowAlpha) {
+        this.shadowAlpha = shadowAlpha;
+    }
+    public Double getShadowAngle() {
+        return shadowAngle;
+    }
+    public void setShadowAngle(Double shadowAngle) {
+        this.shadowAngle = shadowAngle;
+    }
+    public String getShadowColor() {
+        return shadowColor;
+    }
+    public void setShadowColor(String shadowColor) {
+        this.shadowColor = shadowColor;
+    }
+    public Double getShadowDepth() {
+        return shadowDepth;
+    }
+    public void setShadowDepth(Double shadowDepth) {
+        this.shadowDepth = shadowDepth;
+    }
+    public Double getShadowOffset() {
+        return shadowOffset;
+    }
+    public void setShadowOffset(Double shadowOffset) {
+        this.shadowOffset = shadowOffset;
+    }
+    public Double getShadowWidth() {
+        return shadowWidth;
+    }
+    public void setShadowWidth(Double shadowWidth) {
+        this.shadowWidth = shadowWidth;
+    }
+    public Float getTop() {
+        return top;
+    }
+    public void setTop(Float top) {
+        this.top = top;
+    }
+    public Float getWidth() {
+        return width;
+    }
+    public void setWidth(Float width) {
+        this.width = width;
+    }
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.PieDonutData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.DonutRenderer})
+public class PieDonutChart<T extends Number> extends AbstractChart<PieDonutData<T>,String> {
+	private static final long serialVersionUID = -4671992800819368331L;
+	PieDonutData<T> data = new PieDonutData<T>();
+	private final ChartConfiguration<String> chartConfig;
+    public PieDonutChart() {
+        this(null);
+    }
+    public PieDonutChart(String title) {
+    	this.chartConfig = new ChartConfiguration<String>(); 
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.seriesDefaultsInstance()
+    		.setRenderer(JqPlotResources.DonutRenderer)
+    		.rendererOptionsInstance()
+    		.setSliceMargin(4)
+    		.setShowDataLabels(true)
+    		.setDataLabels("value");
+    }
+    public void addValue(Collection<LabeledItem<T>> value) {
+        data.addValue(value);
+    }
+    public PieDonutData<T> getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LineSeriesData;
+import org.wicketstuff.jqplot.lib.data.item.LineSeriesItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.CategoryAxisRenderer,
+    JqPlotResources.BarRenderer,
+    JqPlotResources.PointLabels,
+    JqPlotResources.CanvasTextRenderer,
+    JqPlotResources.CanvasAxisLabelRenderer,
+    JqPlotResources.CanvasAxisTickRenderer,
+    JqPlotResources.CanvasOverlay,
+    JqPlotResources.DateAxisRenderer })
+public class BarSeriesChart<I extends Number, V extends Number> extends
+		AbstractChart<LineSeriesData<I, V>, String> {
+	private static final long serialVersionUID = 3650210485517566138L;
+	private final ChartConfiguration<String> chartConfig;
+	private LineSeriesData<I, V> barData = new LineSeriesData<>();
+    public BarSeriesChart() {
+        this(null, null, null);
+    }
+    public BarSeriesChart(String title) {
+        this(title, null, null);
+    }
+    public BarSeriesChart(String title, String labelX, String labelY)
+    {
+      this.chartConfig = new ChartConfiguration<>();
+      chartConfig.setTitle(new Title(title))
+        .setLabelX(labelX)
+        .setLabelY(labelY)
+        .seriesDefaultsInstance()
+        .pointLabelsInstance();
+      chartConfig
+        .seriesDefaultsInstance()
+        .setRenderer(JqPlotResources.BarRenderer)
+        .setFill(true);
+     }
+	public void addValue(Collection<LineSeriesItem<I, V>> value) {
+		barData.addValue(value);
+	}
+	public void addValues(@SuppressWarnings("unchecked") Collection<LineSeriesItem<I, V>>... values) {
+		barData.addValues(values);
+	}
+	@Override
+	public LineSeriesData<I, V> getChartData() {
+		return barData;
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return this.chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Arrays;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.BarData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.CategoryAxisRenderer, JqPlotResources.BarRenderer, JqPlotResources.PointLabels})
+public class BarChart<T extends Number> extends AbstractChart<BarData<T>, Long> {
+	private static final long serialVersionUID = 3650210485517566138L;
+	private final ChartConfiguration<Long> chartConfig;
+	private BarData<T> barData = new BarData<>();
+    public BarChart() {
+        this(null, null, null);
+    }
+    public BarChart(String title) {
+        this(title, null, null);
+    }
+    public BarChart(String title, String labelX, String labelY) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+        	.seriesDefaultsInstance()
+        	.pointLabelsInstance();
+    	chartConfig
+        	.setLabelX(labelX)
+        	.setLabelY(labelY)
+        	.seriesDefaultsInstance()
+        	.setRenderer(JqPlotResources.BarRenderer)
+        	.setFill(true);
+    	chartConfig
+        	.axesInstance()
+        	.xAxisInstance()
+        	.setRenderer(JqPlotResources.CategoryAxisRenderer)
+			.rendererOptionsInstance();
+    }
+    public void addValue(Collection<T> value) {
+        barData.addValue(value);
+    }
+    public void addValues(@SuppressWarnings("unchecked") Collection<T>... value) {
+        barData.addValues(value);
+    }
+	@SuppressWarnings("unchecked")
+	public void addValues(T... values) {
+        barData.addValues(Arrays.<T>asList(values));
+    }
+    @Override
+	public BarData<T> getChartData() {
+        return barData;
+    }
+	@Override
+	public ChartConfiguration<Long> getChartConfiguration() {
+		return this.chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.MeterData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.MeterGaugeRenderer})
+public class MeterGaugeChart extends AbstractChart<MeterData,String> {
+    private static final long serialVersionUID = -8122703368130701972L;
+	private final ChartConfiguration<String> chartConfig;
+    private MeterData data = new MeterData(0F);
+    public MeterGaugeChart() {
+        this(null);
+    }
+    public MeterGaugeChart(String title) {
+        this.chartConfig = new ChartConfiguration<String>();
+        chartConfig
+        .setTitle(new Title(title))
+        .seriesDefaultsInstance()
+        .setRenderer(JqPlotResources.MeterGaugeRenderer)
+        .rendererOptionsInstance();
+    }
+    public void setValue(Float value) {
+        data.setValue(value);
+    }
+    public void setValue(Integer value) {
+        data.setValue(value.floatValue());
+    }
+    public MeterData getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.Highlighter})
+public class Highlighter implements Element {
+    private static final long serialVersionUID = 6872308828768070373L;
+    private Boolean show;
+    private Boolean showTooltip;
+    private String tooltipFormatString;
+    private Boolean showMarker;
+    private Double lineWidthAdjust;
+    private Double sizeAdjust;
+    private Location tooltipLocation;
+    private Boolean fadeTooltip;
+    private String tooltipFadeSpeed;
+    private Double tooltipOffset;
+    private TooltipAxes tooltipAxes;
+	private Boolean useAxesFormatters;
+	private String formatString;
+	private Integer yvalues;
+    private Boolean bringSeriesToFront;
+    public Boolean getShow() {
+        return show;
+    }
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    public Boolean getShowTooltip() {
+        return showTooltip;
+    }
+    public void setShowTooltip(Boolean showTooltip) {
+        this.showTooltip = showTooltip;
+    }
+    public String getTooltipFormatString() {
+        return tooltipFormatString;
+    }
+    public void setTooltipFormatString(String tooltipFormatString) {
+        this.tooltipFormatString = tooltipFormatString;
+    }
+    public Boolean getShowMarker() {
+        return showMarker;
+    }
+    public void setShowMarker(Boolean showMarker) {
+        this.showMarker = showMarker;
+    }
+    public Double getLineWidthAdjust() {
+        return lineWidthAdjust;
+    }
+    public void setLineWidthAdjust(Double lineWidthAdjust) {
+        this.lineWidthAdjust = lineWidthAdjust;
+    }
+    public Double getSizeAdjust() {
+        return sizeAdjust;
+    }
+    public void setSizeAdjust(Double sizeAdjust) {
+        this.sizeAdjust = sizeAdjust;
+    }
+    public Location getTooltipLocation() {
+        return tooltipLocation;
+    }
+    public void setTooltipLocation(Location tooltipLocation) {
+        this.tooltipLocation = tooltipLocation;
+    }
+    public Boolean getFadeTooltip() {
+        return fadeTooltip;
+    }
+    public void setFadeTooltip(Boolean fadeTooltip) {
+        this.fadeTooltip = fadeTooltip;
+    }
+    public String getTooltipFadeSpeed() {
+        return tooltipFadeSpeed;
+    }
+    public void setTooltipFadeSpeed(String tooltipFadeSpeed) {
+        this.tooltipFadeSpeed = tooltipFadeSpeed;
+    }
+    public Double getTooltipOffset() {
+        return tooltipOffset;
+    }
+    public void setTooltipOffset(Double tooltipOffset) {
+        this.tooltipOffset = tooltipOffset;
+    }
+    public TooltipAxes getTooltipAxes() {
+        return tooltipAxes;
+    }
+    public void setTooltipAxes(TooltipAxes tooltipAxes) {
+        this.tooltipAxes = tooltipAxes;
+    }
+    public Boolean getUseAxesFormatters() {
+        return useAxesFormatters;
+    }
+    public void setUseAxesFormatters(Boolean useAxesFormatters) {
+        this.useAxesFormatters = useAxesFormatters;
+    }
+    public String getFormatString() {
+        return formatString;
+    }
+    public void setFormatString(String formatString) {
+        this.formatString = formatString;
+    }
+    public Integer getYvalues() {
+        return yvalues;
+    }
+    public void setYvalues(Integer yvalues) {
+        this.yvalues = yvalues;
+    }
+    public Boolean getBringSeriesToFront() {
+        return bringSeriesToFront;
+    }
+    public void setBringSeriesToFront(Boolean bringSeriesToFront) {
+        this.bringSeriesToFront = bringSeriesToFront;
+    }
+}
+package org.wicketstuff.jqplot.lib.elements;
+public class Cursor implements Element {
+	private static final long serialVersionUID = -2573578555244857373L;
+	private String style;
+	private Boolean show = true;
+	private Boolean showTooltip;
+	private Boolean followMouse;
+	private Location tooltipLocation;
+	private Integer tooltipOffset;
+	private Boolean showTooltipGridPosition;
+	private Boolean showTooltipUnitPosition;
+	private Boolean showTooltipDataPosition;
+	private String tooltipFormatString;
+	private Boolean useAxesFormatters;
+	private Boolean zoom;
+	private Boolean looseZoom;
+	private Boolean clickReset;
+	private Boolean dblClickReset;
+	private Boolean showVerticalLine;
+	private Boolean showHorizontalLine;
+	private String constrainZoomTo; 
+	private Integer intersectionThreshold;
+	private Boolean showCursorLegend;
+	private String cursorLegendFormatString;
+	private Boolean constrainOutsideZoom;
+	private Boolean showTooltipOutsideZoom;
+	private String tooltipAxisGroups;
+	public String getStyle() {
+		return style;
+	}
+	public void setStyle(String style) {
+		this.style = style;
+	}
+	public Boolean getShow() {
+		return show;
+	}
+	public void setShow(Boolean show) {
+		this.show = show;
+	}
+	public Boolean getShowTooltip() {
+		return showTooltip;
+	}
+	public void setShowTooltip(Boolean showTooltip) {
+		this.showTooltip = showTooltip;
+	}
+	public Boolean getFollowMouse() {
+		return followMouse;
+	}
+	public void setFollowMouse(Boolean followMouse) {
+		this.followMouse = followMouse;
+	}
+	public Location getTooltipLocation() {
+		return tooltipLocation;
+	}
+	public void setTooltipLocation(Location tooltipLocation) {
+		this.tooltipLocation = tooltipLocation;
+	}
+	public Integer getTooltipOffset() {
+		return tooltipOffset;
+	}
+	public void setTooltipOffset(Integer tooltipOffset) {
+		this.tooltipOffset = tooltipOffset;
+	}
+	public Boolean getShowTooltipGridPosition() {
+		return showTooltipGridPosition;
+	}
+	public void setShowTooltipGridPosition(Boolean showTooltipGridPosition) {
+		this.showTooltipGridPosition = showTooltipGridPosition;
+	}
+	public Boolean getShowTooltipUnitPosition() {
+		return showTooltipUnitPosition;
+	}
+	public void setShowTooltipUnitPosition(Boolean showTooltipUnitPosition) {
+		this.showTooltipUnitPosition = showTooltipUnitPosition;
+	}
+	public Boolean getShowTooltipDataPosition() {
+		return showTooltipDataPosition;
+	}
+	public void setShowTooltipDataPosition(Boolean showTooltipDataPosition) {
+		this.showTooltipDataPosition = showTooltipDataPosition;
+	}
+	public String getTooltipFormatString() {
+		return tooltipFormatString;
+	}
+	public void setTooltipFormatString(String tooltipFormatString) {
+		this.tooltipFormatString = tooltipFormatString;
+	}
+	public Boolean getUseAxesFormatters() {
+		return useAxesFormatters;
+	}
+	public void setUseAxesFormatters(Boolean useAxesFormatters) {
+		this.useAxesFormatters = useAxesFormatters;
+	}
+	public Boolean getZoom() {
+		return zoom;
+	}
+	public void setZoom(Boolean zoom) {
+		this.zoom = zoom;
+	}
+	public Boolean getLooseZoom() {
+		return looseZoom;
+	}
+	public void setLooseZoom(Boolean looseZoom) {
+		this.looseZoom = looseZoom;
+	}
+	public Boolean getClickReset() {
+		return clickReset;
+	}
+	public void setClickReset(Boolean clickReset) {
+		this.clickReset = clickReset;
+	}
+	public Boolean getDblClickReset() {
+		return dblClickReset;
+	}
+	public void setDblClickReset(Boolean dblClickReset) {
+		this.dblClickReset = dblClickReset;
+	}
+	public Boolean getShowVerticalLine() {
+		return showVerticalLine;
+	}
+	public void setShowVerticalLine(Boolean showVerticalLine) {
+		this.showVerticalLine = showVerticalLine;
+	}
+	public Boolean getShowHorizontalLine() {
+		return showHorizontalLine;
+	}
+	public void setShowHorizontalLine(Boolean showHorizontalLine) {
+		this.showHorizontalLine = showHorizontalLine;
+	}
+	public String getConstrainZoomTo() {
+		return constrainZoomTo;
+	}
+	public void setConstrainZoomTo(String constrainZoomTo) {
+		this.constrainZoomTo = constrainZoomTo;
+	}
+	public Integer getIntersectionThreshold() {
+		return intersectionThreshold;
+	}
+	public void setIntersectionThreshold(Integer intersectionThreshold) {
+		this.intersectionThreshold = intersectionThreshold;
+	}
+	public Boolean getShowCursorLegend() {
+		return showCursorLegend;
+	}
+	public void setShowCursorLegend(Boolean showCursorLegend) {
+		this.showCursorLegend = showCursorLegend;
+	}
+	public String getCursorLegendFormatString() {
+		return cursorLegendFormatString;
+	}
+	public void setCursorLegendFormatString(String cursorLegendFormatString) {
+		this.cursorLegendFormatString = cursorLegendFormatString;
+	}
+	public Boolean getConstrainOutsideZoom() {
+		return constrainOutsideZoom;
+	}
+	public void setConstrainOutsideZoom(Boolean constrainOutsideZoom) {
+		this.constrainOutsideZoom = constrainOutsideZoom;
+	}
+	public Boolean getShowTooltipOutsideZoom() {
+		return showTooltipOutsideZoom;
+	}
+	public void setShowTooltipOutsideZoom(Boolean showTooltipOutsideZoom) {
+		this.showTooltipOutsideZoom = showTooltipOutsideZoom;
+	}
+	public String getTooltipAxisGroups() {
+		return tooltipAxisGroups;
+	}
+	public void setTooltipAxisGroups(String tooltipAxisGroups) {
+		this.tooltipAxisGroups = tooltipAxisGroups;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.PieData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Location;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.PieRenderer})
+public class PieChart<T extends Number> extends AbstractChart<PieData<T>,String> {
+	private static final long serialVersionUID = -9078771567964143651L;
+	private final ChartConfiguration<String> chartConfig;
+	private PieData<T> data = new PieData<>();
+    public PieChart() {
+        this(null);
+    }
+    public PieChart(String title) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.setLegend(new Legend(true, Location.e))
+    		.seriesDefaultsInstance()
+    		.setRenderer(JqPlotResources.PieRenderer)
+    		.rendererOptionsInstance()
+    		.setShowLables(true);
+    }
+    public void addValue(String label, T value) {
+        data.addValue(new LabeledItem<>(label, value));
+    }
+    public void addValue(LabeledItem<T> value) {
+        data.addValue(value);
+    }
+    public void addValues(@SuppressWarnings("unchecked") LabeledItem<T>... values) {
+        data.addValues(values);
+    }
+    @Override
+	public PieData<T> getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LinedData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = { JqPlotResources.CanvasTextRenderer,
+		JqPlotResources.CategoryAxisRenderer })
+public class LineChart<T extends Number> extends
+		AbstractChart<LinedData<T>, String> {
+	private static final long serialVersionUID = -643105267124184518L;
+	private final ChartConfiguration<String> chartConfig;
+	private LinedData<T> linedData = new LinedData<>();
+	public LineChart() {
+		this(null, null, null);
+	}
+	public LineChart(String title) {
+		this(title, null, null);
+	}
+	public LineChart(String title, String labelX, String labelY) {
+		this.chartConfig = new ChartConfiguration<>();
+		chartConfig
+				.setTitle(new Title(title))
+				.setLabelX(labelX)
+				.setLabelY(labelY)
+				.axesDefaultsInstance()
+				.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer);
+		chartConfig.axesInstance().xAxisInstance().setPad(0F);
+	}
+	public void addValue(T value) {
+		linedData.addValue(value);
+	}
+	public void addValues(@SuppressWarnings("unchecked") T... values) {
+		linedData.addValues(values);
+	}
+	@Override
+	public LinedData<T> getChartData() {
+		return linedData;
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib;
+import com.thoughtworks.xstream.XStream;
+import com.thoughtworks.xstream.converters.MarshallingContext;
+import com.thoughtworks.xstream.converters.enums.EnumConverter;
+import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
+import com.thoughtworks.xstream.io.json.JsonHierarchicalStreamDriver;
+import com.thoughtworks.xstream.io.json.JsonWriter;
+import java.io.Writer;
+import java.util.ArrayList;
+import java.util.List;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+import org.wicketstuff.jqplot.lib.support.JqPlotJsonMapHierarchicalWriter;
+public class JqPlotUtils {
+    public static List<String> retriveJavaScriptResources(Chart<?> chart) {
+        List<String> resources = new ArrayList<String>();
+        Class<?> clazz = chart.getClass();
+        if (clazz.isAnnotationPresent(JqPlotPlugin.class)) {
+            JqPlotResources[] jqPlotResourceses = clazz.getAnnotation(
+                    JqPlotPlugin.class).values();
+            for (JqPlotResources jqPlotResources : jqPlotResourceses) {
+                resources.add(jqPlotResources.getResource());
+            }
+        }
+        if(chart.getChartConfiguration().getHighlighter() != null) {
+            resources.add(JqPlotResources.Highlighter.getResource());
+        }
+        return resources;
+    }
+    public static String createJquery(Chart<?> chart, String divId) {
+        return createJquery(chart, divId, null);
+    }
+    public static String createJquery(Chart<?> chart, String divId, String javaScriptVar) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("$(document).ready(function(){\r\n");
+        if (javaScriptVar != null) {
+            builder.append("   var ").append(javaScriptVar).append("=");
+        }
+        builder.append("   $.jqplot('").append(divId).append("', ");
+        builder.append(chart.getChartData().toJsonString());
+        builder.append(", ");
+        builder.append(jqPlotToJson(chart.getChartConfiguration()));
+        builder.append(");\r\n");
+        builder.append("});\r\n");
+        return builder.toString();
+    }
+    public static String jqPlotToJson(ChartConfiguration<?> jqPlot) {
+        XStream xstream = new XStream(new JsonHierarchicalStreamDriver() {
+            @Override
+            public HierarchicalStreamWriter createWriter(Writer writer) {
+                return new JqPlotJsonMapHierarchicalWriter(writer, JsonWriter.DROP_ROOT_MODE) {
+                    @Override
+                    public void addAttribute(String name, String value) {
+                        if (!name.contains("class")) {
+                            super.addAttribute(name, value);
+                        }
+                    }
+                };
+            }
+        }) {
+        };
+        EnumConverter converter = new EnumConverter() {
+            @Override
+            public void marshal(Object source, HierarchicalStreamWriter writer,
+                    MarshallingContext context) {
+                if(source instanceof JqPlotResources) {
+                    JqPlotResources plugin = (JqPlotResources) source;
+                    writer.setValue(plugin.getClassName());
+                } else {
+                    super.marshal(source, writer, context);
+                }
+            }
+        };
+        converter.canConvert(JqPlotResources.class);
+        xstream.registerConverter(converter);
+        return xstream.toXML(jqPlot);
+    }
+}
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.List;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.AreaFillData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+public class AreaChart<T extends Number> extends AbstractChart<AreaFillData<T>,String> {
+	private static final long serialVersionUID = 6050878600406620553L;
+	private final ChartConfiguration<String> chartConfig;
+	private AreaFillData<T> data = new AreaFillData<>();
+    public AreaChart() {
+        this(null);
+    }
+    public AreaChart(String title) {
+    	chartConfig= new ChartConfiguration<>();
+    	chartConfig
+        	.setTitle(new Title(title))
+        	.setStackSeries(true)
+        	.setShowMarker(false)
+        	.seriesDefaultsInstance()
+        	.setFill(true);
+    	chartConfig
+        	.axesInstance()
+        	.xAxisInstance()
+        	.setRenderer(JqPlotResources.CategoryAxisRenderer);
+    }
+    @Override
+	public AreaFillData<T> getChartData() {
+        return data;
+    }
+    public void addValue(List<T> value) {
+        data.addValue(value);
+    }
+    public void addValues(@SuppressWarnings("unchecked") List<T>... value) {
+        data.addValues(value);
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}

@@ -1,0 +1,1709 @@
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class EndNode extends AbstractSqlNode implements SpaceStrippingNode {
+  protected final String text;
+  public EndNode(String text) {
+    this.text = text;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void clearChildren() {
+    children.clear();
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitEndNode(this, p);
+  }
+}
+package org.seasar.doma.jdbc;
+import org.seasar.doma.internal.jdbc.sql.node.*;
+public interface SqlNodeVisitor<R, P> {
+  R visitAnonymousNode(AnonymousNode node, P p);
+  R visitBindVariableNode(BindVariableNode node, P p);
+  R visitCommentNode(CommentNode node, P p);
+  R visitDistinctNode(DistinctNode node, P p);
+  R visitElseifNode(ElseifNode node, P p);
+  R visitElseNode(ElseNode node, P p);
+  R visitEmbeddedVariableNode(EmbeddedVariableNode node, P p);
+  R visitEndNode(EndNode node, P p);
+  R visitEolNode(EolNode node, P p);
+  R visitExpandNode(ExpandNode node, P p);
+  R visitForBlockNode(ForBlockNode node, P p);
+  R visitForNode(ForNode node, P p);
+  R visitForUpdateClauseNode(ForUpdateClauseNode node, P p);
+  R visitFragmentNode(FragmentNode node, P p);
+  R visitFromClauseNode(FromClauseNode node, P p);
+  R visitGroupByClauseNode(GroupByClauseNode node, P p);
+  R visitHavingClauseNode(HavingClauseNode node, P p);
+  R visitIfBlockNode(IfBlockNode node, P p);
+  R visitIfNode(IfNode node, P p);
+  default R visitInNode(InNode node, P p) {
+    return visitWordNode(node.getWordNode(), p);
+  }
+  R visitLiteralVariableNode(LiteralVariableNode node, P p);
+  R visitLogicalOperatorNode(LogicalOperatorNode node, P p);
+  R visitOptionClauseNode(OptionClauseNode node, P p);
+  R visitOrderByClauseNode(OrderByClauseNode node, P p);
+  R visitOtherNode(OtherNode node, P p);
+  R visitParensNode(ParensNode node, P p);
+  R visitPopulateNode(PopulateNode node, P p);
+  R visitSelectClauseNode(SelectClauseNode node, P p);
+  R visitSelectStatementNode(SelectStatementNode node, P p);
+  R visitSetClauseNode(SetClauseNode node, P p);
+  R visitUpdateClauseNode(UpdateClauseNode node, P p);
+  R visitUpdateStatementNode(UpdateStatementNode node, P p);
+  R visitWhereClauseNode(WhereClauseNode node, P p);
+  R visitWhitespaceNode(WhitespaceNode node, P p);
+  R visitWordNode(WordNode node, P p);
+}
+package org.seasar.doma.jdbc;
+import java.util.List;
+import org.seasar.doma.DomaNullPointerException;
+public interface SqlNode {
+  List<SqlNode> getChildren();
+  <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p);
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ForBlockNode extends AbstractSqlNode implements BlockNode {
+  public static final String HAS_NEXT_SUFFIX = "_has_next";
+  public static final String INDEX_SUFFIX = "_index";
+  protected ForNode forNode;
+  protected EndNode endNode;
+  public ForBlockNode() {}
+  public void setForNode(ForNode forNode) {
+    this.forNode = forNode;
+    appendNodeInternal(forNode);
+  }
+  public ForNode getForNode() {
+    return forNode;
+  }
+  @Override
+  public void setEndNode(EndNode endNode) {
+    this.endNode = endNode;
+    appendNodeInternal(endNode);
+  }
+  public EndNode getEndNode() {
+    return endNode;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  protected void appendNodeInternal(SqlNode child) {
+    if (child != null) {
+      super.appendNode(child);
+    }
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitForBlockNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ForNode extends AbstractSqlNode implements SpaceStrippingNode {
+  protected final SqlLocation location;
+  protected final String identifier;
+  protected final String expression;
+  protected final String text;
+  public ForNode(SqlLocation location, String identifier, String expression, String text) {
+    assertNotNull(location, identifier, expression, text);
+    this.location = location;
+    this.identifier = identifier;
+    this.expression = expression;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getIdentifier() {
+    return identifier;
+  }
+  public String getExpression() {
+    return expression;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void clearChildren() {
+    children.clear();
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitForNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class FragmentNode extends AbstractSqlNode {
+  protected final String fragment;
+  public FragmentNode(String fragment) {
+    assertNotNull(fragment);
+    this.fragment = fragment;
+  }
+  public String getFragment() {
+    return fragment;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitFragmentNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class SetClauseNode extends AbstractClauseNode {
+  public SetClauseNode(String word) {
+    super(word);
+  }
+  public SetClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitSetClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class WordNode extends AbstractSqlNode {
+  protected final String word;
+  protected final boolean reserved;
+  public WordNode(String word) {
+    this(word, false);
+  }
+  public WordNode(String word, boolean reserved) {
+    assertNotNull(word);
+    this.word = word;
+    this.reserved = reserved;
+  }
+  public String getWord() {
+    return word;
+  }
+  public boolean isReserved() {
+    return reserved;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitWordNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class OrderByClauseNode extends AbstractClauseNode implements RemovableClauseNode {
+  public OrderByClauseNode(String word) {
+    super(word);
+  }
+  public OrderByClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitOrderByClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class HavingClauseNode extends AbstractClauseNode implements RemovableClauseNode {
+  public HavingClauseNode(String word) {
+    super(word);
+  }
+  public HavingClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitHavingClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class SelectStatementNode extends AbstractSqlNode implements WhereClauseAwareNode {
+  protected SelectClauseNode selectClauseNode;
+  protected FromClauseNode fromClauseNode;
+  protected WhereClauseNode whereClauseNode;
+  protected GroupByClauseNode groupByClauseNode;
+  protected HavingClauseNode havingClauseNode;
+  protected OrderByClauseNode orderByClauseNode;
+  protected ForUpdateClauseNode forUpdateClauseNode;
+  protected OptionClauseNode optionClauseNode;
+  public SelectClauseNode getSelectClauseNode() {
+    return selectClauseNode;
+  }
+  public void setSelectClauseNode(SelectClauseNode selectClauseNode) {
+    this.selectClauseNode = selectClauseNode;
+    appendNodeInternal(selectClauseNode);
+  }
+  public FromClauseNode getFromClauseNode() {
+    return fromClauseNode;
+  }
+  public void setFromClauseNode(FromClauseNode fromClauseNode) {
+    this.fromClauseNode = fromClauseNode;
+    appendNodeInternal(fromClauseNode);
+  }
+  @Override
+  public WhereClauseNode getWhereClauseNode() {
+    return whereClauseNode;
+  }
+  @Override
+  public void setWhereClauseNode(WhereClauseNode whereClauseNode) {
+    this.whereClauseNode = whereClauseNode;
+    appendNodeInternal(whereClauseNode);
+  }
+  public GroupByClauseNode getGroupByClauseNode() {
+    return groupByClauseNode;
+  }
+  public void setGroupByClauseNode(GroupByClauseNode groupByClauseNode) {
+    this.groupByClauseNode = groupByClauseNode;
+    appendNodeInternal(groupByClauseNode);
+  }
+  public HavingClauseNode getHavingClauseNode() {
+    return havingClauseNode;
+  }
+  public void setHavingClauseNode(HavingClauseNode havingClauseNode) {
+    this.havingClauseNode = havingClauseNode;
+    appendNodeInternal(havingClauseNode);
+  }
+  public OrderByClauseNode getOrderByClauseNode() {
+    return orderByClauseNode;
+  }
+  public void setOrderByClauseNode(OrderByClauseNode orderByClauseNode) {
+    this.orderByClauseNode = orderByClauseNode;
+    appendNodeInternal(orderByClauseNode);
+  }
+  public ForUpdateClauseNode getForUpdateClauseNode() {
+    return forUpdateClauseNode;
+  }
+  public void setForUpdateClauseNode(ForUpdateClauseNode forUpdateClauseNode) {
+    this.forUpdateClauseNode = forUpdateClauseNode;
+    appendNodeInternal(forUpdateClauseNode);
+  }
+  public OptionClauseNode getOptionClauseNode() {
+    return optionClauseNode;
+  }
+  public void setOptionClauseNode(OptionClauseNode optionClauseNode) {
+    this.optionClauseNode = optionClauseNode;
+    appendNodeInternal(optionClauseNode);
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  protected void appendNodeInternal(SqlNode child) {
+    if (child != null) {
+      super.appendNode(child);
+    }
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitSelectStatementNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class WhereClauseNode extends AbstractClauseNode implements RemovableClauseNode {
+  public WhereClauseNode(String word) {
+    super(word);
+  }
+  public WhereClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitWhereClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql;
+import org.seasar.doma.internal.jdbc.sql.node.AnonymousNode;
+import org.seasar.doma.internal.jdbc.sql.node.BindVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.CommentNode;
+import org.seasar.doma.internal.jdbc.sql.node.DistinctNode;
+import org.seasar.doma.internal.jdbc.sql.node.ElseNode;
+import org.seasar.doma.internal.jdbc.sql.node.ElseifNode;
+import org.seasar.doma.internal.jdbc.sql.node.EmbeddedVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.EndNode;
+import org.seasar.doma.internal.jdbc.sql.node.EolNode;
+import org.seasar.doma.internal.jdbc.sql.node.ExpandNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForBlockNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForUpdateClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.FragmentNode;
+import org.seasar.doma.internal.jdbc.sql.node.FromClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.GroupByClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.HavingClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.IfBlockNode;
+import org.seasar.doma.internal.jdbc.sql.node.IfNode;
+import org.seasar.doma.internal.jdbc.sql.node.LiteralVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.LogicalOperatorNode;
+import org.seasar.doma.internal.jdbc.sql.node.OptionClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.OrderByClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.OtherNode;
+import org.seasar.doma.internal.jdbc.sql.node.ParensNode;
+import org.seasar.doma.internal.jdbc.sql.node.PopulateNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectStatementNode;
+import org.seasar.doma.internal.jdbc.sql.node.SetClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.UpdateClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.UpdateStatementNode;
+import org.seasar.doma.internal.jdbc.sql.node.WhereClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.WhitespaceNode;
+import org.seasar.doma.internal.jdbc.sql.node.WordNode;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class SimpleSqlNodeVisitor<R, P> implements SqlNodeVisitor<R, P> {
+  protected R defaultAction(SqlNode node, P p) {
+    return null;
+  }
+  @Override
+  public R visitAnonymousNode(AnonymousNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitBindVariableNode(BindVariableNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitCommentNode(CommentNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitDistinctNode(DistinctNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitElseifNode(ElseifNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitElseNode(ElseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitEmbeddedVariableNode(EmbeddedVariableNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitEndNode(EndNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitEolNode(EolNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitExpandNode(ExpandNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitForBlockNode(ForBlockNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitForNode(ForNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitForUpdateClauseNode(ForUpdateClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitFragmentNode(FragmentNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitFromClauseNode(FromClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitGroupByClauseNode(GroupByClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitHavingClauseNode(HavingClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitIfBlockNode(IfBlockNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitIfNode(IfNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitLiteralVariableNode(LiteralVariableNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitLogicalOperatorNode(LogicalOperatorNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitOptionClauseNode(OptionClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitOrderByClauseNode(OrderByClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitOtherNode(OtherNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitParensNode(ParensNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitPopulateNode(PopulateNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitSelectClauseNode(SelectClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitSelectStatementNode(SelectStatementNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitSetClauseNode(SetClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitUpdateClauseNode(UpdateClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitUpdateStatementNode(UpdateStatementNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitWhereClauseNode(WhereClauseNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitWhitespaceNode(WhitespaceNode node, P p) {
+    return defaultAction(node, p);
+  }
+  @Override
+  public R visitWordNode(WordNode node, P p) {
+    return defaultAction(node, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class SelectClauseNode extends AbstractClauseNode {
+  public SelectClauseNode(String word) {
+    super(word);
+  }
+  public SelectClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitSelectClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class GroupByClauseNode extends AbstractClauseNode implements RemovableClauseNode {
+  public GroupByClauseNode(String word) {
+    super(word);
+  }
+  public GroupByClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public WordNode getWordNode() {
+    return wordNode;
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitGroupByClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class FromClauseNode extends AbstractClauseNode {
+  public FromClauseNode(String word) {
+    super(word);
+  }
+  public FromClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitFromClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ElseifNode extends AbstractSqlNode implements SpaceStrippingNode {
+  protected final SqlLocation location;
+  protected final String expression;
+  protected final String text;
+  public ElseifNode(SqlLocation location, String expression, String text) {
+    assertNotNull(location, expression, text);
+    this.location = location;
+    this.expression = expression;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getExpression() {
+    return expression;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void clearChildren() {
+    children.clear();
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitElseifNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class AnonymousNode extends AbstractSqlNode {
+  public AnonymousNode() {}
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitAnonymousNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class OptionClauseNode extends AbstractClauseNode {
+  public OptionClauseNode(String word) {
+    super(word);
+  }
+  public OptionClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitOptionClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ForUpdateClauseNode extends AbstractClauseNode {
+  public ForUpdateClauseNode(String word) {
+    super(word);
+  }
+  public ForUpdateClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitForUpdateClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ElseNode extends AbstractSqlNode implements SpaceStrippingNode {
+  protected final String text;
+  public ElseNode(String text) {
+    assertNotNull(text);
+    this.text = text;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void clearChildren() {
+    children.clear();
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitElseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class UpdateStatementNode extends AbstractSqlNode implements WhereClauseAwareNode {
+  protected UpdateClauseNode updateClauseNode;
+  protected SetClauseNode setClauseNode;
+  protected WhereClauseNode whereClauseNode;
+  public UpdateClauseNode getUpdateClauseNode() {
+    return updateClauseNode;
+  }
+  public void setUpdateClauseNode(UpdateClauseNode updateClauseNode) {
+    this.updateClauseNode = updateClauseNode;
+    appendNodeInternal(updateClauseNode);
+  }
+  public SetClauseNode getSetClauseNode() {
+    return setClauseNode;
+  }
+  public void setSetClauseNode(SetClauseNode setClauseNode) {
+    this.setClauseNode = setClauseNode;
+    appendNodeInternal(setClauseNode);
+  }
+  @Override
+  public WhereClauseNode getWhereClauseNode() {
+    return whereClauseNode;
+  }
+  @Override
+  public void setWhereClauseNode(WhereClauseNode whereClauseNode) {
+    this.whereClauseNode = whereClauseNode;
+    appendNodeInternal(whereClauseNode);
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  protected void appendNodeInternal(SqlNode child) {
+    if (child != null) {
+      super.appendNode(child);
+    }
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitUpdateStatementNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ParensNode extends AbstractSqlNode {
+  protected final SqlLocation location;
+  protected boolean attachedWithValue;
+  protected boolean empty = true;
+  protected final OtherNode openedParensNode;
+  protected OtherNode closedParensNode;
+  public ParensNode(SqlLocation location) {
+    assertNotNull(location);
+    this.location = location;
+    openedParensNode = OtherNode.of("(");
+  }
+  public boolean isAttachedWithValue() {
+    return attachedWithValue;
+  }
+  public void setAttachedWithValue(boolean attachedWithValue) {
+    this.attachedWithValue = attachedWithValue;
+  }
+  public boolean isEmpty() {
+    return empty;
+  }
+  public void setEmpty(boolean empty) {
+    this.empty = empty;
+  }
+  public OtherNode getOpenedFragmentNode() {
+    return openedParensNode;
+  }
+  public OtherNode getClosedFragmentNode() {
+    return closedParensNode;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public void close() {
+    closedParensNode = OtherNode.of(")");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitParensNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class CommentNode extends AbstractSqlNode {
+  protected final String comment;
+  protected final CommentType commentType;
+  public CommentNode(String comment, CommentType commentType) {
+    assertNotNull(comment, commentType);
+    this.comment = comment;
+    this.commentType = commentType;
+  }
+  public String getComment() {
+    return comment;
+  }
+  public CommentType getCommentType() {
+    return commentType;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitCommentNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class PopulateNode extends AbstractSqlNode {
+  protected final SqlLocation location;
+  protected final String text;
+  public PopulateNode(SqlLocation location, String text) {
+    assertNotNull(location, text);
+    this.location = location;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitPopulateNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class BindVariableNode extends ValueNode {
+  public BindVariableNode(SqlLocation location, String variableName, String text) {
+    super(location, variableName, text);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitBindVariableNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class IfNode extends AbstractSqlNode implements SpaceStrippingNode {
+  protected final SqlLocation location;
+  protected final String expression;
+  protected final String text;
+  public IfNode(SqlLocation location, String expression, String text) {
+    assertNotNull(location, expression, text);
+    this.location = location;
+    this.expression = expression;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getExpression() {
+    return expression;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void clearChildren() {
+    children.clear();
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitIfNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import java.util.HashMap;
+import java.util.Map;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class OtherNode extends AbstractSqlNode {
+  protected static final Map<String, OtherNode> otherNodeMap = new HashMap<>();
+  static {
+    otherNodeMap.put(",", new OtherNode(","));
+    otherNodeMap.put("=", new OtherNode("="));
+    otherNodeMap.put(">", new OtherNode(">"));
+    otherNodeMap.put("<", new OtherNode("<"));
+    otherNodeMap.put("-", new OtherNode("-"));
+    otherNodeMap.put("+", new OtherNode("+"));
+    otherNodeMap.put("*", new OtherNode("*"));
+    otherNodeMap.put("/", new OtherNode("/"));
+    otherNodeMap.put("(", new OtherNode("("));
+    otherNodeMap.put(")", new OtherNode(")"));
+    otherNodeMap.put(";", new OtherNode(";"));
+  }
+  protected final String other;
+  private OtherNode(String other) {
+    assertNotNull(other);
+    this.other = other;
+  }
+  public String getOther() {
+    return other;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitOtherNode(this, p);
+  }
+  public static OtherNode of(String other) {
+    OtherNode otherNode = otherNodeMap.get(other);
+    if (otherNode != null) {
+      return otherNode;
+    }
+    return new OtherNode(other);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class UpdateClauseNode extends AbstractClauseNode {
+  public UpdateClauseNode(String word) {
+    super(word);
+  }
+  public UpdateClauseNode(WordNode wordNode) {
+    super(wordNode);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitUpdateClauseNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class EmbeddedVariableNode extends AbstractSqlNode {
+  protected final SqlLocation location;
+  protected final String variableName;
+  protected final String text;
+  public EmbeddedVariableNode(SqlLocation location, String variableName, String text) {
+    assertNotNull(location, variableName, text);
+    this.location = location;
+    this.variableName = variableName;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getVariableName() {
+    return variableName;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitEmbeddedVariableNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class LogicalOperatorNode extends AbstractSqlNode {
+  protected final WordNode wordNode;
+  public LogicalOperatorNode(String word) {
+    this(new WordNode(word, true));
+  }
+  protected LogicalOperatorNode(WordNode wordNode) {
+    this.wordNode = wordNode;
+  }
+  public WordNode getWordNode() {
+    return wordNode;
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitLogicalOperatorNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class ExpandNode extends AbstractSqlNode {
+  protected final SqlLocation location;
+  protected final String alias;
+  protected final String text;
+  public ExpandNode(SqlLocation location, String alias, String text) {
+    assertNotNull(location, alias, text);
+    this.location = location;
+    this.alias = alias;
+    this.text = text;
+  }
+  public SqlLocation getLocation() {
+    return location;
+  }
+  public String getAlias() {
+    return alias;
+  }
+  public String getText() {
+    return text;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitExpandNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import java.util.HashMap;
+import java.util.Map;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class WhitespaceNode extends AbstractSqlNode implements BlankNode {
+  protected static final Map<String, WhitespaceNode> nodeMap = new HashMap<>();
+  static {
+    nodeMap.put(String.valueOf('\u0009'), new WhitespaceNode('\u0009'));
+    nodeMap.put(String.valueOf('\u000B'), new WhitespaceNode('\u000B'));
+    nodeMap.put(String.valueOf('\u000C'), new WhitespaceNode('\u000C'));
+    nodeMap.put(String.valueOf('\u001C'), new WhitespaceNode('\u001C'));
+    nodeMap.put(String.valueOf('\u001D'), new WhitespaceNode('\u001D'));
+    nodeMap.put(String.valueOf('\u001E'), new WhitespaceNode('\u001E'));
+    nodeMap.put(String.valueOf('\u001F'), new WhitespaceNode('\u001F'));
+    nodeMap.put(String.valueOf('\u0020'), new WhitespaceNode('\u0020'));
+  }
+  protected final String whitespace;
+  private WhitespaceNode(char whitespace) {
+    this(String.valueOf(whitespace));
+  }
+  private WhitespaceNode(String whitespace) {
+    assertNotNull(whitespace);
+    this.whitespace = whitespace;
+  }
+  public String getWhitespace() {
+    return whitespace;
+  }
+  @Override
+  public String getBlank() {
+    return whitespace;
+  }
+  @Override
+  public boolean isEol() {
+    return false;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitWhitespaceNode(this, p);
+  }
+  public static WhitespaceNode of(String whitespace) {
+    WhitespaceNode whitespaceNode = nodeMap.get(whitespace);
+    if (whitespaceNode != null) {
+      return whitespaceNode;
+    }
+    return new WhitespaceNode(whitespace);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class DistinctNode extends AbstractSqlNode {
+  protected final WordNode wordNode;
+  public DistinctNode(String word) {
+    wordNode = new WordNode(word, false);
+  }
+  public WordNode getWordNode() {
+    return wordNode;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitDistinctNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class EolNode extends AbstractSqlNode implements BlankNode {
+  protected final String eol;
+  public EolNode(String eol) {
+    assertNotNull(eol);
+    this.eol = eol;
+  }
+  public String getEol() {
+    return eol;
+  }
+  @Override
+  public String getBlank() {
+    return eol;
+  }
+  @Override
+  public boolean isEol() {
+    return true;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitEolNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class LiteralVariableNode extends ValueNode {
+  public LiteralVariableNode(SqlLocation location, String variableName, String text) {
+    super(location, variableName, text);
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitLiteralVariableNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.sql.node;
+import java.util.ArrayList;
+import java.util.List;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class IfBlockNode extends AbstractSqlNode implements BlockNode {
+  protected IfNode ifNode;
+  protected final List<ElseifNode> elseifNodes = new ArrayList<>();
+  protected ElseNode elseNode;
+  protected EndNode endNode;
+  public IfBlockNode() {}
+  public void setIfNode(IfNode ifNode) {
+    this.ifNode = ifNode;
+    appendNodeInternal(ifNode);
+  }
+  public IfNode getIfNode() {
+    return ifNode;
+  }
+  public void addElseifNode(ElseifNode elseIfNode) {
+    elseifNodes.add(elseIfNode);
+    appendNodeInternal(elseIfNode);
+  }
+  public List<ElseifNode> getElseifNodes() {
+    return elseifNodes;
+  }
+  public void setElseNode(ElseNode elseNode) {
+    this.elseNode = elseNode;
+    appendNodeInternal(elseNode);
+  }
+  public ElseNode getElseNode() {
+    return elseNode;
+  }
+  @Override
+  public void setEndNode(EndNode endNode) {
+    this.endNode = endNode;
+    appendNodeInternal(endNode);
+  }
+  public EndNode getEndNode() {
+    return endNode;
+  }
+  public boolean isElseNodeExistent() {
+    return elseNode != null;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  protected void appendNodeInternal(SqlNode child) {
+    if (child != null) {
+      super.appendNode(child);
+    }
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitIfBlockNode(this, p);
+  }
+}
+package org.seasar.doma.internal.jdbc.dialect;
+import java.util.Optional;
+import org.seasar.doma.internal.jdbc.sql.SimpleSqlNodeVisitor;
+import org.seasar.doma.internal.jdbc.sql.node.AnonymousNode;
+import org.seasar.doma.internal.jdbc.sql.node.DistinctNode;
+import org.seasar.doma.internal.jdbc.sql.node.FragmentNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectStatementNode;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class Mssql2008PagingTransformer extends StandardPagingTransformer {
+  public Mssql2008PagingTransformer(long offset, long limit) {
+    super(offset, limit);
+  }
+  @Override
+  public SqlNode transform(SqlNode sqlNode) {
+    AnonymousNode result = new AnonymousNode();
+    for (SqlNode child : sqlNode.getChildren()) {
+      result.appendNode(child.accept(this, null));
+    }
+    return result;
+  }
+  @Override
+  public SqlNode visitSelectStatementNode(SelectStatementNode node, Void p) {
+    if (processed) {
+      return node;
+    }
+    if (offset > 0) {
+      return super.visitSelectStatementNode(node, p);
+    }
+    processed = true;
+    return appendTopNode(node);
+  }
+  protected SqlNode appendTopNode(SelectStatementNode node) {
+    SelectClauseNode select = new SelectClauseNode(node.getSelectClauseNode().getWordNode());
+    FragmentNode top = new FragmentNode(" top (" + limit + ")");
+    Optional<SqlNode> optionalDistinctNode = getDistinctNode(node.getSelectClauseNode());
+    if (optionalDistinctNode.isPresent()) {
+      SqlNode distinctNode = optionalDistinctNode.get();
+      for (SqlNode child : node.getSelectClauseNode().getChildren()) {
+        select.appendNode(child);
+        if (child == distinctNode) {
+          select.appendNode(top);
+        }
+      }
+    } else {
+      select.appendNode(top);
+      for (SqlNode child : node.getSelectClauseNode().getChildren()) {
+        select.appendNode(child);
+      }
+    }
+    return createSelectStatementNode(node, select);
+  }
+  private static SelectStatementNode createSelectStatementNode(
+      SelectStatementNode node, SelectClauseNode select) {
+    SelectStatementNode result = new SelectStatementNode();
+    result.setSelectClauseNode(select);
+    result.setFromClauseNode(node.getFromClauseNode());
+    result.setWhereClauseNode(node.getWhereClauseNode());
+    result.setGroupByClauseNode(node.getGroupByClauseNode());
+    result.setHavingClauseNode(node.getHavingClauseNode());
+    result.setOrderByClauseNode(node.getOrderByClauseNode());
+    result.setForUpdateClauseNode(node.getForUpdateClauseNode());
+    result.setOptionClauseNode(node.getOptionClauseNode());
+    return result;
+  }
+  private Optional<SqlNode> getDistinctNode(SelectClauseNode node) {
+    SqlNodeVisitor<Boolean, Void> visitor =
+        new SimpleSqlNodeVisitor<Boolean, Void>() {
+          @Override
+          protected Boolean defaultAction(SqlNode node, Void o) {
+            return false;
+          }
+          @Override
+          public Boolean visitDistinctNode(DistinctNode node, Void o) {
+            return true;
+          }
+        };
+    return node.getChildren().stream().filter(child -> child.accept(visitor, null)).findFirst();
+  }
+}
+package org.seasar.doma.internal.jdbc.sql;
+import static org.seasar.doma.internal.util.AssertionUtil.assertNotNull;
+import static org.seasar.doma.internal.util.AssertionUtil.assertUnreachable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.ListIterator;
+import java.util.StringJoiner;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import org.seasar.doma.internal.expr.EvaluationResult;
+import org.seasar.doma.internal.expr.ExpressionEvaluator;
+import org.seasar.doma.internal.expr.ExpressionException;
+import org.seasar.doma.internal.expr.ExpressionParser;
+import org.seasar.doma.internal.expr.Value;
+import org.seasar.doma.internal.expr.node.ExpressionNode;
+import org.seasar.doma.internal.jdbc.scalar.Scalar;
+import org.seasar.doma.internal.jdbc.scalar.ScalarException;
+import org.seasar.doma.internal.jdbc.scalar.Scalars;
+import org.seasar.doma.internal.jdbc.sql.node.AnonymousNode;
+import org.seasar.doma.internal.jdbc.sql.node.BindVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.BlankNode;
+import org.seasar.doma.internal.jdbc.sql.node.CommentNode;
+import org.seasar.doma.internal.jdbc.sql.node.CommentType;
+import org.seasar.doma.internal.jdbc.sql.node.DistinctNode;
+import org.seasar.doma.internal.jdbc.sql.node.ElseNode;
+import org.seasar.doma.internal.jdbc.sql.node.ElseifNode;
+import org.seasar.doma.internal.jdbc.sql.node.EmbeddedVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.EndNode;
+import org.seasar.doma.internal.jdbc.sql.node.EolNode;
+import org.seasar.doma.internal.jdbc.sql.node.ExpandNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForBlockNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForNode;
+import org.seasar.doma.internal.jdbc.sql.node.ForUpdateClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.FragmentNode;
+import org.seasar.doma.internal.jdbc.sql.node.FromClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.GroupByClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.HavingClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.IfBlockNode;
+import org.seasar.doma.internal.jdbc.sql.node.IfNode;
+import org.seasar.doma.internal.jdbc.sql.node.LiteralVariableNode;
+import org.seasar.doma.internal.jdbc.sql.node.LogicalOperatorNode;
+import org.seasar.doma.internal.jdbc.sql.node.OptionClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.OrderByClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.OtherNode;
+import org.seasar.doma.internal.jdbc.sql.node.ParensNode;
+import org.seasar.doma.internal.jdbc.sql.node.PopulateNode;
+import org.seasar.doma.internal.jdbc.sql.node.RemovableClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.SelectStatementNode;
+import org.seasar.doma.internal.jdbc.sql.node.SetClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.SqlLocation;
+import org.seasar.doma.internal.jdbc.sql.node.UpdateClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.UpdateStatementNode;
+import org.seasar.doma.internal.jdbc.sql.node.ValueNode;
+import org.seasar.doma.internal.jdbc.sql.node.WhereClauseNode;
+import org.seasar.doma.internal.jdbc.sql.node.WhitespaceNode;
+import org.seasar.doma.internal.jdbc.sql.node.WordNode;
+import org.seasar.doma.internal.util.IntegerUtil;
+import org.seasar.doma.internal.util.PaddingIterator;
+import org.seasar.doma.internal.util.SqlTokenUtil;
+import org.seasar.doma.internal.util.StringUtil;
+import org.seasar.doma.jdbc.Config;
+import org.seasar.doma.jdbc.InParameter;
+import org.seasar.doma.jdbc.JdbcException;
+import org.seasar.doma.jdbc.PreparedSql;
+import org.seasar.doma.jdbc.SqlBuilderSettings;
+import org.seasar.doma.jdbc.SqlKind;
+import org.seasar.doma.jdbc.SqlLogFormattingFunction;
+import org.seasar.doma.jdbc.SqlLogType;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+import org.seasar.doma.message.Message;
+import org.seasar.doma.wrapper.WrapperVisitor;
+public class NodePreparedSqlBuilder
+    implements SqlNodeVisitor<Void, NodePreparedSqlBuilder.Context> {
+  protected static final Pattern clauseKeywordPattern =
+      Pattern.compile(
+          "(select|from|where|group by|having|order by|for update)", Pattern.CASE_INSENSITIVE);
+  protected final Config config;
+  protected final SqlBuilderSettings sqlBuilderSettings;
+  protected final SqlKind kind;
+  protected final String sqlFilePath;
+  protected final ExpressionEvaluator evaluator;
+  protected final SqlLogType sqlLogType;
+  protected final Function<ExpandNode, List<String>> columnsExpander;
+  protected final BiConsumer<PopulateNode, SqlContext> valuesPopulater;
+  protected final BiFunction<ExpandNode, String, List<String>> aggregateColumnsExpander;
+  public NodePreparedSqlBuilder(Config config, SqlKind kind, String sqlFilePath) {
+    this(
+        config,
+        kind,
+        sqlFilePath,
+        new ExpressionEvaluator(
+            config.getDialect().getExpressionFunctions(), config.getClassHelper()),
+        SqlLogType.FORMATTED);
+  }
+  public NodePreparedSqlBuilder(
+      Config config,
+      SqlKind kind,
+      String sqlFilePath,
+      ExpressionEvaluator evaluator,
+      SqlLogType sqlLogType) {
+    this(
+        config,
+        kind,
+        sqlFilePath,
+        evaluator,
+        sqlLogType,
+        node -> {
+          throw new UnsupportedOperationException("The '%expand' directive is not supported.");
+        });
+  }
+  public NodePreparedSqlBuilder(
+      Config config,
+      SqlKind kind,
+      String sqlFilePath,
+      ExpressionEvaluator evaluator,
+      SqlLogType sqlLogType,
+      Function<ExpandNode, List<String>> columnsExpander) {
+    this(
+        config,
+        kind,
+        sqlFilePath,
+        evaluator,
+        sqlLogType,
+        columnsExpander,
+        (node, context) -> {
+          throw new UnsupportedOperationException("The '%populate' directive is not supported.");
+        });
+  }
+  public NodePreparedSqlBuilder(
+      Config config,
+      SqlKind kind,
+      String sqlFilePath,
+      ExpressionEvaluator evaluator,
+      SqlLogType sqlLogType,
+      Function<ExpandNode, List<String>> columnsExpander,
+      BiConsumer<PopulateNode, SqlContext> valuesPopulater) {
+    this(
+        config,
+        kind,
+        sqlFilePath,
+        evaluator,
+        sqlLogType,
+        columnsExpander,
+        valuesPopulater,
+        (node, alias) -> Collections.emptyList());
+  }
+  public NodePreparedSqlBuilder(
+      Config config,
+      SqlKind kind,
+      String sqlFilePath,
+      ExpressionEvaluator evaluator,
+      SqlLogType sqlLogType,
+      Function<ExpandNode, List<String>> columnsExpander,
+      BiConsumer<PopulateNode, SqlContext> valuesPopulater,
+      BiFunction<ExpandNode, String, List<String>> aggregateColumnsExpander) {
+    assertNotNull(
+        config, kind, evaluator, columnsExpander, valuesPopulater, aggregateColumnsExpander);
+    this.config = config;
+    this.sqlBuilderSettings = config.getSqlBuilderSettings();
+    this.kind = kind;
+    this.sqlFilePath = sqlFilePath;
+    this.evaluator = evaluator;
+    this.sqlLogType = sqlLogType;
+    this.columnsExpander = columnsExpander;
+    this.valuesPopulater = valuesPopulater;
+    this.aggregateColumnsExpander = aggregateColumnsExpander;
+  }
+  public PreparedSql build(SqlNode sqlNode, Function<String, String> commenter) {
+    assertNotNull(sqlNode, commenter);
+    Context context = createContext(config, evaluator);
+    sqlNode.accept(this, context);
+    return new PreparedSql(
+        kind,
+        context.getSqlBuf(),
+        context.getFormattedSqlBuf(),
+        sqlFilePath,
+        context.getParameters(),
+        sqlLogType,
+        commenter);
+  }
+  @Override
+  public Void visitAnonymousNode(AnonymousNode node, Context p) {
+    for (SqlNode child : node.getChildren()) {
+      child.accept(this, p);
+    }
+    return null;
+  }
+  @Override
+  public Void visitOtherNode(OtherNode node, Context p) {
+    p.setAvailable(true);
+    String other = node.getOther();
+    p.appendRawSql(other);
+    p.appendFormattedSql(other);
+    return null;
+  }
+  @Override
+  public Void visitWhitespaceNode(WhitespaceNode node, Context p) {
+    p.appendWhitespaceNode(node);
+    return null;
+  }
+  @Override
+  public Void visitCommentNode(CommentNode node, Context p) {
+    String comment = node.getComment();
+    CommentType commentType = node.getCommentType();
+    switch (commentType) {
+      case BLOCK:
+        if (!sqlBuilderSettings.shouldRemoveBlockComment(comment)) {
+          p.appendRawSql(comment);
+          p.appendFormattedSql(comment);
+        }
+        break;
+      case LINE:
+        if (!sqlBuilderSettings.shouldRemoveLineComment(comment)) {
+          p.appendRawSql(comment);
+          p.appendFormattedSql(comment);
+        }
+        break;
+    }
+    return null;
+  }
+  @Override
+  public Void visitBindVariableNode(BindVariableNode node, Context p) {
+    return visitValueNode(node, p, p::addBindValue);
+  }
+  @Override
+  public Void visitLiteralVariableNode(final LiteralVariableNode node, Context p) {
+    Consumer<Scalar<?, ?>> validator =
+        (scalar) -> {
+          Object value = scalar.get();
+          if (value == null) {
+            return;
+          }
+          String text = value.toString();
+          if (text.indexOf('\'') > -1) {
+            SqlLocation location = node.getLocation();
+            throw new JdbcException(
+                Message.DOMA2224,
+                location.getSql(),
+                location.getLineNumber(),
+                location.getPosition(),
+                node.getVariableName());
+          }
+        };
+    return visitValueNode(node, p, validator.andThen(p::addLiteralValue));
+  }
+  @SuppressWarnings("SameReturnValue")
+  protected Void visitValueNode(ValueNode node, Context p, Consumer<Scalar<?, ?>> valueHandler) {
+    SqlLocation location = node.getLocation();
+    String name = node.getVariableName();
+    EvaluationResult result = p.evaluate(location, name);
+    Object value = result.getValue();
+    Class<?> valueClass = result.getValueClass();
+    p.setAvailable(true);
+    if (node.isWordNodeIgnored()) {
+      handleSingleValueNode(node, p, value, valueClass, valueHandler);
+    } else if (node.isParensNodeIgnored()) {
+      ParensNode parensNode = node.getParensNode();
+      OtherNode openedFragmentNode = parensNode.getOpenedFragmentNode();
+      openedFragmentNode.accept(this, p);
+      if (Iterable.class.isAssignableFrom(valueClass)) {
+        handleIterableValueNode(node, p, (Iterable<?>) value, valueClass, valueHandler);
+      } else if (valueClass.isArray()) {
+        handleIterableValueNode(node, p, Arrays.asList((Object[]) value), valueClass, valueHandler);
+      } else {
+        throw new JdbcException(
+            Message.DOMA2112,
+            location.getSql(),
+            location.getLineNumber(),
+            location.getPosition(),
+            node.getVariableName(),
+            valueClass);
+      }
+      OtherNode closedFragmentNode = parensNode.getClosedFragmentNode();
+      closedFragmentNode.accept(this, p);
+    } else {
+      assertUnreachable();
+    }
+    return null;
+  }
+  @Override
+  public Void visitEmbeddedVariableNode(EmbeddedVariableNode node, Context p) {
+    SqlLocation location = node.getLocation();
+    String name = node.getVariableName();
+    EvaluationResult result = p.evaluate(location, name);
+    Object value = result.getValue();
+    if (value != null) {
+      String fragment = value.toString();
+      if (fragment.indexOf('\'') > -1) {
+        throw new JdbcException(
+            Message.DOMA2116,
+            location.getSql(),
+            location.getLineNumber(),
+            location.getPosition(),
+            node.getVariableName());
+      }
+      if (fragment.indexOf(';') > -1) {
+        throw new JdbcException(
+            Message.DOMA2117,
+            location.getSql(),
+            location.getLineNumber(),
+            location.getPosition(),
+            node.getVariableName());
+      }
+      if (fragment.contains("--")) {
+        throw new JdbcException(
+            Message.DOMA2122,
+            location.getSql(),
+            location.getLineNumber(),
+            location.getPosition(),
+            node.getVariableName());
+      }
+      if (fragment.contains("
+package org.seasar.doma.internal.jdbc.sql.node;
+import org.seasar.doma.DomaNullPointerException;
+import org.seasar.doma.jdbc.JdbcUnsupportedOperationException;
+import org.seasar.doma.jdbc.SqlNode;
+import org.seasar.doma.jdbc.SqlNodeVisitor;
+public class InNode extends AbstractSqlNode {
+  protected final WordNode wordNode;
+  public InNode(String word) {
+    wordNode = new WordNode(word, false);
+  }
+  public WordNode getWordNode() {
+    return wordNode;
+  }
+  @Override
+  public void appendNode(SqlNode child) {
+    throw new JdbcUnsupportedOperationException(getClass().getName(), "addNode");
+  }
+  @Override
+  public <R, P> R accept(SqlNodeVisitor<R, P> visitor, P p) {
+    if (visitor == null) {
+      throw new DomaNullPointerException("visitor");
+    }
+    return visitor.visitInNode(this, p);
+  }
+}

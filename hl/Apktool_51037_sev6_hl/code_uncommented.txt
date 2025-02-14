@@ -1,0 +1,2872 @@
+package brut.androlib.res.decoder;
+import android.util.TypedValue;
+import brut.androlib.Config;
+import brut.androlib.apk.ApkInfo;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.*;
+import brut.androlib.res.data.arsc.*;
+import brut.androlib.res.data.value.*;
+import brut.util.ExtDataInputStream;
+import org.apache.commons.lang3.tuple.Pair;
+import java.io.*;
+import java.math.BigInteger;
+import java.util.*;
+import java.util.logging.Logger;
+public class ARSCDecoder {
+    private static final Logger LOGGER = Logger.getLogger(ARSCDecoder.class.getName());
+    private static final short ENTRY_FLAG_COMPLEX = 0x0001;
+    private static final short ENTRY_FLAG_PUBLIC = 0x0002;
+    private static final short ENTRY_FLAG_WEAK = 0x0004;
+    private static final short ENTRY_FLAG_COMPACT = 0x0008;
+    private static final short TABLE_TYPE_FLAG_SPARSE = 0x01;
+    private static final short TABLE_TYPE_FLAG_OFFSET16 = 0x02;
+    private static final int KNOWN_CONFIG_BYTES = 64;
+    private static final int NO_ENTRY = 0xFFFFFFFF;
+    private static final int NO_ENTRY_OFFSET16 = 0xFFFF;
+    private final ExtDataInputStream mIn;
+    private final ResTable mResTable;
+    private final List<FlagsOffset> mFlagsOffsets;
+    private final boolean mKeepBroken;
+    private final Config mConfig;
+    private final HashMap<Integer, Integer> mMissingResSpecMap;
+    private final HashMap<Integer, ResTypeSpec> mResTypeSpecs;
+    private ARSCHeader mHeader;
+    private StringBlock mTableStrings;
+    private StringBlock mTypeNames;
+    private StringBlock mSpecNames;
+    private ResPackage mPkg;
+    private ResTypeSpec mTypeSpec;
+    private ResType mType;
+    private int mResId;
+    private int mTypeIdOffset;
+    public ARSCDecoder(InputStream in, ResTable resTable, boolean storeFlagsOffsets, boolean keepBroken) {
+        mIn = ExtDataInputStream.littleEndian(in);
+        mResTable = resTable;
+        mFlagsOffsets = storeFlagsOffsets ? new ArrayList<>() : null;
+        mKeepBroken = keepBroken;
+        mConfig = resTable.getConfig();
+        mMissingResSpecMap = new LinkedHashMap<>();
+        mResTypeSpecs = new HashMap<>();
+    }
+    public ARSCData decode() throws AndrolibException {
+        try {
+            ResPackage[] pkgs = readResourceTable();
+            FlagsOffset[] flagsOffsets = mFlagsOffsets != null ? mFlagsOffsets.toArray(new FlagsOffset[0]) : null;
+            return new ARSCData(pkgs, flagsOffsets);
+        } catch (IOException ex) {
+            throw new AndrolibException("Could not decode arsc file", ex);
+        }
+    }
+    private ResPackage[] readResourceTable() throws AndrolibException, IOException {
+        Set<ResPackage> pkgs = new LinkedHashSet<>();
+        ResTypeSpec typeSpec;
+        int chunkNumber = 1;
+        chunkLoop:
+        for (;;) {
+            nextChunk();
+            LOGGER.fine(String.format(
+                "Chunk #%d start=0x%08x type=0x%04x chunkSize=0x%08x",
+                chunkNumber++, mIn.position(), mHeader.type, mHeader.chunkSize
+            ));
+            switch (mHeader.type) {
+                case ARSCHeader.RES_NULL_TYPE:
+                    readUnknownChunk();
+                    break;
+                case ARSCHeader.RES_STRING_POOL_TYPE:
+                    readStringPoolChunk();
+                    break;
+                case ARSCHeader.RES_TABLE_TYPE:
+                    readTableChunk();
+                    break;
+                case ARSCHeader.XML_TYPE_PACKAGE:
+                    mTypeIdOffset = 0;
+                    pkgs.add(readTablePackage());
+                    break;
+                case ARSCHeader.XML_TYPE_TYPE:
+                    readTableType();
+                    break;
+                case ARSCHeader.XML_TYPE_SPEC_TYPE:
+                    typeSpec = readTableSpecType();
+                    addTypeSpec(typeSpec);
+                    break;
+                case ARSCHeader.XML_TYPE_LIBRARY:
+                    readLibraryType();
+                    break;
+                case ARSCHeader.XML_TYPE_OVERLAY:
+                    readOverlaySpec();
+                    break;
+                case ARSCHeader.XML_TYPE_OVERLAY_POLICY:
+                    readOverlayPolicySpec();
+                    break;
+                case ARSCHeader.XML_TYPE_STAGED_ALIAS:
+                    readStagedAliasSpec();
+                    break;
+                default:
+                    if (mHeader.type != ARSCHeader.RES_NONE_TYPE) {
+                        LOGGER.severe(String.format("Unknown chunk type: %04x", mHeader.type));
+                    }
+                    break chunkLoop;
+            }
+        }
+        if (mConfig.getDecodeResolveMode() == Config.DECODE_RES_RESOLVE_DUMMY
+                && mPkg != null && mPkg.getResSpecCount() > 0) {
+            addMissingResSpecs();
+        }
+        return pkgs.toArray(new ResPackage[0]);
+    }
+    private void readStringPoolChunk() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.RES_STRING_POOL_TYPE);
+        mTableStrings = StringBlock.readWithoutChunk(mIn, mHeader.startPosition, mHeader.headerSize, mHeader.chunkSize);
+    }
+    private void readTableChunk() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.RES_TABLE_TYPE);
+        mIn.skipInt(); 
+        mHeader.checkForUnreadHeader(mIn);
+    }
+    private void readUnknownChunk() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.RES_NULL_TYPE);
+        mHeader.checkForUnreadHeader(mIn);
+        LOGGER.warning("Skipping unknown chunk data of size " + mHeader.chunkSize);
+        mHeader.skipChunk(mIn);
+    }
+    private ResPackage readTablePackage() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_PACKAGE);
+        int id = mIn.readInt();
+        if (id == 0) {
+            id = 2;
+            if (mResTable.getPackageOriginal() == null && mResTable.getPackageRenamed() == null) {
+                mResTable.setSharedLibrary(true);
+            }
+        }
+        String name = mIn.readNullEndedString(128, true);
+        mIn.skipInt(); 
+        mIn.skipInt(); 
+        mIn.skipInt(); 
+        mIn.skipInt(); 
+        int splitHeaderSize = 2 + 2 + 4 + 4 + (2 * 128) + (4 * 5); 
+        if (mHeader.headerSize == splitHeaderSize) {
+            mTypeIdOffset = mIn.readInt();
+        }
+        if (mTypeIdOffset > 0) {
+            LOGGER.warning("Please report this application to Apktool for a fix: https:
+        }
+        mHeader.checkForUnreadHeader(mIn);
+        mTypeNames = StringBlock.readWithChunk(mIn);
+        mSpecNames = StringBlock.readWithChunk(mIn);
+        mResId = id << 24;
+        mPkg = new ResPackage(mResTable, id, name);
+        return mPkg;
+    }
+    private void readLibraryType() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_LIBRARY);
+        int libraryCount = mIn.readInt();
+        int packageId;
+        String packageName;
+        mHeader.checkForUnreadHeader(mIn);
+        for (int i = 0; i < libraryCount; i++) {
+            packageId = mIn.readInt();
+            packageName = mIn.readNullEndedString(128, true);
+            LOGGER.info(String.format("Decoding Shared Library (%s), pkgId: %d", packageName, packageId));
+        }
+    }
+    private void readStagedAliasSpec() throws IOException {
+        int count = mIn.readInt();
+        mHeader.checkForUnreadHeader(mIn);
+        for (int i = 0; i < count; i++) {
+            LOGGER.fine(String.format("Staged alias: 0x%08x -> 0x%08x", mIn.readInt(), mIn.readInt()));
+        }
+    }
+    private void readOverlaySpec() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_OVERLAY);
+        String name = mIn.readNullEndedString(256, true);
+        String actor = mIn.readNullEndedString(256, true);
+        mHeader.checkForUnreadHeader(mIn);
+        LOGGER.fine(String.format("Overlay name: \"%s\", actor: \"%s\")", name, actor));
+    }
+    private void readOverlayPolicySpec() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_OVERLAY_POLICY);
+        mIn.skipInt(); 
+        int count = mIn.readInt();
+        mHeader.checkForUnreadHeader(mIn);
+        for (int i = 0; i < count; i++) {
+            LOGGER.fine(String.format("Skipping overlay (%h)", mIn.readInt()));
+        }
+    }
+    private ResTypeSpec readTableSpecType() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_SPEC_TYPE);
+        int id = mIn.readUnsignedByte();
+        mIn.skipBytes(1); 
+        mIn.skipBytes(2); 
+        int entryCount = mIn.readInt();
+        if (mFlagsOffsets != null) {
+            mFlagsOffsets.add(new FlagsOffset((int) mIn.position(), entryCount));
+        }
+        mHeader.checkForUnreadHeader(mIn);
+        mIn.skipBytes(entryCount * 4); 
+        mTypeSpec = new ResTypeSpec(mTypeNames.getString(id - 1), id);
+        mPkg.addType(mTypeSpec);
+        return mTypeSpec;
+    }
+    private ResType readTableType() throws AndrolibException, IOException {
+        checkChunkType(ARSCHeader.XML_TYPE_TYPE);
+        int typeId = mIn.readUnsignedByte() - mTypeIdOffset;
+        if (mResTypeSpecs.containsKey(typeId)) {
+            mTypeSpec = mResTypeSpecs.get(typeId);
+        } else {
+            mTypeSpec = new ResTypeSpec(mTypeNames.getString(typeId - 1), typeId);
+            addTypeSpec(mTypeSpec);
+            mPkg.addType(mTypeSpec);
+        }
+        mResId = (0xff000000 & mResId) | mTypeSpec.getId() << 16;
+        int typeFlags = mIn.readByte();
+        mIn.skipBytes(2); 
+        int entryCount = mIn.readInt();
+        int entriesStart = mIn.readInt();
+        ResConfigFlags flags = readConfigFlags();
+        mHeader.checkForUnreadHeader(mIn);
+        boolean isOffset16 = (typeFlags & TABLE_TYPE_FLAG_OFFSET16) != 0;
+        boolean isSparse = (typeFlags & TABLE_TYPE_FLAG_SPARSE) != 0;
+        if (isSparse && !mResTable.isMainPkgLoaded()) {
+            mResTable.setSparseResources(true);
+        }
+        HashMap<Integer, Integer> entryOffsetMap = new LinkedHashMap<>();
+        for (int i = 0; i < entryCount; i++) {
+            if (isSparse) {
+                entryOffsetMap.put(mIn.readUnsignedShort(), mIn.readUnsignedShort());
+            } else if (isOffset16) {
+                entryOffsetMap.put(i, mIn.readUnsignedShort());
+            } else {
+                entryOffsetMap.put(i, mIn.readInt());
+            }
+        }
+        if (flags.isInvalid()) {
+            String resName = mTypeSpec.getName() + flags.getQualifiers();
+            if (mKeepBroken) {
+                LOGGER.warning("Invalid config flags detected: " + resName);
+            } else {
+                LOGGER.warning("Invalid config flags detected. Dropping resources: " + resName);
+            }
+        }
+        mType = !flags.isInvalid() || mKeepBroken ? mPkg.getOrCreateConfig(flags) : null;
+        int noEntry = isOffset16 ? NO_ENTRY_OFFSET16 : NO_ENTRY;
+        long entriesStartAligned = mHeader.startPosition + entriesStart;
+        if (mIn.position() < entriesStartAligned) {
+            long bytesSkipped = mIn.skip(entriesStartAligned - mIn.position());
+            LOGGER.fine(String.format("Skipping: %d byte(s) to align with ResTable_entry start.", bytesSkipped));
+        }
+        for (int i : entryOffsetMap.keySet()) {
+            mResId = (mResId & 0xffff0000) | i;
+            int offset = entryOffsetMap.get(i);
+            if (offset == noEntry) {
+                mMissingResSpecMap.put(mResId, typeId);
+                continue;
+            }
+            if (mIn.position() == mHeader.endPosition) {
+                int remainingEntries = entryCount - i;
+                LOGGER.warning(String.format("End of chunk hit. Skipping remaining entries (%d) in type: %s",
+                    remainingEntries, mTypeSpec.getName()
+                ));
+                break;
+            }
+            EntryData entryData = readEntryData();
+            if (entryData != null) {
+                readEntry(entryData);
+            } else {
+                mMissingResSpecMap.put(mResId, typeId);
+            }
+        }
+        if (mIn.position() < mHeader.endPosition) {
+            long bytesSkipped = mIn.skip(mHeader.endPosition - mIn.position());
+            LOGGER.warning("Unknown data detected. Skipping: " + bytesSkipped + " byte(s)");
+        }
+        return mType;
+    }
+    private EntryData readEntryData() throws AndrolibException, IOException {
+        int size = mIn.readUnsignedShort();
+        short flags = mIn.readShort();
+        boolean isComplex = (flags & ENTRY_FLAG_COMPLEX) != 0;
+        boolean isCompact = (flags & ENTRY_FLAG_COMPACT) != 0;
+        int specNamesId = mIn.readInt();
+        if (specNamesId == NO_ENTRY && !isCompact) {
+            return null;
+        }
+        if (isCompact && !mResTable.isMainPkgLoaded()) {
+            mResTable.setCompactEntries(true);
+        }
+        ResValue value;
+        if (isCompact) {
+            byte type = (byte) ((flags >> 8) & 0xFF);
+            value = readCompactValue(type, specNamesId);
+            specNamesId = size;
+        } else if (isComplex) {
+            value = readComplexEntry();
+        } else {
+            value = readValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        EntryData entryData = new EntryData();
+        entryData.flags = flags;
+        entryData.specNamesId = specNamesId;
+        entryData.value = value;
+        return entryData;
+    }
+    private void readEntry(EntryData entryData) throws AndrolibException {
+        int specNamesId = entryData.specNamesId;
+        ResValue value = entryData.value;
+        if (mTypeSpec.isString() && value instanceof ResFileValue) {
+            value = new ResStringValue(value.toString(), ((ResFileValue) value).getRawIntValue());
+        }
+        if (mType == null) {
+            return;
+        }
+        ResID resId = new ResID(mResId);
+        ResResSpec spec;
+        if (mPkg.hasResSpec(resId)) {
+            spec = mPkg.getResSpec(resId);
+        } else {
+            spec = new ResResSpec(resId, mSpecNames.getString(specNamesId), mPkg, mTypeSpec);
+            mPkg.addResSpec(spec);
+            mTypeSpec.addResSpec(spec);
+        }
+        ResResource res = new ResResource(mType, spec, value);
+        try {
+            mType.addResource(res);
+            spec.addResource(res);
+        } catch (AndrolibException ex) {
+            if (mKeepBroken) {
+                mType.addResource(res, true);
+                spec.addResource(res, true);
+                LOGGER.warning(String.format("Duplicate Resource Detected. Ignoring duplicate: %s", res));
+            } else {
+                throw ex;
+            }
+        }
+    }
+    private ResBagValue readComplexEntry() throws AndrolibException, IOException {
+        int parentId = mIn.readInt();
+        int count = mIn.readInt();
+        ResValueFactory factory = mPkg.getValueFactory();
+        Pair<Integer, ResScalarValue>[] items = new Pair[count];
+        ResIntBasedValue resValue;
+        int resId;
+        for (int i = 0; i < count; i++) {
+            resId = mIn.readInt();
+            resValue = readValue();
+            if (resValue == null) {
+                continue;
+            }
+            if (!(resValue instanceof ResScalarValue)) {
+                resValue = new ResStringValue(resValue.toString(), resValue.getRawIntValue());
+            }
+            items[i] = Pair.of(resId, (ResScalarValue) resValue);
+        }
+        return factory.bagFactory(parentId, items, mTypeSpec);
+    }
+    private ResIntBasedValue readCompactValue(byte type, int data) throws AndrolibException {
+        return type == TypedValue.TYPE_STRING
+            ? mPkg.getValueFactory().factory(mTableStrings.getHTML(data), data)
+            : mPkg.getValueFactory().factory(type, data, null);
+    }
+    private ResIntBasedValue readValue() throws AndrolibException, IOException {
+        short size = mIn.readShort();
+        if (size < 8) {
+            return null;
+        }
+        mIn.skipCheckByte((byte) 0); 
+        byte type = mIn.readByte();
+        int data = mIn.readInt();
+        return type == TypedValue.TYPE_STRING
+            ? mPkg.getValueFactory().factory(mTableStrings.getHTML(data), data)
+            : mPkg.getValueFactory().factory(type, data, null);
+    }
+    private ResConfigFlags readConfigFlags() throws AndrolibException, IOException {
+        int size = mIn.readInt();
+        int read = 8;
+        if (size < 8) {
+            throw new AndrolibException("Config size < 8");
+        }
+        boolean isInvalid = false;
+        short mcc = mIn.readShort();
+        short mnc = mIn.readShort();
+        char[] language = new char[0];
+        char[] country = new char[0];
+        if (size >= 12) {
+            language = unpackLanguageOrRegion(mIn.readByte(), mIn.readByte(), 'a');
+            country = unpackLanguageOrRegion(mIn.readByte(), mIn.readByte(), '0');
+            read = 12;
+        }
+        byte orientation = 0;
+        byte touchscreen = 0;
+        if (size >= 14) {
+            orientation = mIn.readByte();
+            touchscreen = mIn.readByte();
+            read = 14;
+        }
+        int density = 0;
+        if (size >= 16) {
+            density = mIn.readUnsignedShort();
+            read = 16;
+        }
+        byte keyboard = 0;
+        byte navigation = 0;
+        byte inputFlags = 0;
+        byte grammaticalInflection = 0;
+        if (size >= 20) {
+            keyboard = mIn.readByte();
+            navigation = mIn.readByte();
+            inputFlags = mIn.readByte();
+            grammaticalInflection = mIn.readByte();
+            read = 20;
+        }
+        short screenWidth = 0;
+        short screenHeight = 0;
+        short sdkVersion = 0;
+        if (size >= 28) {
+            screenWidth = mIn.readShort();
+            screenHeight = mIn.readShort();
+            sdkVersion = mIn.readShort();
+            mIn.skipBytes(2); 
+            read = 28;
+        }
+        byte screenLayout = 0;
+        byte uiMode = 0;
+        short smallestScreenWidthDp = 0;
+        if (size >= 32) {
+            screenLayout = mIn.readByte();
+            uiMode = mIn.readByte();
+            smallestScreenWidthDp = mIn.readShort();
+            read = 32;
+        }
+        short screenWidthDp = 0;
+        short screenHeightDp = 0;
+        if (size >= 36) {
+            screenWidthDp = mIn.readShort();
+            screenHeightDp = mIn.readShort();
+            read = 36;
+        }
+        char[] localeScript = null;
+        char[] localeVariant = null;
+        if (size >= 48) {
+            localeScript = readVariantLengthString(4).toCharArray();
+            localeVariant = readVariantLengthString(8).toCharArray();
+            read = 48;
+        }
+        byte screenLayout2 = 0;
+        byte colorMode = 0;
+        if (size >= 52) {
+            screenLayout2 = mIn.readByte();
+            colorMode = mIn.readByte();
+            mIn.skipBytes(2); 
+            read = 52;
+        }
+        char[] localeNumberingSystem = null;
+        if (size >= 60) {
+            localeNumberingSystem = readVariantLengthString(8).toCharArray();
+            read = 60;
+        }
+        int exceedingKnownSize = size - KNOWN_CONFIG_BYTES;
+        if (exceedingKnownSize > 0) {
+            byte[] buf = new byte[exceedingKnownSize];
+            read += exceedingKnownSize;
+            mIn.readFully(buf);
+            BigInteger exceedingBI = new BigInteger(1, buf);
+            if (exceedingBI.equals(BigInteger.ZERO)) {
+                LOGGER.fine(String
+                        .format("Config flags size > %d, but exceeding bytes are all zero, so it should be ok.",
+                                KNOWN_CONFIG_BYTES));
+            } else {
+                LOGGER.warning(String.format("Config flags size > %d. Size = %d. Exceeding bytes: 0x%X.",
+                        KNOWN_CONFIG_BYTES, size, exceedingBI));
+                isInvalid = true;
+            }
+        }
+        int remainingSize = size - read;
+        if (remainingSize > 0) {
+            mIn.skipBytes(remainingSize);
+        }
+        return new ResConfigFlags(mcc, mnc, language, country,
+                orientation, touchscreen, density, keyboard, navigation,
+                inputFlags, grammaticalInflection, screenWidth, screenHeight, sdkVersion,
+                screenLayout, uiMode, smallestScreenWidthDp, screenWidthDp,
+                screenHeightDp, localeScript, localeVariant, screenLayout2,
+                colorMode, localeNumberingSystem, size, isInvalid);
+    }
+    private char[] unpackLanguageOrRegion(byte in0, byte in1, char base) {
+        if (((in0 >> 7) & 1) == 1) {
+            int first = in1 & 0x1F;
+            int second = ((in1 & 0xE0) >> 5) + ((in0 & 0x03) << 3);
+            int third = (in0 & 0x7C) >> 2;
+            return new char[] { (char) (first + base), (char) (second + base), (char) (third + base) };
+        }
+        return new char[] { (char) in0, (char) in1 };
+    }
+    private String readVariantLengthString(int maxLength) throws IOException {
+        StringBuilder string = new StringBuilder(16);
+        while (maxLength-- != 0) {
+            short ch = mIn.readByte();
+            if (ch == 0) {
+                break;
+            }
+            string.append((char) ch);
+        }
+        mIn.skipBytes(maxLength);
+        return string.toString();
+    }
+    private void addTypeSpec(ResTypeSpec resTypeSpec) {
+        mResTypeSpecs.put(resTypeSpec.getId(), resTypeSpec);
+    }
+    private void addMissingResSpecs() throws AndrolibException {
+        for (int resId : mMissingResSpecMap.keySet()) {
+            int typeId = mMissingResSpecMap.get(resId);
+            String resName = "APKTOOL_DUMMY_" + Integer.toHexString(resId);
+            ResID id = new ResID(resId);
+            ResResSpec spec = new ResResSpec(id, resName, mPkg, mResTypeSpecs.get(typeId));
+            if (!mPkg.hasResSpec(id)) {
+                mPkg.addResSpec(spec);
+                spec.getType().addResSpec(spec);
+                ResType resType = mPkg.getOrCreateConfig(new ResConfigFlags());
+                ResValue value = new ResReferenceValue(mPkg, 0, "");
+                ResResource res = new ResResource(resType, spec, value);
+                resType.addResource(res);
+                spec.addResource(res);
+            }
+        }
+    }
+    private ARSCHeader nextChunk() throws IOException {
+        return mHeader = ARSCHeader.read(mIn);
+    }
+    private void checkChunkType(int expectedType) throws AndrolibException {
+        if (mHeader.type != expectedType) {
+            throw new AndrolibException(String.format("Invalid chunk type: expected=0x%08x, got=0x%08x",
+                    expectedType, mHeader.type));
+        }
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import java.util.*;
+public class ResType {
+    private final ResConfigFlags mFlags;
+    private final Map<ResResSpec, ResResource> mResources;
+    public ResType(ResConfigFlags flags) {
+        mFlags = flags;
+        mResources = new LinkedHashMap<>();
+    }
+    public ResResource getResource(ResResSpec spec) throws AndrolibException {
+        ResResource res = mResources.get(spec);
+        if (res == null) {
+            throw new UndefinedResObjectException(String.format("resource: spec=%s, config=%s", spec, this));
+        }
+        return res;
+    }
+    public ResConfigFlags getFlags() {
+        return mFlags;
+    }
+    public void addResource(ResResource res) throws AndrolibException {
+        addResource(res, false);
+    }
+    public void addResource(ResResource res, boolean overwrite) throws AndrolibException {
+        ResResSpec spec = res.getResSpec();
+        if (mResources.put(spec, res) != null && !overwrite) {
+            throw new AndrolibException(String.format("Multiple resources: spec=%s, config=%s", spec, this));
+        }
+    }
+    @Override
+    public String toString() {
+        return mFlags.toString();
+    }
+}
+package brut.androlib;
+import brut.androlib.exceptions.AndrolibException;
+import brut.common.BrutException;
+import brut.util.AaptManager;
+import brut.util.OSDetection;
+import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.logging.Logger;
+public final class Config {
+    private static final Logger LOGGER = Logger.getLogger(Config.class.getName());
+    public static final short DECODE_SOURCES_NONE = 0x0000;
+    public static final short DECODE_SOURCES_SMALI = 0x0001;
+    public static final short DECODE_SOURCES_SMALI_ONLY_MAIN_CLASSES = 0x0010;
+    public static final short DECODE_RESOURCES_NONE = 0x0100;
+    public static final short DECODE_RESOURCES_FULL = 0x0101;
+    public static final short FORCE_DECODE_MANIFEST_NONE = 0x0000;
+    public static final short FORCE_DECODE_MANIFEST_FULL = 0x0001;
+    public static final short DECODE_ASSETS_NONE = 0x0000;
+    public static final short DECODE_ASSETS_FULL = 0x0001;
+    public static final short DECODE_RES_RESOLVE_REMOVE = 0x0000;
+    public static final short DECODE_RES_RESOLVE_DUMMY = 0x0001;
+    public static final short DECODE_RES_RESOLVE_RETAIN = 0x0002;
+    private static final String DEFAULT_FRAMEWORK_DIRECTORY;
+    static {
+        File parent = new File(System.getProperty("user.home"));
+        Path path;
+        if (OSDetection.isMacOSX()) {
+            path = Paths.get(parent.getAbsolutePath(), "Library", "apktool", "framework");
+        } else if (OSDetection.isWindows()) {
+            path = Paths.get(parent.getAbsolutePath(), "AppData", "Local", "apktool", "framework");
+        } else {
+            String xdgDataFolder = System.getenv("XDG_DATA_HOME");
+            if (xdgDataFolder != null) {
+                path = Paths.get(xdgDataFolder, "apktool", "framework");
+            } else {
+                path = Paths.get(parent.getAbsolutePath(), ".local", "share", "apktool", "framework");
+            }
+        }
+        DEFAULT_FRAMEWORK_DIRECTORY = path.toString();
+    }
+    private boolean mForceBuildAll;
+    private boolean mForceDeleteFramework;
+    private boolean mDebugMode;
+    private boolean mNetSecConf;
+    private boolean mVerbose;
+    private boolean mCopyOriginalFiles;
+    private boolean mUpdateFiles;
+    private boolean mNoCrunch;
+    private boolean mNoApk;
+    private short mDecodeSources;
+    private short mDecodeResources;
+    private short mForceDecodeManifest;
+    private short mDecodeAssets;
+    private short mDecodeResolveMode;
+    private int mApiLevel;
+    private boolean mAnalysisMode;
+    private boolean mForceDelete;
+    private boolean mKeepBrokenResources;
+    private boolean mBaksmaliDebugMode;
+    private int mJobs;
+    private String mFrameworkDirectory;
+    private String mFrameworkTag;
+    private File mAaptBinary;
+    private int mAaptVersion;
+    public Config() {
+        mForceBuildAll = false;
+        mForceDeleteFramework = false;
+        mDebugMode = false;
+        mNetSecConf = false;
+        mVerbose = false;
+        mCopyOriginalFiles = false;
+        mUpdateFiles = false;
+        mNoCrunch = false;
+        mNoApk = false;
+        mDecodeSources = DECODE_SOURCES_SMALI;
+        mDecodeResources = DECODE_RESOURCES_FULL;
+        mForceDecodeManifest = FORCE_DECODE_MANIFEST_NONE;
+        mDecodeAssets = DECODE_ASSETS_FULL;
+        mDecodeResolveMode = DECODE_RES_RESOLVE_REMOVE;
+        mApiLevel = 0;
+        mAnalysisMode = false;
+        mForceDelete = false;
+        mKeepBrokenResources = false;
+        mBaksmaliDebugMode = true;
+        mJobs = Math.min(Runtime.getRuntime().availableProcessors(), 8);
+        mFrameworkDirectory = DEFAULT_FRAMEWORK_DIRECTORY;
+        mFrameworkTag = null;
+        mAaptBinary = null;
+        mAaptVersion = 2;
+    }
+    public boolean isForceBuildAll() {
+        return mForceBuildAll;
+    }
+    public void setForceBuildAll(boolean forceBuildAll) {
+        mForceBuildAll = forceBuildAll;
+    }
+    public boolean isForceDeleteFramework() {
+        return mForceDeleteFramework;
+    }
+    public void setForceDeleteFramework(boolean forceDeleteFramework) {
+        mForceDeleteFramework = forceDeleteFramework;
+    }
+    public boolean isDebugMode() {
+        return mDebugMode;
+    }
+    public void setDebugMode(boolean debugMode) {
+        mDebugMode = debugMode;
+    }
+    public boolean isNetSecConf() {
+        return mNetSecConf;
+    }
+    public void setNetSecConf(boolean netSecConf) {
+        mNetSecConf = netSecConf;
+    }
+    public boolean isVerbose() {
+        return mVerbose;
+    }
+    public void setVerbose(boolean verbose) {
+        mVerbose = verbose;
+    }
+    public boolean isCopyOriginalFiles() {
+        return mCopyOriginalFiles;
+    }
+    public void setCopyOriginalFiles(boolean copyOriginalFiles) {
+        mCopyOriginalFiles = copyOriginalFiles;
+    }
+    public boolean isUpdateFiles() {
+        return mUpdateFiles;
+    }
+    public void setUpdateFiles(boolean updateFiles) {
+        mUpdateFiles = updateFiles;
+    }
+    public boolean isNoCrunch() {
+        return mNoCrunch;
+    }
+    public void setNoCrunch(boolean noCrunch) {
+        mNoCrunch = noCrunch;
+    }
+    public boolean isNoApk() {
+        return mNoApk;
+    }
+    public void setNoApk(boolean noApk) {
+        mNoApk = noApk;
+    }
+    public short getDecodeSources() {
+        return mDecodeSources;
+    }
+    public void setDecodeSources(short decodeSources) throws AndrolibException {
+        switch (decodeSources) {
+            case DECODE_SOURCES_NONE:
+            case DECODE_SOURCES_SMALI:
+            case DECODE_SOURCES_SMALI_ONLY_MAIN_CLASSES:
+                mDecodeSources = decodeSources;
+                break;
+            default:
+                throw new AndrolibException("Invalid decode sources mode: " + decodeSources);
+        }
+    }
+    public short getDecodeResources() {
+        return mDecodeResources;
+    }
+    public void setDecodeResources(short decodeResources) throws AndrolibException {
+        switch (decodeResources) {
+            case DECODE_RESOURCES_NONE:
+            case DECODE_RESOURCES_FULL:
+                mDecodeResources = decodeResources;
+                break;
+            default:
+                throw new AndrolibException("Invalid decode resources mode: " + decodeResources);
+        }
+    }
+    public short getForceDecodeManifest() {
+        return mForceDecodeManifest;
+    }
+    public void setForceDecodeManifest(short forceDecodeManifest) throws AndrolibException {
+        switch (forceDecodeManifest) {
+            case FORCE_DECODE_MANIFEST_NONE:
+            case FORCE_DECODE_MANIFEST_FULL:
+                mForceDecodeManifest = forceDecodeManifest;
+                break;
+            default:
+                throw new AndrolibException("Invalid force decode manifest mode: " + forceDecodeManifest);
+        }
+    }
+    public short getDecodeAssets() {
+        return mDecodeAssets;
+    }
+    public void setDecodeAssets(short decodeAssets) throws AndrolibException {
+        switch (decodeAssets) {
+            case DECODE_ASSETS_NONE:
+            case DECODE_ASSETS_FULL:
+                mDecodeAssets = decodeAssets;
+                break;
+            default:
+                throw new AndrolibException("Invalid decode asset mode: " + decodeAssets);
+        }
+    }
+    public short getDecodeResolveMode() {
+        return mDecodeResolveMode;
+    }
+    public void setDecodeResolveMode(short decodeResolveMode) throws AndrolibException {
+        switch (decodeResolveMode) {
+            case DECODE_RES_RESOLVE_REMOVE:
+            case DECODE_RES_RESOLVE_DUMMY:
+            case DECODE_RES_RESOLVE_RETAIN:
+                mDecodeResolveMode = decodeResolveMode;
+                break;
+            default:
+                throw new AndrolibException("Invalid decode resolve mode: " + decodeResolveMode);
+        }
+    }
+    public int getApiLevel() {
+        return mApiLevel;
+    }
+    public void setApiLevel(int apiLevel) {
+        mApiLevel = apiLevel;
+    }
+    public boolean isAnalysisMode() {
+        return mAnalysisMode;
+    }
+    public void setAnalysisMode(boolean analysisMode) {
+        mAnalysisMode = analysisMode;
+    }
+    public boolean isForceDelete() {
+        return mForceDelete;
+    }
+    public void setForceDelete(boolean forceDelete) {
+        mForceDelete = forceDelete;
+    }
+    public boolean isKeepBrokenResources() {
+        return mKeepBrokenResources;
+    }
+    public void setKeepBrokenResources(boolean keepBrokenResources) {
+        mKeepBrokenResources = keepBrokenResources;
+    }
+    public boolean isBaksmaliDebugMode() {
+        return mBaksmaliDebugMode;
+    }
+    public void setBaksmaliDebugMode(boolean baksmaliDebugMode) {
+        mBaksmaliDebugMode = baksmaliDebugMode;
+    }
+    public int getJobs() {
+        return mJobs;
+    }
+    public void setJobs(int jobs) {
+        mJobs = jobs;
+    }
+    public String getFrameworkDirectory() {
+        return mFrameworkDirectory;
+    }
+    public void setFrameworkDirectory(String frameworkDirectory) {
+        mFrameworkDirectory = frameworkDirectory != null
+            ? frameworkDirectory : DEFAULT_FRAMEWORK_DIRECTORY;
+    }
+    public String getFrameworkTag() {
+        return mFrameworkTag;
+    }
+    public void setFrameworkTag(String frameworkTag) {
+        mFrameworkTag = frameworkTag;
+    }
+    public File getAaptBinary() {
+        return mAaptBinary;
+    }
+    public void setAaptBinary(File aaptBinary) throws AndrolibException {
+        try {
+            mAaptBinary = aaptBinary;
+            mAaptVersion = AaptManager.getAaptVersion(aaptBinary);
+        } catch (BrutException ex) {
+            throw new AndrolibException(ex);
+        }
+    }
+    public int getAaptVersion() {
+        return mAaptVersion;
+    }
+    public void setAaptVersion(int aaptVersion) {
+        mAaptVersion = aaptVersion;
+    }
+}
+package brut.androlib.exceptions;
+import brut.common.BrutException;
+public class AndrolibException extends BrutException {
+    public AndrolibException() {
+        super();
+    }
+    public AndrolibException(String message) {
+        super(message);
+    }
+    public AndrolibException(Throwable cause) {
+        super(cause);
+    }
+    public AndrolibException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import com.google.common.collect.Sets;
+import org.apache.commons.lang3.StringUtils;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+public class ResResSpec {
+    private static final Set<String> EMPTY_RESOURCE_NAMES = Sets.newHashSet(
+        "0_resource_name_obfuscated", "(name removed)"
+    );
+    private final ResID mId;
+    private final String mName;
+    private final ResPackage mPackage;
+    private final ResTypeSpec mType;
+    private final Map<ResConfigFlags, ResResource> mResources;
+    public ResResSpec(ResID id, String name, ResPackage pkg, ResTypeSpec type) {
+        mId = id;
+        if (name == null || name.isEmpty() || EMPTY_RESOURCE_NAMES.contains(name)) {
+            name = "APKTOOL_DUMMYVAL_" + id;
+        } else if (type.getResSpecUnsafe(name) != null) {
+            name = String.format("APKTOOL_DUPLICATE_%s_%s", type, id);
+        }
+        mName = name;
+        mPackage = pkg;
+        mType = type;
+        mResources = new LinkedHashMap<>();
+    }
+    public Set<ResResource> listResources() {
+        return new LinkedHashSet<>(mResources.values());
+    }
+    public ResResource getResource(ResType config) throws AndrolibException {
+        return getResource(config.getFlags());
+    }
+    public ResResource getResource(ResConfigFlags config) throws AndrolibException {
+        ResResource res = mResources.get(config);
+        if (res == null) {
+            throw new UndefinedResObjectException(String.format("resource: spec=%s, config=%s", this, config));
+        }
+        return res;
+    }
+    public ResResource getDefaultResource() throws AndrolibException {
+        return getResource(new ResConfigFlags());
+    }
+    public boolean hasDefaultResource() {
+        return mResources.containsKey(new ResConfigFlags());
+    }
+    public String getFullName(ResPackage relativeToPackage, boolean excludeType) {
+        return getFullName(getPackage().equals(relativeToPackage), excludeType);
+    }
+    public String getFullName(boolean excludePackage, boolean excludeType) {
+        return (excludePackage ? "" : getPackage().getName() + ":")
+                + (excludeType ? "" : getType().getName() + "/") + getName();
+    }
+    public ResID getId() {
+        return mId;
+    }
+    public String getName() {
+        return StringUtils.replace(mName, "\"", "q");
+    }
+    public ResPackage getPackage() {
+        return mPackage;
+    }
+    public ResTypeSpec getType() {
+        return mType;
+    }
+    public boolean isDummyResSpec() {
+        return getName().startsWith("APKTOOL_DUMMY_");
+    }
+    public void addResource(ResResource res) throws AndrolibException {
+        addResource(res, false);
+    }
+    public void addResource(ResResource res, boolean overwrite) throws AndrolibException {
+        ResConfigFlags flags = res.getConfig().getFlags();
+        if (mResources.put(flags, res) != null && !overwrite) {
+            throw new AndrolibException(String.format("Multiple resources: spec=%s, config=%s", this, flags));
+        }
+    }
+    @Override
+    public String toString() {
+        return mId + " " + mType + "/" + mName;
+    }
+}
+package brut.androlib.res.data.value;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import brut.androlib.res.data.ResPackage;
+import brut.androlib.res.data.ResResSpec;
+public class ResReferenceValue extends ResIntValue {
+    private final ResPackage mPackage;
+    private final boolean mTheme;
+    public ResReferenceValue(ResPackage pkg, int value, String rawValue) {
+        this(pkg, value, rawValue, false);
+    }
+    public ResReferenceValue(ResPackage pkg, int value, String rawValue, boolean theme) {
+        super(value, rawValue, "reference");
+        mPackage = pkg;
+        mTheme = theme;
+    }
+    @Override
+    protected String encodeAsResXml() throws AndrolibException {
+        ResResSpec spec = !isNull() ? getReferent() : null;
+        if (spec == null) {
+            return "@null";
+        }
+        String prefix = mTheme ? "?" : "@";
+        boolean excludeType = mTheme && spec.getType().getName().equals("attr");
+        return prefix + spec.getFullName(mPackage, excludeType);
+    }
+    public ResPackage getPackage() {
+        return mPackage;
+    }
+    public ResResSpec getReferent() throws AndrolibException {
+        try {
+            return mPackage.getResTable().getResSpec(getValue());
+        } catch (UndefinedResObjectException ex) {
+            return null;
+        }
+    }
+    public boolean isNull() {
+        return mValue == 0;
+    }
+    public boolean referentIsNull() throws AndrolibException {
+        return getReferent() == null;
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.Config;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import brut.androlib.res.data.value.ResFileValue;
+import brut.androlib.res.data.value.ResValueFactory;
+import brut.androlib.res.xml.ResValuesXmlSerializable;
+import org.apache.commons.lang3.tuple.Pair;
+import java.util.*;
+import java.util.logging.Logger;
+public class ResPackage {
+    private static final Logger LOGGER = Logger.getLogger(ResPackage.class.getName());
+    private final ResTable mResTable;
+    private final int mId;
+    private final String mName;
+    private final Map<ResID, ResResSpec> mResSpecs;
+    private final Map<ResConfigFlags, ResType> mConfigs;
+    private final Map<String, ResTypeSpec> mTypes;
+    private final Set<ResID> mSynthesizedRes;
+    private ResValueFactory mValueFactory;
+    public ResPackage(ResTable resTable, int id, String name) {
+        mResTable = resTable;
+        mId = id;
+        mName = name;
+        mResSpecs = new LinkedHashMap<>();
+        mConfigs = new LinkedHashMap<>();
+        mTypes = new LinkedHashMap<>();
+        mSynthesizedRes = new HashSet<>();
+    }
+    public Config getConfig() {
+        return mResTable.getConfig();
+    }
+    public List<ResResSpec> listResSpecs() {
+        return new ArrayList<>(mResSpecs.values());
+    }
+    public boolean hasResSpec(ResID resId) {
+        return mResSpecs.containsKey(resId);
+    }
+    public ResResSpec getResSpec(ResID resId) throws UndefinedResObjectException {
+        ResResSpec spec = mResSpecs.get(resId);
+        if (spec == null) {
+            throw new UndefinedResObjectException("resource spec: " + resId);
+        }
+        return spec;
+    }
+    public int getResSpecCount() {
+        return mResSpecs.size();
+    }
+    public ResType getOrCreateConfig(ResConfigFlags flags) {
+        ResType config = mConfigs.get(flags);
+        if (config == null) {
+            config = new ResType(flags);
+            mConfigs.put(flags, config);
+        }
+        return config;
+    }
+    public ResTypeSpec getType(String typeName) throws AndrolibException {
+        ResTypeSpec type = mTypes.get(typeName);
+        if (type == null) {
+            throw new UndefinedResObjectException("type: " + typeName);
+        }
+        return type;
+    }
+    public Collection<ResResource> listFiles() {
+        Set<ResResource> ret = new HashSet<>();
+        for (ResResSpec spec : mResSpecs.values()) {
+            for (ResResource res : spec.listResources()) {
+                if (res.getValue() instanceof ResFileValue) {
+                    ret.add(res);
+                }
+            }
+        }
+        return ret;
+    }
+    public Collection<ResValuesFile> listValuesFiles() {
+        Map<Pair<ResTypeSpec, ResType>, ResValuesFile> ret = new HashMap<>();
+        for (ResResSpec spec : mResSpecs.values()) {
+            for (ResResource res : spec.listResources()) {
+                if (res.getValue() instanceof ResValuesXmlSerializable) {
+                    ResTypeSpec type = res.getResSpec().getType();
+                    ResType config = res.getConfig();
+                    Pair<ResTypeSpec, ResType> key = Pair.of(type, config);
+                    ResValuesFile values = ret.get(key);
+                    if (values == null) {
+                        values = new ResValuesFile(this, type, config);
+                        ret.put(key, values);
+                    }
+                    values.addResource(res);
+                }
+            }
+        }
+        return ret.values();
+    }
+    public ResTable getResTable() {
+        return mResTable;
+    }
+    public int getId() {
+        return mId;
+    }
+    public String getName() {
+        return mName;
+    }
+    boolean isSynthesized(ResID resId) {
+        return mSynthesizedRes.contains(resId);
+    }
+    public void addResSpec(ResResSpec spec) throws AndrolibException {
+        if (mResSpecs.put(spec.getId(), spec) != null) {
+            throw new AndrolibException("Multiple resource specs: " + spec);
+        }
+    }
+    public void addType(ResTypeSpec type) {
+        if (mTypes.containsKey(type.getName())) {
+            LOGGER.warning("Multiple types detected! " + type + " ignored!");
+        } else {
+            mTypes.put(type.getName(), type);
+        }
+    }
+    public void addSynthesizedRes(int resId) {
+        mSynthesizedRes.add(new ResID(resId));
+    }
+    @Override
+    public String toString() {
+        return mName;
+    }
+    @Override
+    public boolean equals(Object obj) {
+        if (obj == this) {
+            return true;
+        }
+        if (obj instanceof ResPackage) {
+            ResPackage other = (ResPackage) obj;
+            return Objects.equals(mResTable, other.mResTable)
+                    && mId == other.mId;
+        }
+        return false;
+    }
+    @Override
+    public int hashCode() {
+        return Objects.hash(mResTable, mId);
+    }
+    public ResValueFactory getValueFactory() {
+        if (mValueFactory == null) {
+            mValueFactory = new ResValueFactory(this);
+        }
+        return mValueFactory;
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.value.ResValue;
+public class ResResource {
+    private final ResType mConfig;
+    private final ResResSpec mResSpec;
+    private final ResValue mValue;
+    public ResResource(ResType config, ResResSpec spec, ResValue value) {
+        mConfig = config;
+        mResSpec = spec;
+        mValue = value;
+    }
+    public String getFilePath() {
+        return mResSpec.getType().getName() + mConfig.getFlags().getQualifiers() + "/" + mResSpec.getName();
+    }
+    public ResType getConfig() {
+        return mConfig;
+    }
+    public ResResSpec getResSpec() {
+        return mResSpec;
+    }
+    public ResValue getValue() {
+        return mValue;
+    }
+    public void replace(ResValue value) throws AndrolibException {
+        ResResource res = new ResResource(mConfig, mResSpec, value);
+        mConfig.addResource(res, true);
+        mResSpec.addResource(res, true);
+    }
+    @Override
+    public String toString() {
+        return getFilePath();
+    }
+}
+package brut.androlib.exceptions;
+public class UndefinedResObjectException extends AndrolibException {
+    public UndefinedResObjectException(String message) {
+        super(message);
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import java.util.*;
+public final class ResTypeSpec {
+    public static final String RES_TYPE_NAME_ARRAY = "array";
+    public static final String RES_TYPE_NAME_ATTR = "attr";
+    public static final String RES_TYPE_NAME_ATTR_PRIVATE = "^attr-private";
+    public static final String RES_TYPE_NAME_PLURALS = "plurals";
+    public static final String RES_TYPE_NAME_STRING = "string";
+    public static final String RES_TYPE_NAME_STYLES = "style";
+    private final String mName;
+    private final int mId;
+    private final Map<String, ResResSpec> mResSpecs;
+    public ResTypeSpec(String name, int id) {
+        mName = name;
+        mId = id;
+        mResSpecs = new LinkedHashMap<>();
+    }
+    public String getName() {
+        return mName;
+    }
+    public int getId() {
+        return mId;
+    }
+    public boolean isString() {
+        return mName.equals(RES_TYPE_NAME_STRING);
+    }
+    public ResResSpec getResSpec(String name) throws AndrolibException {
+        ResResSpec spec = getResSpecUnsafe(name);
+        if (spec == null) {
+            throw new UndefinedResObjectException(String.format("resource spec: %s/%s", getName(), name));
+        }
+        return spec;
+    }
+    public ResResSpec getResSpecUnsafe(String name) {
+        return mResSpecs.get(name);
+    }
+    public void addResSpec(ResResSpec spec) throws AndrolibException {
+        if (mResSpecs.put(spec.getName(), spec) != null) {
+            throw new AndrolibException(String.format("Multiple res specs: %s/%s", getName(), spec.getName()));
+        }
+    }
+    @Override
+    public String toString() {
+        return mName;
+    }
+}
+package brut.androlib.res.data.arsc;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.ResPackage;
+import java.util.logging.Logger;
+public class ARSCData {
+    private static final Logger LOGGER = Logger.getLogger(ARSCData.class.getName());
+    private final ResPackage[] mPackages;
+    private final FlagsOffset[] mFlagsOffsets;
+    public ARSCData(ResPackage[] pkgs, FlagsOffset[] flagsOffsets) {
+        mPackages = pkgs;
+        mFlagsOffsets = flagsOffsets;
+    }
+    public FlagsOffset[] getFlagsOffsets() {
+        return mFlagsOffsets;
+    }
+    public ResPackage[] getPackages() {
+        return mPackages;
+    }
+    public ResPackage getOnePackage() throws AndrolibException {
+        if (mPackages.length == 0) {
+            throw new AndrolibException("Arsc file contains zero packages");
+        } else if (mPackages.length != 1) {
+            int id = findPackageWithMostResSpecs();
+            LOGGER.info("Arsc file contains multiple packages. Using package "
+                + mPackages[id].getName() + " as default.");
+            return mPackages[id];
+        }
+        return mPackages[0];
+    }
+    public int findPackageWithMostResSpecs() {
+        int count = mPackages[0].getResSpecCount();
+        int id = 0;
+        for (int i = 0; i < mPackages.length; i++) {
+            if (mPackages[i].getResSpecCount() >= count) {
+                count = mPackages[i].getResSpecCount();
+                id = i;
+            }
+        }
+        return id;
+    }
+}
+package brut.androlib.res.data.value;
+import brut.androlib.exceptions.AndrolibException;
+public class ResFileValue extends ResIntBasedValue {
+    private final String mPath;
+    public ResFileValue(String path, int rawIntValue) {
+        super(rawIntValue);
+        mPath = path;
+    }
+    public String getStrippedPath() throws AndrolibException {
+        if (mPath.startsWith("res/")) {
+            return mPath.substring(4);
+        }
+        if (mPath.startsWith("r/") || mPath.startsWith("R/")) {
+            return mPath.substring(2);
+        }
+        throw new AndrolibException("File path does not start with \"res/\" or \"r/\": " + mPath);
+    }
+    @Override
+    public String toString() {
+        return mPath;
+    }
+}
+package brut.androlib.res;
+import brut.androlib.Config;
+import brut.androlib.apk.ApkInfo;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.CantFindFrameworkResException;
+import brut.androlib.res.decoder.ARSCDecoder;
+import brut.androlib.res.data.ResTable;
+import brut.androlib.res.data.arsc.ARSCData;
+import brut.androlib.res.data.arsc.FlagsOffset;
+import brut.util.BrutIO;
+import brut.util.OS;
+import java.io.*;
+import java.nio.file.Files;
+import java.util.logging.Logger;
+import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
+public class Framework {
+    private static final Logger LOGGER = Logger.getLogger(Framework.class.getName());
+    private final Config mConfig;
+    private File mDirectory;
+    public Framework(Config config) {
+        mConfig = config;
+    }
+    public void install(File frameFile) throws AndrolibException {
+        install(frameFile, mConfig.getFrameworkTag());
+    }
+    public void install(File frameFile, String tag) throws AndrolibException {
+        try (ZipFile zip = new ZipFile(frameFile)) {
+            ZipEntry entry = zip.getEntry("resources.arsc");
+            if (entry == null) {
+                throw new AndrolibException("Could not find resources.arsc file");
+            }
+            byte[] data = BrutIO.readAndClose(zip.getInputStream(entry));
+            ResTable resTable = new ResTable(new ApkInfo(), mConfig);
+            ARSCDecoder decoder = new ARSCDecoder(new ByteArrayInputStream(data), resTable, true, true);
+            ARSCData arsc = decoder.decode();
+            publicizeResources(data, arsc.getFlagsOffsets());
+            File outFile = new File(getDirectory(),
+                arsc.getOnePackage().getId() + (tag != null ? "-" + tag : "") + ".apk");
+            try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(outFile.toPath()))) {
+                out.setMethod(ZipOutputStream.STORED);
+                CRC32 crc = new CRC32();
+                crc.update(data);
+                entry = new ZipEntry("resources.arsc");
+                entry.setSize(data.length);
+                entry.setMethod(ZipEntry.STORED);
+                entry.setCrc(crc.getValue());
+                out.putNextEntry(entry);
+                out.write(data);
+                out.closeEntry();
+                entry = zip.getEntry("AndroidManifest.xml");
+                if (entry != null) {
+                    byte[] manifest = BrutIO.readAndClose(zip.getInputStream(entry));
+                    CRC32 manifestCrc = new CRC32();
+                    manifestCrc.update(manifest);
+                    entry.setSize(manifest.length);
+                    entry.setCompressedSize(-1);
+                    entry.setCrc(manifestCrc.getValue());
+                    out.putNextEntry(entry);
+                    out.write(manifest);
+                    out.closeEntry();
+                }
+            }
+            LOGGER.info("Framework installed to: " + outFile);
+        } catch (IOException ex) {
+            throw new AndrolibException(ex);
+        }
+    }
+    public void listDirectory() throws AndrolibException {
+        File dir = getDirectory();
+        if (dir == null) {
+            LOGGER.severe("No framework directory found. Nothing to list.");
+            return;
+        }
+        for (File file : dir.listFiles()) {
+            if (file.isFile() && file.getName().endsWith(".apk")) {
+                LOGGER.info(file.getName());
+            }
+        }
+    }
+    public void publicizeResources(File arscFile) throws AndrolibException {
+        byte[] data = new byte[(int) arscFile.length()];
+        try (
+            InputStream in = Files.newInputStream(arscFile.toPath());
+            OutputStream out = Files.newOutputStream(arscFile.toPath())
+        ) {
+            in.read(data);
+            publicizeResources(data);
+            out.write(data);
+        } catch (IOException ex){
+            throw new AndrolibException(ex);
+        }
+    }
+    private void publicizeResources(byte[] data) throws AndrolibException {
+        ResTable resTable = new ResTable(new ApkInfo(), mConfig);
+        ARSCDecoder decoder = new ARSCDecoder(new ByteArrayInputStream(data), resTable, true, true);
+        ARSCData arsc = decoder.decode();
+        publicizeResources(data, arsc.getFlagsOffsets());
+    }
+    public void publicizeResources(byte[] data, FlagsOffset[] flagsOffsets) {
+        for (FlagsOffset flags : flagsOffsets) {
+            int offset = flags.offset + 3;
+            int end = offset + 4 * flags.count;
+            while (offset < end) {
+                data[offset] |= (byte) 0x40;
+                offset += 4;
+            }
+        }
+    }
+    public File getDirectory() throws AndrolibException {
+        if (mDirectory == null) {
+            File dir = new File(mConfig.getFrameworkDirectory());
+            if (dir.exists() && !dir.isDirectory()) {
+                throw new AndrolibException("Framework path is not a directory: " + dir);
+            }
+            File parent = dir.getParentFile();
+            if (parent != null && parent.exists() && !parent.isDirectory()) {
+                throw new AndrolibException("Framework path's parent is not a directory: " + parent);
+            }
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw new AndrolibException("Could not create framework directory: " + dir);
+            }
+            mDirectory = dir;
+        }
+        return mDirectory;
+    }
+    public File getApkFile(int id, String frameTag) throws AndrolibException {
+        File dir = getDirectory();
+        File apk;
+        if (frameTag != null) {
+            apk = new File(dir, id + "-" + frameTag + ".apk");
+            if (apk.exists()) {
+                return apk;
+            }
+        }
+        apk = new File(dir, id + ".apk");
+        if (apk.exists()) {
+            return apk;
+        }
+        if (id == 1) {
+            try {
+                BrutIO.copyAndClose(getAndroidFrameworkAsStream(), Files.newOutputStream(apk.toPath()));
+            } catch (IOException ex) {
+                throw new AndrolibException(ex);
+            }
+            return apk;
+        }
+        throw new CantFindFrameworkResException(id);
+    }
+    private InputStream getAndroidFrameworkAsStream() {
+        return getClass().getResourceAsStream("/prebuilt/android-framework.jar");
+    }
+    public void emptyDirectory() throws AndrolibException {
+        File dir = getDirectory();
+        File apk = new File(dir, "1.apk");
+        if (!apk.exists()) {
+            LOGGER.warning("Could not empty framework directory, no file found at: " + apk);
+            return;
+        }
+        File[] files = dir.listFiles();
+        if (apk.exists() && files.length > 1 && !mConfig.isForceDeleteFramework()) {
+            LOGGER.warning("More than default framework detected. Please run command with `--force` parameter to wipe framework directory.");
+            return;
+        }
+        for (File file : files) {
+            if (file.isFile() && file.getName().endsWith(".apk")) {
+                LOGGER.info("Removing framework file: " + file.getName());
+                OS.rmfile(file);
+            }
+        }
+    }
+}
+package brut.androlib.res.data;
+import brut.androlib.ApkDecoder;
+import brut.androlib.Config;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import brut.androlib.apk.ApkInfo;
+import brut.androlib.apk.UsesFramework;
+import brut.androlib.res.Framework;
+import brut.androlib.res.data.value.ResValue;
+import brut.androlib.res.decoder.ARSCDecoder;
+import brut.androlib.res.xml.ResXmlUtils;
+import brut.directory.DirectoryException;
+import brut.directory.ExtFile;
+import java.io.*;
+import java.util.*;
+import java.util.logging.Logger;
+public class ResTable {
+    private static final Logger LOGGER = Logger.getLogger(ApkDecoder.class.getName());
+    private final ApkInfo mApkInfo;
+    private final Config mConfig;
+    private final Map<Integer, ResPackage> mPackagesById;
+    private final Map<String, ResPackage> mPackagesByName;
+    private final Set<ResPackage> mMainPackages;
+    private final Set<ResPackage> mFramePackages;
+    private String mPackageRenamed;
+    private String mPackageOriginal;
+    private int mPackageId;
+    private boolean mMainPkgLoaded;
+    public ResTable(ApkInfo apkInfo, Config config) {
+        mApkInfo = apkInfo;
+        mConfig = config;
+        mPackagesById = new HashMap<>();
+        mPackagesByName = new HashMap<>();
+        mMainPackages = new LinkedHashSet<>();
+        mFramePackages = new LinkedHashSet<>();
+    }
+    public ApkInfo getApkInfo() {
+        return mApkInfo;
+    }
+    public Config getConfig() {
+        return mConfig;
+    }
+    public boolean isMainPkgLoaded() {
+        return mMainPkgLoaded;
+    }
+    public ResResSpec getResSpec(int resId) throws AndrolibException {
+        if (resId >> 24 == 0) {
+            int pkgId = mPackageId == 0 ? 2 : mPackageId;
+            resId = (0xFF000000 & (pkgId << 24)) | resId;
+        }
+        return getResSpec(new ResID(resId));
+    }
+    public ResResSpec getResSpec(ResID resId) throws AndrolibException {
+        return getPackage(resId.getPackageId()).getResSpec(resId);
+    }
+    public Set<ResPackage> listMainPackages() {
+        return mMainPackages;
+    }
+    public Set<ResPackage> listFramePackages() {
+        return mFramePackages;
+    }
+    public ResPackage getPackage(int id) throws AndrolibException {
+        ResPackage pkg = mPackagesById.get(id);
+        if (pkg != null) {
+            return pkg;
+        }
+        pkg = loadFrameworkPkg(id);
+        addPackage(pkg, false);
+        return pkg;
+    }
+    private ResPackage selectPkgWithMostResSpecs(ResPackage[] pkgs) {
+        int id = 0;
+        int value = 0;
+        int index = 0;
+        for (int i = 0; i < pkgs.length; i++) {
+            ResPackage resPackage = pkgs[i];
+            if (resPackage.getResSpecCount() > value && !resPackage.getName().equals("android")) {
+                value = resPackage.getResSpecCount();
+                id = resPackage.getId();
+                index = i;
+            }
+        }
+        return pkgs[id == 0 ? 0 : index];
+    }
+    public void loadMainPkg(File apkFile) throws AndrolibException {
+        LOGGER.info("Loading resource table...");
+        ResPackage[] pkgs = loadResPackagesFromApk(apkFile, mConfig.isKeepBrokenResources());
+        ResPackage pkg;
+        switch (pkgs.length) {
+            case 0:
+                pkg = new ResPackage(this, 0, null);
+                break;
+            case 1:
+                pkg = pkgs[0];
+                break;
+            case 2:
+                LOGGER.warning("Skipping package group: " + pkgs[0].getName());
+                pkg = pkgs[1];
+                break;
+            default:
+                pkg = selectPkgWithMostResSpecs(pkgs);
+                break;
+        }
+        addPackage(pkg, true);
+        mMainPkgLoaded = true;
+    }
+    private ResPackage loadFrameworkPkg(int id) throws AndrolibException {
+        Framework framework = new Framework(mConfig);
+        File apkFile = framework.getApkFile(id, mConfig.getFrameworkTag());
+        LOGGER.info("Loading resource table from file: " + apkFile);
+        ResPackage[] pkgs = loadResPackagesFromApk(apkFile, true);
+        ResPackage pkg;
+        if (pkgs.length > 1) {
+            pkg = selectPkgWithMostResSpecs(pkgs);
+        } else if (pkgs.length == 1) {
+            pkg = pkgs[0];
+        } else {
+            throw new AndrolibException("Arsc files with zero packages");
+        }
+        if (pkg.getId() != id) {
+            throw new AndrolibException("Expected pkg of id: " + id + ", got: " + pkg.getId());
+        }
+        return pkg;
+    }
+    private ResPackage[] loadResPackagesFromApk(File apkFile, boolean keepBrokenResources)
+            throws AndrolibException {
+        try (
+            ExtFile inFile = new ExtFile(apkFile);
+            BufferedInputStream in = new BufferedInputStream(
+                inFile.getDirectory().getFileInput("resources.arsc"))
+        ) {
+            ARSCDecoder decoder = new ARSCDecoder(in, this, false, keepBrokenResources);
+            return decoder.decode().getPackages();
+        } catch (DirectoryException | IOException ex) {
+            throw new AndrolibException("Could not load resources.arsc from file: " + apkFile, ex);
+        }
+    }
+    public ResPackage getHighestSpecPackage() throws AndrolibException {
+        int id = 0;
+        int value = 0;
+        for (ResPackage resPackage : mPackagesById.values()) {
+            if (resPackage.getResSpecCount() > value && !resPackage.getName().equals("android")) {
+                id = resPackage.getId();
+                value = resPackage.getResSpecCount();
+            }
+        }
+        return getPackage(id == 0 ? 1 : id);
+    }
+    public ResPackage getCurrentResPackage() throws AndrolibException {
+        ResPackage pkg = mPackagesById.get(mPackageId);
+        if (pkg != null) {
+            return pkg;
+        }
+        if (mMainPackages.size() == 1) {
+            return mMainPackages.iterator().next();
+        }
+        return getHighestSpecPackage();
+    }
+    public ResPackage getPackage(String name) throws AndrolibException {
+        ResPackage pkg = mPackagesByName.get(name);
+        if (pkg == null) {
+            throw new UndefinedResObjectException("package: name=" + name);
+        }
+        return pkg;
+    }
+    public ResValue getValue(String pkg, String type, String name) throws AndrolibException {
+        return getPackage(pkg).getType(type).getResSpec(name).getDefaultResource().getValue();
+    }
+    public void addPackage(ResPackage pkg, boolean main) throws AndrolibException {
+        Integer id = pkg.getId();
+        if (mPackagesById.containsKey(id)) {
+            throw new AndrolibException("Multiple packages: id=" + id);
+        }
+        String name = pkg.getName();
+        if (mPackagesByName.containsKey(name)) {
+            throw new AndrolibException("Multiple packages: name=" + name);
+        }
+        mPackagesById.put(id, pkg);
+        mPackagesByName.put(name, pkg);
+        if (main) {
+            mMainPackages.add(pkg);
+        } else {
+            mFramePackages.add(pkg);
+        }
+    }
+    public void setPackageRenamed(String pkg) {
+        mPackageRenamed = pkg;
+    }
+    public void setPackageOriginal(String pkg) {
+        mPackageOriginal = pkg;
+    }
+    public void setPackageId(int id) {
+        mPackageId = id;
+    }
+    public void setSharedLibrary(boolean flag) {
+        mApkInfo.sharedLibrary = flag;
+    }
+    public void setSparseResources(boolean flag) {
+        mApkInfo.sparseResources = flag;
+    }
+    public void setCompactEntries(boolean flag) {
+        mApkInfo.compactEntries = flag;
+    }
+    public void addSdkInfo(String key, String value) {
+        mApkInfo.sdkInfo.put(key, value);
+    }
+    public void setVersionName(String versionName) {
+        mApkInfo.versionInfo.versionName = versionName;
+    }
+    public void setVersionCode(String versionCode) {
+        mApkInfo.versionInfo.versionCode = versionCode;
+    }
+    public String getPackageRenamed() {
+        return mPackageRenamed;
+    }
+    public String getPackageOriginal() {
+        return mPackageOriginal;
+    }
+    public int getPackageId() {
+        return mPackageId;
+    }
+    public boolean getSparseResources() {
+        return mApkInfo.sparseResources;
+    }
+    private boolean isFrameworkApk() {
+        for (ResPackage pkg : mMainPackages) {
+            if (pkg.getId() > 0 && pkg.getId() < 64) {
+                return true;
+            }
+        }
+        return false;
+    }
+    public void initApkInfo(ApkInfo apkInfo, File apkDir) throws AndrolibException {
+        apkInfo.isFrameworkApk = isFrameworkApk();
+        apkInfo.usesFramework = getUsesFramework();
+        if (!mApkInfo.sdkInfo.isEmpty()) {
+            updateSdkInfoFromResources(apkDir);
+        }
+        initPackageInfo();
+        loadVersionName(apkDir);
+    }
+    private UsesFramework getUsesFramework() {
+        UsesFramework info = new UsesFramework();
+        Integer[] ids = new Integer[mFramePackages.size()];
+        int i = 0;
+        for (ResPackage pkg : mFramePackages) {
+            ids[i++] = pkg.getId();
+        }
+        Arrays.sort(ids);
+        info.ids = Arrays.asList(ids);
+        info.tag = mConfig.getFrameworkTag();
+        return info;
+    }
+    private void updateSdkInfoFromResources(File apkDir) {
+        String minSdkVersion = mApkInfo.getMinSdkVersion();
+        if (minSdkVersion != null) {
+            String refValue = ResXmlUtils.pullValueFromIntegers(apkDir, minSdkVersion);
+            if (refValue != null) {
+                mApkInfo.setMinSdkVersion(refValue);
+            }
+        }
+        String targetSdkVersion = mApkInfo.getTargetSdkVersion();
+        if (targetSdkVersion != null) {
+            String refValue = ResXmlUtils.pullValueFromIntegers(apkDir, targetSdkVersion);
+            if (refValue != null) {
+                mApkInfo.setTargetSdkVersion(refValue);
+            }
+        }
+        String maxSdkVersion = mApkInfo.getMaxSdkVersion();
+        if (maxSdkVersion != null) {
+            String refValue = ResXmlUtils.pullValueFromIntegers(apkDir, maxSdkVersion);
+            if (refValue != null) {
+                mApkInfo.setMaxSdkVersion(refValue);
+            }
+        }
+    }
+    private void initPackageInfo() throws AndrolibException {
+        String original = getPackageOriginal();
+        if (original == null || original.isEmpty()) {
+            return;
+        }
+        String renamed = getPackageRenamed();
+        if (renamed != null && !renamed.equals(original)) {
+            mApkInfo.packageInfo.renameManifestPackage = renamed;
+        }
+        int id;
+        try {
+            id = getPackage(renamed).getId();
+        } catch (UndefinedResObjectException ex) {
+            id = getPackageId();
+        }
+        mApkInfo.packageInfo.forcedPackageId = String.valueOf(id);
+    }
+    private void loadVersionName(File apkDir) {
+        String versionName = mApkInfo.versionInfo.versionName;
+        String refValue = ResXmlUtils.pullValueFromStrings(apkDir, versionName);
+        if (refValue != null) {
+            mApkInfo.versionInfo.versionName = refValue;
+        }
+    }
+}
+package brut.androlib.res;
+import brut.androlib.Config;
+import brut.androlib.apk.ApkInfo;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.*;
+import brut.androlib.res.decoder.*;
+import brut.androlib.res.xml.ResValuesXmlSerializable;
+import brut.androlib.res.xml.ResXmlUtils;
+import brut.directory.Directory;
+import brut.directory.DirectoryException;
+import brut.directory.ExtFile;
+import brut.xmlpull.MXSerializer;
+import com.google.common.collect.Sets;
+import org.xmlpull.v1.XmlSerializer;
+import java.io.*;
+import java.util.*;
+import java.util.logging.Logger;
+public class ResourcesDecoder {
+    private static final Logger LOGGER = Logger.getLogger(ResourcesDecoder.class.getName());
+    private static final Set<String> IGNORED_PACKAGES = Sets.newHashSet(
+        "android", "com.htc", "com.lge", "com.lge.internal", "yi", "flyme", "air.com.adobe.appentry",
+        "FFFFFFFFFFFFFFFFFFFFFF"
+    );
+    private final ApkInfo mApkInfo;
+    private final Config mConfig;
+    private final ResTable mResTable;
+    private final Map<String, String> mResFileMapping;
+    public ResourcesDecoder(ApkInfo apkInfo, Config config) {
+        mApkInfo = apkInfo;
+        mConfig = config;
+        mResTable = new ResTable(apkInfo, config);
+        mResFileMapping = new HashMap<>();
+    }
+    public ResTable getResTable() throws AndrolibException {
+        if (!mApkInfo.hasManifest() && !mApkInfo.hasResources()) {
+            throw new AndrolibException(
+                "Apk doesn't contain either AndroidManifest.xml file or resources.arsc file");
+        }
+        return mResTable;
+    }
+    public Map<String, String> getResFileMapping() {
+        return mResFileMapping;
+    }
+    public void loadMainPkg() throws AndrolibException {
+        mResTable.loadMainPkg(mApkInfo.getApkFile());
+    }
+    public void decodeManifest(File apkDir) throws AndrolibException {
+        if (!mApkInfo.hasManifest()) {
+            return;
+        }
+        AXmlResourceParser axmlParser = new AndroidManifestResourceParser(mResTable);
+        XmlSerializer xmlSerializer = newXmlSerializer();
+        ResStreamDecoder fileDecoder = new AndroidManifestPullStreamDecoder(axmlParser, xmlSerializer);
+        Directory inDir, outDir;
+        try {
+            inDir = mApkInfo.getApkFile().getDirectory();
+            outDir = new ExtFile(apkDir).getDirectory();
+            if (mApkInfo.hasResources()) {
+                LOGGER.info("Decoding AndroidManifest.xml with resources...");
+            } else {
+                LOGGER.info("Decoding AndroidManifest.xml with only framework resources...");
+            }
+            try (
+                InputStream in = inDir.getFileInput("AndroidManifest.xml");
+                OutputStream out = outDir.getFileOutput("AndroidManifest.xml")
+            ) {
+                fileDecoder.decode(in, out);
+            }
+        } catch (DirectoryException | IOException ex) {
+            throw new AndrolibException(ex);
+        }
+        File manifest = new File(apkDir, "AndroidManifest.xml");
+        if (mApkInfo.hasResources() && !mConfig.isAnalysisMode()) {
+            adjustPackageManifest(manifest);
+            ResXmlUtils.removeManifestVersions(manifest);
+            mApkInfo.packageInfo.forcedPackageId = String.valueOf(mResTable.getPackageId());
+        }
+        String[] featureFlags = ResXmlUtils.pullManifestFeatureFlags(manifest);
+        if (featureFlags != null) {
+            for (String flag : featureFlags) {
+                mApkInfo.addFeatureFlag(flag, true);
+            }
+        }
+    }
+    public void updateApkInfo(File apkDir) throws AndrolibException {
+        mResTable.initApkInfo(mApkInfo, apkDir);
+    }
+    private void adjustPackageManifest(File manifest) throws AndrolibException {
+        ResPackage resPackage = mResTable.getCurrentResPackage();
+        String pkgOriginal = resPackage.getName();
+        String pkgRenamed = mResTable.getPackageRenamed();
+        mResTable.setPackageId(resPackage.getId());
+        mResTable.setPackageOriginal(pkgOriginal);
+        if (pkgOriginal == null || pkgRenamed == null || pkgOriginal.equals(pkgRenamed)
+                || IGNORED_PACKAGES.contains(pkgOriginal)) {
+            LOGGER.info("Regular manifest package...");
+        } else {
+            LOGGER.info("Renamed manifest package found! Replacing " + pkgRenamed + " with " + pkgOriginal);
+            ResXmlUtils.renameManifestPackage(manifest, pkgOriginal);
+        }
+    }
+    public void decodeResources(File apkDir) throws AndrolibException {
+        if (!mApkInfo.hasResources()) {
+            return;
+        }
+        loadMainPkg();
+        ResStreamDecoderContainer decoders = new ResStreamDecoderContainer();
+        decoders.setDecoder("raw", new ResRawStreamDecoder());
+        decoders.setDecoder("9patch", new Res9patchStreamDecoder());
+        AXmlResourceParser axmlParser = new AXmlResourceParser(mResTable);
+        XmlSerializer xmlSerializer = newXmlSerializer();
+        decoders.setDecoder("xml", new ResXmlPullStreamDecoder(axmlParser, xmlSerializer));
+        ResFileDecoder fileDecoder = new ResFileDecoder(decoders);
+        Directory inDir, outDir;
+        try {
+            inDir = mApkInfo.getApkFile().getDirectory();
+            outDir = new ExtFile(apkDir).getDirectory().createDir("res");
+        } catch (DirectoryException ex) {
+            throw new AndrolibException(ex);
+        }
+        for (ResPackage pkg : mResTable.listMainPackages()) {
+            LOGGER.info("Decoding file-resources...");
+            for (ResResource res : pkg.listFiles()) {
+                fileDecoder.decode(res, inDir, outDir, mResFileMapping);
+            }
+            LOGGER.info("Decoding values *
+package brut.androlib.res.data.value;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.ResPackage;
+import brut.androlib.res.data.ResResource;
+import brut.androlib.res.xml.ResValuesXmlSerializable;
+import org.apache.commons.lang3.tuple.Pair;
+import org.xmlpull.v1.XmlSerializer;
+import java.io.IOException;
+public class ResAttr extends ResBagValue implements ResValuesXmlSerializable {
+    private static final int BAG_KEY_ATTR_MIN = 0x01000001;
+    private static final int BAG_KEY_ATTR_MAX = 0x01000002;
+    private static final int BAG_KEY_ATTR_L10N = 0x01000003;
+    private static final int TYPE_REFERENCE = 0x01;
+    private static final int TYPE_STRING = 0x02;
+    private static final int TYPE_INT = 0x04;
+    private static final int TYPE_BOOL = 0x08;
+    private static final int TYPE_COLOR = 0x10;
+    private static final int TYPE_FLOAT = 0x20;
+    private static final int TYPE_DIMEN = 0x40;
+    private static final int TYPE_FRACTION = 0x80;
+    private static final int TYPE_ANY_STRING = 0xee;
+    private static final int TYPE_ENUM = 0x00010000;
+    private static final int TYPE_FLAGS = 0x00020000;
+    private final int mType;
+    private final Integer mMin;
+    private final Integer mMax;
+    private final Boolean mL10n;
+    ResAttr(ResReferenceValue parent, int type, Integer min, Integer max, Boolean l10n) {
+        super(parent);
+        mType = type;
+        mMin = min;
+        mMax = max;
+        mL10n = l10n;
+    }
+    public String convertToResXmlFormat(ResScalarValue value) throws AndrolibException {
+        return null;
+    }
+    @Override
+    public void serializeToResValuesXml(XmlSerializer serializer, ResResource res)
+            throws AndrolibException, IOException {
+        String type = getTypeAsString();
+        serializer.startTag(null, "attr");
+        serializer.attribute(null, "name", res.getResSpec().getName());
+        if (type != null) {
+            serializer.attribute(null, "format", type);
+        }
+        if (mMin != null) {
+            serializer.attribute(null, "min", mMin.toString());
+        }
+        if (mMax != null) {
+            serializer.attribute(null, "max", mMax.toString());
+        }
+        if (mL10n != null && mL10n) {
+            serializer.attribute(null, "localization", "suggested");
+        }
+        serializeBody(serializer, res);
+        serializer.endTag(null, "attr");
+    }
+    public static ResAttr factory(ResReferenceValue parent, Pair<Integer, ResScalarValue>[] items,
+                                  ResValueFactory factory) throws AndrolibException {
+        Integer min = null, max = null;
+        Boolean l10n = null;
+        int i = 1;
+        for (; i < items.length; i++) {
+            Pair<Integer, ResScalarValue> item = items[i];
+            switch (item.getLeft()) {
+                case BAG_KEY_ATTR_MIN:
+                    min = item.getRight().getRawIntValue();
+                    continue;
+                case BAG_KEY_ATTR_MAX:
+                    max = item.getRight().getRawIntValue();
+                    continue;
+                case BAG_KEY_ATTR_L10N:
+                    l10n = item.getRight().getRawIntValue() != 0;
+                    continue;
+            }
+            break;
+        }
+        int rawValue = items[0].getRight().getRawIntValue();
+        int scalarType = rawValue & 0xffff;
+        if (i == items.length) {
+            return new ResAttr(parent, scalarType, min, max, l10n);
+        }
+        ResPackage pkg = parent.getPackage();
+        Pair<ResReferenceValue, ResScalarValue>[] attrItems = new Pair[items.length - i];
+        for (int j = 0; i < items.length; i++, j++) {
+            Pair<Integer, ResScalarValue> item = items[i];
+            int resId = item.getLeft();
+            pkg.addSynthesizedRes(resId);
+            attrItems[j] = Pair.of(factory.newReference(resId, null), item.getRight());
+        }
+        switch (rawValue & 0xff0000) {
+            case TYPE_ENUM:
+                return new ResEnumAttr(parent, scalarType, min, max, l10n, attrItems);
+            case TYPE_FLAGS:
+                return new ResFlagsAttr(parent, scalarType, min, max, l10n, attrItems);
+        }
+        throw new AndrolibException("Could not decode attr value");
+    }
+    protected void serializeBody(XmlSerializer serializer, ResResource res)
+            throws AndrolibException, IOException {
+    }
+    protected String getTypeAsString() {
+        String s = "";
+        if ((mType & TYPE_REFERENCE) != 0) {
+            s += "|reference";
+        }
+        if ((mType & TYPE_STRING) != 0) {
+            s += "|string";
+        }
+        if ((mType & TYPE_INT) != 0) {
+            s += "|integer";
+        }
+        if ((mType & TYPE_BOOL) != 0) {
+            s += "|boolean";
+        }
+        if ((mType & TYPE_COLOR) != 0) {
+            s += "|color";
+        }
+        if ((mType & TYPE_FLOAT) != 0) {
+            s += "|float";
+        }
+        if ((mType & TYPE_DIMEN) != 0) {
+            s += "|dimension";
+        }
+        if ((mType & TYPE_FRACTION) != 0) {
+            s += "|fraction";
+        }
+        if (s.isEmpty()) {
+            return null;
+        }
+        return s.substring(1);
+    }
+}
+package brut.androlib.res.xml;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.ResResource;
+import org.xmlpull.v1.XmlSerializer;
+import java.io.IOException;
+public interface ResValuesXmlSerializable {
+    void serializeToResValuesXml(XmlSerializer serializer, ResResource res)
+            throws AndrolibException, IOException;
+}
+package brut.androlib.res.data.value;
+import android.util.TypedValue;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.res.data.ResPackage;
+import brut.androlib.res.data.ResTypeSpec;
+import org.apache.commons.lang3.tuple.Pair;
+public class ResValueFactory {
+    private final ResPackage mPackage;
+    public ResValueFactory(ResPackage pkg) {
+        mPackage = pkg;
+    }
+    public ResScalarValue factory(int type, int value, String rawValue) throws AndrolibException {
+        switch (type) {
+            case TypedValue.TYPE_NULL:
+                if (value == TypedValue.DATA_NULL_EMPTY) {
+                    return new ResEmptyValue(value, rawValue, type);
+                }
+                return new ResReferenceValue(mPackage, 0, null);
+            case TypedValue.TYPE_REFERENCE:
+                return newReference(value, null);
+            case TypedValue.TYPE_ATTRIBUTE:
+            case TypedValue.TYPE_DYNAMIC_ATTRIBUTE:
+                return newReference(value, rawValue, true);
+            case TypedValue.TYPE_STRING:
+                return new ResStringValue(rawValue, value);
+            case TypedValue.TYPE_FLOAT:
+                return new ResFloatValue(Float.intBitsToFloat(value), value, rawValue);
+            case TypedValue.TYPE_DIMENSION:
+                return new ResDimenValue(value, rawValue);
+            case TypedValue.TYPE_FRACTION:
+                return new ResFractionValue(value, rawValue);
+            case TypedValue.TYPE_INT_BOOLEAN:
+                return new ResBoolValue(value != 0, value, rawValue);
+            case TypedValue.TYPE_DYNAMIC_REFERENCE:
+                return newReference(value, rawValue);
+        }
+        if (type >= TypedValue.TYPE_FIRST_COLOR_INT && type <= TypedValue.TYPE_LAST_COLOR_INT) {
+            return new ResColorValue(value, rawValue);
+        }
+        if (type >= TypedValue.TYPE_FIRST_INT && type <= TypedValue.TYPE_LAST_INT) {
+            return new ResIntValue(value, rawValue, type);
+        }
+        throw new AndrolibException("Invalid value type: " + type);
+    }
+    public ResIntBasedValue factory(String value, int rawValue) {
+        if (value == null) {
+            return new ResFileValue("", rawValue);
+        }
+        if (value.startsWith("res/")) {
+            return new ResFileValue(value, rawValue);
+        }
+        if (value.startsWith("r/") || value.startsWith("R/")) { 
+            return new ResFileValue(value, rawValue);
+        }
+        return new ResStringValue(value, rawValue);
+    }
+    public ResBagValue bagFactory(int parentId, Pair<Integer, ResScalarValue>[] items, ResTypeSpec resTypeSpec)
+            throws AndrolibException {
+        ResReferenceValue parent = newReference(parentId, null);
+        if (items.length == 0) {
+            return new ResBagValue(parent);
+        }
+        String resTypeName = resTypeSpec.getName();
+        switch (resTypeName) {
+            case ResTypeSpec.RES_TYPE_NAME_ATTR:
+            case ResTypeSpec.RES_TYPE_NAME_ATTR_PRIVATE:
+                return ResAttr.factory(parent, items, this);
+            case ResTypeSpec.RES_TYPE_NAME_ARRAY:
+                return new ResArrayValue(parent, items);
+            case ResTypeSpec.RES_TYPE_NAME_PLURALS:
+                return new ResPluralsValue(parent, items);
+            default:
+                if (resTypeName.startsWith(ResTypeSpec.RES_TYPE_NAME_STYLES)) {
+                    return new ResStyleValue(parent, items, this);
+                }
+                throw new AndrolibException("unsupported res type name for bags. Found: " + resTypeName);
+        }
+    }
+    public ResReferenceValue newReference(int resId, String rawValue) {
+        return newReference(resId, rawValue, false);
+    }
+    public ResReferenceValue newReference(int resId, String rawValue, boolean theme) {
+        return new ResReferenceValue(mPackage, resId, rawValue, theme);
+    }
+}
+package brut.androlib.res.decoder;
+import android.content.res.XmlResourceParser;
+import android.util.TypedValue;
+import brut.androlib.exceptions.AndrolibException;
+import brut.androlib.exceptions.CantFindFrameworkResException;
+import brut.androlib.exceptions.UndefinedResObjectException;
+import brut.androlib.res.data.ResID;
+import brut.androlib.res.data.ResResSpec;
+import brut.androlib.res.data.ResTable;
+import brut.androlib.res.data.arsc.ARSCHeader;
+import brut.androlib.res.data.axml.NamespaceStack;
+import brut.androlib.res.data.value.ResAttr;
+import brut.androlib.res.data.value.ResScalarValue;
+import brut.androlib.res.xml.ResXmlEncoders;
+import brut.util.ExtDataInputStream;
+import org.xmlpull.v1.XmlPullParserException;
+import java.io.*;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+public class AXmlResourceParser implements XmlResourceParser {
+    private static final Logger LOGGER = Logger.getLogger(AXmlResourceParser.class.getName());
+    private static final String E_NOT_SUPPORTED = "Method is not supported.";
+    private static final String ANDROID_RES_NS_AUTO = "http:
+    public static final String ANDROID_RES_NS = "http:
+    private static final int ATTRIBUTE_IX_NAMESPACE_URI = 0; 
+    private static final int ATTRIBUTE_IX_NAME = 1; 
+    private static final int ATTRIBUTE_IX_VALUE_STRING = 2; 
+    private static final int ATTRIBUTE_IX_VALUE_TYPE = 3; 
+    private static final int ATTRIBUTE_IX_VALUE_DATA = 4; 
+    private static final int ATTRIBUTE_LENGTH = 5;
+    private static final int PRIVATE_PKG_ID = 0x7F;
+    private final ResTable mResTable;
+    private final NamespaceStack mNamespaces;
+    private boolean mIsOperational;
+    private ExtDataInputStream mIn;
+    private StringBlock mStringBlock;
+    private int[] mResourceIds;
+    private boolean mDecreaseDepth;
+    private AndrolibException mFirstError;
+    private int mEvent;
+    private int mLineNumber;
+    private int mNameIndex;
+    private int mNamespaceIndex;
+    private int[] mAttributes;
+    private int mIdIndex;
+    private int mClassIndex;
+    private int mStyleIndex;
+    public AXmlResourceParser(ResTable resTable) {
+        mResTable = resTable;
+        mNamespaces = new NamespaceStack();
+        resetEventInfo();
+    }
+    public AndrolibException getFirstError() {
+        return mFirstError;
+    }
+    public ResTable getResTable() {
+        return mResTable;
+    }
+    public void open(InputStream stream) {
+        close();
+        if (stream != null) {
+            mIn = ExtDataInputStream.littleEndian(stream);
+        }
+    }
+    @Override
+    public void close() {
+        if (!mIsOperational) {
+            return;
+        }
+        mIsOperational = false;
+        mIn = null;
+        mStringBlock = null;
+        mResourceIds = null;
+        mNamespaces.reset();
+        resetEventInfo();
+    }
+    @Override
+    public int next() throws XmlPullParserException, IOException {
+        if (mIn == null) {
+            throw new XmlPullParserException("Parser is not opened.", this, null);
+        }
+        try {
+            doNext();
+            return mEvent;
+        } catch (IOException ex) {
+            close();
+            throw ex;
+        }
+    }
+    @Override
+    public int nextToken() throws XmlPullParserException, IOException {
+        return next();
+    }
+    @Override
+    public int nextTag() throws XmlPullParserException, IOException {
+        int eventType = next();
+        if (eventType == TEXT && isWhitespace()) {
+            eventType = next();
+        }
+        if (eventType != START_TAG && eventType != END_TAG) {
+            throw new XmlPullParserException("Expected start or end tag.", this, null);
+        }
+        return eventType;
+    }
+    @Override
+    public String nextText() throws XmlPullParserException, IOException {
+        if (getEventType() != START_TAG) {
+            throw new XmlPullParserException("Parser must be on START_TAG to read next text.", this, null);
+        }
+        int eventType = next();
+        if (eventType == TEXT) {
+            String result = getText();
+            eventType = next();
+            if (eventType != END_TAG) {
+                throw new XmlPullParserException("Event TEXT must be immediately followed by END_TAG.", this, null);
+            }
+            return result;
+        } else if (eventType == END_TAG) {
+            return "";
+        } else {
+            throw new XmlPullParserException("Parser must be on START_TAG or TEXT to read text.", this, null);
+        }
+    }
+    @Override
+    public void require(int type, String namespace, String name) throws XmlPullParserException {
+        if (type != getEventType() || (namespace != null && !namespace.equals(getNamespace()))
+                || (name != null && !name.equals(getName()))) {
+            throw new XmlPullParserException(TYPES[type] + " is expected.", this, null);
+        }
+    }
+    @Override
+    public int getDepth() {
+        return mNamespaces.getDepth() - 1;
+    }
+    @Override
+    public int getEventType(){
+        return mEvent;
+    }
+    @Override
+    public int getLineNumber() {
+        return mLineNumber;
+    }
+    @Override
+    public String getName() {
+        if (mNameIndex == -1 || (mEvent != START_TAG && mEvent != END_TAG)) {
+            return null;
+        }
+        return mStringBlock.getString(mNameIndex);
+    }
+    @Override
+    public String getText() {
+        if (mNameIndex == -1 || mEvent != TEXT) {
+            return null;
+        }
+        return mStringBlock.getString(mNameIndex);
+    }
+    @Override
+    public char[] getTextCharacters(int[] holderForStartAndLength) {
+        String text = getText();
+        if (text == null) {
+            return null;
+        }
+        holderForStartAndLength[0] = 0;
+        holderForStartAndLength[1] = text.length();
+        char[] chars = new char[text.length()];
+        text.getChars(0, text.length(), chars, 0);
+        return chars;
+    }
+    @Override
+    public String getNamespace() {
+        return mStringBlock.getString(mNamespaceIndex);
+    }
+    @Override
+    public String getPrefix() {
+        int prefix = mNamespaces.findPrefix(mNamespaceIndex);
+        return mStringBlock.getString(prefix);
+    }
+    @Override
+    public String getPositionDescription() {
+        return "XML line #" + getLineNumber();
+    }
+    @Override
+    public int getNamespaceCount(int depth) {
+        return mNamespaces.getAccumulatedCount(depth);
+    }
+    @Override
+    public String getNamespacePrefix(int pos) {
+        int prefix = mNamespaces.getPrefix(pos);
+        return mStringBlock.getString(prefix);
+    }
+    @Override
+    public String getNamespaceUri(int pos) {
+        int uri = mNamespaces.getUri(pos);
+        return mStringBlock.getString(uri);
+    }
+    @Override
+    public String getClassAttribute() {
+        if (mClassIndex == -1) {
+            return null;
+        }
+        int offset = getAttributeOffset(mClassIndex);
+        int value = mAttributes[offset + ATTRIBUTE_IX_VALUE_STRING];
+        return mStringBlock.getString(value);
+    }
+    @Override
+    public String getIdAttribute() {
+        if (mIdIndex == -1) {
+            return null;
+        }
+        int offset = getAttributeOffset(mIdIndex);
+        int value = mAttributes[offset + ATTRIBUTE_IX_VALUE_STRING];
+        return mStringBlock.getString(value);
+    }
+    @Override
+    public int getIdAttributeResourceValue(int defaultValue) {
+        if (mIdIndex == -1) {
+            return defaultValue;
+        }
+        int offset = getAttributeOffset(mIdIndex);
+        int valueType = mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+        if (valueType != TypedValue.TYPE_REFERENCE) {
+            return defaultValue;
+        }
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+    }
+    @Override
+    public int getStyleAttribute() {
+        if (mStyleIndex == -1) {
+            return 0;
+        }
+        int offset = getAttributeOffset(mStyleIndex);
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+    }
+    @Override
+    public int getAttributeCount() {
+        if (mEvent != START_TAG) {
+            return -1;
+        }
+        return mAttributes.length / ATTRIBUTE_LENGTH;
+    }
+    @Override
+    public String getAttributeNamespace(int index) {
+        int offset = getAttributeOffset(index);
+        int namespace = mAttributes[offset + ATTRIBUTE_IX_NAMESPACE_URI];
+        ResID resId = new ResID(getAttributeNameResource(index));
+        if (namespace == -1 && resId.getPackageId() == 1) {
+            return ANDROID_RES_NS;
+        }
+        if (namespace == -1) {
+            return "";
+        }
+        String value = mStringBlock.getString(namespace);
+        if (value == null || value.isEmpty()) {
+            if (resId.getPackageId() == PRIVATE_PKG_ID) {
+                return getNonDefaultNamespaceUri(offset);
+            } else {
+                return ANDROID_RES_NS;
+            }
+        }
+        return value;
+    }
+    public String decodeFromResourceId(int attrResId) throws AndrolibException {
+        if (attrResId != 0) {
+            try {
+                ResResSpec resResSpec = mResTable.getResSpec(attrResId);
+                if (resResSpec != null) {
+                    return resResSpec.getName();
+                }
+            } catch (UndefinedResObjectException | CantFindFrameworkResException ignored) {}
+        }
+        return null;
+    }
+    private String getNonDefaultNamespaceUri(int offset) {
+        String prefix = mStringBlock.getString(mNamespaces.getPrefix(offset));
+        if (prefix == null) {
+            return ANDROID_RES_NS_AUTO;
+        }
+        return mStringBlock.getString(mNamespaces.getUri(offset));
+    }
+    @Override
+    public String getAttributePrefix(int index) {
+        int offset = getAttributeOffset(index);
+        int uri = mAttributes[offset + ATTRIBUTE_IX_NAMESPACE_URI];
+        int prefix = mNamespaces.findPrefix(uri);
+        if (prefix == -1) {
+            return "";
+        }
+        return mStringBlock.getString(prefix);
+    }
+    @Override
+    public String getAttributeName(int index) {
+        int offset = getAttributeOffset(index);
+        int name = mAttributes[offset + ATTRIBUTE_IX_NAME];
+        if (name == -1) {
+            return "";
+        }
+        String resourceMapValue;
+        String stringBlockValue = mStringBlock.getString(name);
+        int attrResId = getAttributeNameResource(index);
+        try {
+            resourceMapValue = decodeFromResourceId(attrResId);
+        } catch (AndrolibException ignored) {
+            resourceMapValue = null;
+        }
+        if (resourceMapValue != null) {
+            return resourceMapValue;
+        }
+        if (stringBlockValue != null) {
+            return stringBlockValue;
+        }
+        return "APKTOOL_MISSING_" + Integer.toHexString(attrResId);
+    }
+    @Override
+    public int getAttributeNameResource(int index) {
+        int offset = getAttributeOffset(index);
+        int name = mAttributes[offset + ATTRIBUTE_IX_NAME];
+        if (mResourceIds == null || name < 0 || name >= mResourceIds.length) {
+            return 0;
+        }
+        return mResourceIds[name];
+    }
+    @Override
+    public int getAttributeValueType(int index) {
+        int offset = getAttributeOffset(index);
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+    }
+    @Override
+    public int getAttributeValueData(int index) {
+        int offset = getAttributeOffset(index);
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+    }
+    @Override
+    public String getAttributeValue(int index) {
+        int offset = getAttributeOffset(index);
+        int valueType = mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+        int valueData = mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+        int valueRaw = mAttributes[offset + ATTRIBUTE_IX_VALUE_STRING];
+        try {
+            String stringBlockValue = valueRaw != -1
+                ? ResXmlEncoders.escapeXmlChars(mStringBlock.getString(valueRaw)) : null;
+            String resourceMapValue = null;
+            if (valueType == TypedValue.TYPE_REFERENCE
+                    || valueType == TypedValue.TYPE_DYNAMIC_REFERENCE
+                    || valueType == TypedValue.TYPE_ATTRIBUTE
+                    || valueType == TypedValue.TYPE_DYNAMIC_ATTRIBUTE) {
+                resourceMapValue = decodeFromResourceId(valueData);
+            }
+            String value = getPreferredString(stringBlockValue, resourceMapValue);
+            int attrResId = getAttributeNameResource(index);
+            ResScalarValue resValue = mResTable.getCurrentResPackage()
+                .getValueFactory().factory(valueType, valueData, value);
+            String decoded = null;
+            if (attrResId > 0) {
+                try {
+                    ResAttr attr = (ResAttr) mResTable.getResSpec(attrResId).getDefaultResource().getValue();
+                    decoded = attr.convertToResXmlFormat(resValue);
+                } catch (UndefinedResObjectException | ClassCastException ignored) {}
+            }
+            return decoded != null ? decoded : resValue.encodeAsResXmlAttr();
+        } catch (AndrolibException ex) {
+            setFirstError(ex);
+            LOGGER.log(Level.WARNING, String.format("Could not decode attr value, using undecoded value "
+                            + "instead: ns=%s, name=%s, value=0x%08x",
+                    getAttributePrefix(index),
+                    getAttributeName(index),
+                    valueData), ex);
+        }
+        return TypedValue.coerceToString(valueType, valueData);
+    }
+    @Override
+    public boolean getAttributeBooleanValue(int index, boolean defaultValue) {
+        return getAttributeIntValue(index, defaultValue ? 1 : 0) != 0;
+    }
+    @Override
+    public float getAttributeFloatValue(int index, float defaultValue) {
+        int offset = getAttributeOffset(index);
+        int valueType = mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+        if (valueType != TypedValue.TYPE_FLOAT) {
+            return defaultValue;
+        }
+        return Float.intBitsToFloat(mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA]);
+    }
+    @Override
+    public int getAttributeIntValue(int index, int defaultValue) {
+        int offset = getAttributeOffset(index);
+        int valueType = mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+        if (valueType < TypedValue.TYPE_FIRST_INT || valueType > TypedValue.TYPE_LAST_INT) {
+            return defaultValue;
+        }
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+    }
+    @Override
+    public int getAttributeUnsignedIntValue(int index, int defaultValue) {
+        return getAttributeIntValue(index, defaultValue);
+    }
+    @Override
+    public int getAttributeResourceValue(int index, int defaultValue) {
+        int offset = getAttributeOffset(index);
+        int valueType = mAttributes[offset + ATTRIBUTE_IX_VALUE_TYPE];
+        if (valueType != TypedValue.TYPE_REFERENCE) {
+            return defaultValue;
+        }
+        return mAttributes[offset + ATTRIBUTE_IX_VALUE_DATA];
+    }
+    @Override
+    public String getAttributeValue(String namespace, String attribute) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return "";
+        }
+        return getAttributeValue(index);
+    }
+    @Override
+    public boolean getAttributeBooleanValue(String namespace, String attribute, boolean defaultValue) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return defaultValue;
+        }
+        return getAttributeBooleanValue(index, defaultValue);
+    }
+    @Override
+    public float getAttributeFloatValue(String namespace, String attribute, float defaultValue) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return defaultValue;
+        }
+        return getAttributeFloatValue(index, defaultValue);
+    }
+    @Override
+    public int getAttributeIntValue(String namespace, String attribute, int defaultValue) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return defaultValue;
+        }
+        return getAttributeIntValue(index, defaultValue);
+    }
+    @Override
+    public int getAttributeUnsignedIntValue(String namespace, String attribute, int defaultValue) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return defaultValue;
+        }
+        return getAttributeUnsignedIntValue(index, defaultValue);
+    }
+    @Override
+    public int getAttributeResourceValue(String namespace, String attribute, int defaultValue) {
+        int index = findAttribute(namespace, attribute);
+        if (index == -1) {
+            return defaultValue;
+        }
+        return getAttributeResourceValue(index, defaultValue);
+    }
+    @Override
+    public int getAttributeListValue(int index, String[] options, int defaultValue) {
+        return 0;
+    }
+    @Override
+    public int getAttributeListValue(String namespace, String attribute, String[] options, int defaultValue) {
+        return 0;
+    }
+    @Override
+    public String getAttributeType(int index) {
+        return "CDATA";
+    }
+    @Override
+    public boolean isAttributeDefault(int index) {
+        return false;
+    }
+    @Override
+    public void setInput(InputStream stream, String inputEncoding) {
+        open(stream);
+    }
+    @Override
+    public void setInput(Reader reader) throws XmlPullParserException {
+        throw new XmlPullParserException(E_NOT_SUPPORTED);
+    }
+    @Override
+    public String getInputEncoding() {
+        return null;
+    }
+    @Override
+    public int getColumnNumber() {
+        return -1;
+    }
+    @Override
+    public boolean isEmptyElementTag() {
+        return false;
+    }
+    @Override
+    public boolean isWhitespace() {
+        return false;
+    }
+    @Override
+    public void defineEntityReplacementText(String entityName, String replacementText)
+            throws XmlPullParserException {
+        throw new XmlPullParserException(E_NOT_SUPPORTED);
+    }
+    @Override
+    public String getNamespace(String prefix) {
+        throw new RuntimeException(E_NOT_SUPPORTED);
+    }
+    @Override
+    public Object getProperty(String name) {
+        return null;
+    }
+    @Override
+    public void setProperty(String name, Object value) throws XmlPullParserException {
+        throw new XmlPullParserException(E_NOT_SUPPORTED);
+    }
+    @Override
+    public boolean getFeature(String name) {
+        return false;
+    }
+    @Override
+    public void setFeature(String name, boolean state) throws XmlPullParserException {
+        throw new XmlPullParserException(E_NOT_SUPPORTED);
+    }
+    private int getAttributeOffset(int index) {
+        if (mEvent != START_TAG) {
+            throw new IndexOutOfBoundsException("Current event is not START_TAG.");
+        }
+        int offset = index * ATTRIBUTE_LENGTH;
+        if (offset >= mAttributes.length) {
+            throw new IndexOutOfBoundsException("Invalid attribute index (" + index + ").");
+        }
+        return offset;
+    }
+    private int findAttribute(String namespace, String attribute) {
+        if (mStringBlock == null || attribute == null) {
+            return -1;
+        }
+        int name = mStringBlock.find(attribute);
+        if (name == -1) {
+            return -1;
+        }
+        int uri = namespace != null ? mStringBlock.find(namespace) : -1;
+        int offset = 0;
+        while (offset < mAttributes.length) {
+            if (name == mAttributes[offset + ATTRIBUTE_IX_NAME]
+                    && (uri == -1 || uri == mAttributes[offset + ATTRIBUTE_IX_NAMESPACE_URI])) {
+                return offset / ATTRIBUTE_LENGTH;
+            }
+            offset += ATTRIBUTE_LENGTH;
+        }
+        return -1;
+    }
+    private static String getPreferredString(String stringBlockValue, String resourceMapValue) {
+        String value = stringBlockValue;
+        if (stringBlockValue != null && resourceMapValue != null) {
+            int slashPos = stringBlockValue.lastIndexOf("/");
+            int colonPos = stringBlockValue.lastIndexOf(":");
+            if (slashPos != -1) {
+                if (colonPos == -1) {
+                    String type = stringBlockValue.substring(0, slashPos);
+                    value = type + "/" + resourceMapValue;
+                }
+            } else if (!stringBlockValue.equals(resourceMapValue)) {
+                value = resourceMapValue;
+            }
+        }
+        return value;
+    }
+    private void resetEventInfo() {
+        mEvent = -1;
+        mLineNumber = -1;
+        mNameIndex = -1;
+        mNamespaceIndex = -1;
+        mAttributes = null;
+        mIdIndex = -1;
+        mClassIndex = -1;
+        mStyleIndex = -1;
+    }
+    private void doNext() throws IOException {
+        if (mStringBlock == null) {
+            mIn.skipInt(); 
+            mIn.skipInt(); 
+            mStringBlock = StringBlock.readWithChunk(mIn);
+            mNamespaces.increaseDepth();
+            mIsOperational = true;
+        }
+        if (mEvent == END_DOCUMENT) {
+            return;
+        }
+        int event = mEvent;
+        resetEventInfo();
+        while (true) {
+            if (mDecreaseDepth) {
+                mDecreaseDepth = false;
+                mNamespaces.decreaseDepth();
+            }
+            if (event == END_TAG && mNamespaces.getDepth() == 1 && mNamespaces.getCurrentCount() == 0) {
+                mEvent = END_DOCUMENT;
+                break;
+            }
+            if (mIn.available() == 0) {
+                LOGGER.warning(String.format("AXML hit unexpected end of file at byte: 0x%X", mIn.position()));
+                mEvent = END_DOCUMENT;
+                break;
+            }
+            int chunkType;
+            int headerSize = 0;
+            if (event == START_DOCUMENT) {
+                chunkType = ARSCHeader.RES_XML_START_ELEMENT_TYPE;
+            } else {
+                chunkType = mIn.readShort();
+                headerSize = mIn.readShort();
+            }
+            if (chunkType == ARSCHeader.RES_XML_RESOURCE_MAP_TYPE) {
+                int chunkSize = mIn.readInt();
+                if (chunkSize < 8 || (chunkSize % 4) != 0) {
+                    throw new IOException("Invalid resource ids size (" + chunkSize + ").");
+                }
+                mResourceIds = mIn.readIntArray(chunkSize / 4 - 2);
+                continue;
+            }
+            if (chunkType < ARSCHeader.RES_XML_FIRST_CHUNK_TYPE || chunkType > ARSCHeader.RES_XML_LAST_CHUNK_TYPE) {
+                int chunkSize = mIn.readInt();
+                mIn.skipBytes(chunkSize - 8);
+                LOGGER.warning(String.format("Unknown chunk type at: (0x%08x) skipping...", mIn.position()));
+                break;
+            }
+            if (chunkType == ARSCHeader.RES_XML_START_ELEMENT_TYPE && event == -1) {
+                mEvent = START_DOCUMENT;
+                break;
+            }
+            mIn.skipInt(); 
+            mLineNumber = mIn.readInt();
+            mIn.skipInt(); 
+            if (chunkType == ARSCHeader.RES_XML_START_NAMESPACE_TYPE || chunkType == ARSCHeader.RES_XML_END_NAMESPACE_TYPE) {
+                if (chunkType == ARSCHeader.RES_XML_START_NAMESPACE_TYPE) {
+                    int prefix = mIn.readInt();
+                    int uri = mIn.readInt();
+                    mNamespaces.push(prefix, uri);
+                } else {
+                    mIn.skipInt(); 
+                    mIn.skipInt(); 
+                    mNamespaces.pop();
+                }
+                if (headerSize > 0x10) {
+                    int bytesToSkip = headerSize - 0x10;
+                    LOGGER.warning(String.format("AXML header larger than 0x10 bytes, skipping %d bytes.", bytesToSkip));
+                    mIn.skipBytes(bytesToSkip);
+                }
+                continue;
+            }
+            if (chunkType == ARSCHeader.RES_XML_START_ELEMENT_TYPE) {
+                mNamespaceIndex = mIn.readInt();
+                mNameIndex = mIn.readInt();
+                mIn.skipShort(); 
+                int attributeSize = mIn.readShort();
+                int attributeCount = mIn.readShort();
+                mIdIndex = mIn.readShort();
+                mClassIndex = mIn.readShort();
+                mStyleIndex = mIn.readShort();
+                mAttributes = mIn.readIntArray(attributeCount * ATTRIBUTE_LENGTH);
+                for (int i = ATTRIBUTE_IX_VALUE_TYPE; i < mAttributes.length; ) {
+                    mAttributes[i] = (mAttributes[i] >>> 24);
+                    i += ATTRIBUTE_LENGTH;
+                }
+                int byteAttrSizeRead = (attributeCount * ATTRIBUTE_LENGTH) * 4;
+                int byteAttrSizeReported = (attributeSize * attributeCount);
+                if (byteAttrSizeRead < byteAttrSizeReported) {
+                    int bytesToSkip = byteAttrSizeReported - byteAttrSizeRead;
+                    mIn.skipBytes(bytesToSkip);
+                    LOGGER.fine("Skipping " + bytesToSkip + " unknown bytes in attributes area.");
+                }
+                mNamespaces.increaseDepth();
+                mEvent = START_TAG;
+                break;
+            }
+            if (chunkType == ARSCHeader.RES_XML_END_ELEMENT_TYPE) {
+                mNamespaceIndex = mIn.readInt();
+                mNameIndex = mIn.readInt();
+                mEvent = END_TAG;
+                mDecreaseDepth = true;
+                break;
+            }
+            if (chunkType == ARSCHeader.RES_XML_CDATA_TYPE) {
+                mNameIndex = mIn.readInt();
+                mIn.skipInt();
+                mIn.skipInt();
+                mEvent = TEXT;
+                break;
+            }
+        }
+    }
+    private void setFirstError(AndrolibException error) {
+        if (mFirstError == null) {
+            mFirstError = error;
+        }
+    }
+}
+package brut.androlib.res.data;
+import java.util.LinkedHashSet;
+import java.util.Objects;
+import java.util.Set;
+public class ResValuesFile {
+    private final ResPackage mPackage;
+    private final ResTypeSpec mType;
+    private final ResType mConfig;
+    private final Set<ResResource> mResources;
+    public ResValuesFile(ResPackage pkg, ResTypeSpec type, ResType config) {
+        mPackage = pkg;
+        mType = type;
+        mConfig = config;
+        mResources = new LinkedHashSet<>();
+    }
+    public String getPath() {
+        return "values" + mConfig.getFlags().getQualifiers() + "/"
+                + mType.getName() + (mType.getName().endsWith("s") ? "" : "s")
+                + ".xml";
+    }
+    public Set<ResResource> listResources() {
+        return mResources;
+    }
+    public ResTypeSpec getType() {
+        return mType;
+    }
+    public boolean isSynthesized(ResResource res) {
+        return mPackage.isSynthesized(res.getResSpec().getId());
+    }
+    public void addResource(ResResource res) {
+        mResources.add(res);
+    }
+    @Override
+    public boolean equals(Object obj) {
+        if (obj == this) {
+            return true;
+        }
+        if (obj instanceof ResValuesFile) {
+            ResValuesFile other = (ResValuesFile) obj;
+            return Objects.equals(mType, other.mType)
+                    && Objects.equals(mConfig, other.mConfig);
+        }
+        return false;
+    }
+    @Override
+    public int hashCode() {
+        return Objects.hash(mType, mConfig);
+    }
+}

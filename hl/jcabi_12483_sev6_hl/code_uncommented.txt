@@ -1,0 +1,2527 @@
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Assignees;
+import com.jcabi.github.Branch;
+import com.jcabi.github.Branches;
+import com.jcabi.github.Collaborators;
+import com.jcabi.github.Contents;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.DeployKeys;
+import com.jcabi.github.Forks;
+import com.jcabi.github.Git;
+import com.jcabi.github.Github;
+import com.jcabi.github.Hooks;
+import com.jcabi.github.IssueEvents;
+import com.jcabi.github.Issues;
+import com.jcabi.github.Labels;
+import com.jcabi.github.Language;
+import com.jcabi.github.Milestones;
+import com.jcabi.github.Notifications;
+import com.jcabi.github.Pulls;
+import com.jcabi.github.Releases;
+import com.jcabi.github.Repo;
+import com.jcabi.github.RepoCommits;
+import com.jcabi.github.RtLanguage;
+import com.jcabi.github.Stargazers;
+import com.jcabi.github.Stars;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = {"storage", "self", "coords"})
+@SuppressWarnings
+    (
+        {
+            "PMD.TooManyMethods",
+            "PMD.ExcessiveImports",
+            "PMD.CouplingBetweenObjects"
+        }
+    )
+final class MkRepo implements Repo {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    private final transient Coordinates coords;
+    
+    MkRepo(
+        final MkStorage stg,
+        final String login,
+        final Coordinates repo
+    ) {
+        this.storage = stg;
+        this.self = login;
+        this.coords = repo;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Coordinates coordinates() {
+        return this.coords;
+    }
+    @Override
+    public Issues issues() {
+        try {
+            return new MkIssues(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Milestones milestones() {
+        try {
+            return new MkMilestones(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Pulls pulls() {
+        try {
+            return new MkPulls(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Hooks hooks() {
+        try {
+            return new MkHooks(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public IssueEvents issueEvents() {
+        try {
+            return new MkIssueEvents(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Labels labels() {
+        try {
+            return new MkLabels(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Assignees assignees() {
+        return new MkAssignees(this.storage, this.self, this.coords);
+    }
+    @Override
+    public Releases releases() {
+        try {
+            return new MkReleases(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Forks forks() {
+        try {
+            return new MkForks(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Collaborators collaborators() {
+        try {
+            return new MkCollaborators(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public DeployKeys keys() {
+        try {
+            return new MkDeployKeys(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Contents contents() {
+        try {
+            return new MkContents(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    @Override
+    public RepoCommits commits() {
+        try {
+            return new MkRepoCommits(
+                this.storage, this.self, this.coordinates()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Branches branches() {
+        try {
+            return new MkBranches(
+                this.storage, this.self, this.coordinates()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Git git() {
+        try {
+            return new MkGit(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Stars stars() {
+        try {
+            return new MkStars(this.storage, this.self, this.coords);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Notifications notifications() {
+        return new MkNotifications(
+            this.storage,
+            this.xpath().concat("/notifications/notification")
+        );
+    }
+    @Override
+    public Iterable<Language> languages() {
+        final List<Language> languages = new ArrayList<>(0);
+        final int java = 999;
+        languages.add(new RtLanguage("Java", java));
+        final int php = 888;
+        languages.add(new RtLanguage("PHP", php));
+        final int ruby = 777;
+        languages.add(new RtLanguage("Ruby", ruby));
+        return languages;
+    }
+    @Override
+    public Branch defaultBranch() {
+        return new MkBranch(
+            this.storage,
+            this.self,
+            this.coords,
+            "master",
+            ""
+        );
+    }
+    @Override
+    public Stargazers stargazers() {
+        throw new UnsupportedOperationException(
+            String.format(
+                "%s.stargazers() not yet implemented",
+                this.getClass().getSimpleName()
+            )
+        );
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    @Override
+    public int compareTo(final Repo repo) {
+        return this.coords.compareTo(repo.coordinates());
+    }
+    
+    private String xpath() {
+        return String.format(
+            "/github/repos/repo[@coords='%s']",
+            this.coords
+        );
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.http.Request;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+
+@Immutable
+@SuppressWarnings("PMD.TooManyMethods")
+public interface Github {
+    
+    Request entry();
+    
+    Repos repos();
+    
+    Gists gists();
+    
+    Users users();
+    
+    Organizations organizations();
+    
+    Markdown markdown();
+    
+    Limits limits();
+    
+    Search search();
+    
+    Gitignores gitignores();
+    
+    JsonObject meta() throws IOException;
+    
+    JsonObject emojis() throws IOException;
+    
+    @Immutable
+    @EqualsAndHashCode(of = { "msec" })
+    final class Time {
+        
+        public static final String FORMAT_ISO = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+        
+        public static final TimeZone TIMEZONE = TimeZone.getTimeZone("UTC");
+        
+        private final transient long msec;
+        
+        public Time() {
+            this(new Date());
+        }
+        
+        public Time(final String text) throws ParseException {
+            this(Github.Time.format().parse(text));
+        }
+        
+        public Time(final Date date) {
+            this(date.getTime());
+        }
+        
+        public Time(final long millis) {
+            this.msec = millis;
+        }
+        @Override
+        public String toString() {
+            return Github.Time.format().format(this.date());
+        }
+        
+        public Date date() {
+            return new Date(this.msec);
+        }
+        
+        private static DateFormat format() {
+            final DateFormat fmt = new SimpleDateFormat(
+                Github.Time.FORMAT_ISO, Locale.ENGLISH
+            );
+            fmt.setTimeZone(Github.Time.TIMEZONE);
+            return fmt;
+        }
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.xml.XML;
+import com.jcabi.xml.XMLDocument;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import lombok.EqualsAndHashCode;
+import org.apache.commons.io.FileUtils;
+import org.xembly.Directive;
+import org.xembly.Xembler;
+
+@Immutable
+@SuppressWarnings("PMD.TooManyMethods")
+public interface MkStorage {
+    
+    XML xml() throws IOException;
+    
+    void apply(
+        Iterable<Directive> dirs
+    ) throws IOException;
+    
+    void lock();
+    
+    void unlock();
+    
+    @Immutable
+    @EqualsAndHashCode(of = "name")
+    @Loggable(Loggable.DEBUG)
+    final class InFile implements MkStorage {
+        
+        private final transient String name;
+        
+        public InFile() throws IOException {
+            this(File.createTempFile("jcabi-github", ".xml"));
+            new File(this.name).deleteOnExit();
+        }
+        
+        public InFile(
+            final File file
+        ) throws IOException {
+            FileUtils.write(file, "<github/>", StandardCharsets.UTF_8);
+            this.name = file.getAbsolutePath();
+        }
+        @Override
+        public String toString() {
+            try {
+                return this.xml().toString();
+            } catch (final IOException ex) {
+                throw new IllegalStateException(ex);
+            }
+        }
+        @Override
+        public XML xml() throws IOException {
+            synchronized (this.name) {
+                return new XMLDocument(
+                    FileUtils.readFileToString(
+                        new File(this.name), StandardCharsets.UTF_8
+                    )
+                );
+            }
+        }
+        @Override
+        public void apply(
+            final Iterable<Directive> dirs
+        ) throws IOException {
+            synchronized (this.name) {
+                FileUtils.write(
+                    new File(this.name),
+                    new XMLDocument(
+                        new Xembler(dirs).applyQuietly(this.xml().node())
+                    ).toString(),
+                    StandardCharsets.UTF_8
+                );
+            }
+        }
+        @Override
+        public void lock() {
+            
+        }
+        @Override
+        public void unlock() {
+            
+        }
+    }
+    
+    @Immutable
+    @EqualsAndHashCode(of = { "origin", "lock" })
+    @Loggable(Loggable.DEBUG)
+    final class Synced implements MkStorage {
+        
+        private final transient MkStorage origin;
+        
+        private final transient ImmutableReentrantLock lock =
+            new ImmutableReentrantLock();
+        
+        public Synced(final MkStorage storage) {
+            this.origin = storage;
+        }
+        @Override
+        public String toString() {
+            return this.origin.toString();
+        }
+        @Override
+        public XML xml() throws IOException {
+            return this.origin.xml();
+        }
+        @Override
+        public void apply(final Iterable<Directive> dirs) throws IOException {
+            this.origin.apply(dirs);
+        }
+        @Override
+        public void lock() {
+            this.lock.lock();
+        }
+        @Override
+        public void unlock() {
+            this.lock.unlock();
+        }
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.util.EnumMap;
+
+@Immutable
+@SuppressWarnings("PMD.AvoidDuplicateLiterals")
+public interface Search {
+    
+    Github github();
+    
+    Iterable<Repo> repos(
+        String keywords,
+        String sort,
+        Order order
+    );
+    
+    Iterable<Issue> issues(
+        String keywords,
+        String sort,
+        Order order,
+        EnumMap<Qualifier, String> qualifiers);
+    
+    Iterable<User> users(
+        String keywords,
+        String sort,
+        Order order);
+    
+    Iterable<Content> codes(
+        String keywords,
+        String sort,
+        Order order);
+    enum Qualifier implements StringEnum {
+        
+        TYPE("type"),
+        
+        IN("in"),
+        
+        AUTHOR("author"),
+        
+        ASSIGNEE("assignee"),
+        
+        MENTIONS("mentions"),
+        
+        COMMENTER("commenter"),
+        
+        INVOLVES("involves"),
+        
+        TEAM("team"),
+        
+        STATE("state"),
+        
+        LABEL("label"),
+        
+        NO("no"),
+        
+        LANGUAGE("language"),
+        
+        IS("is"),
+        
+        CREATED("created"),
+        
+        UPDATED("updated"),
+        
+        MERGED("merged"),
+        
+        CLOSED("closed"),
+        
+        COMMENTS("comments"),
+        
+        USER("user"),
+        
+        REPO("repo");
+        
+        private final transient String qualifier;
+        
+        Qualifier(final String key) {
+            this.qualifier = key;
+        }
+        
+        @Override
+        public String identifier() {
+            return this.qualifier;
+        }
+    }
+    enum Order implements StringEnum {
+        
+        ASC("asc"),
+        
+        DESC("desc");
+        
+        private final transient String order;
+        
+        Order(final String key) {
+            this.order = key;
+        }
+        
+        @Override
+        public String identifier() {
+            return this.order;
+        }
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import java.io.IOException;
+import javax.json.JsonObject;
+import javax.json.JsonValue;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@SuppressWarnings({"PMD.TooManyMethods", "PMD.ExcessivePublicCount"})
+public interface Repo extends JsonReadable, JsonPatchable, Comparable<Repo> {
+    
+    Github github();
+    
+    Coordinates coordinates();
+    
+    Issues issues();
+    
+    Milestones milestones();
+    
+    Pulls pulls();
+    
+    Hooks hooks();
+    
+    IssueEvents issueEvents();
+    
+    Labels labels();
+    
+    Assignees assignees();
+    
+    Releases releases();
+    
+    DeployKeys keys();
+    
+    Forks forks();
+    
+    RepoCommits commits();
+    
+    Branches branches();
+    
+    Contents contents();
+    
+    Collaborators collaborators();
+    
+    Git git();
+    
+    Stars stars();
+    
+    Notifications notifications();
+    
+    Iterable<Language> languages() throws IOException;
+    
+    Branch defaultBranch() throws IOException;
+    
+    Stargazers stargazers();
+    
+    @Immutable
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = {"repo", "jsn"})
+    final class Smart implements Repo {
+        
+        private final transient Repo repo;
+        
+        private final transient SmartJson jsn;
+        
+        public Smart(
+            final Repo rep
+        ) {
+            this.repo = rep;
+            this.jsn = new SmartJson(rep);
+        }
+        
+        public boolean exists() throws IOException {
+            return new Existence(this.repo).check();
+        }
+        
+        public boolean hasDescription() throws IOException {
+            return this.jsn.hasNotNull("description");
+        }
+        
+        public String description() throws IOException {
+            return this.jsn.text("description");
+        }
+        
+        public boolean isPrivate() throws IOException {
+            return Boolean.parseBoolean(
+                this.json()
+                    .getOrDefault("private", JsonValue.FALSE)
+                    .toString().replace("\"", "")
+            );
+        }
+        @Override
+        public Github github() {
+            return this.repo.github();
+        }
+        @Override
+        public Coordinates coordinates() {
+            return this.repo.coordinates();
+        }
+        @Override
+        public Issues issues() {
+            return this.repo.issues();
+        }
+        @Override
+        public Milestones milestones() {
+            return this.repo.milestones();
+        }
+        @Override
+        public Pulls pulls() {
+            return this.repo.pulls();
+        }
+        @Override
+        public Hooks hooks() {
+            return this.repo.hooks();
+        }
+        @Override
+        public IssueEvents issueEvents() {
+            return this.repo.issueEvents();
+        }
+        @Override
+        public Labels labels() {
+            return this.repo.labels();
+        }
+        @Override
+        public Assignees assignees() {
+            return this.repo.assignees();
+        }
+        @Override
+        public Releases releases() {
+            return this.repo.releases();
+        }
+        @Override
+        public DeployKeys keys() {
+            return this.repo.keys();
+        }
+        @Override
+        public Forks forks() {
+            return this.repo.forks();
+        }
+        @Override
+        public Contents contents() {
+            return this.repo.contents();
+        }
+        @Override
+        public Collaborators collaborators() {
+            return this.repo.collaborators();
+        }
+        @Override
+        public Git git() {
+            return this.repo.git();
+        }
+        @Override
+        public Stars stars() {
+            return this.repo.stars();
+        }
+        @Override
+        public Notifications notifications() {
+            return this.repo.notifications();
+        }
+        @Override
+        public Iterable<Language> languages() throws IOException {
+            return this.repo.languages();
+        }
+        @Override
+        public Branch defaultBranch() throws IOException {
+            return this.repo.defaultBranch();
+        }
+        @Override
+        public Stargazers stargazers() {
+            throw new UnsupportedOperationException(
+                "stargazers() not yet implemented"
+            );
+        }
+        @Override
+        public void patch(
+            final JsonObject json
+        ) throws IOException {
+            this.repo.patch(json);
+        }
+        @Override
+        public RepoCommits commits() {
+            return this.repo.commits();
+        }
+        @Override
+        public Branches branches() {
+            return this.repo.branches();
+        }
+        @Override
+        public JsonObject json() throws IOException {
+            return this.repo.json();
+        }
+        @Override
+        public int compareTo(final Repo repos) {
+            return this.repo.compareTo(repos);
+        }
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Gitignores;
+import java.util.Collections;
+import java.util.Map;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "ghub" })
+@SuppressWarnings("PMD.UseConcurrentHashMap")
+final class MkGitignores implements Gitignores {
+    
+    private static final Map<String, String> GITIGNORES =
+        Collections.singletonMap(
+            "Java",
+            "*.class\n\n# Package Files #\n*.jar\n*.war\n*.ear\n"
+        );
+    
+    private final transient MkGithub ghub;
+    
+    MkGitignores(final MkGithub github) {
+        this.ghub = github;
+    }
+    @Override
+    public Github github() {
+        return this.ghub;
+    }
+    @Override
+    public Iterable<String> iterate() {
+        return GITIGNORES.keySet();
+    }
+    @Override
+    public String template(
+        final String name) {
+        final String template = GITIGNORES.get(name);
+        if (template == null) {
+            throw new IllegalArgumentException("Template not found.");
+        }
+        return template;
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.aspects.Tv;
+import com.jcabi.github.Gists;
+import com.jcabi.github.Github;
+import com.jcabi.github.Gitignores;
+import com.jcabi.github.Limits;
+import com.jcabi.github.Markdown;
+import com.jcabi.github.Organizations;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Repos;
+import com.jcabi.github.Search;
+import com.jcabi.github.Users;
+import com.jcabi.http.Request;
+import com.jcabi.http.request.FakeRequest;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import org.apache.commons.lang3.RandomStringUtils;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = { "storage", "self" })
+@SuppressWarnings("PMD.TooManyMethods")
+public final class MkGithub implements Github {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    public MkGithub() throws IOException {
+        this("jeff");
+    }
+    
+    public MkGithub(
+        final String login
+    ) throws IOException {
+        this(new MkStorage.Synced(new MkStorage.InFile()), login);
+    }
+    
+    public MkGithub(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public String toString() {
+        return this.storage.toString();
+    }
+    @Override
+    public Request entry() {
+        return new FakeRequest()
+            .withBody("{}")
+            .withStatus(HttpURLConnection.HTTP_OK);
+    }
+    @Override
+    public Repos repos() {
+        try {
+            return new MkRepos(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Gists gists() {
+        try {
+            return new MkGists(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Users users() {
+        try {
+            return new MkUsers(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Organizations organizations() {
+        try {
+            return new MkOrganizations(this.storage);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Limits limits() {
+        return new MkLimits(this.storage, this.self);
+    }
+    @Override
+    public JsonObject meta() {
+        return Json.createObjectBuilder()
+            .add("hooks", Json.createArrayBuilder().build())
+            .add("git", Json.createArrayBuilder().build())
+            .build();
+    }
+    @Override
+    public Search search() {
+        return new MkSearch(this.storage, this.self);
+    }
+    @Override
+    public Gitignores gitignores() {
+        return new MkGitignores(this);
+    }
+    @Override
+    public JsonObject emojis() {
+        return Json.createObjectBuilder()
+            .add("+1", "http:
+            .add("-1", "http:
+            .build();
+    }
+    @Override
+    public Markdown markdown() {
+        return new MkMarkdown(this);
+    }
+    
+    public Github relogin(final String login
+    ) {
+        return new MkGithub(this.storage, login);
+    }
+    
+    public Repo randomRepo() throws IOException {
+        return this.repos().create(
+            new Repos.RepoCreate(
+                RandomStringUtils.randomAlphanumeric(Tv.TWENTY),
+                true
+            )
+        );
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+
+@Immutable
+public interface Gitignores {
+    
+    Github github();
+    
+    Iterable<String> iterate() throws IOException;
+    
+    String template(String name) throws IOException;
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Gist;
+import com.jcabi.github.GistComments;
+import com.jcabi.github.Github;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import java.util.List;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.apache.commons.lang3.StringUtils;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self", "gist" })
+@SuppressWarnings("PMD.TooManyMethods")
+final class MkGist implements Gist {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    private final transient String gist;
+    
+    MkGist(
+        final MkStorage stg,
+        final String login,
+        final String name
+    ) {
+        this.storage = stg;
+        this.self = login;
+        this.gist = name;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String identifier() {
+        return this.gist;
+    }
+    @Override
+    public String read(
+        final String file
+    ) throws IOException {
+        final List<XML> files = this.storage.xml().nodes(
+            String.format(
+                "%s/files/file[filename='%s']",
+                this.xpath(), file
+            )
+        );
+        if (files.isEmpty()) {
+            throw new IOException(
+                String.format("Couldn't find file with the name %s.", file)
+            );
+        }
+        final List<String> contents = files.get(0)
+            .xpath("raw_content/text()");
+        String content = "";
+        if (!contents.isEmpty()) {
+            content = contents.get(0);
+        }
+        return content;
+    }
+    @Override
+    public void write(
+        final String file,
+        final String content
+    )
+        throws IOException {
+        this.storage.apply(
+            
+            new Directives().xpath(this.xpath()).xpath(
+                String.format("files[not(file[filename='%s'])]", file)
+            ).add("file").add("filename").set(file).up().add("raw_content")
+        );
+        this.storage.apply(
+            new Directives().xpath(this.xpath()).xpath(
+                String.format(
+                    "files/file[filename='%s']/raw_content",
+                    file
+                )
+            ).set(content)
+        );
+    }
+    
+    @Override
+    public void star() throws IOException {
+        this.storage.apply(
+            new Directives()
+                .xpath(this.xpath())
+                .attr("starred", Boolean.toString(true))
+        );
+    }
+    
+    @Override
+    public void unstar() throws IOException {
+        this.storage.apply(
+            new Directives()
+                .xpath(this.xpath())
+                .attr("starred", Boolean.toString(false))
+        );
+    }
+    
+    @Override
+    public boolean starred() throws IOException {
+        final List<String> xpath = this.storage.xml().xpath(
+            String.format("%s/@starred", this.xpath())
+        );
+        return !xpath.isEmpty() && StringUtils.equalsIgnoreCase(
+            Boolean.toString(true),
+            xpath.get(0)
+        );
+    }
+    @Override
+    public Gist fork() throws IOException {
+        this.storage.lock();
+        final String number;
+        try {
+            final XML xml = this.storage.xml();
+            number = Integer.toString(
+                1 + xml.xpath("/github/gists/gist/id/text()").size()
+            );
+            final Directives dirs = new Directives().xpath("/github/gists")
+                .add("gist")
+                .add("id").set(number).up()
+                .add("files");
+            final List<XML> files = xml.nodes(
+                String.format("%s/files/file", this.xpath())
+            );
+            for (final XML file : files) {
+                final String filename = file.xpath("filename/text()").get(0);
+                
+                dirs.add("file")
+                    .add("filename").set(filename).up()
+                    .add("raw_content").set(this.read(filename)).up().up();
+            }
+            this.storage.apply(dirs);
+        } finally {
+            this.storage.unlock();
+        }
+        return new MkGist(this.storage, this.self, number);
+    }
+    @Override
+    public GistComments comments() {
+        throw new UnsupportedOperationException();
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    
+    private String xpath() {
+        return String.format(
+            "/github/gists/gist[id='%s']",
+            this.gist
+        );
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Limit;
+import com.jcabi.github.Limits;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "himself" })
+final class MkLimits implements Limits {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String himself;
+    
+    MkLimits(final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.himself = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.himself);
+    }
+    @Override
+    public Limit get(final String resource) {
+        
+        return new Limit() {
+            @Override
+            public Github github() {
+                return MkLimits.this.github();
+            }
+            @Override
+            public JsonObject json() {
+                return Json.createObjectBuilder()
+                    
+                    .add("limit", 5000)
+                    .add("remaining", 4999)
+                    .add("reset", System.currentTimeMillis())
+                    .build();
+            }
+        };
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+public interface Limits {
+    
+    String CORE = "core";
+    
+    String SEARCH = "search";
+    
+    Github github();
+    
+    Limit get(String resource);
+    
+    @Immutable
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = "origin")
+    final class Throttled implements Limits {
+        
+        private final transient Limits origin;
+        
+        private final transient int max;
+        
+        public Throttled(
+            final Limits limits,
+            final int allowed
+        ) {
+            this.origin = limits;
+            this.max = allowed;
+        }
+        @Override
+        public Github github() {
+            return this.origin.github();
+        }
+        @Override
+        public Limit get(
+            final String resource
+        ) {
+            return new Limit.Throttled(this.origin.get(resource), this.max);
+        }
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.User;
+import com.jcabi.github.Users;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "himself" })
+final class MkUsers implements Users {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String himself;
+    
+    MkUsers(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.himself = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("users")
+        );
+        this.add(login);
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.himself);
+    }
+    @Override
+    public User self() {
+        return this.get(this.himself);
+    }
+    @Override
+    public User get(
+        final String login
+    ) {
+        return new MkUser(this.storage, login);
+    }
+    @Override
+    public Iterable<User> iterate(
+        final String identifier
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/users/user",
+            xml -> this.get(xml.xpath("login/text()").get(0))
+        );
+    }
+    @Override
+    public User add(final String login) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(
+                        String.format(
+                            "/github/users[not(user[login='%s'])]", login
+                        )
+                    )
+                    .add("user")
+                    .add("login").set(login).up()
+                    .add("type").set("User").up()
+                    .add("name").set(login).up()
+                    .add("notifications").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return this.get(login);
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+import java.util.Map;
+
+@Immutable
+public interface Gists {
+    
+    Github github();
+    
+    Gist create(
+        Map<String, String> files, boolean visible
+    ) throws IOException;
+    
+    Gist get(String name);
+    
+    Iterable<Gist> iterate();
+    
+    void remove(String identifier) throws IOException;
+}
+
+package com.jcabi.github.safe;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comment;
+import com.jcabi.github.Issue;
+import com.jcabi.github.Reaction;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+public final class SfComment implements Comment {
+    
+    private final transient Comment origin;
+    
+    public SfComment(final Comment cmt) {
+        this.origin = cmt;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public Issue issue() {
+        return this.origin.issue();
+    }
+    @Override
+    public long number() {
+        return this.origin.number();
+    }
+    @Override
+    public void remove() throws IOException {
+        try {
+            this.origin.remove();
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to remove comment: %[exception]s", ex);
+        }
+    }
+    @Override
+    public void react(final Reaction reaction) throws IOException {
+        this.origin.react(reaction);
+    }
+    @Override
+    public Iterable<Reaction> reactions() {
+        return this.origin.reactions();
+    }
+    @Override
+    public int compareTo(final Comment cmt) {
+        return this.origin.compareTo(cmt);
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        try {
+            this.origin.patch(json);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to path comment: %[exception]s", ex);
+        }
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        JsonObject json;
+        try {
+            json = this.origin.json();
+        } catch (final AssertionError ex) {
+            final String author = new Issue.Smart(
+                new SfIssue(this.origin.issue())
+            ).author().login();
+            json = new MkGithub(author).randomRepo()
+                .issues().create("", "")
+                .comments().post("deleted comment").json();
+            Logger.warn(this, "failed to fetch comment: %[exception]s", ex);
+        }
+        return json;
+    }
+}
+
+package com.jcabi.github.safe;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comments;
+import com.jcabi.github.Event;
+import com.jcabi.github.Issue;
+import com.jcabi.github.IssueLabels;
+import com.jcabi.github.Reaction;
+import com.jcabi.github.Repo;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+@SuppressWarnings("PMD.TooManyMethods")
+public final class SfIssue implements Issue {
+    
+    private final transient Issue origin;
+    
+    public SfIssue(final Issue issue) {
+        this.origin = issue;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        JsonObject json;
+        try {
+            json = this.origin.json();
+        } catch (final AssertionError ex) {
+            json = new MkGithub().randomRepo()
+                .issues().create("", "").json();
+            Logger.warn(this, "failed to fetch issue: %[exception]s", ex);
+        }
+        return json;
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        try {
+            this.origin.patch(json);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "failed to patch issue: %[exception]s", ex);
+        }
+    }
+    @Override
+    public Repo repo() {
+        return this.origin.repo();
+    }
+    @Override
+    public int number() {
+        return this.origin.number();
+    }
+    @Override
+    public Comments comments() {
+        return new SfComments(this.origin.comments());
+    }
+    @Override
+    public IssueLabels labels() {
+        return this.origin.labels();
+    }
+    @Override
+    public Iterable<Event> events() throws IOException {
+        return this.origin.events();
+    }
+    @Override
+    public boolean exists() throws IOException {
+        return this.origin.exists();
+    }
+    @Override
+    public int compareTo(final Issue issue) {
+        return this.origin.compareTo(issue);
+    }
+    @Override
+    public void react(final Reaction reaction) throws IOException {
+        this.origin.react(reaction);
+    }
+    @Override
+    public Iterable<Reaction> reactions() {
+        return this.origin.reactions();
+    }
+    @Override
+    public void lock(final String reason) {
+        this.origin.lock(reason);
+    }
+    @Override
+    public void unlock() {
+        this.origin.unlock();
+    }
+    @Override
+    public boolean isLocked() {
+        return this.origin.isLocked();
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+
+@Immutable
+public interface Users {
+    
+    Github github();
+    
+    User self();
+    
+    User get(String login);
+    
+    User add(String login);
+    
+    Iterable<User> iterate(
+        String identifier
+    );
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Organization;
+import com.jcabi.github.PublicMembers;
+import com.jcabi.github.User;
+import java.io.IOException;
+import java.security.SecureRandom;
+import java.util.Random;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+public final class MkOrganization implements Organization {
+    
+    private static final Random RAND = new SecureRandom();
+    
+    private static final String LOGIN_KEY = "login";
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    public MkOrganization(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String login() {
+        return this.self;
+    }
+    @Override
+    public JsonObject json() {
+        return Json.createObjectBuilder()
+            .add(LOGIN_KEY, this.self)
+            .add("id", Integer.toString(RAND.nextInt()))
+            .add("name", "github")
+            .add("company", "GitHub")
+            .add("blog", "https:
+            .add("location", "San Francisco")
+            .add("email", "octocat@github.com")
+            .add("public_repos", RAND.nextInt())
+            .add("public_gists", RAND.nextInt())
+            .add("total_private_repos", RAND.nextInt())
+            .add("owned_private_repos", RAND.nextInt())
+            .add("followers", RAND.nextInt())
+            .add("following", RAND.nextInt())
+            .add("url", "https:
+            .add("repos_url", "https:
+            .add("events_url", "https:
+            .add("html_url", "https:
+            .add("created_at", new Github.Time().toString())
+            .add("type", "Organization")
+            .build();
+    }
+    @Override
+    public int compareTo(final Organization obj) {
+        return this.login().compareTo(obj.login());
+    }
+    @Override
+    public void patch(final JsonObject json) throws IOException {
+        new JsonPatch(this.storage)
+            .patch(this.xpath(), json);
+    }
+    @Override
+    public PublicMembers publicMembers() {
+        return new MkPublicMembers(this.storage, this);
+    }
+    
+    public void addMember(final User user) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(String.format("%s/members", this.xpath()))
+                    .add("member")
+                    .add(LOGIN_KEY).set(user.login()).up()
+                    .add("public").set("false").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    
+    private String xpath() {
+        return String.format("/github/orgs/org[login='%s']", this.self);
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Markdown;
+import javax.json.JsonObject;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+public final class MkMarkdown implements Markdown {
+    
+    private final transient Github owner;
+    
+    public MkMarkdown(final Github github) {
+        this.owner = github;
+    }
+    @Override
+    public Github github() {
+        return this.owner;
+    }
+    @Override
+    public String render(
+        final JsonObject json
+    ) {
+        return json.getString("text");
+    }
+    @Override
+    public String raw(
+        final String text
+    ) {
+        return text;
+    }
+}
+
+package com.jcabi.github.safe;
+import com.google.common.collect.Iterables;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Comment;
+import com.jcabi.github.Comments;
+import com.jcabi.github.Issue;
+import com.jcabi.github.mock.MkGithub;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import java.util.Date;
+import lombok.EqualsAndHashCode;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@EqualsAndHashCode(of = "origin")
+public final class SfComments implements Comments {
+    
+    private final transient Comments origin;
+    
+    public SfComments(final Comments cmt) {
+        this.origin = cmt;
+    }
+    @Override
+    public String toString() {
+        return this.origin.toString();
+    }
+    @Override
+    public Issue issue() {
+        return this.origin.issue();
+    }
+    @Override
+    public Comment get(final long number) {
+        return new SfComment(this.origin.get(number));
+    }
+    @Override
+    public Iterable<Comment> iterate(final Date since) {
+        return Iterables.transform(
+            this.origin.iterate(since),
+            input -> new SfComment(input)
+        );
+    }
+    @Override
+    public Comment post(final String text) throws IOException {
+        Comment cmt;
+        try {
+            cmt = this.origin.post(text);
+        } catch (final AssertionError ex) {
+            Logger.warn(this, "Failed to post to GitHub: %[exception]s", ex);
+            cmt = new MkGithub().randomRepo()
+                .issues().create("", "")
+                .comments().post(text);
+        }
+        return cmt;
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Organization;
+import com.jcabi.github.Organizations;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage" })
+final class MkOrganizations implements Organizations {
+    
+    private final transient MkStorage storage;
+    
+    MkOrganizations(
+        final MkStorage stg
+    )
+        throws IOException {
+        this.storage = stg;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("orgs")
+        );
+    }
+    @Override
+    public Organization get(
+        final String login
+    ) {
+        try {
+            this.storage.apply(
+                new Directives()
+                    .xpath(
+                        String.format(
+                            "/github/orgs[not(org[login='%s'])]",
+                            login
+                    )
+                )
+                    .add("org")
+                    .add("login").set(login).up()
+                    .add("members").up()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return new MkOrganization(this.storage, login);
+    }
+    @Override
+    public Iterable<Organization> iterate() {
+        return new MkIterable<>(
+            this.storage,
+            String.format("%s/org", this.xpath()),
+            xml -> this.get(
+                xml.xpath("login/text()").get(0)
+            )
+        );
+    }
+    
+    private String xpath() {
+        return "/github/orgs";
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.Github;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Repos;
+import com.jcabi.log.Logger;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkRepos implements Repos {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    MkRepos(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(new Directives().xpath("/github").addIf("repos"));
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Repo create(
+        final RepoCreate settings
+    ) throws IOException {
+        String owner = this.self;
+        final String org = settings.organization();
+        if (org != null && !org.isEmpty()) {
+            owner = "/orgs/".concat(org).concat("/repos");
+        }
+        final Coordinates coords = new Coordinates.Simple(
+            owner,
+            settings.name()
+        );
+        this.storage.apply(
+            new Directives().xpath(this.xpath()).add("repo")
+                .attr("coords", coords.toString())
+                .add("name").set(settings.name()).up()
+                .add("description").set("test repository").up()
+                .add("private").set(settings.isPrivate()).up()
+        );
+        final Repo repo = this.get(coords);
+        repo.patch(settings.json());
+        Logger.info(
+            this, "repository %s created by %s",
+            coords, owner
+        );
+        return repo;
+    }
+    @Override
+    public Repo get(
+        final Coordinates coords
+    ) {
+        try {
+            final String xpath = String.format(
+                "%s/repo[@coords='%s']", this.xpath(), coords
+            );
+            if (this.storage.xml().nodes(xpath).isEmpty()) {
+                throw new IllegalArgumentException(
+                    String.format("repository %s doesn't exist", coords)
+                );
+            }
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return new MkRepo(this.storage, this.self, coords);
+    }
+    @Override
+    public void remove(
+        final Coordinates coords) {
+        try {
+            this.storage.apply(
+                new Directives().xpath(
+                    String.format("%s/repo[@coords='%s']", this.xpath(), coords)
+                ).remove()
+            );
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    
+    @Override
+    public Iterable<Repo> iterate(
+        final String identifier) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo",
+            xml -> new MkRepo(
+                this.storage, this.self,
+                new Coordinates.Simple(xml.xpath("@coords").get(0))
+            )
+        );
+    }
+    @Override
+    public boolean exists(final Coordinates coords) throws IOException {
+        final String xpath = String.format(
+            "%s/repo[@coords='%s']", this.xpath(), coords
+        );
+        return !this.storage.xml().nodes(xpath).isEmpty();
+    }
+    
+    private String xpath() {
+        return "/github/repos";
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Content;
+import com.jcabi.github.Coordinates;
+import com.jcabi.github.Github;
+import com.jcabi.github.Issue;
+import com.jcabi.github.Repo;
+import com.jcabi.github.Search;
+import com.jcabi.github.User;
+import java.util.EnumMap;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkSearch implements Search {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    MkSearch(
+        final MkStorage stg,
+        final String login
+    ) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Iterable<Repo> repos(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo",
+            xml -> new MkRepo(
+                this.storage, this.self,
+                new Coordinates.Simple(xml.xpath("@coords").get(0))
+            )
+        );
+    }
+    
+    @Override
+    public Iterable<Issue> issues(final String keywords, final String sort,
+        final Order order, final EnumMap<Qualifier, String> qualifiers
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo/issues/issue",
+            xml -> new MkIssue(
+                this.storage, this.self,
+                new Coordinates.Simple(
+                    xml.xpath("../../@coords").get(0)
+                ),
+                Integer.parseInt(xml.xpath("number/text()").get(0))
+            )
+        );
+    }
+    @Override
+    public Iterable<User> users(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/users/user",
+            xml -> new MkUser(
+                this.storage,
+                xml.xpath("login/text()").get(0)
+            )
+        );
+    }
+    @Override
+    public Iterable<Content> codes(
+        final String keywords,
+        final String sort,
+        final Order order
+    ) {
+        return new MkIterable<>(
+            this.storage,
+            "/github/repos/repo/name",
+            xml -> new MkContent(
+                this.storage,
+                this.self,
+                new Coordinates.Simple(this.self, "repo"),
+                "/path/to/search",
+                "master"
+            )
+        );
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Organization;
+import com.jcabi.github.Organizations;
+import com.jcabi.github.User;
+import com.jcabi.github.UserOrganizations;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+@SuppressWarnings("PMD.TooManyMethods")
+final class MkUserOrganizations implements UserOrganizations {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    MkUserOrganizations(
+        final MkStorage stg,
+        final String login
+    )
+        throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("orgs")
+        );
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public User user() {
+        return new MkUser(this.storage, this.self);
+    }
+    @Override
+    public Iterable<Organization> iterate() throws IOException {
+        return new MkIterable<>(
+            this.storage,
+            "/github/orgs/org",
+            new OrganizationMapping(new MkOrganizations(this.storage))
+        );
+    }
+    private static final class OrganizationMapping
+        implements MkIterable.Mapping<Organization> {
+        
+        private final transient Organizations organizations;
+        
+        OrganizationMapping(final Organizations orgs) {
+            this.organizations = orgs;
+        }
+        @Override
+        public Organization map(final XML xml) {
+            return this.organizations.get(
+                xml.xpath("login/text()").get(0)
+            );
+        }
+    }
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+import java.io.IOException;
+import javax.json.JsonObject;
+
+@Immutable
+public interface Markdown {
+    
+    Github github();
+    
+    String render(JsonObject json)
+        throws IOException;
+    
+    String raw(String text)
+        throws IOException;
+}
+
+package com.jcabi.github;
+import com.jcabi.aspects.Immutable;
+
+@Immutable
+public interface Organizations {
+    
+    Organization get(String login);
+    
+    Iterable<Organization> iterate();
+}
+
+package com.jcabi.github;
+import com.google.common.base.Optional;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import javax.json.Json;
+import javax.json.JsonObject;
+import javax.json.JsonObjectBuilder;
+import javax.json.JsonValue;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@SuppressWarnings("PMD.TooManyMethods")
+@Immutable
+public interface Repos {
+    
+    Github github();
+    
+    
+    Repo create(RepoCreate settings)
+        throws IOException;
+    
+    Repo get(Coordinates coords);
+    
+    void remove(Coordinates coords) throws IOException;
+    
+    Iterable<Repo> iterate(
+        String identifier
+    );
+    
+    boolean exists(final Coordinates coords) throws IOException;
+    
+    @SuppressWarnings("PMD.TooManyMethods")
+    @ToString
+    @Loggable(Loggable.DEBUG)
+    @EqualsAndHashCode(of = {"nam", "priv", "descr", "home", "init"})
+    final class RepoCreate implements JsonReadable {
+        
+        private final transient String nam;
+        
+        private final transient boolean priv;
+        
+        private final transient String descr;
+        
+        private final transient String home;
+        
+        private final transient Optional<Boolean> init;
+        
+        private final transient String organization;
+        
+        private final transient Map<String, JsonValue> other;
+        
+        public RepoCreate(final String nme, final boolean prvt) {
+            this(nme, prvt, "", "", Optional.<Boolean>absent(), "");
+        }
+        
+        private RepoCreate(
+            final String nme,
+            final boolean prvt,
+            final String desc,
+            final String page,
+            final Optional<Boolean> auto,
+            final String org
+        ) {
+            if (nme.isEmpty()) {
+                throw new IllegalArgumentException("Name cannot be empty!");
+            }
+            this.nam = nme;
+            this.priv = prvt;
+            this.descr = desc;
+            this.home = page;
+            this.init = auto;
+            this.organization = org;
+            this.other = new HashMap<>(0);
+        }
+        
+        public String name() {
+            return this.nam;
+        }
+        
+        public boolean isPrivate() {
+            return this.priv;
+        }
+        
+        public String description() {
+            return this.descr;
+        }
+        
+        public String homepage() {
+            return this.home;
+        }
+        
+        public Optional<Boolean> autoInit() {
+            return this.init;
+        }
+        
+        public String organization() {
+            return this.organization;
+        }
+        
+        public RepoCreate withName(
+            final String nme
+        ) {
+            return new RepoCreate(
+                nme,
+                this.priv,
+                this.descr,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        
+        public RepoCreate withPrivacy(final boolean privacy) {
+            return new RepoCreate(
+                this.nam,
+                privacy,
+                this.descr,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        
+        public RepoCreate withDescription(
+            final String desc
+        ) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                desc,
+                this.home,
+                this.init,
+                this.organization
+            );
+        }
+        
+        public RepoCreate withHomepage(
+            final String page
+        ) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                page,
+                this.init,
+                this.organization
+            );
+        }
+        
+        public RepoCreate withAutoInit(final Optional<Boolean> auto) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                auto,
+                this.organization
+            );
+        }
+        
+        public RepoCreate withAutoInit(final boolean auto) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                Optional.of(auto),
+                this.organization
+            );
+        }
+        
+        public RepoCreate withOrganization(final String org) {
+            return new RepoCreate(
+                this.nam,
+                this.priv,
+                this.descr,
+                this.home,
+                this.init,
+                org
+            );
+        }
+        
+        public RepoCreate with(final String key, final JsonValue value) {
+            this.other.put(key, value);
+            return this;
+        }
+        @Override
+        public JsonObject json() {
+            JsonObjectBuilder builder = Json.createObjectBuilder()
+                .add("name", this.nam)
+                .add("description", this.descr)
+                .add("homepage", this.home)
+                .add("private", this.priv);
+            if (this.init.isPresent()) {
+                builder = builder.add("auto_init", this.init.get());
+            }
+            for (final Map.Entry<String, JsonValue> entry
+                : this.other.entrySet()) {
+                builder.add(entry.getKey(), entry.getValue());
+            }
+            return builder.build();
+        }
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Github;
+import com.jcabi.github.Notifications;
+import com.jcabi.github.PublicKeys;
+import com.jcabi.github.User;
+import com.jcabi.github.UserEmails;
+import com.jcabi.github.UserOrganizations;
+import com.jcabi.xml.XML;
+import java.io.IOException;
+import java.util.Date;
+import javax.json.Json;
+import javax.json.JsonObject;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkUser implements User {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    MkUser(final MkStorage stg, final String login) {
+        this.storage = stg;
+        this.self = login;
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public String login() {
+        return this.self;
+    }
+    @Override
+    public UserOrganizations organizations() {
+        try {
+            return new MkUserOrganizations(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public PublicKeys keys() {
+        try {
+            return new MkPublicKeys(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public UserEmails emails() {
+        try {
+            return new MkUserEmails(this.storage, this.self);
+        } catch (final IOException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+    @Override
+    public Notifications notifications() {
+        return new MkNotifications(
+            this.storage,
+            this.xpath().concat("/notifications/notification")
+        );
+    }
+    @Override
+    public void markAsRead(final Date lastread) throws IOException {
+        final Iterable<XML> ids = this.storage.xml().nodes(
+            this.xpath() + String.format(
+                "/notifications/notification[date <= %s]/id",
+                lastread.getTime()
+            )
+        );
+        final JsonPatch json = new JsonPatch(this.storage);
+        final JsonObject read = Json.createObjectBuilder()
+            .add("read", true).build();
+        for (final XML nid : ids) {
+            json.patch(
+                String.format(
+                    this.xpath().concat("/notifications/notification[id = %s]"),
+                    nid.xpath("text()").get(0)
+                ),
+                read
+            );
+        }
+    }
+    @Override
+    public void patch(
+        final JsonObject json
+    ) throws IOException {
+        new JsonPatch(this.storage).patch(this.xpath(), json);
+    }
+    @Override
+    public JsonObject json() throws IOException {
+        return new JsonNode(
+            this.storage.xml().nodes(this.xpath()).get(0)
+        ).json();
+    }
+    
+    private String xpath() {
+        return String.format("/github/users/user[login='%s']", this.self);
+    }
+}
+
+package com.jcabi.github.mock;
+import com.jcabi.aspects.Immutable;
+import com.jcabi.aspects.Loggable;
+import com.jcabi.github.Gist;
+import com.jcabi.github.Gists;
+import com.jcabi.github.Github;
+import java.io.IOException;
+import java.util.Map;
+import lombok.EqualsAndHashCode;
+import lombok.ToString;
+import org.xembly.Directives;
+
+@Immutable
+@Loggable(Loggable.DEBUG)
+@ToString
+@EqualsAndHashCode(of = { "storage", "self" })
+final class MkGists implements Gists {
+    
+    private final transient MkStorage storage;
+    
+    private final transient String self;
+    
+    MkGists(
+        final MkStorage stg,
+        final String login
+    ) throws IOException {
+        this.storage = stg;
+        this.self = login;
+        this.storage.apply(
+            new Directives().xpath("/github").addIf("gists")
+        );
+    }
+    @Override
+    public Github github() {
+        return new MkGithub(this.storage, this.self);
+    }
+    @Override
+    public Gist create(
+        final Map<String, String> files, final boolean visible
+    ) throws IOException {
+        this.storage.lock();
+        final String number;
+        try {
+            number = Integer.toString(
+                1 + this.storage.xml().xpath(
+                    String.format("%s/gist/id/text()", this.xpath())
+                ).size()
+            );
+            final Directives dirs = new Directives().xpath(this.xpath())
+                .add("gist")
+                .add("id").set(number).up()
+                .add("public").set(String.valueOf(visible)).up()
+                .add("files");
+            for (final Map.Entry<String, String> file : files.entrySet()) {
+                dirs.add("file")
+                    .add("filename").set(file.getKey()).up()
+                    .add("raw_content").set(file.getValue()).up().up();
+            }
+            this.storage.apply(dirs);
+        } finally {
+            this.storage.unlock();
+        }
+        return this.get(number);
+    }
+    @Override
+    public Gist get(final String name
+    ) {
+        return new MkGist(this.storage, this.self, name);
+    }
+    @Override
+    public Iterable<Gist> iterate() {
+        return new MkIterable<>(
+            this.storage,
+            String.format("%s/gist", this.xpath()),
+            xml -> this.get(xml.xpath("id/text()").get(0))
+        );
+    }
+    @Override
+    public void remove(final String identifier
+    ) throws IOException {
+        this.storage.apply(
+            new Directives().xpath(
+                String.format("%s/gist[id='%s']", this.xpath(), identifier)
+            ).remove()
+        );
+    }
+    
+    private String xpath() {
+        return "/github/gists";
+    }
+}

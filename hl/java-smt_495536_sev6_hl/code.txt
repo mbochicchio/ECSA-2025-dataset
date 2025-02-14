@@ -1,0 +1,4797 @@
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Z3Exception;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaManager;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.SolverException;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormulaManager;
+final class Z3FormulaManager extends AbstractFormulaManager<Long, Long, Long, Long> {
+  private final Z3FormulaCreator formulaCreator;
+  @SuppressWarnings("checkstyle:parameternumber")
+  Z3FormulaManager(
+      Z3FormulaCreator pFormulaCreator,
+      Z3UFManager pFunctionManager,
+      Z3BooleanFormulaManager pBooleanManager,
+      Z3IntegerFormulaManager pIntegerManager,
+      Z3RationalFormulaManager pRationalManager,
+      Z3BitvectorFormulaManager pBitpreciseManager,
+      Z3FloatingPointFormulaManager pFloatingPointManager,
+      Z3QuantifiedFormulaManager pQuantifiedManager,
+      Z3ArrayFormulaManager pArrayManager,
+      Z3StringFormulaManager pStringManager,
+      Z3EnumerationFormulaManager pEnumerationManager) {
+    super(
+        pFormulaCreator,
+        pFunctionManager,
+        pBooleanManager,
+        pIntegerManager,
+        pRationalManager,
+        pBitpreciseManager,
+        pFloatingPointManager,
+        pQuantifiedManager,
+        pArrayManager,
+        null,
+        pStringManager,
+        pEnumerationManager);
+    formulaCreator = pFormulaCreator;
+  }
+  @Override
+  public Long parseImpl(String str) throws IllegalArgumentException {
+    // Z3 does not access the existing symbols on its own,
+    // but requires all symbols as part of the query.
+    // Thus, we track the used symbols on our own and give them to the parser call, if required.
+    // Later, we collect all symbols from the parsed query and
+    // define them again to have them tracked.
+    final long env = getEnvironment();
+    // JavaSMT does currently not allow defining new sorts, future work?
+    long[] sortSymbols = new long[0];
+    long[] sorts = new long[0];
+    // first step: lets try to parse the query directly, without additional information
+    List<Long> declSymbols = new ArrayList<>();
+    List<Long> decls = new ArrayList<>();
+    long e = 0;
+    boolean finished = false;
+    while (!finished) {
+      try {
+        e =
+            Native.parseSmtlib2String(
+                env,
+                str,
+                sorts.length,
+                sortSymbols,
+                sorts,
+                declSymbols.size(),
+                Longs.toArray(declSymbols),
+                Longs.toArray(decls));
+        finished = true;
+      } catch (Z3Exception nested) {
+        // get the missing symbol and restart the parsing with them
+        Pattern pattern =
+            Pattern.compile(
+                "\\(error \"line \\d+ column \\d+: unknown constant"
+                    + " (?<name>.*?)\\s?(?<sorts>\\(.*\\))?\\s?\\\"\\)\\n");
+        Matcher matcher = pattern.matcher(nested.getMessage());
+        if (matcher.matches()) {
+          String missingSymbol = matcher.group(1);
+          Long appDecl = formulaCreator.getKnownDeclaration(missingSymbol);
+          if (appDecl != null) { // if the symbol is known, then use it
+            declSymbols.add(Native.mkStringSymbol(env, missingSymbol));
+            decls.add(appDecl);
+            continue; // restart the parsing
+          }
+        }
+        throw new IllegalArgumentException(nested);
+      }
+    }
+    Preconditions.checkState(e != 0, "parsing aborted");
+    final int size = Native.astVectorSize(env, e);
+    Preconditions.checkState(
+        size == 1, "parsing expects exactly one asserted term, but got %s terms", size);
+    final long term = Native.astVectorGet(env, e, 0);
+    // last step: all parsed symbols need to be declared again to have them tracked in the creator.
+    declareAllSymbols(term);
+    return term;
+  }
+  @SuppressWarnings("CheckReturnValue")
+  private void declareAllSymbols(final long term) {
+    final long env = getEnvironment();
+    final Map<String, Long> symbols = formulaCreator.extractVariablesAndUFs(term, true);
+    for (Map.Entry<String, Long> symbol : symbols.entrySet()) {
+      long sym = symbol.getValue();
+      String name = symbol.getKey();
+      assert Native.isApp(env, sym);
+      int arity = Native.getAppNumArgs(env, sym);
+      if (arity == 0) { // constants
+        formulaCreator.makeVariable(Native.getSort(env, sym), name);
+      } else {
+        ImmutableList.Builder<Long> argTypes = ImmutableList.builder();
+        for (int j = 0; j < arity; j++) {
+          argTypes.add(Native.getSort(env, Native.getAppArg(env, sym, j)));
+        }
+        formulaCreator.declareUFImpl(name, Native.getSort(env, sym), argTypes.build());
+      }
+    }
+  }
+  @Override
+  protected BooleanFormula applyQELightImpl(BooleanFormula pF)
+      throws InterruptedException, SolverException {
+    return applyTacticImpl(pF, "qe-light");
+  }
+  @Override
+  protected BooleanFormula applyCNFImpl(BooleanFormula pF)
+      throws InterruptedException, SolverException {
+    return applyTacticImpl(pF, "tseitin-cnf");
+  }
+  @Override
+  protected BooleanFormula applyNNFImpl(BooleanFormula pF)
+      throws InterruptedException, SolverException {
+    return applyTacticImpl(pF, "nnf");
+  }
+  private BooleanFormula applyTacticImpl(BooleanFormula pF, String tacticName)
+      throws InterruptedException, SolverException {
+    long out =
+        formulaCreator.applyTactic(getFormulaCreator().getEnv(), extractInfo(pF), tacticName);
+    return formulaCreator.encapsulateBoolean(out);
+  }
+  @Override
+  public String dumpFormulaImpl(final Long expr) {
+    assert getFormulaCreator().getFormulaType(expr) == FormulaType.BooleanType
+        : "Only BooleanFormulas may be dumped";
+    // Serializing a solver is the simplest way to dump a formula in Z3,
+    // cf https://github.com/Z3Prover/z3/issues/397
+    long z3solver = Native.mkSolver(getEnvironment());
+    Native.solverIncRef(getEnvironment(), z3solver);
+    Native.solverAssert(getEnvironment(), z3solver, expr);
+    String serialized = Native.solverToString(getEnvironment(), z3solver);
+    Native.solverDecRef(getEnvironment(), z3solver);
+    return serialized;
+  }
+  @Override
+  protected Long simplify(Long pF) throws InterruptedException {
+    try {
+      try {
+        return Native.simplify(getFormulaCreator().getEnv(), pF);
+      } catch (Z3Exception exp) {
+        throw formulaCreator.handleZ3Exception(exp);
+      }
+    } catch (SolverException e) {
+      // ignore exception and return original formula AS-IS.
+      return pF;
+    }
+  }
+  @Override
+  public <T extends Formula> T substitute(
+      final T f, final Map<? extends Formula, ? extends Formula> fromToMapping) {
+    long[] changeFrom = new long[fromToMapping.size()];
+    long[] changeTo = new long[fromToMapping.size()];
+    int idx = 0;
+    for (Map.Entry<? extends Formula, ? extends Formula> e : fromToMapping.entrySet()) {
+      changeFrom[idx] = extractInfo(e.getKey());
+      changeTo[idx] = extractInfo(e.getValue());
+      idx++;
+    }
+    FormulaType<T> type = getFormulaType(f);
+    return getFormulaCreator()
+        .encapsulate(
+            type,
+            Native.substitute(
+                getFormulaCreator().getEnv(),
+                extractInfo(f),
+                fromToMapping.size(),
+                changeFrom,
+                changeTo));
+  }
+  @Override
+  public BooleanFormula translateFrom(BooleanFormula other, FormulaManager otherManager) {
+    if (otherManager instanceof Z3FormulaManager) {
+      long otherZ3Context = ((Z3FormulaManager) otherManager).getEnvironment();
+      if (otherZ3Context == getEnvironment()) {
+        // Same context.
+        return other;
+      } else {
+        // Z3-to-Z3 translation.
+        long translatedAST = Native.translate(otherZ3Context, extractInfo(other), getEnvironment());
+        return getFormulaCreator().encapsulateBoolean(translatedAST);
+      }
+    }
+    return super.translateFrom(other, otherManager);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.microsoft.z3.Native;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.basicimpl.AbstractArrayFormulaManager;
+@SuppressWarnings("MethodTypeParameterName")
+class Z3ArrayFormulaManager extends AbstractArrayFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  Z3ArrayFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    this.z3context = creator.getEnv();
+  }
+  @Override
+  protected Long select(Long pArray, Long pIndex) {
+    return Native.mkSelect(z3context, pArray, pIndex);
+  }
+  @Override
+  protected Long store(Long pArray, Long pIndex, Long pValue) {
+    return Native.mkStore(z3context, pArray, pIndex, pValue);
+  }
+  @Override
+  @SuppressWarnings("MethodTypeParameterName")
+  protected <TI extends Formula, TE extends Formula> Long internalMakeArray(
+      String pName, FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+    final Long z3ArrayType = toSolverType(FormulaType.getArrayType(pIndexType, pElementType));
+    return getFormulaCreator().makeVariable(z3ArrayType, pName);
+  }
+  @Override
+  protected <TI extends Formula, TE extends Formula> Long internalMakeArray(
+      FormulaType<TI> pIndexType, FormulaType<TE> pElementType, Long defaultElement) {
+    return Native.mkConstArray(z3context, toSolverType(pIndexType), defaultElement);
+  }
+  @Override
+  protected Long equivalence(Long pArray1, Long pArray2) {
+    return Native.mkEq(z3context, pArray1, pArray2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2021 Alejandro Serrano Mena
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the string sort. */
+@Immutable
+public interface StringFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api.visitors;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.List;
+import org.sosy_lab.common.rationals.Rational;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaManager;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+/**
+ * Visitor iterating through entire formula. Use {@link FormulaManager#visit} for visiting formulas.
+ *
+ * @param <R> Desired return type.
+ */
+public interface FormulaVisitor<R> {
+  /**
+   * Visit a free variable (such as "x", "y" or "z"), not bound by a quantifier. The variable can
+   * have any sort (both boolean and non-boolean).
+   *
+   * @param f Formula representing the variable.
+   * @param name Variable name.
+   */
+  R visitFreeVariable(Formula f, String name);
+  /**
+   * Visit a variable bound by a quantifier. The variable can have any sort (both boolean and
+   * non-boolean).
+   *
+   * @param f Formula representing the variable.
+   * @param deBruijnIdx de-Bruijn index of the bound variable, which can be used to find the
+   *     matching quantifier.
+   */
+  R visitBoundVariable(Formula f, int deBruijnIdx);
+  /**
+   * Visit a constant, such as "true"/"false", a numeric constant like "1" or "1.0", a String
+   * constant like 2hello world" or enumeration constant like "Blue".
+   *
+   * @param f Formula representing the constant.
+   * @param value The value of the constant. It is either of type {@link Boolean}, of a subtype of
+   *     {@link Number} (mostly a {@link BigInteger}, a {@link BigDecimal}, or a {@link Rational}),
+   *     or {@link String}.
+   * @return An arbitrary return value that is passed to the caller.
+   */
+  R visitConstant(Formula f, Object value);
+  /**
+   * Visit an arbitrary, potentially uninterpreted function. The function can have any sort.
+   *
+   * @param f Input function.
+   * @param args List of arguments
+   * @param functionDeclaration Function declaration. Can be given to {@link
+   *     FormulaManager#makeApplication} to construct a new instance of the same function with
+   *     different arguments.
+   */
+  R visitFunction(Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration);
+  /**
+   * Visit a quantified node.
+   *
+   * @param f Quantifier formula.
+   * @param quantifier Quantifier type: either {@code FORALL} or {@code EXISTS}.
+   * @param boundVariables Variables bound by the quantifier. <b>NOTE:</b> not all solvers hold
+   *     metadata about bound variables. In case this is not available, this method will be called
+   *     with an empty list, yet {@code #mkQuantifier} will work fine with an empty list as well.
+   * @param body Body of the quantifier.
+   */
+  R visitQuantifier(
+      BooleanFormula f, Quantifier quantifier, List<Formula> boundVariables, BooleanFormula body);
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the boolean sort. */
+@Immutable
+public interface BooleanFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.enumerations.Z3_ast_print_mode;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.common.ShutdownNotifier;
+import org.sosy_lab.common.ShutdownNotifier.ShutdownRequestListener;
+import org.sosy_lab.common.configuration.Configuration;
+import org.sosy_lab.common.configuration.FileOption;
+import org.sosy_lab.common.configuration.InvalidConfigurationException;
+import org.sosy_lab.common.configuration.Option;
+import org.sosy_lab.common.configuration.Options;
+import org.sosy_lab.common.io.IO;
+import org.sosy_lab.common.io.PathCounterTemplate;
+import org.sosy_lab.common.log.LogManager;
+import org.sosy_lab.java_smt.SolverContextFactory.Solvers;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingMode;
+import org.sosy_lab.java_smt.api.InterpolatingProverEnvironment;
+import org.sosy_lab.java_smt.api.OptimizationProverEnvironment;
+import org.sosy_lab.java_smt.api.ProverEnvironment;
+import org.sosy_lab.java_smt.basicimpl.AbstractNumeralFormulaManager.NonLinearArithmetic;
+import org.sosy_lab.java_smt.basicimpl.AbstractSolverContext;
+public final class Z3SolverContext extends AbstractSolverContext {
+  private final ShutdownRequestListener interruptListener;
+  private final ShutdownNotifier shutdownNotifier;
+  private final LogManager logger;
+  private final ExtraOptions extraOptions;
+  private final Z3FormulaCreator creator;
+  private final Z3FormulaManager manager;
+  private boolean closed = false;
+  private static final String OPT_ENGINE_CONFIG_KEY = "optsmt_engine";
+  private static final String OPT_PRIORITY_CONFIG_KEY = "priority";
+  @Options(prefix = "solver.z3")
+  private static class ExtraOptions {
+    @Option(secure = true, description = "Require proofs from SMT solver")
+    boolean requireProofs = false;
+    @Option(
+        secure = true,
+        description =
+            "Activate replayable logging in Z3."
+                + " The log can be given as an input to the solver and replayed.")
+    @FileOption(FileOption.Type.OUTPUT_FILE)
+    @Nullable Path log = null;
+    /** Optimization settings. */
+    @Option(
+        secure = true,
+        description = "Engine to use for the optimization",
+        values = {"basic", "farkas", "symba"})
+    String optimizationEngine = "basic";
+    @Option(
+        secure = true,
+        description = "Ordering for objectives in the optimization context",
+        values = {"lex", "pareto", "box"})
+    String objectivePrioritizationMode = "box";
+    private final @Nullable PathCounterTemplate logfile;
+    private final int randomSeed;
+    ExtraOptions(Configuration config, @Nullable PathCounterTemplate pLogfile, int pRandomSeed)
+        throws InvalidConfigurationException {
+      config.inject(this);
+      randomSeed = pRandomSeed;
+      logfile = pLogfile;
+    }
+  }
+  private Z3SolverContext(
+      Z3FormulaCreator pFormulaCreator,
+      ShutdownNotifier pShutdownNotifier,
+      LogManager pLogger,
+      Z3FormulaManager pManager,
+      ExtraOptions pExtraOptions) {
+    super(pManager);
+    creator = pFormulaCreator;
+    interruptListener = reason -> Native.interrupt(pFormulaCreator.getEnv());
+    shutdownNotifier = pShutdownNotifier;
+    pShutdownNotifier.register(interruptListener);
+    logger = pLogger;
+    manager = pManager;
+    extraOptions = pExtraOptions;
+  }
+  @SuppressWarnings("ParameterNumber")
+  public static synchronized Z3SolverContext create(
+      LogManager logger,
+      Configuration config,
+      ShutdownNotifier pShutdownNotifier,
+      @Nullable PathCounterTemplate solverLogfile,
+      long randomSeed,
+      FloatingPointRoundingMode pFloatingPointRoundingMode,
+      NonLinearArithmetic pNonLinearArithmetic,
+      Consumer<String> pLoader)
+      throws InvalidConfigurationException {
+    ExtraOptions extraOptions = new ExtraOptions(config, solverLogfile, (int) randomSeed);
+    // We need to load z3 in addition to z3java, because Z3's own class only loads the latter,
+    // but it will fail to find the former if not loaded previously.
+    // We load both libraries here to have all the loading in one place.
+    loadLibrariesWithFallback(
+        pLoader, ImmutableList.of("z3", "z3java"), ImmutableList.of("libz3", "libz3java"));
+    // disable Z3's own loading mechanism, see com.microsoft.z3.Native
+    System.setProperty("z3.skipLibraryLoad", "true");
+    if (extraOptions.log != null) {
+      Path absolutePath = extraOptions.log.toAbsolutePath();
+      try {
+        // Z3 segfaults if it cannot write to the file, thus we write once first
+        IO.writeFile(absolutePath, StandardCharsets.US_ASCII, "");
+        Native.openLog(absolutePath.toString());
+      } catch (IOException e) {
+        logger.logUserException(Level.WARNING, e, "Cannot write Z3 log file");
+      }
+    }
+    long cfg = Native.mkConfig();
+    if (extraOptions.requireProofs) {
+      Native.setParamValue(cfg, "PROOF", "true");
+    }
+    Native.globalParamSet("smt.random_seed", String.valueOf(randomSeed));
+    Native.globalParamSet("model.compact", "false");
+    final long context = Native.mkContextRc(cfg);
+    Native.delConfig(cfg);
+    long boolSort = Native.mkBoolSort(context);
+    Native.incRef(context, Native.sortToAst(context, boolSort));
+    long integerSort = Native.mkIntSort(context);
+    Native.incRef(context, Native.sortToAst(context, integerSort));
+    long realSort = Native.mkRealSort(context);
+    Native.incRef(context, Native.sortToAst(context, realSort));
+    long stringSort = Native.mkStringSort(context);
+    Native.incRef(context, Native.sortToAst(context, stringSort));
+    long regexSort = Native.mkReSort(context, stringSort);
+    Native.incRef(context, Native.sortToAst(context, regexSort));
+    // The string representations of Z3s formulas should be in SMTLib2,
+    // otherwise serialization wouldn't work.
+    Native.setAstPrintMode(context, Z3_ast_print_mode.Z3_PRINT_SMTLIB2_COMPLIANT.toInt());
+    Z3FormulaCreator creator =
+        new Z3FormulaCreator(
+            context,
+            boolSort,
+            integerSort,
+            realSort,
+            stringSort,
+            regexSort,
+            config,
+            pShutdownNotifier);
+    // Create managers
+    Z3UFManager functionTheory = new Z3UFManager(creator);
+    Z3BooleanFormulaManager booleanTheory = new Z3BooleanFormulaManager(creator);
+    Z3IntegerFormulaManager integerTheory =
+        new Z3IntegerFormulaManager(creator, pNonLinearArithmetic);
+    Z3RationalFormulaManager rationalTheory =
+        new Z3RationalFormulaManager(creator, pNonLinearArithmetic);
+    Z3BitvectorFormulaManager bitvectorTheory =
+        new Z3BitvectorFormulaManager(creator, booleanTheory);
+    Z3FloatingPointFormulaManager floatingPointTheory =
+        new Z3FloatingPointFormulaManager(creator, pFloatingPointRoundingMode);
+    Z3QuantifiedFormulaManager quantifierManager = new Z3QuantifiedFormulaManager(creator);
+    Z3ArrayFormulaManager arrayManager = new Z3ArrayFormulaManager(creator);
+    Z3StringFormulaManager stringTheory = new Z3StringFormulaManager(creator);
+    Z3EnumerationFormulaManager enumTheory = new Z3EnumerationFormulaManager(creator);
+    // Set the custom error handling
+    // which will throw Z3Exception
+    // instead of exit(1).
+    Native.setInternalErrorHandler(context);
+    Z3FormulaManager manager =
+        new Z3FormulaManager(
+            creator,
+            functionTheory,
+            booleanTheory,
+            integerTheory,
+            rationalTheory,
+            bitvectorTheory,
+            floatingPointTheory,
+            quantifierManager,
+            arrayManager,
+            stringTheory,
+            enumTheory);
+    return new Z3SolverContext(creator, pShutdownNotifier, logger, manager, extraOptions);
+  }
+  @Override
+  protected ProverEnvironment newProverEnvironment0(Set<ProverOptions> options) {
+    Preconditions.checkState(!closed, "solver context is already closed");
+    final ImmutableMap<String, Object> solverOptions =
+        ImmutableMap.<String, Object>builder()
+            .put(":random-seed", extraOptions.randomSeed)
+            .put(
+                ":model",
+                options.contains(ProverOptions.GENERATE_MODELS)
+                    || options.contains(ProverOptions.GENERATE_ALL_SAT))
+            .put(
+                ":unsat_core",
+                options.contains(ProverOptions.GENERATE_UNSAT_CORE)
+                    || options.contains(ProverOptions.GENERATE_UNSAT_CORE_OVER_ASSUMPTIONS))
+            .buildOrThrow();
+    return new Z3TheoremProver(
+        creator, manager, options, solverOptions, extraOptions.logfile, shutdownNotifier);
+  }
+  @Override
+  protected InterpolatingProverEnvironment<?> newProverEnvironmentWithInterpolation0(
+      Set<ProverOptions> options) {
+    throw new UnsupportedOperationException("Z3 does not support interpolation");
+  }
+  @Override
+  public OptimizationProverEnvironment newOptimizationProverEnvironment0(
+      Set<ProverOptions> options) {
+    Preconditions.checkState(!closed, "solver context is already closed");
+    final ImmutableMap<String, Object> solverOptions =
+        ImmutableMap.<String, Object>builder()
+            // .put(":random-seed", extraOptions.randomSeed) // not supported here
+            .put(OPT_ENGINE_CONFIG_KEY, extraOptions.optimizationEngine)
+            .put(OPT_PRIORITY_CONFIG_KEY, extraOptions.objectivePrioritizationMode)
+            .build();
+    return new Z3OptimizationProver(
+        creator, logger, manager, options, solverOptions, extraOptions.logfile, shutdownNotifier);
+  }
+  @Override
+  public String getVersion() {
+    Native.IntPtr major = new Native.IntPtr();
+    Native.IntPtr minor = new Native.IntPtr();
+    Native.IntPtr build = new Native.IntPtr();
+    Native.IntPtr revision = new Native.IntPtr();
+    Native.getVersion(major, minor, build, revision);
+    return "Z3 " + major.value + "." + minor.value + "." + build.value + "." + revision.value;
+  }
+  @Override
+  public Solvers getSolverName() {
+    return Solvers.Z3;
+  }
+  @Override
+  public void close() {
+    if (!closed) {
+      closed = true;
+      long context = creator.getEnv();
+      creator.forceClose();
+      shutdownNotifier.unregister(interruptListener);
+      Native.closeLog();
+      Native.delContext(context);
+    }
+  }
+  @Override
+  protected boolean supportsAssumptionSolving() {
+    return true;
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.collect.ImmutableMap;
+import com.microsoft.z3.Native;
+import org.sosy_lab.java_smt.api.FormulaType.EnumerationFormulaType;
+import org.sosy_lab.java_smt.basicimpl.AbstractEnumerationFormulaManager;
+class Z3EnumerationFormulaManager
+    extends AbstractEnumerationFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  Z3EnumerationFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    this.z3context = creator.getEnv();
+  }
+  @Override
+  protected EnumType declareEnumeration0(EnumerationFormulaType pType) {
+    long symbol = Native.mkStringSymbol(z3context, pType.getName());
+    String[] elements = pType.getElements().toArray(new String[] {});
+    long[] elementSymbols = new long[elements.length];
+    for (int i = 0; i < elements.length; i++) {
+      elementSymbols[i] = Native.mkStringSymbol(z3context, elements[i]);
+    }
+    long[] constants = new long[pType.getElements().size()];
+    long[] predicates = new long[pType.getElements().size()]; // unused later
+    long enumType =
+        Native.mkEnumerationSort(
+            z3context, symbol, elements.length, elementSymbols, constants, predicates);
+    Native.incRef(z3context, enumType);
+    // we store the constants for later access
+    ImmutableMap.Builder<String, Long> constantsMapping = ImmutableMap.builder();
+    for (int i = 0; i < elements.length; i++) {
+      long constantApp = Native.mkApp(z3context, constants[i], 0, null);
+      Native.incRef(z3context, constantApp);
+      constantsMapping.put(elements[i], constantApp);
+    }
+    return new EnumType(pType, enumType, constantsMapping.buildOrThrow());
+  }
+  @Override
+  protected Long equivalenceImpl(Long pF1, Long pF2) {
+    return Native.mkEq(z3context, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2021 AlejandroSerranoMena
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import java.util.List;
+import org.sosy_lab.java_smt.basicimpl.AbstractStringFormulaManager;
+class Z3StringFormulaManager extends AbstractStringFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  Z3StringFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    z3context = creator.getEnv();
+  }
+  @Override
+  protected Long makeStringImpl(String pValue) {
+    return Native.mkString(z3context, escapeUnicodeForSmtlib(pValue));
+  }
+  @Override
+  protected Long makeVariableImpl(String varName) {
+    long type = getFormulaCreator().getStringType();
+    return getFormulaCreator().makeVariable(type, varName);
+  }
+  @Override
+  protected Long equal(Long pParam1, Long pParam2) {
+    return Native.mkEq(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long greaterThan(Long pParam1, Long pParam2) {
+    return lessThan(pParam2, pParam1);
+  }
+  @Override
+  protected Long greaterOrEquals(Long pParam1, Long pParam2) {
+    return lessOrEquals(pParam2, pParam1);
+  }
+  @Override
+  protected Long lessThan(Long pParam1, Long pParam2) {
+    return Native.mkStrLt(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long lessOrEquals(Long pParam1, Long pParam2) {
+    return Native.mkStrLe(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long length(Long pParam) {
+    return Native.mkSeqLength(z3context, pParam);
+  }
+  @Override
+  protected Long concatImpl(List<Long> parts) {
+    Preconditions.checkArgument(!parts.isEmpty());
+    return Native.mkSeqConcat(z3context, parts.size(), Longs.toArray(parts));
+  }
+  @Override
+  protected Long prefix(Long prefix, Long str) {
+    return Native.mkSeqPrefix(z3context, prefix, str);
+  }
+  @Override
+  protected Long suffix(Long suffix, Long str) {
+    return Native.mkSeqSuffix(z3context, suffix, str);
+  }
+  @Override
+  protected Long in(Long str, Long regex) {
+    return Native.mkSeqInRe(z3context, str, regex);
+  }
+  @Override
+  protected Long contains(Long str, Long part) {
+    return Native.mkSeqContains(z3context, str, part);
+  }
+  @Override
+  protected Long indexOf(Long str, Long part, Long startIndex) {
+    return Native.mkSeqIndex(z3context, str, part, startIndex);
+  }
+  @Override
+  protected Long charAt(Long str, Long index) {
+    return Native.mkSeqAt(z3context, str, index);
+  }
+  @Override
+  protected Long substring(Long str, Long index, Long length) {
+    return Native.mkSeqExtract(z3context, str, index, length);
+  }
+  @Override
+  protected Long replace(Long fullStr, Long target, Long replacement) {
+    return Native.mkSeqReplace(z3context, fullStr, target, replacement);
+  }
+  @Override
+  protected Long replaceAll(Long fullStr, Long target, Long replacement) {
+    throw new UnsupportedOperationException();
+  }
+  @Override
+  protected Long makeRegexImpl(String value) {
+    Long str = makeStringImpl(value);
+    return Native.mkSeqToRe(z3context, str);
+  }
+  @Override
+  protected Long noneImpl() {
+    return Native.mkReEmpty(z3context, formulaCreator.getRegexType());
+  }
+  @Override
+  protected Long allImpl() {
+    return Native.mkReFull(z3context, formulaCreator.getRegexType());
+  }
+  @Override
+  protected Long allCharImpl() {
+    return Native.mkReAllchar(z3context, formulaCreator.getRegexType());
+  }
+  @Override
+  protected Long range(Long start, Long end) {
+    return Native.mkReRange(z3context, start, end);
+  }
+  @Override
+  protected Long concatRegexImpl(List<Long> parts) {
+    if (parts.isEmpty()) {
+      return noneImpl();
+    }
+    return Native.mkReConcat(z3context, parts.size(), Longs.toArray(parts));
+  }
+  @Override
+  protected Long union(Long pParam1, Long pParam2) {
+    return Native.mkReUnion(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long intersection(Long pParam1, Long pParam2) {
+    return Native.mkReIntersect(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long closure(Long pParam) {
+    return Native.mkReStar(z3context, pParam);
+  }
+  @Override
+  protected Long complement(Long pParam) {
+    return Native.mkReComplement(z3context, pParam);
+  }
+  @Override
+  protected Long toIntegerFormula(Long pParam) {
+    return Native.mkStrToInt(z3context, pParam);
+  }
+  @Override
+  protected Long toStringFormula(Long pParam) {
+    return Native.mkIntToStr(z3context, pParam);
+  }
+  @Override
+  protected Long toCodePoint(Long pParam) {
+    return Native.mkStringToCode(z3context, pParam);
+  }
+  @Override
+  protected Long fromCodePoint(Long pParam) {
+    return Native.mkStringFromCode(z3context, pParam);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import static com.google.common.base.Preconditions.checkArgument;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import java.util.List;
+import org.sosy_lab.java_smt.api.SolverException;
+import org.sosy_lab.java_smt.basicimpl.AbstractQuantifiedFormulaManager;
+class Z3QuantifiedFormulaManager extends AbstractQuantifiedFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  private final Z3FormulaCreator z3FormulaCreator;
+  Z3QuantifiedFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    this.z3context = creator.getEnv();
+    z3FormulaCreator = creator;
+  }
+  @Override
+  public Long mkQuantifier(Quantifier q, List<Long> pVariables, Long pBody) {
+    checkArgument(!pVariables.isEmpty(), "List of quantified variables can not be empty");
+    return Native.mkQuantifierConst(
+        z3context,
+        q == Quantifier.FORALL,
+        0,
+        pVariables.size(),
+        Longs.toArray(pVariables),
+        0,
+        new long[0],
+        pBody);
+  }
+  @Override
+  protected Long eliminateQuantifiers(Long pExtractInfo)
+      throws SolverException, InterruptedException {
+    // It is recommended (personal communication with Nikolaj Bjorner)
+    // to run "qe-light" before "qe".
+    // "qe" does not perform a "qe-light" as a preprocessing on its own!
+    // One might want to run the tactic "ctx-solver-simplify" on the result.
+    return z3FormulaCreator.applyTactics(z3context, pExtractInfo, "qe-light", "qe");
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.microsoft.z3.Native;
+import java.math.BigDecimal;
+import org.sosy_lab.java_smt.api.NumeralFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+import org.sosy_lab.java_smt.api.RationalFormulaManager;
+class Z3RationalFormulaManager extends Z3NumeralFormulaManager<NumeralFormula, RationalFormula>
+    implements RationalFormulaManager {
+  Z3RationalFormulaManager(Z3FormulaCreator pCreator, NonLinearArithmetic pNonLinearArithmetic) {
+    super(pCreator, pNonLinearArithmetic);
+  }
+  @Override
+  protected long getNumeralType() {
+    return getFormulaCreator().getRationalType();
+  }
+  @Override
+  protected Long makeNumberImpl(double pNumber) {
+    return makeNumberImpl(Double.toString(pNumber));
+  }
+  @Override
+  protected Long makeNumberImpl(BigDecimal pNumber) {
+    return makeNumberImpl(pNumber.toPlainString());
+  }
+  @Override
+  protected Long floor(Long pNumber) {
+    return Native.mkReal2int(z3context, pNumber);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.microsoft.z3.Native;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import org.sosy_lab.java_smt.api.IntegerFormulaManager;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+class Z3IntegerFormulaManager extends Z3NumeralFormulaManager<IntegerFormula, IntegerFormula>
+    implements IntegerFormulaManager {
+  Z3IntegerFormulaManager(Z3FormulaCreator pCreator, NonLinearArithmetic pNonLinearArithmetic) {
+    super(pCreator, pNonLinearArithmetic);
+  }
+  @Override
+  protected long getNumeralType() {
+    return getFormulaCreator().getIntegerType();
+  }
+  @Override
+  protected Long makeNumberImpl(double pNumber) {
+    return makeNumberImpl((long) pNumber);
+  }
+  @Override
+  protected Long makeNumberImpl(BigDecimal pNumber) {
+    return decimalAsInteger(pNumber);
+  }
+  @Override
+  public Long modulo(Long pNumber1, Long pNumber2) {
+    return Native.mkMod(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long modularCongruence(Long pNumber1, Long pNumber2, long pModulo) {
+    long n = makeNumberImpl(pModulo);
+    Native.incRef(z3context, n);
+    try {
+      return modularCongruence0(pNumber1, pNumber2, makeNumberImpl(pModulo));
+    } finally {
+      Native.decRef(z3context, n);
+    }
+  }
+  @Override
+  protected Long modularCongruence(Long pNumber1, Long pNumber2, BigInteger pModulo) {
+    long n = makeNumberImpl(pModulo);
+    Native.incRef(z3context, n);
+    try {
+      return modularCongruence0(pNumber1, pNumber2, makeNumberImpl(pModulo));
+    } finally {
+      Native.decRef(z3context, n);
+    }
+  }
+  protected Long modularCongruence0(Long pNumber1, Long pNumber2, Long n) {
+    // ((_ divisible n) x)   <==>   (= x (* n (div x n)))
+    long x = subtract(pNumber1, pNumber2);
+    Native.incRef(z3context, x);
+    long div = Native.mkDiv(z3context, x, n);
+    Native.incRef(z3context, div);
+    long mul = Native.mkMul(z3context, 2, new long[] {n, div});
+    Native.incRef(z3context, mul);
+    try {
+      return Native.mkEq(z3context, x, mul);
+    } finally {
+      Native.decRef(z3context, x);
+      Native.decRef(z3context, div);
+      Native.decRef(z3context, mul);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.common.collect.ImmutableList;
+import java.util.List;
+/**
+ * This interface contains methods for working with any theory with quantifiers.
+ *
+ * <p>ATTENTION: Not every theory has a quantifier elimination property!
+ */
+public interface QuantifiedFormulaManager {
+  enum Quantifier {
+    FORALL,
+    EXISTS
+  }
+  /**
+   * @return An existentially quantified formula.
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  default BooleanFormula exists(List<? extends Formula> pVariables, BooleanFormula pBody) {
+    return mkQuantifier(Quantifier.EXISTS, pVariables, pBody);
+  }
+  /**
+   * @return A universally quantified formula.
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  default BooleanFormula forall(List<? extends Formula> pVariables, BooleanFormula pBody) {
+    return mkQuantifier(Quantifier.FORALL, pVariables, pBody);
+  }
+  /** Syntax sugar, see {@link #forall(List, BooleanFormula)}. */
+  default BooleanFormula forall(Formula quantifiedArg, BooleanFormula pBody) {
+    return forall(ImmutableList.of(quantifiedArg), pBody);
+  }
+  /** Syntax sugar, see {@link #exists(List, BooleanFormula)}. */
+  default BooleanFormula exists(Formula quantifiedArg, BooleanFormula pBody) {
+    return exists(ImmutableList.of(quantifiedArg), pBody);
+  }
+  /**
+   * @return A quantified formula
+   * @param q Quantifier type
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  BooleanFormula mkQuantifier(
+      Quantifier q, List<? extends Formula> pVariables, BooleanFormula pBody);
+  /**
+   * Eliminate the quantifiers for a given formula. If this is not possible, it will return the
+   * input formula. Note that CVC4 only supports this for LIA and LRA.
+   *
+   * @param pF Formula with quantifiers.
+   * @return New formula without quantifiers.
+   */
+  BooleanFormula eliminateQuantifiers(BooleanFormula pF)
+      throws InterruptedException, SolverException;
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import org.sosy_lab.java_smt.basicimpl.AbstractUFManager;
+class Z3UFManager extends AbstractUFManager<Long, Long, Long, Long> {
+  Z3UFManager(Z3FormulaCreator creator) {
+    super(creator);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2022 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import com.google.auto.value.AutoValue;
+import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.Immutable;
+import java.util.List;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+/** Declaration of a function. */
+@Immutable(containerOf = "T")
+@AutoValue
+public abstract class FunctionDeclarationImpl<F extends Formula, T>
+    implements FunctionDeclaration<F> {
+  public static <F extends Formula, T> FunctionDeclaration<F> of(
+      String name,
+      FunctionDeclarationKind kind,
+      List<FormulaType<?>> pArgumentTypes,
+      FormulaType<F> pReturnType,
+      T pDeclaration) {
+    return new AutoValue_FunctionDeclarationImpl<>(
+        kind, name, pReturnType, ImmutableList.copyOf(pArgumentTypes), pDeclaration);
+  }
+  /**
+   * get a reference to the internal declaration used by the SMT solver. This method should only be
+   * used internally in JavaSMT.
+   */
+  public abstract T getSolverDeclaration();
+  @Override
+  public final String toString() {
+    return String.format("%s (%s)", getKind(), getName());
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.DOUBLE_PRECISION_EXPONENT_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.DOUBLE_PRECISION_MANTISSA_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.SINGLE_PRECISION_EXPONENT_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.SINGLE_PRECISION_MANTISSA_SIZE;
+import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.Immutable;
+import java.util.List;
+import java.util.Set;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+/**
+ * Type of a formula.
+ *
+ * @param <T> Formula class corresponding to the given formula type.
+ */
+@SuppressWarnings("checkstyle:constantname")
+@Immutable
+public abstract class FormulaType<T extends Formula> {
+  private FormulaType() {}
+  public boolean isArrayType() {
+    return false;
+  }
+  public boolean isBitvectorType() {
+    return false;
+  }
+  public boolean isBooleanType() {
+    return false;
+  }
+  public boolean isFloatingPointType() {
+    return false;
+  }
+  public boolean isFloatingPointRoundingModeType() {
+    return false;
+  }
+  public boolean isNumeralType() {
+    return false;
+  }
+  public boolean isRationalType() {
+    return false;
+  }
+  public boolean isIntegerType() {
+    return false;
+  }
+  public boolean isSLType() {
+    return false;
+  }
+  public boolean isStringType() {
+    return false;
+  }
+  public boolean isRegexType() {
+    return false;
+  }
+  public boolean isEnumerationType() {
+    return false;
+  }
+  @Override
+  public abstract String toString();
+  /** return the correctly formatted SMTLIB2 type declaration. */
+  public abstract String toSMTLIBString();
+  @Immutable
+  public abstract static class NumeralType<T extends NumeralFormula> extends FormulaType<T> {
+    @Override
+    public final boolean isNumeralType() {
+      return true;
+    }
+  }
+  @SuppressWarnings("ClassInitializationDeadlock")
+  public static final FormulaType<RationalFormula> RationalType =
+      new NumeralType<>() {
+        @Override
+        public boolean isRationalType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Rational";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Real";
+        }
+      };
+  @SuppressWarnings("ClassInitializationDeadlock")
+  public static final FormulaType<IntegerFormula> IntegerType =
+      new NumeralType<>() {
+        @Override
+        public boolean isIntegerType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Integer";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Int";
+        }
+      };
+  public static final FormulaType<BooleanFormula> BooleanType =
+      new FormulaType<>() {
+        @Override
+        public boolean isBooleanType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Boolean";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Bool";
+        }
+      };
+  public static BitvectorType getBitvectorTypeWithSize(int size) {
+    return new BitvectorType(size);
+  }
+  @Immutable
+  public static final class BitvectorType extends FormulaType<BitvectorFormula> {
+    private final int size;
+    private BitvectorType(int size) {
+      this.size = size;
+    }
+    @Override
+    public boolean isBitvectorType() {
+      return true;
+    }
+    public int getSize() {
+      return size;
+    }
+    @Override
+    public String toString() {
+      return "Bitvector<" + getSize() + ">";
+    }
+    @Override
+    public boolean equals(Object pObj) {
+      if (pObj == this) {
+        return true;
+      }
+      if (!(pObj instanceof BitvectorType)) {
+        return false;
+      }
+      BitvectorType other = (BitvectorType) pObj;
+      return size == other.size;
+    }
+    @Override
+    public int hashCode() {
+      return size;
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(_ BitVec " + size + ")";
+    }
+  }
+  public static FloatingPointType getFloatingPointType(int exponentSize, int mantissaSize) {
+    return new FloatingPointType(exponentSize, mantissaSize);
+  }
+  public static FloatingPointType getSinglePrecisionFloatingPointType() {
+    return FloatingPointType.SINGLE_PRECISION_FP_TYPE;
+  }
+  public static FloatingPointType getDoublePrecisionFloatingPointType() {
+    return FloatingPointType.DOUBLE_PRECISION_FP_TYPE;
+  }
+  @Immutable
+  public static final class FloatingPointType extends FormulaType<FloatingPointFormula> {
+    private static final FloatingPointType SINGLE_PRECISION_FP_TYPE =
+        new FloatingPointType(SINGLE_PRECISION_EXPONENT_SIZE, SINGLE_PRECISION_MANTISSA_SIZE);
+    private static final FloatingPointType DOUBLE_PRECISION_FP_TYPE =
+        new FloatingPointType(DOUBLE_PRECISION_EXPONENT_SIZE, DOUBLE_PRECISION_MANTISSA_SIZE);
+    private final int exponentSize;
+    private final int mantissaSize;
+    private FloatingPointType(int pExponentSize, int pMantissaSize) {
+      exponentSize = pExponentSize;
+      mantissaSize = pMantissaSize;
+    }
+    @Override
+    public boolean isFloatingPointType() {
+      return true;
+    }
+    public int getExponentSize() {
+      return exponentSize;
+    }
+    public int getMantissaSize() {
+      return mantissaSize;
+    }
+    /** Return the total size of a value of this type in bits. */
+    public int getTotalSize() {
+      return exponentSize + mantissaSize + 1;
+    }
+    @Override
+    public int hashCode() {
+      return (31 + exponentSize) * 31 + mantissaSize;
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof FloatingPointType)) {
+        return false;
+      }
+      FloatingPointType other = (FloatingPointType) obj;
+      return this.exponentSize == other.exponentSize && this.mantissaSize == other.mantissaSize;
+    }
+    @Override
+    public String toString() {
+      return "FloatingPoint<exp=" + exponentSize + ",mant=" + mantissaSize + ">";
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(_ FloatingPoint " + exponentSize + " " + mantissaSize + ")";
+    }
+  }
+  public static final FormulaType<FloatingPointRoundingModeFormula> FloatingPointRoundingModeType =
+      new FloatingPointRoundingModeType();
+  private static final class FloatingPointRoundingModeType
+      extends FormulaType<FloatingPointRoundingModeFormula> {
+    @Override
+    public boolean isFloatingPointRoundingModeType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return "FloatingPointRoundingMode";
+    }
+    @Override
+    public String toSMTLIBString() {
+      throw new UnsupportedOperationException(
+          "rounding mode is not expected in symbol declarations");
+    }
+  }
+  @SuppressWarnings("MethodTypeParameterName")
+  public static <TD extends Formula, TR extends Formula> ArrayFormulaType<TD, TR> getArrayType(
+      FormulaType<TD> pDomainSort, FormulaType<TR> pRangeSort) {
+    return new ArrayFormulaType<>(pDomainSort, pRangeSort);
+  }
+  @SuppressWarnings("ClassTypeParameterName")
+  public static final class ArrayFormulaType<TI extends Formula, TE extends Formula>
+      extends FormulaType<ArrayFormula<TI, TE>> {
+    private final FormulaType<TE> elementType;
+    private final FormulaType<TI> indexType;
+    private ArrayFormulaType(FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+      this.indexType = Preconditions.checkNotNull(pIndexType);
+      this.elementType = Preconditions.checkNotNull(pElementType);
+    }
+    public FormulaType<TE> getElementType() {
+      return elementType;
+    }
+    public FormulaType<TI> getIndexType() {
+      return indexType;
+    }
+    @Override
+    public boolean isArrayType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return String.format("Array<%s,%s>", indexType, elementType);
+    }
+    @Override
+    public int hashCode() {
+      return 31 * elementType.hashCode() + indexType.hashCode();
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof ArrayFormulaType)) {
+        return false;
+      }
+      ArrayFormulaType<?, ?> other = (ArrayFormulaType<?, ?>) obj;
+      return elementType.equals(other.elementType) && indexType.equals(other.indexType);
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(Array " + indexType.toSMTLIBString() + " " + elementType.toSMTLIBString() + ")";
+    }
+  }
+  public static EnumerationFormulaType getEnumerationType(String pName, Set<String> pElements) {
+    return new EnumerationFormulaType(pName, pElements);
+  }
+  public static final class EnumerationFormulaType extends FormulaType<EnumerationFormula> {
+    private final String name;
+    private final ImmutableSet<String> elements;
+    private EnumerationFormulaType(String pName, Set<String> pElements) {
+      this.name = Preconditions.checkNotNull(pName);
+      this.elements = ImmutableSet.copyOf(pElements);
+    }
+    public String getName() {
+      return name;
+    }
+    public ImmutableSet<String> getElements() {
+      return elements;
+    }
+    public int getCardinality() {
+      return elements.size();
+    }
+    @Override
+    public boolean isEnumerationType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return String.format("%s (%s)", name, Joiner.on(", ").join(elements));
+    }
+    @Override
+    public int hashCode() {
+      return 31 * name.hashCode() + elements.hashCode();
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof EnumerationFormulaType)) {
+        return false;
+      }
+      EnumerationFormulaType other = (EnumerationFormulaType) obj;
+      return name.equals(other.name) && elements.equals(other.elements);
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(" + this + ")";
+    }
+  }
+  public static final FormulaType<StringFormula> StringType =
+      new FormulaType<>() {
+        @Override
+        public boolean isStringType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "String";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "String";
+        }
+      };
+  public static final FormulaType<RegexFormula> RegexType =
+      new FormulaType<>() {
+        @Override
+        public boolean isRegexType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "RegLan";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "RegLan";
+        }
+      };
+  /**
+   * Parse a string and return the corresponding type. This method is the counterpart of {@link
+   * #toString()}.
+   */
+  public static FormulaType<?> fromString(String t) {
+    if (BooleanType.toString().equals(t)) {
+      return BooleanType;
+    } else if (IntegerType.toString().equals(t)) {
+      return IntegerType;
+    } else if (RationalType.toString().equals(t)) {
+      return RationalType;
+    } else if (StringType.toString().equals(t)) {
+      return StringType;
+    } else if (RegexType.toString().equals(t)) {
+      return RegexType;
+    } else if (FloatingPointRoundingModeType.toString().equals(t)) {
+      return FloatingPointRoundingModeType;
+    } else if (t.startsWith("FloatingPoint<")) {
+      // FloatingPoint<exp=11,mant=52>
+      List<String> exman = Splitter.on(',').limit(2).splitToList(t.substring(14, t.length() - 1));
+      return FormulaType.getFloatingPointType(
+          Integer.parseInt(exman.get(0).substring(4)), Integer.parseInt(exman.get(1).substring(5)));
+    } else if (t.startsWith("Bitvector<")) {
+      // Bitvector<32>
+      return FormulaType.getBitvectorTypeWithSize(
+          Integer.parseInt(t.substring(10, t.length() - 1)));
+    } else if (t.matches(".*\\(.*\\)")) {
+      // Color (Red, Green, Blue)
+      String name = t.substring(0, t.indexOf("(") - 1);
+      String elementsStr = t.substring(t.indexOf("(") + 1, t.length() - 1);
+      Set<String> elements = ImmutableSet.copyOf(Splitter.on(", ").split(elementsStr));
+      return new EnumerationFormulaType(name, elements);
+    } else {
+      throw new AssertionError("unknown type:" + t);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Z3Exception;
+import com.microsoft.z3.enumerations.Z3_lbool;
+import java.util.Collection;
+import java.util.Map.Entry;
+import java.util.Set;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.common.ShutdownNotifier;
+import org.sosy_lab.common.ShutdownNotifier.ShutdownRequestListener;
+import org.sosy_lab.common.io.PathCounterTemplate;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.ProverEnvironment;
+import org.sosy_lab.java_smt.api.SolverContext.ProverOptions;
+import org.sosy_lab.java_smt.api.SolverException;
+import org.sosy_lab.java_smt.api.UserPropagator;
+class Z3TheoremProver extends Z3AbstractProver implements ProverEnvironment {
+  private final long z3solver;
+  private final ShutdownRequestListener interruptListener;
+  private @Nullable Z3UserPropagator propagator = null;
+  Z3TheoremProver(
+      Z3FormulaCreator creator,
+      Z3FormulaManager pMgr,
+      Set<ProverOptions> pOptions,
+      ImmutableMap<String, Object> pSolverOptions,
+      @Nullable PathCounterTemplate pLogfile,
+      ShutdownNotifier pShutdownNotifier) {
+    super(creator, pMgr, pOptions, pLogfile, pShutdownNotifier);
+    z3solver = Native.mkSolver(z3context);
+    Native.solverIncRef(z3context, z3solver);
+    interruptListener = reason -> Native.solverInterrupt(z3context, z3solver);
+    shutdownNotifier.register(interruptListener);
+    long z3params = Native.mkParams(z3context);
+    Native.paramsIncRef(z3context, z3params);
+    for (Entry<String, Object> entry : pSolverOptions.entrySet()) {
+      addParameter(z3params, entry.getKey(), entry.getValue());
+    }
+    Native.solverSetParams(z3context, z3solver, z3params);
+    Native.paramsDecRef(z3context, z3params);
+  }
+  @Override
+  protected void pushImpl() {
+    push0();
+    try {
+      Native.solverPush(z3context, z3solver);
+    } catch (Z3Exception exception) {
+      throw creator.handleZ3ExceptionAsRuntimeException(exception);
+    }
+  }
+  @Override
+  protected void popImpl() {
+    Native.solverPop(z3context, z3solver, 1);
+    pop0();
+  }
+  @Override
+  protected void assertContraint(long constraint) {
+    Native.solverAssert(z3context, z3solver, constraint);
+  }
+  @Override
+  protected void assertContraintAndTrack(long constraint, long symbol) {
+    Native.solverAssertAndTrack(z3context, z3solver, constraint, symbol);
+  }
+  @Override
+  public boolean isUnsat() throws SolverException, InterruptedException {
+    Preconditions.checkState(!closed);
+    logSolverStack();
+    int result;
+    try {
+      result = Native.solverCheck(z3context, z3solver);
+    } catch (Z3Exception e) {
+      throw creator.handleZ3Exception(e);
+    }
+    undefinedStatusToException(result);
+    return result == Z3_lbool.Z3_L_FALSE.toInt();
+  }
+  @Override
+  public boolean isUnsatWithAssumptions(Collection<BooleanFormula> assumptions)
+      throws SolverException, InterruptedException {
+    Preconditions.checkState(!closed);
+    int result;
+    try {
+      result =
+          Native.solverCheckAssumptions(
+              z3context,
+              z3solver,
+              assumptions.size(),
+              assumptions.stream().mapToLong(creator::extractInfo).toArray());
+    } catch (Z3Exception e) {
+      throw creator.handleZ3Exception(e);
+    }
+    undefinedStatusToException(result);
+    return result == Z3_lbool.Z3_L_FALSE.toInt();
+  }
+  private void undefinedStatusToException(int solverStatus)
+      throws SolverException, InterruptedException {
+    if (solverStatus == Z3_lbool.Z3_L_UNDEF.toInt()) {
+      creator.shutdownNotifier.shutdownIfNecessary();
+      final String reason = Native.solverGetReasonUnknown(z3context, z3solver);
+      switch (reason) {
+        case "canceled": // see Z3: src/tactic/tactic.cpp
+        case "interrupted": // see Z3: src/solver/check_sat_result.cpp
+        case "interrupted from keyboard": // see Z3: src/solver/check_sat_result.cpp
+          throw new InterruptedException(reason);
+        default:
+          throw new SolverException("Z3 returned 'unknown' status, reason: " + reason);
+      }
+    }
+  }
+  @Override
+  protected long getUnsatCore0() {
+    return Native.solverGetUnsatCore(z3context, z3solver);
+  }
+  @Override
+  protected long getZ3Model() {
+    try {
+      return Native.solverGetModel(z3context, z3solver);
+    } catch (Z3Exception e) {
+      throw creator.handleZ3ExceptionAsRuntimeException(e);
+    }
+  }
+  @Override
+  public int size() {
+    Preconditions.checkState(!closed);
+    Preconditions.checkState(
+        Native.solverGetNumScopes(z3context, z3solver) == super.size(),
+        "prover-size %s does not match stack-size %s",
+        Native.solverGetNumScopes(z3context, z3solver),
+        super.size());
+    return super.size();
+  }
+  @Override
+  protected long getStatistics0() {
+    return Native.solverGetStatistics(z3context, z3solver);
+  }
+  @Override
+  public boolean registerUserPropagator(UserPropagator prop) {
+    Preconditions.checkState(!closed);
+    if (propagator != null) {
+      propagator.close();
+    }
+    propagator = new Z3UserPropagator(z3context, z3solver, creator, mgr, prop);
+    prop.initializeWithBackend(propagator);
+    return true;
+  }
+  @Override
+  public String toString() {
+    Preconditions.checkState(!closed);
+    return Native.solverToString(z3context, z3solver);
+  }
+  @Override
+  public void close() {
+    if (!closed) {
+      Preconditions.checkArgument(
+          Native.solverGetNumScopes(z3context, z3solver) >= 0,
+          "a negative number of scopes is not allowed");
+      Native.solverReset(z3context, z3solver); // remove all assertions from the solver
+      Native.solverDecRef(z3context, z3solver);
+      if (propagator != null) {
+        propagator.close();
+        propagator = null;
+      }
+      shutdownNotifier.unregister(interruptListener);
+    }
+    super.close();
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2024 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.sosy_lab.java_smt.basicimpl.AbstractStringFormulaManager.unescapeUnicodeForSmtlib;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.HashBasedTable;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Table;
+import com.google.common.primitives.Longs;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Z3Exception;
+import com.microsoft.z3.enumerations.Z3_ast_kind;
+import com.microsoft.z3.enumerations.Z3_decl_kind;
+import com.microsoft.z3.enumerations.Z3_sort_kind;
+import com.microsoft.z3.enumerations.Z3_symbol_kind;
+import java.lang.ref.PhantomReference;
+import java.lang.ref.ReferenceQueue;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.common.ShutdownNotifier;
+import org.sosy_lab.common.configuration.Configuration;
+import org.sosy_lab.common.configuration.InvalidConfigurationException;
+import org.sosy_lab.common.configuration.Option;
+import org.sosy_lab.common.configuration.Options;
+import org.sosy_lab.common.rationals.Rational;
+import org.sosy_lab.common.time.Timer;
+import org.sosy_lab.java_smt.api.ArrayFormula;
+import org.sosy_lab.java_smt.api.BitvectorFormula;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.EnumerationFormula;
+import org.sosy_lab.java_smt.api.FloatingPointFormula;
+import org.sosy_lab.java_smt.api.FloatingPointNumber;
+import org.sosy_lab.java_smt.api.FloatingPointNumber.Sign;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingMode;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.ArrayFormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.FloatingPointType;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+import org.sosy_lab.java_smt.api.RegexFormula;
+import org.sosy_lab.java_smt.api.SolverException;
+import org.sosy_lab.java_smt.api.StringFormula;
+import org.sosy_lab.java_smt.api.visitors.FormulaVisitor;
+import org.sosy_lab.java_smt.basicimpl.FormulaCreator;
+import org.sosy_lab.java_smt.basicimpl.FunctionDeclarationImpl;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3ArrayFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3BitvectorFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3BooleanFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3EnumerationFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3FloatingPointFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3FloatingPointRoundingModeFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3IntegerFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3RationalFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3RegexFormula;
+import org.sosy_lab.java_smt.solvers.z3.Z3Formula.Z3StringFormula;
+@Options(prefix = "solver.z3")
+class Z3FormulaCreator extends FormulaCreator<Long, Long, Long, Long> {
+  private static final ImmutableMap<Integer, Object> Z3_CONSTANTS =
+      ImmutableMap.<Integer, Object>builder()
+          .put(Z3_decl_kind.Z3_OP_TRUE.toInt(), true)
+          .put(Z3_decl_kind.Z3_OP_FALSE.toInt(), false)
+          .put(
+              Z3_decl_kind.Z3_OP_FPA_RM_NEAREST_TIES_TO_EVEN.toInt(),
+              FloatingPointRoundingMode.NEAREST_TIES_TO_EVEN)
+          .put(
+              Z3_decl_kind.Z3_OP_FPA_RM_NEAREST_TIES_TO_AWAY.toInt(),
+              FloatingPointRoundingMode.NEAREST_TIES_AWAY)
+          .put(
+              Z3_decl_kind.Z3_OP_FPA_RM_TOWARD_POSITIVE.toInt(),
+              FloatingPointRoundingMode.TOWARD_POSITIVE)
+          .put(
+              Z3_decl_kind.Z3_OP_FPA_RM_TOWARD_NEGATIVE.toInt(),
+              FloatingPointRoundingMode.TOWARD_NEGATIVE)
+          .put(Z3_decl_kind.Z3_OP_FPA_RM_TOWARD_ZERO.toInt(), FloatingPointRoundingMode.TOWARD_ZERO)
+          .buildOrThrow();
+  private static final ImmutableSet<Integer> Z3_FP_CONSTANTS =
+      ImmutableSet.of(
+          Z3_decl_kind.Z3_OP_FPA_PLUS_ZERO.toInt(),
+          Z3_decl_kind.Z3_OP_FPA_MINUS_ZERO.toInt(),
+          Z3_decl_kind.Z3_OP_FPA_PLUS_INF.toInt(),
+          Z3_decl_kind.Z3_OP_FPA_MINUS_INF.toInt(),
+          Z3_decl_kind.Z3_OP_FPA_NAN.toInt());
+  // Set of error messages that might occur if Z3 is interrupted.
+  private static final ImmutableSet<String> Z3_INTERRUPT_ERRORS =
+      ImmutableSet.of(
+          "canceled", // Z3::src/util/common_msgs.cpp
+          "push canceled", // src/smt/smt_context.cpp
+          "interrupted from keyboard", // Z3: src/solver/check_sat_result.cpp
+          "Proof error!",
+          "interrupted", // Z3::src/solver/check_sat_result.cpp
+          "maximization suspended" // Z3::src/opt/opt_solver.cpp
+          );
+  @Option(secure = true, description = "Whether to use PhantomReferences for discarding Z3 AST")
+  private boolean usePhantomReferences = false;
+  /**
+   * We need to track all created symbols for parsing.
+   *
+   * <p>This map stores symbols (names) and their declaration (type information).
+   */
+  private final Map<String, Long> symbolsToDeclarations = new LinkedHashMap<>();
+  private final Table<Long, Long, Long> allocatedArraySorts = HashBasedTable.create();
+  /** Automatic clean-up of Z3 ASTs. */
+  private final ReferenceQueue<Z3Formula> referenceQueue = new ReferenceQueue<>();
+  private final Z3AstReference referenceListHead;
+  // todo: getters for statistic.
+  private final Timer cleanupTimer = new Timer();
+  protected final ShutdownNotifier shutdownNotifier;
+  @SuppressWarnings("ParameterNumber")
+  Z3FormulaCreator(
+      long pEnv,
+      long pBoolType,
+      long pIntegerType,
+      long pRealType,
+      long pStringType,
+      long pRegexType,
+      Configuration config,
+      ShutdownNotifier pShutdownNotifier)
+      throws InvalidConfigurationException {
+    super(pEnv, pBoolType, pIntegerType, pRealType, pStringType, pRegexType);
+    shutdownNotifier = pShutdownNotifier;
+    config.inject(this);
+    if (usePhantomReferences) {
+      // Setup sentinel nodes for doubly-linked phantom reference list.
+      Z3AstReference head = new Z3AstReference();
+      Z3AstReference tail = new Z3AstReference();
+      head.next = tail;
+      tail.prev = head;
+      referenceListHead = head;
+    } else {
+      referenceListHead = null;
+    }
+  }
+  /**
+   * This method throws an {@link InterruptedException} if Z3 was interrupted by a shutdown hook.
+   * Otherwise, the given exception is wrapped and thrown as a SolverException.
+   */
+  @CanIgnoreReturnValue
+  final SolverException handleZ3Exception(Z3Exception e)
+      throws SolverException, InterruptedException {
+    if (Z3_INTERRUPT_ERRORS.contains(e.getMessage())) {
+      shutdownNotifier.shutdownIfNecessary();
+    }
+    throw new SolverException("Z3 has thrown an exception", e);
+  }
+  /**
+   * This method handles a Z3Exception, however it only throws a RuntimeException. This method is
+   * used in places where we cannot throw a checked exception in JavaSMT due to API restrictions.
+   *
+   * @param e the Z3Exception to handle
+   * @return nothing, always throw a RuntimeException
+   * @throws RuntimeException always thrown for the given Z3Exception
+   */
+  final RuntimeException handleZ3ExceptionAsRuntimeException(Z3Exception e) {
+    try {
+      throw handleZ3Exception(e);
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      throw sneakyThrow(e);
+    } catch (SolverException ex) {
+      throw sneakyThrow(e);
+    }
+  }
+  @SuppressWarnings("unchecked")
+  private static <E extends Throwable> RuntimeException sneakyThrow(Throwable e) throws E {
+    throw (E) e;
+  }
+  @Override
+  public Long makeVariable(Long type, String varName) {
+    long z3context = getEnv();
+    long symbol = Native.mkStringSymbol(z3context, varName);
+    long var = Native.mkConst(z3context, symbol, type);
+    Native.incRef(z3context, var);
+    symbolsToDeclarations.put(varName, Native.getAppDecl(z3context, var));
+    return var;
+  }
+  @Override
+  public Long extractInfo(Formula pT) {
+    if (pT instanceof Z3Formula) {
+      return ((Z3Formula) pT).getFormulaInfo();
+    }
+    throw new IllegalArgumentException(
+        "Cannot get the formula info of type " + pT.getClass().getSimpleName() + " in the Solver!");
+  }
+  @SuppressWarnings("unchecked")
+  @Override
+  public <T extends Formula> FormulaType<T> getFormulaType(T pFormula) {
+    Long term = extractInfo(pFormula);
+    return (FormulaType<T>) getFormulaType(term);
+  }
+  public FormulaType<?> getFormulaTypeFromSort(Long pSort) {
+    long z3context = getEnv();
+    Z3_sort_kind sortKind = Z3_sort_kind.fromInt(Native.getSortKind(z3context, pSort));
+    switch (sortKind) {
+      case Z3_BOOL_SORT:
+        return FormulaType.BooleanType;
+      case Z3_INT_SORT:
+        return FormulaType.IntegerType;
+      case Z3_REAL_SORT:
+        return FormulaType.RationalType;
+      case Z3_BV_SORT:
+        return FormulaType.getBitvectorTypeWithSize(Native.getBvSortSize(z3context, pSort));
+      case Z3_ARRAY_SORT:
+        long domainSort = Native.getArraySortDomain(z3context, pSort);
+        long rangeSort = Native.getArraySortRange(z3context, pSort);
+        return FormulaType.getArrayType(
+            getFormulaTypeFromSort(domainSort), getFormulaTypeFromSort(rangeSort));
+      case Z3_FLOATING_POINT_SORT:
+        return FormulaType.getFloatingPointType(
+            Native.fpaGetEbits(z3context, pSort), Native.fpaGetSbits(z3context, pSort) - 1);
+      case Z3_ROUNDING_MODE_SORT:
+        return FormulaType.FloatingPointRoundingModeType;
+      case Z3_RE_SORT:
+        return FormulaType.RegexType;
+      case Z3_DATATYPE_SORT:
+        int n = Native.getDatatypeSortNumConstructors(z3context, pSort);
+        ImmutableSet.Builder<String> elements = ImmutableSet.builder();
+        for (int i = 0; i < n; i++) {
+          long decl = Native.getDatatypeSortConstructor(z3context, pSort, i);
+          elements.add(symbolToString(Native.getDeclName(z3context, decl)));
+        }
+        return FormulaType.getEnumerationType(
+            Native.sortToString(z3context, pSort), elements.build());
+      case Z3_RELATION_SORT:
+      case Z3_FINITE_DOMAIN_SORT:
+      case Z3_SEQ_SORT:
+      case Z3_UNKNOWN_SORT:
+      case Z3_UNINTERPRETED_SORT:
+        if (Native.isStringSort(z3context, pSort)) {
+          return FormulaType.StringType;
+        } else {
+          // TODO: support for remaining sorts.
+          throw new IllegalArgumentException(
+              "Unknown formula type "
+                  + Native.sortToString(z3context, pSort)
+                  + " with sort "
+                  + sortKind);
+        }
+      default:
+        throw new UnsupportedOperationException("Unexpected state.");
+    }
+  }
+  @Override
+  public FormulaType<?> getFormulaType(Long pFormula) {
+    long sort = Native.getSort(getEnv(), pFormula);
+    return getFormulaTypeFromSort(sort);
+  }
+  @Override
+  @SuppressWarnings("MethodTypeParameterName")
+  protected <TD extends Formula, TR extends Formula> FormulaType<TR> getArrayFormulaElementType(
+      ArrayFormula<TD, TR> pArray) {
+    return ((Z3ArrayFormula<TD, TR>) pArray).getElementType();
+  }
+  @Override
+  @SuppressWarnings("MethodTypeParameterName")
+  protected <TD extends Formula, TR extends Formula> FormulaType<TD> getArrayFormulaIndexType(
+      ArrayFormula<TD, TR> pArray) {
+    return ((Z3ArrayFormula<TD, TR>) pArray).getIndexType();
+  }
+  @Override
+  @SuppressWarnings("MethodTypeParameterName")
+  protected <TD extends Formula, TR extends Formula> ArrayFormula<TD, TR> encapsulateArray(
+      Long pTerm, FormulaType<TD> pIndexType, FormulaType<TR> pElementType) {
+    assert getFormulaType(pTerm).equals(FormulaType.getArrayType(pIndexType, pElementType));
+    cleanupReferences();
+    return storePhantomReference(
+        new Z3ArrayFormula<>(getEnv(), pTerm, pIndexType, pElementType), pTerm);
+  }
+  @SuppressWarnings("unchecked")
+  @Override
+  public <T extends Formula> T encapsulate(FormulaType<T> pType, Long pTerm) {
+    assert pType.equals(getFormulaType(pTerm))
+            || (pType.equals(FormulaType.RationalType)
+                && getFormulaType(pTerm).equals(FormulaType.IntegerType))
+        : String.format(
+            "Trying to encapsulate formula of type %s as %s", getFormulaType(pTerm), pType);
+    cleanupReferences();
+    if (pType.isBooleanType()) {
+      return (T) storePhantomReference(new Z3BooleanFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isIntegerType()) {
+      return (T) storePhantomReference(new Z3IntegerFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isRationalType()) {
+      return (T) storePhantomReference(new Z3RationalFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isStringType()) {
+      return (T) storePhantomReference(new Z3StringFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isRegexType()) {
+      return (T) storePhantomReference(new Z3RegexFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isBitvectorType()) {
+      return (T) storePhantomReference(new Z3BitvectorFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isFloatingPointType()) {
+      return (T) storePhantomReference(new Z3FloatingPointFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isFloatingPointRoundingModeType()) {
+      return (T)
+          storePhantomReference(new Z3FloatingPointRoundingModeFormula(getEnv(), pTerm), pTerm);
+    } else if (pType.isArrayType()) {
+      ArrayFormulaType<?, ?> arrFt = (ArrayFormulaType<?, ?>) pType;
+      return (T)
+          storePhantomReference(
+              new Z3ArrayFormula<>(getEnv(), pTerm, arrFt.getIndexType(), arrFt.getElementType()),
+              pTerm);
+    } else if (pType.isEnumerationType()) {
+      return (T) storePhantomReference(new Z3EnumerationFormula(getEnv(), pTerm), pTerm);
+    }
+    throw new IllegalArgumentException("Cannot create formulas of type " + pType + " in Z3");
+  }
+  @Override
+  public BooleanFormula encapsulateBoolean(Long pTerm) {
+    assert getFormulaType(pTerm).isBooleanType();
+    cleanupReferences();
+    return storePhantomReference(new Z3BooleanFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  public BitvectorFormula encapsulateBitvector(Long pTerm) {
+    assert getFormulaType(pTerm).isBitvectorType();
+    cleanupReferences();
+    return storePhantomReference(new Z3BitvectorFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  protected FloatingPointFormula encapsulateFloatingPoint(Long pTerm) {
+    assert getFormulaType(pTerm).isFloatingPointType();
+    cleanupReferences();
+    return storePhantomReference(new Z3FloatingPointFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  protected StringFormula encapsulateString(Long pTerm) {
+    assert getFormulaType(pTerm).isStringType()
+        : String.format(
+            "Term %s has unexpected type %s.",
+            Native.astToString(getEnv(), pTerm),
+            Native.sortToString(getEnv(), Native.getSort(getEnv(), pTerm)));
+    cleanupReferences();
+    return storePhantomReference(new Z3StringFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  protected RegexFormula encapsulateRegex(Long pTerm) {
+    assert getFormulaType(pTerm).isRegexType()
+        : String.format(
+            "Term %s has unexpected type %s.",
+            Native.astToString(getEnv(), pTerm),
+            Native.sortToString(getEnv(), Native.getSort(getEnv(), pTerm)));
+    cleanupReferences();
+    return storePhantomReference(new Z3RegexFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  protected EnumerationFormula encapsulateEnumeration(Long pTerm) {
+    assert getFormulaType(pTerm).isEnumerationType()
+        : String.format(
+            "Term %s has unexpected type %s.",
+            Native.astToString(getEnv(), pTerm),
+            Native.sortToString(getEnv(), Native.getSort(getEnv(), pTerm)));
+    cleanupReferences();
+    return storePhantomReference(new Z3EnumerationFormula(getEnv(), pTerm), pTerm);
+  }
+  @Override
+  public Long getArrayType(Long pIndexType, Long pElementType) {
+    Long allocatedArraySort = allocatedArraySorts.get(pIndexType, pElementType);
+    if (allocatedArraySort == null) {
+      allocatedArraySort = Native.mkArraySort(getEnv(), pIndexType, pElementType);
+      Native.incRef(getEnv(), allocatedArraySort);
+      allocatedArraySorts.put(pIndexType, pElementType, allocatedArraySort);
+    }
+    return allocatedArraySort;
+  }
+  @Override
+  public Long getBitvectorType(int pBitwidth) {
+    checkArgument(pBitwidth > 0, "Cannot use bitvector type with size %s", pBitwidth);
+    long bvSort = Native.mkBvSort(getEnv(), pBitwidth);
+    Native.incRef(getEnv(), Native.sortToAst(getEnv(), bvSort));
+    return bvSort;
+  }
+  @Override
+  public Long getFloatingPointType(FormulaType.FloatingPointType type) {
+    long fpSort = Native.mkFpaSort(getEnv(), type.getExponentSize(), type.getMantissaSize() + 1);
+    Native.incRef(getEnv(), Native.sortToAst(getEnv(), fpSort));
+    return fpSort;
+  }
+  private static final class Z3AstReference extends PhantomReference<Z3Formula> {
+    private final long z3Ast;
+    private @Nullable Z3AstReference prev;
+    private @Nullable Z3AstReference next;
+    // To generate dummy head and tail nodes
+    private Z3AstReference() {
+      this(null, null, 0);
+    }
+    private Z3AstReference(Z3Formula referent, ReferenceQueue<? super Z3Formula> q, long z3Ast) {
+      super(referent, q);
+      this.z3Ast = z3Ast;
+    }
+    private void insert(Z3AstReference ref) {
+      assert next != null;
+      ref.prev = this;
+      ref.next = this.next;
+      ref.next.prev = ref;
+      this.next = ref;
+    }
+    private void cleanup(long environment) {
+      Native.decRef(environment, z3Ast);
+      assert (prev != null && next != null);
+      prev.next = next;
+      next.prev = prev;
+    }
+  }
+  private <T extends Z3Formula> T storePhantomReference(T out, long pTerm) {
+    if (usePhantomReferences) {
+      referenceListHead.insert(new Z3AstReference(out, referenceQueue, pTerm));
+    }
+    return out;
+  }
+  private void cleanupReferences() {
+    if (!usePhantomReferences) {
+      return;
+    }
+    cleanupTimer.start();
+    try {
+      Z3AstReference ref;
+      while ((ref = (Z3AstReference) referenceQueue.poll()) != null) {
+        ref.cleanup(environment);
+      }
+    } finally {
+      cleanupTimer.stop();
+    }
+  }
+  private String getAppName(long f) {
+    long funcDecl = Native.getAppDecl(environment, f);
+    long symbol = Native.getDeclName(environment, funcDecl);
+    return symbolToString(symbol);
+  }
+  @Override
+  public <R> R visit(FormulaVisitor<R> visitor, final Formula formula, final Long f) {
+    switch (Z3_ast_kind.fromInt(Native.getAstKind(environment, f))) {
+      case Z3_NUMERAL_AST:
+        return visitor.visitConstant(formula, convertValue(f));
+      case Z3_APP_AST:
+        int arity = Native.getAppNumArgs(environment, f);
+        int declKind = Native.getDeclKind(environment, Native.getAppDecl(environment, f));
+        if (arity == 0) {
+          // constants
+          Object value = Z3_CONSTANTS.get(declKind);
+          if (value != null) {
+            return visitor.visitConstant(formula, value);
+          } else if (Z3_FP_CONSTANTS.contains(declKind)) {
+            return visitor.visitConstant(formula, convertValue(f));
+            // Rounding mode
+          } else if (declKind == Z3_decl_kind.Z3_OP_FPA_NUM.toInt()
+              || Native.getSortKind(environment, Native.getSort(environment, f))
+                  == Z3_sort_kind.Z3_ROUNDING_MODE_SORT.toInt()) {
+            return visitor.visitConstant(formula, convertValue(f));
+            // string constant
+          } else if (declKind == Z3_decl_kind.Z3_OP_INTERNAL.toInt()
+              && Native.getSortKind(environment, Native.getSort(environment, f))
+                  == Z3_sort_kind.Z3_SEQ_SORT.toInt()) {
+            return visitor.visitConstant(formula, convertValue(f));
+            // Free variable
+          } else if (declKind == Z3_decl_kind.Z3_OP_UNINTERPRETED.toInt()
+              || declKind == Z3_decl_kind.Z3_OP_INTERNAL.toInt()) {
+            return visitor.visitFreeVariable(formula, getAppName(f));
+            // enumeration constant
+          } else if (declKind == Z3_decl_kind.Z3_OP_DT_CONSTRUCTOR.toInt()) {
+            return visitor.visitConstant(formula, convertValue(f));
+          } // else: fall-through with a function application
+        } else if (arity == 3) {
+          // FP from BV
+          if (declKind == Z3_decl_kind.Z3_OP_FPA_FP.toInt()) {
+            final var signBv = Native.getAppArg(environment, f, 0);
+            final var expoBv = Native.getAppArg(environment, f, 1);
+            final var mantBv = Native.getAppArg(environment, f, 2);
+            if (isConstant(signBv) && isConstant(expoBv) && isConstant(mantBv)) {
+              return visitor.visitConstant(formula, convertValue(f));
+            }
+          }
+        }
+        // Function application with zero or more parameters
+        ImmutableList.Builder<Formula> args = ImmutableList.builder();
+        ImmutableList.Builder<FormulaType<?>> argTypes = ImmutableList.builder();
+        for (int i = 0; i < arity; i++) {
+          long arg = Native.getAppArg(environment, f, i);
+          FormulaType<?> argumentType = getFormulaType(arg);
+          args.add(encapsulate(argumentType, arg));
+          argTypes.add(argumentType);
+        }
+        return visitor.visitFunction(
+            formula,
+            args.build(),
+            FunctionDeclarationImpl.of(
+                getAppName(f),
+                getDeclarationKind(f),
+                argTypes.build(),
+                getFormulaType(f),
+                Native.getAppDecl(environment, f)));
+      case Z3_VAR_AST:
+        int deBruijnIdx = Native.getIndexValue(environment, f);
+        return visitor.visitBoundVariable(formula, deBruijnIdx);
+      case Z3_QUANTIFIER_AST:
+        BooleanFormula body = encapsulateBoolean(Native.getQuantifierBody(environment, f));
+        Quantifier q =
+            Native.isQuantifierForall(environment, f) ? Quantifier.FORALL : Quantifier.EXISTS;
+        return visitor.visitQuantifier((BooleanFormula) formula, q, getBoundVars(f), body);
+      case Z3_SORT_AST:
+      case Z3_FUNC_DECL_AST:
+      case Z3_UNKNOWN_AST:
+      default:
+        throw new UnsupportedOperationException(
+            "Input should be a formula AST, " + "got unexpected type instead");
+    }
+  }
+  protected String symbolToString(long symbol) {
+    switch (Z3_symbol_kind.fromInt(Native.getSymbolKind(environment, symbol))) {
+      case Z3_STRING_SYMBOL:
+        return Native.getSymbolString(environment, symbol);
+      case Z3_INT_SYMBOL:
+        // Bound variable.
+        return "#" + Native.getSymbolInt(environment, symbol);
+      default:
+        throw new UnsupportedOperationException("Unexpected state");
+    }
+  }
+  private List<Formula> getBoundVars(long f) {
+    int numBound = Native.getQuantifierNumBound(environment, f);
+    List<Formula> boundVars = new ArrayList<>(numBound);
+    for (int i = 0; i < numBound; i++) {
+      long varName = Native.getQuantifierBoundName(environment, f, i);
+      long varSort = Native.getQuantifierBoundSort(environment, f, i);
+      boundVars.add(
+          encapsulate(
+              getFormulaTypeFromSort(varSort), Native.mkConst(environment, varName, varSort)));
+    }
+    return boundVars;
+  }
+  private FunctionDeclarationKind getDeclarationKind(long f) {
+    final int arity = Native.getArity(environment, Native.getAppDecl(environment, f));
+    assert arity > 0
+        : String.format(
+            "Unexpected arity '%s' for formula '%s' for handling a function application.",
+            arity, Native.astToString(environment, f));
+    if (getAppName(f).equals("div0")) {
+      // Z3 segfaults in getDeclKind for this term (cf. https://github.com/Z3Prover/z3/issues/669)
+      return FunctionDeclarationKind.OTHER;
+    }
+    Z3_decl_kind decl =
+        Z3_decl_kind.fromInt(Native.getDeclKind(environment, Native.getAppDecl(environment, f)));
+    switch (decl) {
+      case Z3_OP_AND:
+        return FunctionDeclarationKind.AND;
+      case Z3_OP_NOT:
+        return FunctionDeclarationKind.NOT;
+      case Z3_OP_OR:
+        return FunctionDeclarationKind.OR;
+      case Z3_OP_IFF:
+        return FunctionDeclarationKind.IFF;
+      case Z3_OP_ITE:
+        return FunctionDeclarationKind.ITE;
+      case Z3_OP_XOR:
+        return FunctionDeclarationKind.XOR;
+      case Z3_OP_DISTINCT:
+        return FunctionDeclarationKind.DISTINCT;
+      case Z3_OP_IMPLIES:
+        return FunctionDeclarationKind.IMPLIES;
+      case Z3_OP_SUB:
+        return FunctionDeclarationKind.SUB;
+      case Z3_OP_ADD:
+        return FunctionDeclarationKind.ADD;
+      case Z3_OP_DIV:
+        return FunctionDeclarationKind.DIV;
+      case Z3_OP_MUL:
+        return FunctionDeclarationKind.MUL;
+      case Z3_OP_MOD:
+        return FunctionDeclarationKind.MODULO;
+      case Z3_OP_TO_INT:
+        return FunctionDeclarationKind.FLOOR;
+      case Z3_OP_TO_REAL:
+        return FunctionDeclarationKind.TO_REAL;
+      case Z3_OP_UNINTERPRETED:
+        return FunctionDeclarationKind.UF;
+      case Z3_OP_LT:
+        return FunctionDeclarationKind.LT;
+      case Z3_OP_LE:
+        return FunctionDeclarationKind.LTE;
+      case Z3_OP_GT:
+        return FunctionDeclarationKind.GT;
+      case Z3_OP_GE:
+        return FunctionDeclarationKind.GTE;
+      case Z3_OP_EQ:
+        return FunctionDeclarationKind.EQ;
+      case Z3_OP_STORE:
+        return FunctionDeclarationKind.STORE;
+      case Z3_OP_SELECT:
+        return FunctionDeclarationKind.SELECT;
+      case Z3_OP_CONST_ARRAY:
+        return FunctionDeclarationKind.CONST;
+      case Z3_OP_TRUE:
+      case Z3_OP_FALSE:
+      case Z3_OP_ANUM:
+      case Z3_OP_AGNUM:
+        throw new UnsupportedOperationException("Unexpected state: constants not expected");
+      case Z3_OP_OEQ:
+        throw new UnsupportedOperationException("Unexpected state: not a proof");
+      case Z3_OP_UMINUS:
+        return FunctionDeclarationKind.UMINUS;
+      case Z3_OP_IDIV:
+        // TODO: different handling for integer division?
+        return FunctionDeclarationKind.DIV;
+      case Z3_OP_EXTRACT:
+        return FunctionDeclarationKind.BV_EXTRACT;
+      case Z3_OP_CONCAT:
+        return FunctionDeclarationKind.BV_CONCAT;
+      case Z3_OP_BNOT:
+        return FunctionDeclarationKind.BV_NOT;
+      case Z3_OP_BNEG:
+        return FunctionDeclarationKind.BV_NEG;
+      case Z3_OP_BAND:
+        return FunctionDeclarationKind.BV_AND;
+      case Z3_OP_BOR:
+        return FunctionDeclarationKind.BV_OR;
+      case Z3_OP_BXOR:
+        return FunctionDeclarationKind.BV_XOR;
+      case Z3_OP_ULT:
+        return FunctionDeclarationKind.BV_ULT;
+      case Z3_OP_SLT:
+        return FunctionDeclarationKind.BV_SLT;
+      case Z3_OP_ULEQ:
+        return FunctionDeclarationKind.BV_ULE;
+      case Z3_OP_SLEQ:
+        return FunctionDeclarationKind.BV_SLE;
+      case Z3_OP_UGT:
+        return FunctionDeclarationKind.BV_UGT;
+      case Z3_OP_SGT:
+        return FunctionDeclarationKind.BV_SGT;
+      case Z3_OP_UGEQ:
+        return FunctionDeclarationKind.BV_UGE;
+      case Z3_OP_SGEQ:
+        return FunctionDeclarationKind.BV_SGE;
+      case Z3_OP_BADD:
+        return FunctionDeclarationKind.BV_ADD;
+      case Z3_OP_BSUB:
+        return FunctionDeclarationKind.BV_SUB;
+      case Z3_OP_BMUL:
+        return FunctionDeclarationKind.BV_MUL;
+      case Z3_OP_BUDIV:
+      case Z3_OP_BUDIV_I: // same as above, and divisor is non-zero
+        return FunctionDeclarationKind.BV_UDIV;
+      case Z3_OP_BSDIV:
+      case Z3_OP_BSDIV_I: // same as above, and divisor is non-zero
+        return FunctionDeclarationKind.BV_SDIV;
+      case Z3_OP_BUREM:
+      case Z3_OP_BUREM_I: // same as above, and divisor is non-zero
+        return FunctionDeclarationKind.BV_UREM;
+      case Z3_OP_BSREM:
+      case Z3_OP_BSREM_I: // same as above, and divisor is non-zero
+        return FunctionDeclarationKind.BV_SREM;
+      case Z3_OP_BSMOD:
+      case Z3_OP_BSMOD_I: // same as above, and divisor is non-zero
+        return FunctionDeclarationKind.BV_SMOD;
+      case Z3_OP_BSHL:
+        return FunctionDeclarationKind.BV_SHL;
+      case Z3_OP_BLSHR:
+        return FunctionDeclarationKind.BV_LSHR;
+      case Z3_OP_BASHR:
+        return FunctionDeclarationKind.BV_ASHR;
+      case Z3_OP_SIGN_EXT:
+        return FunctionDeclarationKind.BV_SIGN_EXTENSION;
+      case Z3_OP_ZERO_EXT:
+        return FunctionDeclarationKind.BV_ZERO_EXTENSION;
+      case Z3_OP_ROTATE_LEFT:
+        return FunctionDeclarationKind.BV_ROTATE_LEFT_BY_INT;
+      case Z3_OP_ROTATE_RIGHT:
+        return FunctionDeclarationKind.BV_ROTATE_RIGHT_BY_INT;
+      case Z3_OP_EXT_ROTATE_LEFT:
+        return FunctionDeclarationKind.BV_ROTATE_LEFT;
+      case Z3_OP_EXT_ROTATE_RIGHT:
+        return FunctionDeclarationKind.BV_ROTATE_RIGHT;
+      case Z3_OP_FPA_NEG:
+        return FunctionDeclarationKind.FP_NEG;
+      case Z3_OP_FPA_ABS:
+        return FunctionDeclarationKind.FP_ABS;
+      case Z3_OP_FPA_MAX:
+        return FunctionDeclarationKind.FP_MAX;
+      case Z3_OP_FPA_MIN:
+        return FunctionDeclarationKind.FP_MIN;
+      case Z3_OP_FPA_SQRT:
+        return FunctionDeclarationKind.FP_SQRT;
+      case Z3_OP_FPA_SUB:
+        return FunctionDeclarationKind.FP_SUB;
+      case Z3_OP_FPA_ADD:
+        return FunctionDeclarationKind.FP_ADD;
+      case Z3_OP_FPA_DIV:
+        return FunctionDeclarationKind.FP_DIV;
+      case Z3_OP_FPA_MUL:
+        return FunctionDeclarationKind.FP_MUL;
+      case Z3_OP_FPA_REM:
+        return FunctionDeclarationKind.FP_REM;
+      case Z3_OP_FPA_LT:
+        return FunctionDeclarationKind.FP_LT;
+      case Z3_OP_FPA_LE:
+        return FunctionDeclarationKind.FP_LE;
+      case Z3_OP_FPA_GE:
+        return FunctionDeclarationKind.FP_GE;
+      case Z3_OP_FPA_GT:
+        return FunctionDeclarationKind.FP_GT;
+      case Z3_OP_FPA_EQ:
+        return FunctionDeclarationKind.FP_EQ;
+      case Z3_OP_FPA_RM_NEAREST_TIES_TO_EVEN:
+        return FunctionDeclarationKind.FP_ROUND_EVEN;
+      case Z3_OP_FPA_RM_NEAREST_TIES_TO_AWAY:
+        return FunctionDeclarationKind.FP_ROUND_AWAY;
+      case Z3_OP_FPA_RM_TOWARD_POSITIVE:
+        return FunctionDeclarationKind.FP_ROUND_POSITIVE;
+      case Z3_OP_FPA_RM_TOWARD_NEGATIVE:
+        return FunctionDeclarationKind.FP_ROUND_NEGATIVE;
+      case Z3_OP_FPA_RM_TOWARD_ZERO:
+        return FunctionDeclarationKind.FP_ROUND_ZERO;
+      case Z3_OP_FPA_ROUND_TO_INTEGRAL:
+        return FunctionDeclarationKind.FP_ROUND_TO_INTEGRAL;
+      case Z3_OP_FPA_TO_FP_UNSIGNED:
+        return FunctionDeclarationKind.BV_UCASTTO_FP;
+      case Z3_OP_FPA_TO_SBV:
+        return FunctionDeclarationKind.FP_CASTTO_SBV;
+      case Z3_OP_FPA_TO_UBV:
+        return FunctionDeclarationKind.FP_CASTTO_UBV;
+      case Z3_OP_FPA_TO_IEEE_BV:
+        return FunctionDeclarationKind.FP_AS_IEEEBV;
+      case Z3_OP_FPA_TO_FP:
+        // use the last argument. other arguments can be part of rounding or casting.
+        long arg = Native.getAppArg(environment, f, Native.getAppNumArgs(environment, f) - 1);
+        Z3_sort_kind sortKind =
+            Z3_sort_kind.fromInt(Native.getSortKind(environment, Native.getSort(environment, arg)));
+        if (Z3_sort_kind.Z3_BV_SORT == sortKind) {
+          return FunctionDeclarationKind.BV_SCASTTO_FP;
+        } else {
+          return FunctionDeclarationKind.FP_CASTTO_FP;
+        }
+      case Z3_OP_FPA_IS_NAN:
+        return FunctionDeclarationKind.FP_IS_NAN;
+      case Z3_OP_FPA_IS_INF:
+        return FunctionDeclarationKind.FP_IS_INF;
+      case Z3_OP_FPA_IS_ZERO:
+        return FunctionDeclarationKind.FP_IS_ZERO;
+      case Z3_OP_FPA_IS_NEGATIVE:
+        return FunctionDeclarationKind.FP_IS_NEGATIVE;
+      case Z3_OP_FPA_IS_SUBNORMAL:
+        return FunctionDeclarationKind.FP_IS_SUBNORMAL;
+      case Z3_OP_FPA_IS_NORMAL:
+        return FunctionDeclarationKind.FP_IS_NORMAL;
+      case Z3_OP_SEQ_CONCAT:
+        return FunctionDeclarationKind.STR_CONCAT;
+      case Z3_OP_SEQ_PREFIX:
+        return FunctionDeclarationKind.STR_PREFIX;
+      case Z3_OP_SEQ_SUFFIX:
+        return FunctionDeclarationKind.STR_SUFFIX;
+      case Z3_OP_SEQ_CONTAINS:
+        return FunctionDeclarationKind.STR_CONTAINS;
+      case Z3_OP_SEQ_EXTRACT:
+        return FunctionDeclarationKind.STR_SUBSTRING;
+      case Z3_OP_SEQ_REPLACE:
+        return FunctionDeclarationKind.STR_REPLACE;
+      case Z3_OP_SEQ_AT:
+        return FunctionDeclarationKind.STR_CHAR_AT;
+      case Z3_OP_SEQ_LENGTH:
+        return FunctionDeclarationKind.STR_LENGTH;
+      case Z3_OP_SEQ_INDEX:
+        return FunctionDeclarationKind.STR_INDEX_OF;
+      case Z3_OP_SEQ_TO_RE:
+        return FunctionDeclarationKind.STR_TO_RE;
+      case Z3_OP_SEQ_IN_RE:
+        return FunctionDeclarationKind.STR_IN_RE;
+      case Z3_OP_STR_TO_INT:
+        return FunctionDeclarationKind.STR_TO_INT;
+      case Z3_OP_STR_TO_CODE:
+        return FunctionDeclarationKind.STR_TO_CODE;
+      case Z3_OP_STR_FROM_CODE:
+        return FunctionDeclarationKind.STR_FROM_CODE;
+      case Z3_OP_INT_TO_STR:
+        return FunctionDeclarationKind.INT_TO_STR;
+      case Z3_OP_STRING_LT:
+        return FunctionDeclarationKind.STR_LT;
+      case Z3_OP_STRING_LE:
+        return FunctionDeclarationKind.STR_LE;
+      case Z3_OP_RE_PLUS:
+        return FunctionDeclarationKind.RE_PLUS;
+      case Z3_OP_RE_STAR:
+        return FunctionDeclarationKind.RE_STAR;
+      case Z3_OP_RE_OPTION:
+        return FunctionDeclarationKind.RE_OPTIONAL;
+      case Z3_OP_RE_CONCAT:
+        return FunctionDeclarationKind.RE_CONCAT;
+      case Z3_OP_RE_UNION:
+        return FunctionDeclarationKind.RE_UNION;
+      case Z3_OP_RE_RANGE:
+        return FunctionDeclarationKind.RE_RANGE;
+      case Z3_OP_RE_INTERSECT:
+        return FunctionDeclarationKind.RE_INTERSECT;
+      case Z3_OP_RE_COMPLEMENT:
+        return FunctionDeclarationKind.RE_COMPLEMENT;
+      default:
+        return FunctionDeclarationKind.OTHER;
+    }
+  }
+  /**
+   * @param value Z3_ast
+   * @return Whether the value is a constant and can be passed to {@link #convertValue(Long)}.
+   */
+  public boolean isConstant(long value) {
+    return Native.isNumeralAst(environment, value)
+        || Native.isAlgebraicNumber(environment, value)
+        || Native.isString(environment, value)
+        || isOP(environment, value, Z3_decl_kind.Z3_OP_FPA_FP) // FP from IEEE-BV
+        || isOP(environment, value, Z3_decl_kind.Z3_OP_TRUE)
+        || isOP(environment, value, Z3_decl_kind.Z3_OP_FALSE)
+        || isOP(environment, value, Z3_decl_kind.Z3_OP_DT_CONSTRUCTOR); // enumeration value
+  }
+  /**
+   * @param value Z3_ast representing a constant value.
+   * @return {@link BigInteger} or {@link Double} or {@link Rational} or {@link Boolean} or {@link
+   *     FloatingPointRoundingMode} or {@link String}.
+   */
+  @Override
+  public Object convertValue(Long value) {
+    if (!isConstant(value)) {
+      return null;
+    }
+    Native.incRef(environment, value);
+    Object constantValue =
+        Z3_CONSTANTS.get(Native.getDeclKind(environment, Native.getAppDecl(environment, value)));
+    if (constantValue != null) {
+      return constantValue;
+    }
+    try {
+      FormulaType<?> type = getFormulaType(value);
+      if (type.isBooleanType()) {
+        return isOP(environment, value, Z3_decl_kind.Z3_OP_TRUE);
+      } else if (type.isIntegerType()) {
+        return new BigInteger(Native.getNumeralString(environment, value));
+      } else if (type.isRationalType()) {
+        Rational ratValue = Rational.ofString(Native.getNumeralString(environment, value));
+        return ratValue.isIntegral() ? ratValue.getNum() : ratValue;
+      } else if (type.isStringType()) {
+        return unescapeUnicodeForSmtlib(Native.getString(environment, value));
+      } else if (type.isBitvectorType()) {
+        return new BigInteger(Native.getNumeralString(environment, value));
+      } else if (type.isFloatingPointType()) {
+        return convertFloatingPoint((FloatingPointType) type, value);
+      } else if (type.isEnumerationType()) {
+        return Native.astToString(environment, value);
+      } else {
+        // Explicitly crash on unknown type.
+        throw new IllegalArgumentException("Unexpected type encountered: " + type);
+      }
+    } finally {
+      Native.decRef(environment, value);
+    }
+  }
+  private FloatingPointNumber convertFloatingPoint(FloatingPointType pType, Long pValue) {
+    if (isOP(environment, pValue, Z3_decl_kind.Z3_OP_FPA_FP)) {
+      final var signBv = Native.getAppArg(environment, pValue, 0);
+      final var expoBv = Native.getAppArg(environment, pValue, 1);
+      final var mantBv = Native.getAppArg(environment, pValue, 2);
+      assert isConstant(signBv) && isConstant(expoBv) && isConstant(mantBv);
+      final var sign = Native.getNumeralString(environment, signBv);
+      assert "0".equals(sign) || "1".equals(sign);
+      final var expo = new BigInteger(Native.getNumeralString(environment, expoBv));
+      final var mant = new BigInteger(Native.getNumeralString(environment, mantBv));
+      return FloatingPointNumber.of(
+          Sign.of(sign.charAt(0) == '1'),
+          expo,
+          mant,
+          pType.getExponentSize(),
+          pType.getMantissaSize());
+    } else if (Native.fpaIsNumeralInf(environment, pValue)) {
+      // Floating Point Inf uses:
+      //  - an sign for posiive/negative infinity,
+      //  - "11..11" as exponent,
+      //  - "00..00" as mantissa.
+      String sign = getSign(pValue).isNegative() ? "1" : "0";
+      return FloatingPointNumber.of(
+          sign + "1".repeat(pType.getExponentSize()) + "0".repeat(pType.getMantissaSize()),
+          pType.getExponentSize(),
+          pType.getMantissaSize());
+    } else if (Native.fpaIsNumeralNan(environment, pValue)) {
+      // TODO We are underspecified here and choose several bits on our own.
+      //  This is not sound, if we combine FP anf BV theory.
+      // Floating Point NaN uses:
+      //  - an unspecified sign (we choose "0"),
+      //  - "11..11" as exponent,
+      //  - an unspecified mantissa (we choose all "1").
+      return FloatingPointNumber.of(
+          "0" + "1".repeat(pType.getExponentSize()) + "1".repeat(pType.getMantissaSize()),
+          pType.getExponentSize(),
+          pType.getMantissaSize());
+    } else {
+      Sign sign = getSign(pValue);
+      var exponentBv = Native.fpaGetNumeralExponentBv(environment, pValue, true);
+      var exponent = Native.getNumeralString(environment, exponentBv);
+      var mantissaBv = Native.fpaGetNumeralSignificandBv(environment, pValue);
+      var mantissa = Native.getNumeralString(environment, mantissaBv);
+      return FloatingPointNumber.of(
+          sign,
+          new BigInteger(exponent),
+          new BigInteger(mantissa),
+          pType.getExponentSize(),
+          pType.getMantissaSize());
+    }
+  }
+  private Sign getSign(Long pValue) {
+    Native.IntPtr signPtr = new Native.IntPtr();
+    Preconditions.checkState(
+        Native.fpaGetNumeralSign(environment, pValue, signPtr), "Sign is not a Boolean value");
+    var sign = signPtr.value != 0;
+    return Sign.of(sign);
+  }
+  @Override
+  public Long declareUFImpl(String pName, Long returnType, List<Long> pArgTypes) {
+    long symbol = Native.mkStringSymbol(environment, pName);
+    long[] sorts = Longs.toArray(pArgTypes);
+    long func = Native.mkFuncDecl(environment, symbol, sorts.length, sorts, returnType);
+    Native.incRef(environment, func);
+    symbolsToDeclarations.put(pName, func);
+    return func;
+  }
+  @Override
+  public Long callFunctionImpl(Long declaration, List<Long> args) {
+    return Native.mkApp(environment, declaration, args.size(), Longs.toArray(args));
+  }
+  @Override
+  protected Long getBooleanVarDeclarationImpl(Long pLong) {
+    return Native.getAppDecl(getEnv(), pLong);
+  }
+  /** returns, if the function of the expression is the given operation. */
+  static boolean isOP(long z3context, long expr, Z3_decl_kind op) {
+    if (!Native.isApp(z3context, expr)) {
+      return false;
+    }
+    long decl = Native.getAppDecl(z3context, expr);
+    return Native.getDeclKind(z3context, decl) == op.toInt();
+  }
+  /**
+   * Apply multiple tactics in sequence.
+   *
+   * @throws InterruptedException thrown by JNI code in case of termination request
+   * @throws SolverException thrown by JNI code in case of error
+   */
+  public long applyTactics(long z3context, final Long pF, String... pTactics)
+      throws InterruptedException, SolverException {
+    long overallResult = pF;
+    for (String tactic : pTactics) {
+      overallResult = applyTactic(z3context, overallResult, tactic);
+    }
+    return overallResult;
+  }
+  /**
+   * Apply tactic on a Z3_ast object, convert the result back to Z3_ast.
+   *
+   * @param z3context Z3_context
+   * @param tactic Z3 Tactic Name
+   * @param pF Z3_ast
+   * @return Z3_ast
+   * @throws InterruptedException If execution gets interrupted.
+   */
+  public long applyTactic(long z3context, long pF, String tactic)
+      throws InterruptedException, SolverException {
+    long tacticObject = Native.mkTactic(z3context, tactic);
+    Native.tacticIncRef(z3context, tacticObject);
+    long goal = Native.mkGoal(z3context, true, false, false);
+    Native.goalIncRef(z3context, goal);
+    Native.goalAssert(z3context, goal, pF);
+    long result;
+    try {
+      result = Native.tacticApply(z3context, tacticObject, goal);
+    } catch (Z3Exception exp) {
+      throw handleZ3Exception(exp);
+    }
+    try {
+      return applyResultToAST(z3context, result);
+    } finally {
+      Native.goalDecRef(z3context, goal);
+      Native.tacticDecRef(z3context, tacticObject);
+    }
+  }
+  private long applyResultToAST(long z3context, long applyResult) {
+    int subgoalsCount = Native.applyResultGetNumSubgoals(z3context, applyResult);
+    long[] goalFormulas = new long[subgoalsCount];
+    for (int i = 0; i < subgoalsCount; i++) {
+      long subgoal = Native.applyResultGetSubgoal(z3context, applyResult, i);
+      goalFormulas[i] = goalToAST(z3context, subgoal);
+    }
+    return goalFormulas.length == 1
+        ? goalFormulas[0]
+        : Native.mkOr(z3context, goalFormulas.length, goalFormulas);
+  }
+  private long goalToAST(long z3context, long goal) {
+    int subgoalFormulasCount = Native.goalSize(z3context, goal);
+    long[] subgoalFormulas = new long[subgoalFormulasCount];
+    for (int k = 0; k < subgoalFormulasCount; k++) {
+      subgoalFormulas[k] = Native.goalFormula(z3context, goal, k);
+    }
+    return subgoalFormulas.length == 1
+        ? subgoalFormulas[0]
+        : Native.mkAnd(z3context, subgoalFormulas.length, subgoalFormulas);
+  }
+  /** Closing the context. */
+  @SuppressWarnings("empty-statement")
+  public void forceClose() {
+    // Force clean all ASTs, even those which were not GC'd yet.
+    if (usePhantomReferences) {
+      Z3AstReference cur = referenceListHead.next;
+      assert cur != null;
+      while (cur.next != null) {
+        Native.decRef(environment, cur.z3Ast);
+        cur = cur.next;
+      }
+      Z3AstReference tail = cur;
+      // Bulk delete everything between head and tail
+      referenceListHead.next = tail;
+      tail.prev = referenceListHead;
+      // Remove already enqueued references.
+      while (referenceQueue.poll() != null) {
+        // NOTE: Together with the above list deletion, this empty loop will guarantee that no more
+        // ast references are reachable by the GC making them all eligible for garbage collection
+        // and preventing them from getting enqueued into the reference queue in the future.
+      }
+    }
+  }
+  /**
+   * get a previously created application declaration, or <code>NULL</code> if the symbol is
+   * unknown.
+   */
+  @Nullable Long getKnownDeclaration(String symbolName) {
+    return symbolsToDeclarations.get(symbolName);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableMap;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Native.IntPtr;
+import com.microsoft.z3.Z3Exception;
+import com.microsoft.z3.enumerations.Z3_lbool;
+import java.util.Collection;
+import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.Set;
+import java.util.logging.Level;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.common.ShutdownNotifier;
+import org.sosy_lab.common.io.PathCounterTemplate;
+import org.sosy_lab.common.log.LogManager;
+import org.sosy_lab.common.rationals.Rational;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.OptimizationProverEnvironment;
+import org.sosy_lab.java_smt.api.SolverContext.ProverOptions;
+import org.sosy_lab.java_smt.api.SolverException;
+class Z3OptimizationProver extends Z3AbstractProver implements OptimizationProverEnvironment {
+  private final LogManager logger;
+  private final long z3optSolver;
+  @SuppressWarnings("checkstyle:parameternumber")
+  Z3OptimizationProver(
+      Z3FormulaCreator creator,
+      LogManager pLogger,
+      Z3FormulaManager pMgr,
+      Set<ProverOptions> pOptions,
+      ImmutableMap<String, Object> pSolverOptions,
+      @Nullable PathCounterTemplate pLogfile,
+      ShutdownNotifier pShutdownNotifier) {
+    super(creator, pMgr, pOptions, pLogfile, pShutdownNotifier);
+    z3optSolver = Native.mkOptimize(z3context);
+    Native.optimizeIncRef(z3context, z3optSolver);
+    logger = pLogger;
+    // set parameters for the optimization solver
+    long params = Native.mkParams(z3context);
+    Native.paramsIncRef(z3context, params);
+    for (Entry<String, Object> entry : pSolverOptions.entrySet()) {
+      addParameter(params, entry.getKey(), entry.getValue());
+    }
+    Native.optimizeSetParams(z3context, z3optSolver, params);
+    Native.paramsDecRef(z3context, params);
+  }
+  @Override
+  public int maximize(Formula objective) {
+    Preconditions.checkState(!closed);
+    return Native.optimizeMaximize(z3context, z3optSolver, creator.extractInfo(objective));
+  }
+  @Override
+  public int minimize(Formula objective) {
+    Preconditions.checkState(!closed);
+    return Native.optimizeMinimize(z3context, z3optSolver, creator.extractInfo(objective));
+  }
+  @Override
+  public OptStatus check() throws InterruptedException, SolverException {
+    Preconditions.checkState(!closed);
+    int status;
+    try {
+      status =
+          Native.optimizeCheck(
+              z3context,
+              z3optSolver,
+              0, // number of assumptions
+              null // assumptions
+              );
+    } catch (Z3Exception ex) {
+      throw creator.handleZ3Exception(ex);
+    }
+    if (status == Z3_lbool.Z3_L_FALSE.toInt()) {
+      return OptStatus.UNSAT;
+    } else if (status == Z3_lbool.Z3_L_UNDEF.toInt()) {
+      creator.shutdownNotifier.shutdownIfNecessary();
+      logger.log(
+          Level.INFO,
+          "Solver returned an unknown status, explanation: ",
+          Native.optimizeGetReasonUnknown(z3context, z3optSolver));
+      return OptStatus.UNDEF;
+    } else {
+      return OptStatus.OPT;
+    }
+  }
+  @Override
+  protected void pushImpl() {
+    push0();
+    try {
+      Native.optimizePush(z3context, z3optSolver);
+    } catch (Z3Exception exception) {
+      throw creator.handleZ3ExceptionAsRuntimeException(exception);
+    }
+  }
+  @Override
+  protected void popImpl() {
+    Native.optimizePop(z3context, z3optSolver);
+    pop0();
+  }
+  @Override
+  protected void assertContraint(long constraint) {
+    Native.optimizeAssert(z3context, z3optSolver, constraint);
+  }
+  @Override
+  protected void assertContraintAndTrack(long constraint, long symbol) {
+    Native.optimizeAssertAndTrack(z3context, z3optSolver, constraint, symbol);
+  }
+  @Override
+  protected long getUnsatCore0() {
+    return Native.optimizeGetUnsatCore(z3context, z3optSolver);
+  }
+  @Override
+  public boolean isUnsat() throws SolverException, InterruptedException {
+    Preconditions.checkState(!closed);
+    logSolverStack();
+    return check() == OptStatus.UNSAT;
+  }
+  @Override
+  public boolean isUnsatWithAssumptions(Collection<BooleanFormula> assumptions)
+      throws SolverException, InterruptedException {
+    return false;
+  }
+  @Override
+  public Optional<Rational> upper(int handle, Rational epsilon) {
+    return round(handle, epsilon, Native::optimizeGetUpperAsVector);
+  }
+  @Override
+  public Optional<Rational> lower(int handle, Rational epsilon) {
+    return round(handle, epsilon, Native::optimizeGetLowerAsVector);
+  }
+  private interface RoundingFunction {
+    long round(long context, long optContext, int handle);
+  }
+  private Optional<Rational> round(int handle, Rational epsilon, RoundingFunction direction) {
+    Preconditions.checkState(!closed);
+    // Z3 exposes the rounding result as a tuple (infinity, number, epsilon)
+    long vector = direction.round(z3context, z3optSolver, handle);
+    Native.astVectorIncRef(z3context, vector);
+    assert Native.astVectorSize(z3context, vector) == 3;
+    long inf = Native.astVectorGet(z3context, vector, 0);
+    Native.incRef(z3context, inf);
+    long value = Native.astVectorGet(z3context, vector, 1);
+    Native.incRef(z3context, value);
+    long eps = Native.astVectorGet(z3context, vector, 2);
+    Native.incRef(z3context, eps);
+    IntPtr ptr = new Native.IntPtr();
+    boolean status = Native.getNumeralInt(z3context, inf, ptr);
+    assert status;
+    if (ptr.value != 0) {
+      // Infinity.
+      return Optional.empty();
+    }
+    Rational v = Rational.ofString(Native.getNumeralString(z3context, value));
+    status = Native.getNumeralInt(z3context, eps, ptr);
+    assert status;
+    try {
+      return Optional.of(v.plus(epsilon.times(Rational.of(ptr.value))));
+    } finally {
+      Native.astVectorDecRef(z3context, vector);
+      Native.decRef(z3context, inf);
+      Native.decRef(z3context, value);
+      Native.decRef(z3context, eps);
+    }
+  }
+  @Override
+  protected long getZ3Model() {
+    try {
+      return Native.optimizeGetModel(z3context, z3optSolver);
+    } catch (Z3Exception e) {
+      throw creator.handleZ3ExceptionAsRuntimeException(e);
+    }
+  }
+  @Override
+  protected long getStatistics0() {
+    return Native.optimizeGetStatistics(z3context, z3optSolver);
+  }
+  /** Dumps the optimized objectives and the constraints on the solver in the SMT-lib format. */
+  @Override
+  public String toString() {
+    Preconditions.checkState(!closed);
+    return Native.optimizeToString(z3context, z3optSolver);
+  }
+  @Override
+  public void close() {
+    if (!closed) {
+      Native.optimizeDecRef(z3context, z3optSolver);
+    }
+    super.close();
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import static org.sosy_lab.java_smt.solvers.z3.Z3FormulaCreator.isOP;
+import com.google.common.collect.Iterables;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.enumerations.Z3_decl_kind;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+class Z3BooleanFormulaManager extends AbstractBooleanFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  private final Long z3true;
+  private final Long z3false;
+  Z3BooleanFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    z3context = creator.getEnv();
+    z3true = Native.mkTrue(z3context);
+    Native.incRef(z3context, z3true);
+    z3false = Native.mkFalse(z3context);
+    Native.incRef(z3context, z3false);
+  }
+  @Override
+  protected Long makeVariableImpl(String varName) {
+    long type = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(type, varName);
+  }
+  @Override
+  protected Long makeBooleanImpl(boolean pValue) {
+    return pValue ? z3true : z3false;
+  }
+  @Override
+  protected Long not(Long pParam) {
+    if (isTrue(pParam)) {
+      return z3false;
+    } else if (isFalse(pParam)) {
+      return z3true;
+    } else if (isOP(z3context, pParam, Z3_decl_kind.Z3_OP_NOT)) {
+      return Native.getAppArg(z3context, pParam, 0);
+    }
+    return Native.mkNot(z3context, pParam);
+  }
+  @Override
+  protected Long and(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return z3false;
+    } else if (isFalse(pParam2)) {
+      return z3false;
+    } else if (Native.isEqAst(z3context, pParam1, pParam2)) {
+      return pParam1;
+    }
+    return Native.mkAnd(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long or(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return z3true;
+    } else if (isTrue(pParam2)) {
+      return z3true;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (Native.isEqAst(z3context, pParam1, pParam2)) {
+      return pParam1;
+    }
+    return Native.mkOr(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long orImpl(Collection<Long> params) {
+    // Z3 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Long> operands = new LinkedHashSet<>();
+    for (final Long operand : params) {
+      if (isTrue(operand)) {
+        return z3true;
+      }
+      if (!isFalse(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return z3false;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return Native.mkOr(z3context, operands.size(), Longs.toArray(operands));
+    }
+  }
+  @Override
+  protected Long andImpl(Collection<Long> params) {
+    // Z3 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Long> operands = new LinkedHashSet<>();
+    for (final Long operand : params) {
+      if (isFalse(operand)) {
+        return z3false;
+      }
+      if (!isTrue(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return z3true;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return Native.mkAnd(z3context, operands.size(), Longs.toArray(operands));
+    }
+  }
+  @Override
+  protected Long xor(Long pParam1, Long pParam2) {
+    return Native.mkXor(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long equivalence(Long pBits1, Long pBits2) {
+    return Native.mkEq(z3context, pBits1, pBits2);
+  }
+  @Override
+  protected Long implication(Long pBits1, Long pBits2) {
+    return Native.mkImplies(z3context, pBits1, pBits2);
+  }
+  @Override
+  protected boolean isTrue(Long pParam) {
+    return z3true.equals(pParam);
+  }
+  @Override
+  protected boolean isFalse(Long pParam) {
+    return z3false.equals(pParam);
+  }
+  @Override
+  protected Long ifThenElse(Long pCond, Long pF1, Long pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return Native.mkIte(z3context, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.collect.ImmutableList;
+import com.microsoft.z3.Native;
+import java.math.BigInteger;
+import org.sosy_lab.java_smt.api.FloatingPointNumber.Sign;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingMode;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.FloatingPointType;
+import org.sosy_lab.java_smt.basicimpl.AbstractFloatingPointFormulaManager;
+class Z3FloatingPointFormulaManager
+    extends AbstractFloatingPointFormulaManager<Long, Long, Long, Long> {
+  private static final FloatingPointType highPrec = FormulaType.getFloatingPointType(15, 112);
+  private final long z3context;
+  private final long roundingMode;
+  Z3FloatingPointFormulaManager(
+      Z3FormulaCreator creator, FloatingPointRoundingMode pFloatingPointRoundingMode) {
+    super(creator);
+    z3context = creator.getEnv();
+    roundingMode = getRoundingModeImpl(pFloatingPointRoundingMode);
+  }
+  @Override
+  protected Long getDefaultRoundingMode() {
+    return roundingMode;
+  }
+  @Override
+  protected Long getRoundingModeImpl(FloatingPointRoundingMode pFloatingPointRoundingMode) {
+    long out;
+    switch (pFloatingPointRoundingMode) {
+      case NEAREST_TIES_TO_EVEN:
+        out = Native.mkFpaRoundNearestTiesToEven(z3context);
+        break;
+      case NEAREST_TIES_AWAY:
+        out = Native.mkFpaRoundNearestTiesToAway(z3context);
+        break;
+      case TOWARD_POSITIVE:
+        out = Native.mkFpaRoundTowardPositive(z3context);
+        break;
+      case TOWARD_NEGATIVE:
+        out = Native.mkFpaRoundTowardNegative(z3context);
+        break;
+      case TOWARD_ZERO:
+        out = Native.mkFpaRoundTowardZero(z3context);
+        break;
+      default:
+        throw new AssertionError("Unexpected value");
+    }
+    Native.incRef(z3context, out);
+    return out;
+  }
+  private long mkFpaSort(FloatingPointType pType) {
+    return getFormulaCreator().getFloatingPointType(pType);
+  }
+  @Override
+  protected Long makeNumberImpl(double pN, FloatingPointType pType, Long pRoundingMode) {
+    return makeNumberImpl(Double.toString(pN), pType, pRoundingMode);
+  }
+  @Override
+  protected Long makeNumberImpl(
+      BigInteger exponent, BigInteger mantissa, Sign sign, FloatingPointType type) {
+    final long signSort = getFormulaCreator().getBitvectorType(1);
+    final long expoSort = getFormulaCreator().getBitvectorType(type.getExponentSize());
+    final long mantSort = getFormulaCreator().getBitvectorType(type.getMantissaSize());
+    final long signBv = Native.mkNumeral(z3context, sign.isNegative() ? "1" : "0", signSort);
+    Native.incRef(z3context, signBv);
+    final long expoBv = Native.mkNumeral(z3context, exponent.toString(), expoSort);
+    Native.incRef(z3context, expoBv);
+    final long mantBv = Native.mkNumeral(z3context, mantissa.toString(), mantSort);
+    Native.incRef(z3context, mantBv);
+    final long fp = Native.mkFpaFp(z3context, signBv, expoBv, mantBv);
+    Native.decRef(z3context, mantBv);
+    Native.decRef(z3context, expoBv);
+    Native.decRef(z3context, signBv);
+    return fp;
+  }
+  @Override
+  protected Long makeNumberAndRound(String pN, FloatingPointType pType, Long pRoundingMode) {
+    // Z3 does not allow specifying a rounding mode for numerals,
+    // so we create it first with a high precision and then round it down explicitly.
+    if (pType.getExponentSize() <= highPrec.getExponentSize()
+        || pType.getMantissaSize() <= highPrec.getMantissaSize()) {
+      long highPrecNumber = Native.mkNumeral(z3context, pN, mkFpaSort(highPrec));
+      Native.incRef(z3context, highPrecNumber);
+      long smallPrecNumber =
+          castToImpl(highPrecNumber, /* irrelevant: */ true, pType, pRoundingMode);
+      Native.incRef(z3context, smallPrecNumber);
+      long result = Native.simplify(z3context, smallPrecNumber);
+      Native.decRef(z3context, highPrecNumber);
+      Native.decRef(z3context, smallPrecNumber);
+      return result;
+    }
+    return Native.mkNumeral(z3context, pN, mkFpaSort(pType));
+  }
+  @Override
+  protected Long makeVariableImpl(String var, FloatingPointType pType) {
+    return getFormulaCreator().makeVariable(mkFpaSort(pType), var);
+  }
+  @Override
+  protected Long makePlusInfinityImpl(FloatingPointType pType) {
+    return Native.mkFpaInf(z3context, mkFpaSort(pType), false);
+  }
+  @Override
+  protected Long makeMinusInfinityImpl(FloatingPointType pType) {
+    return Native.mkFpaInf(z3context, mkFpaSort(pType), true);
+  }
+  @Override
+  protected Long makeNaNImpl(FloatingPointType pType) {
+    return Native.mkFpaNan(z3context, mkFpaSort(pType));
+  }
+  @Override
+  protected Long castToImpl(
+      Long pNumber, boolean pSigned, FormulaType<?> pTargetType, Long pRoundingMode) {
+    if (pTargetType.isFloatingPointType()) {
+      FormulaType.FloatingPointType targetType = (FormulaType.FloatingPointType) pTargetType;
+      return Native.mkFpaToFpFloat(z3context, pRoundingMode, pNumber, mkFpaSort(targetType));
+    } else if (pTargetType.isBitvectorType()) {
+      FormulaType.BitvectorType targetType = (FormulaType.BitvectorType) pTargetType;
+      if (pSigned) {
+        return Native.mkFpaToSbv(z3context, pRoundingMode, pNumber, targetType.getSize());
+      } else {
+        return Native.mkFpaToUbv(z3context, pRoundingMode, pNumber, targetType.getSize());
+      }
+    } else if (pTargetType.isRationalType()) {
+      return Native.mkFpaToReal(z3context, pNumber);
+    } else {
+      return genericCast(pNumber, pTargetType);
+    }
+  }
+  @Override
+  protected Long castFromImpl(
+      Long pNumber, boolean pSigned, FloatingPointType pTargetType, Long pRoundingMode) {
+    FormulaType<?> formulaType = getFormulaCreator().getFormulaType(pNumber);
+    if (formulaType.isFloatingPointType()) {
+      return castToImpl(pNumber, pSigned, pTargetType, pRoundingMode);
+    } else if (formulaType.isBitvectorType()) {
+      if (pSigned) {
+        return Native.mkFpaToFpSigned(z3context, pRoundingMode, pNumber, mkFpaSort(pTargetType));
+      } else {
+        return Native.mkFpaToFpUnsigned(z3context, pRoundingMode, pNumber, mkFpaSort(pTargetType));
+      }
+    } else if (formulaType.isRationalType()) {
+      return Native.mkFpaToFpReal(z3context, pRoundingMode, pNumber, mkFpaSort(pTargetType));
+    } else {
+      return genericCast(pNumber, pTargetType);
+    }
+  }
+  private Long genericCast(Long pNumber, FormulaType<?> pTargetType) {
+    FormulaType<?> argType = getFormulaCreator().getFormulaType(pNumber);
+    long castFuncDecl =
+        getFormulaCreator()
+            .declareUFImpl(
+                "__cast_" + argType + "_to_" + pTargetType,
+                toSolverType(pTargetType),
+                ImmutableList.of(toSolverType(argType)));
+    return Native.mkApp(z3context, castFuncDecl, 1, new long[] {pNumber});
+  }
+  @Override
+  protected Long fromIeeeBitvectorImpl(Long pNumber, FloatingPointType pTargetType) {
+    return Native.mkFpaToFpBv(z3context, pNumber, mkFpaSort(pTargetType));
+  }
+  @Override
+  protected Long toIeeeBitvectorImpl(Long pNumber) {
+    return Native.mkFpaToIeeeBv(z3context, pNumber);
+  }
+  @Override
+  protected Long negate(Long pNumber) {
+    return Native.mkFpaNeg(z3context, pNumber);
+  }
+  @Override
+  protected Long abs(Long pNumber) {
+    return Native.mkFpaAbs(z3context, pNumber);
+  }
+  @Override
+  protected Long max(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaMax(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long min(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaMin(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long sqrt(Long pNumber, Long pRoundingMode) {
+    return Native.mkFpaSqrt(z3context, pRoundingMode, pNumber);
+  }
+  @Override
+  protected Long add(Long pNumber1, Long pNumber2, Long pRoundingMode) {
+    return Native.mkFpaAdd(z3context, pRoundingMode, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long subtract(Long pNumber1, Long pNumber2, Long pRoundingMode) {
+    return Native.mkFpaSub(z3context, pRoundingMode, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long multiply(Long pNumber1, Long pNumber2, Long pRoundingMode) {
+    return Native.mkFpaMul(z3context, pRoundingMode, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long remainder(Long pParam1, Long pParam2) {
+    return Native.mkFpaRem(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long divide(Long pNumber1, Long pNumber2, Long pRoundingMode) {
+    return Native.mkFpaDiv(z3context, pRoundingMode, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long assignment(Long pNumber1, Long pNumber2) {
+    return Native.mkEq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long equalWithFPSemantics(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaEq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long greaterThan(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaGt(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long greaterOrEquals(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaGeq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long lessThan(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaLt(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long lessOrEquals(Long pNumber1, Long pNumber2) {
+    return Native.mkFpaLeq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long isNaN(Long pParam) {
+    return Native.mkFpaIsNan(z3context, pParam);
+  }
+  @Override
+  protected Long isInfinity(Long pParam) {
+    return Native.mkFpaIsInfinite(z3context, pParam);
+  }
+  @Override
+  protected Long isZero(Long pParam) {
+    return Native.mkFpaIsZero(z3context, pParam);
+  }
+  @Override
+  protected Long isSubnormal(Long pParam) {
+    return Native.mkFpaIsSubnormal(z3context, pParam);
+  }
+  @Override
+  protected Long isNormal(Long pParam) {
+    return Native.mkFpaIsNormal(z3context, pParam);
+  }
+  @Override
+  protected Long isNegative(Long pParam) {
+    return Native.mkFpaIsNegative(z3context, pParam);
+  }
+  @Override
+  protected Long round(Long pFormula, FloatingPointRoundingMode pRoundingMode) {
+    return Native.mkFpaRoundToIntegral(z3context, getRoundingModeImpl(pRoundingMode), pFormula);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import java.math.BigInteger;
+import java.util.List;
+import org.sosy_lab.java_smt.basicimpl.AbstractBitvectorFormulaManager;
+class Z3BitvectorFormulaManager extends AbstractBitvectorFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  Z3BitvectorFormulaManager(Z3FormulaCreator creator, Z3BooleanFormulaManager pBmgr) {
+    super(creator, pBmgr);
+    this.z3context = creator.getEnv();
+  }
+  @Override
+  public Long concat(Long pFirst, Long pSecond) {
+    return Native.mkConcat(z3context, pFirst, pSecond);
+  }
+  @Override
+  public Long extract(Long pNumber, int pMsb, int pLsb) {
+    return Native.mkExtract(z3context, pMsb, pLsb, pNumber);
+  }
+  @Override
+  public Long extend(Long pNumber, int pExtensionBits, boolean pSigned) {
+    if (pSigned) {
+      return Native.mkSignExt(z3context, pExtensionBits, pNumber);
+    } else {
+      return Native.mkZeroExt(z3context, pExtensionBits, pNumber);
+    }
+  }
+  @Override
+  protected Long makeBitvectorImpl(int pLength, BigInteger pI) {
+    pI = transformValueToRange(pLength, pI);
+    long sort = Native.mkBvSort(z3context, pLength);
+    return Native.mkNumeral(z3context, pI.toString(), sort);
+  }
+  @Override
+  protected Long makeBitvectorImpl(int pLength, Long pNumeralFormula) {
+    return Native.mkInt2bv(z3context, pLength, pNumeralFormula);
+  }
+  @Override
+  protected Long toIntegerFormulaImpl(Long pBVFormula, boolean pSigned) {
+    return Native.mkBv2int(z3context, pBVFormula, pSigned);
+  }
+  @Override
+  public Long makeVariableImpl(int length, String varName) {
+    long type = getFormulaCreator().getBitvectorType(length);
+    return getFormulaCreator().makeVariable(type, varName);
+  }
+  /**
+   * Return a term representing the (arithmetic if signed is true) right shift of number by toShift.
+   */
+  @Override
+  public Long shiftRight(Long number, Long toShift, boolean signed) {
+    if (signed) {
+      return Native.mkBvashr(z3context, number, toShift);
+    } else {
+      return Native.mkBvlshr(z3context, number, toShift);
+    }
+  }
+  @Override
+  public Long shiftLeft(Long number, Long toShift) {
+    return Native.mkBvshl(z3context, number, toShift);
+  }
+  @Override
+  public Long rotateLeftByConstant(Long number, int toShift) {
+    return Native.mkRotateLeft(z3context, toShift, number);
+  }
+  @Override
+  public Long rotateLeft(Long number, Long toShift) {
+    return Native.mkExtRotateLeft(z3context, number, toShift);
+  }
+  @Override
+  public Long rotateRightByConstant(Long number, int toShift) {
+    return Native.mkRotateRight(z3context, toShift, number);
+  }
+  @Override
+  public Long rotateRight(Long number, Long toShift) {
+    return Native.mkExtRotateRight(z3context, number, toShift);
+  }
+  @Override
+  public Long not(Long pBits) {
+    return Native.mkBvnot(z3context, pBits);
+  }
+  @Override
+  public Long and(Long pBits1, Long pBits2) {
+    return Native.mkBvand(z3context, pBits1, pBits2);
+  }
+  @Override
+  public Long or(Long pBits1, Long pBits2) {
+    return Native.mkBvor(z3context, pBits1, pBits2);
+  }
+  @Override
+  public Long xor(Long pBits1, Long pBits2) {
+    return Native.mkBvxor(z3context, pBits1, pBits2);
+  }
+  @Override
+  public Long negate(Long pNumber) {
+    return Native.mkBvneg(z3context, pNumber);
+  }
+  @Override
+  public Long add(Long pNumber1, Long pNumber2) {
+    return Native.mkBvadd(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  public Long subtract(Long pNumber1, Long pNumber2) {
+    return Native.mkBvsub(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  public Long divide(Long pNumber1, Long pNumber2, boolean signed) {
+    if (signed) {
+      return Native.mkBvsdiv(z3context, pNumber1, pNumber2);
+    } else {
+      return Native.mkBvudiv(z3context, pNumber1, pNumber2);
+    }
+  }
+  @Override
+  public Long remainder(Long pNumber1, Long pNumber2, boolean signed) {
+    if (signed) {
+      return Native.mkBvsrem(z3context, pNumber1, pNumber2);
+    } else {
+      return Native.mkBvurem(z3context, pNumber1, pNumber2);
+    }
+  }
+  @Override
+  protected Long smodulo(Long pParam1, Long pParam2) {
+    return Native.mkBvsmod(z3context, pParam1, pParam2);
+  }
+  @Override
+  public Long multiply(Long pNumber1, Long pNumber2) {
+    return Native.mkBvmul(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  public Long equal(Long pNumber1, Long pNumber2) {
+    return Native.mkEq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  public Long lessThan(Long pNumber1, Long pNumber2, boolean signed) {
+    if (signed) {
+      return Native.mkBvslt(z3context, pNumber1, pNumber2);
+    } else {
+      return Native.mkBvult(z3context, pNumber1, pNumber2);
+    }
+  }
+  @Override
+  public Long lessOrEquals(Long pNumber1, Long pNumber2, boolean signed) {
+    if (signed) {
+      return Native.mkBvsle(z3context, pNumber1, pNumber2);
+    } else {
+      return Native.mkBvule(z3context, pNumber1, pNumber2);
+    }
+  }
+  @Override
+  public Long greaterThan(Long pNumber1, Long pNumber2, boolean signed) {
+    return lessThan(pNumber2, pNumber1, signed);
+  }
+  @Override
+  public Long greaterOrEquals(Long pNumber1, Long pNumber2, boolean signed) {
+    return lessOrEquals(pNumber2, pNumber1, signed);
+  }
+  @Override
+  protected Long distinctImpl(List<Long> pBits) {
+    return Native.mkDistinct(z3context, pBits.size(), Longs.toArray(pBits));
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2024 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Native.UserPropagatorBase;
+import com.microsoft.z3.Status;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.PropagatorBackend;
+import org.sosy_lab.java_smt.api.UserPropagator;
+final class Z3UserPropagator extends UserPropagatorBase implements PropagatorBackend {
+  private final Z3FormulaCreator creator;
+  private final Z3FormulaManager manager;
+  private final UserPropagator userPropagator;
+  private final long z3True;
+  private final long z3False;
+  /* We use this map to reuse existing formula wrappers and avoid creating unnecessary phantom
+  references (if enabled). This is particularly useful, because the user propagator frequently
+  reports the same formulas. */
+  private final Map<Long, BooleanFormula> canonicalizer = new HashMap<>();
+  Z3UserPropagator(
+      long ctx,
+      long solver,
+      Z3FormulaCreator creator,
+      Z3FormulaManager manager,
+      UserPropagator userPropagator) {
+    super(ctx, solver);
+    this.creator = creator;
+    this.userPropagator = userPropagator;
+    this.manager = manager;
+    z3True = creator.extractInfo(manager.getBooleanFormulaManager().makeTrue());
+    z3False = creator.extractInfo(manager.getBooleanFormulaManager().makeFalse());
+  }
+  // ===========================================================================
+  // Function calls from Z3's side (forwarding callbacks to the user propagator)
+  // ===========================================================================
+  @Override
+  protected void pushWrapper() {
+    userPropagator.onPush();
+  }
+  @Override
+  protected void popWrapper(int num) {
+    userPropagator.onPop(num);
+  }
+  @Override
+  protected void finWrapper() {
+    userPropagator.onFinalCheck();
+  }
+  // TODO: This method is not supported for now.
+  @Override
+  protected void eqWrapper(long pL, long pL1) {}
+  @Override
+  protected void fixedWrapper(long lvar, long lvalue) {
+    assert lvalue == z3True || lvalue == z3False;
+    userPropagator.onKnownValue(encapsulate(lvar), lvalue == z3True);
+  }
+  // TODO: This method is called if Z3 re-instantiates a user propagator for a sub-problem
+  //  (usually when quantifiers are involved). For now, we assume the user propagators to only get
+  //  used on quantifier-less formulas so that this method is unnecessary.
+  @Override
+  protected Z3UserPropagator freshWrapper(long lctx) {
+    return this;
+  }
+  // TODO: This method is called if the user registers a function (currently not
+  //  possible) and the solver instantiates the registered function: if the solver
+  //  instantiates "forall x: f(x)" at x=y, then f(y) will get created.
+  @Override
+  protected void createdWrapper(long le) {}
+  @Override
+  protected void decideWrapper(long lvar, int bit, boolean isPositive) {
+    // We currently only allow tracking of decision on boolean formulas,
+    // so we ignore the <bit> parameter
+    userPropagator.onDecision(encapsulate(lvar), isPositive);
+  }
+  // ===========================================================================
+  // Function calls from JavaSMT's side (mostly calls to the smt backend)
+  // ===========================================================================
+  @Override
+  public void registerExpression(BooleanFormula exprToWatch) {
+    Native.propagateAdd(this, ctx, solver, javainfo, creator.extractInfo(exprToWatch));
+  }
+  @Override
+  public void notifyOnKnownValue() {
+    registerFixed();
+  }
+  @Override
+  public void notifyOnDecision() {
+    registerDecide();
+  }
+  @Override
+  public void notifyOnFinalCheck() {
+    registerFinal();
+  }
+  @Override
+  public void propagateConflict(BooleanFormula[] conflictExpressions) {
+    propagateConsequence(conflictExpressions, manager.getBooleanFormulaManager().makeFalse());
+  }
+  @Override
+  public void propagateConsequence(BooleanFormula[] assignedLiterals, BooleanFormula consequence) {
+    long[] emptyEqs = new long[0];
+    Native.propagateConsequence(
+        this,
+        ctx,
+        solver,
+        javainfo,
+        assignedLiterals.length,
+        extractInfoFromArray(assignedLiterals),
+        emptyEqs.length,
+        emptyEqs,
+        emptyEqs,
+        creator.extractInfo(consequence));
+  }
+  @Override
+  public boolean propagateNextDecision(BooleanFormula expr, Optional<Boolean> value) {
+    Status status =
+        value
+            .map(pBoolean -> (pBoolean ? Status.SATISFIABLE : Status.UNSATISFIABLE))
+            .orElse(Status.UNKNOWN);
+    int index = 0; // Only relevant for bitvector expressions, which are not supported yet.
+    return Native.propagateNextSplit(
+        this, ctx, solver, javainfo, creator.extractInfo(expr), index, status.toInt());
+  }
+  private long[] extractInfoFromArray(BooleanFormula[] formulaArray) {
+    long[] formulaInfos = new long[formulaArray.length];
+    for (int i = 0; i < formulaArray.length; i++) {
+      if (formulaArray[i] != null) {
+        formulaInfos[i] = creator.extractInfo(formulaArray[i]);
+      }
+    }
+    return formulaInfos;
+  }
+  private BooleanFormula encapsulate(final long z3Expr) {
+    // Due to pointer alignment, the lowest 2-3 bits are always 0 which can lead to
+    // more collisions in the hashmap. To counteract, we fill the lowest bits by rotating the
+    // value. The rotation guarantees a bijective transformation.
+    return canonicalizer.computeIfAbsent(
+        Long.rotateRight(z3Expr, 3), key -> creator.encapsulateBoolean(z3Expr));
+  }
+  @Override
+  public void close() {
+    canonicalizer.clear();
+    super.close();
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/**
+ * Formula representing a rounding mode for floating-point operations. This is currently unused by
+ * the API but necessary for traversal of formulas with such terms.
+ */
+@Immutable
+public interface FloatingPointRoundingModeFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.java_smt.api.ArrayFormula;
+import org.sosy_lab.java_smt.api.BitvectorFormula;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.EnumerationFormula;
+import org.sosy_lab.java_smt.api.FloatingPointFormula;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingModeFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.ArrayFormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.FloatingPointType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+import org.sosy_lab.java_smt.api.RegexFormula;
+import org.sosy_lab.java_smt.api.StringFormula;
+import org.sosy_lab.java_smt.api.visitors.DefaultFormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.FormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.TraversalProcess;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.ArrayFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.BitvectorFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.BooleanFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.EnumerationFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.FloatingPointFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.FloatingPointRoundingModeFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.IntegerFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.RationalFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.RegexFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.StringFormulaImpl;
+/**
+ * This is a helper class with several methods that are commonly used throughout the basicimpl
+ * package and may have solver-specific implementations. Each solver package is expected to provide
+ * an instance of this class, with the appropriate methods overwritten. Depending on the solver,
+ * some or all non-final methods in this class may need to be overwritten.
+ *
+ * @param <TFormulaInfo> the solver specific type for formulas.
+ * @param <TType> the solver specific type for formula types.
+ * @param <TEnv> the solver specific type for the environment/context.
+ */
+@SuppressWarnings({"ClassTypeParameterName", "MethodTypeParameterName"})
+public abstract class FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> {
+  private final TType boolType;
+  private final @Nullable TType integerType;
+  private final @Nullable TType rationalType;
+  private final @Nullable TType stringType;
+  private final @Nullable TType regexType;
+  protected final TEnv environment;
+  protected FormulaCreator(
+      TEnv env,
+      TType boolType,
+      @Nullable TType pIntegerType,
+      @Nullable TType pRationalType,
+      @Nullable TType stringType,
+      @Nullable TType regexType) {
+    this.environment = env;
+    this.boolType = boolType;
+    this.integerType = pIntegerType;
+    this.rationalType = pRationalType;
+    this.stringType = stringType;
+    this.regexType = regexType;
+  }
+  public final TEnv getEnv() {
+    return environment;
+  }
+  public final TType getBoolType() {
+    return boolType;
+  }
+  public final TType getIntegerType() {
+    if (integerType == null) {
+      throw new UnsupportedOperationException("Integer theory is not supported by this solver.");
+    }
+    return integerType;
+  }
+  public final TType getRationalType() {
+    if (rationalType == null) {
+      throw new UnsupportedOperationException("Rational theory is not supported by this solver.");
+    }
+    return rationalType;
+  }
+  public abstract TType getBitvectorType(int bitwidth);
+  public abstract TType getFloatingPointType(FloatingPointType type);
+  public abstract TType getArrayType(TType indexType, TType elementType);
+  public final TType getStringType() {
+    if (stringType == null) {
+      throw new UnsupportedOperationException("String theory is not supported by this solver.");
+    }
+    return stringType;
+  }
+  public final TType getRegexType() {
+    if (regexType == null) {
+      throw new UnsupportedOperationException("String theory is not supported by this solver.");
+    }
+    return regexType;
+  }
+  public abstract TFormulaInfo makeVariable(TType type, String varName);
+  public BooleanFormula encapsulateBoolean(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isBooleanType(),
+        "Boolean formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new BooleanFormulaImpl<>(pTerm);
+  }
+  protected BitvectorFormula encapsulateBitvector(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isBitvectorType(),
+        "Bitvector formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new BitvectorFormulaImpl<>(pTerm);
+  }
+  protected FloatingPointFormula encapsulateFloatingPoint(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isFloatingPointType(),
+        "Floatingpoint formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new FloatingPointFormulaImpl<>(pTerm);
+  }
+  protected <TI extends Formula, TE extends Formula> ArrayFormula<TI, TE> encapsulateArray(
+      TFormulaInfo pTerm, FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+    checkArgument(
+        getFormulaType(pTerm).equals(FormulaType.getArrayType(pIndexType, pElementType)),
+        "Array formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new ArrayFormulaImpl<>(pTerm, pIndexType, pElementType);
+  }
+  protected StringFormula encapsulateString(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isStringType(),
+        "String formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new StringFormulaImpl<>(pTerm);
+  }
+  protected RegexFormula encapsulateRegex(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isRegexType(),
+        "Regex formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new RegexFormulaImpl<>(pTerm);
+  }
+  protected EnumerationFormula encapsulateEnumeration(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isEnumerationType(),
+        "Enumeration formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new EnumerationFormulaImpl<>(pTerm);
+  }
+  public Formula encapsulateWithTypeOf(TFormulaInfo pTerm) {
+    return encapsulate(getFormulaType(pTerm), pTerm);
+  }
+  @SuppressWarnings("unchecked")
+  public <T extends Formula> T encapsulate(FormulaType<T> pType, TFormulaInfo pTerm) {
+    checkArgument(
+        pType.equals(getFormulaType(pTerm)),
+        "Trying to encapsulate formula %s of type %s as %s",
+        pTerm,
+        getFormulaType(pTerm),
+        pType);
+    if (pType.isBooleanType()) {
+      return (T) new BooleanFormulaImpl<>(pTerm);
+    } else if (pType.isIntegerType()) {
+      return (T) new IntegerFormulaImpl<>(pTerm);
+    } else if (pType.isRationalType()) {
+      return (T) new RationalFormulaImpl<>(pTerm);
+    } else if (pType.isStringType()) {
+      return (T) new StringFormulaImpl<>(pTerm);
+    } else if (pType.isRegexType()) {
+      return (T) new RegexFormulaImpl<>(pTerm);
+    } else if (pType.isBitvectorType()) {
+      return (T) new BitvectorFormulaImpl<>(pTerm);
+    } else if (pType.isFloatingPointType()) {
+      return (T) new FloatingPointFormulaImpl<>(pTerm);
+    } else if (pType.isFloatingPointRoundingModeType()) {
+      return (T) new FloatingPointRoundingModeFormulaImpl<>(pTerm);
+    } else if (pType.isArrayType()) {
+      ArrayFormulaType<?, ?> arrayType = (ArrayFormulaType<?, ?>) pType;
+      return (T) encapsulateArray(pTerm, arrayType.getIndexType(), arrayType.getElementType());
+    } else if (pType.isEnumerationType()) {
+      return (T) new EnumerationFormulaImpl<>(pTerm);
+    }
+    throw new IllegalArgumentException(
+        "Cannot create formulas of type " + pType + " in the Solver!");
+  }
+  @SuppressWarnings("unchecked")
+  protected TFormulaInfo extractInfo(Formula pT) {
+    if (pT instanceof AbstractFormula) {
+      return ((AbstractFormula<TFormulaInfo>) pT).getFormulaInfo();
+    }
+    throw new IllegalArgumentException(
+        "Cannot get the formula info of type " + pT.getClass().getSimpleName() + " in the Solver!");
+  }
+  @SuppressWarnings("unchecked")
+  protected <TI extends Formula, TE extends Formula> FormulaType<TE> getArrayFormulaElementType(
+      ArrayFormula<TI, TE> pArray) {
+    return ((ArrayFormulaImpl<TI, TE, TFormulaInfo>) pArray).getElementType();
+  }
+  @SuppressWarnings("unchecked")
+  protected <TI extends Formula, TE extends Formula> FormulaType<TI> getArrayFormulaIndexType(
+      ArrayFormula<TI, TE> pArray) {
+    return ((ArrayFormulaImpl<TI, TE, TFormulaInfo>) pArray).getIndexType();
+  }
+  /** Returns the type of the given Formula. */
+  @SuppressWarnings("unchecked")
+  protected <T extends Formula> FormulaType<T> getFormulaType(T formula) {
+    checkNotNull(formula);
+    FormulaType<?> t;
+    if (formula instanceof BooleanFormula) {
+      t = FormulaType.BooleanType;
+    } else if (formula instanceof IntegerFormula) {
+      t = FormulaType.IntegerType;
+    } else if (formula instanceof RationalFormula) {
+      t = FormulaType.RationalType;
+    } else if (formula instanceof StringFormula) {
+      t = FormulaType.StringType;
+    } else if (formula instanceof RegexFormula) {
+      t = FormulaType.RegexType;
+    } else if (formula instanceof FloatingPointRoundingModeFormula) {
+      t = FormulaType.FloatingPointRoundingModeType;
+    } else if (formula instanceof ArrayFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for arrays need to overwrite FormulaCreator.getFormulaType()");
+    } else if (formula instanceof BitvectorFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for bitvectors "
+              + "need to overwrite FormulaCreator.getFormulaType()");
+    } else if (formula instanceof EnumerationFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for enumerations need to overwrite FormulaCreator"
+              + ".getFormulaType()");
+    } else {
+      throw new IllegalArgumentException("Formula with unexpected type " + formula.getClass());
+    }
+    return (FormulaType<T>) t;
+  }
+  public abstract FormulaType<?> getFormulaType(TFormulaInfo formula);
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visit
+   */
+  @CanIgnoreReturnValue
+  public <R> R visit(Formula input, FormulaVisitor<R> visitor) {
+    return visit(visitor, input, extractInfo(input));
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visit
+   */
+  public abstract <R> R visit(FormulaVisitor<R> visitor, Formula formula, TFormulaInfo f);
+  protected List<TFormulaInfo> extractInfo(List<? extends Formula> input) {
+    return Lists.transform(input, this::extractInfo);
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visitRecursively
+   */
+  public void visitRecursively(FormulaVisitor<TraversalProcess> pFormulaVisitor, Formula pF) {
+    visitRecursively(pFormulaVisitor, pF, t -> true);
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visitRecursively
+   */
+  public void visitRecursively(
+      FormulaVisitor<TraversalProcess> pFormulaVisitor,
+      Formula pF,
+      Predicate<Formula> shouldProcess) {
+    RecursiveFormulaVisitorImpl recVisitor = new RecursiveFormulaVisitorImpl(pFormulaVisitor);
+    recVisitor.addToQueue(pF);
+    while (!recVisitor.isQueueEmpty()) {
+      Formula tt = recVisitor.pop();
+      if (shouldProcess.test(tt)) {
+        TraversalProcess process = visit(tt, recVisitor);
+        if (process == TraversalProcess.ABORT) {
+          return;
+        }
+      }
+    }
+  }
+  public <T extends Formula> T transformRecursively(
+      FormulaVisitor<? extends Formula> pFormulaVisitor, T pF) {
+    return transformRecursively(pFormulaVisitor, pF, t -> true);
+  }
+  public <T extends Formula> T transformRecursively(
+      FormulaVisitor<? extends Formula> pFormulaVisitor, T pF, Predicate<Object> shouldProcess) {
+    final Deque<Formula> toProcess = new ArrayDeque<>();
+    Map<Formula, Formula> pCache = new HashMap<>();
+    FormulaTransformationVisitorImpl recVisitor =
+        new FormulaTransformationVisitorImpl(pFormulaVisitor, toProcess, pCache);
+    toProcess.push(pF);
+    // Process the work queue
+    while (!toProcess.isEmpty()) {
+      Formula tt = toProcess.peek();
+      if (pCache.containsKey(tt)) {
+        toProcess.pop();
+        continue;
+      }
+      if (shouldProcess.test(tt)) {
+        visit(tt, recVisitor);
+      } else {
+        pCache.put(tt, tt);
+      }
+    }
+    @SuppressWarnings("unchecked")
+    T out = (T) pCache.get(pF);
+    return out;
+  }
+  /**
+   * Wrapper for {@link #extractVariablesAndUFs(Formula, boolean, BiConsumer)} which unwraps both
+   * input and output.
+   */
+  public Map<String, TFormulaInfo> extractVariablesAndUFs(
+      final TFormulaInfo pFormula, final boolean extractUFs) {
+    Map<String, TFormulaInfo> found = new LinkedHashMap<>();
+    extractVariablesAndUFs(
+        encapsulateWithTypeOf(pFormula), extractUFs, (name, f) -> found.put(name, extractInfo(f)));
+    return found;
+  }
+  /**
+   * Wrapper for {@link #extractVariablesAndUFs(Formula, boolean, BiConsumer)} which unwraps both
+   * input and output.
+   */
+  public void extractVariablesAndUFs(
+      final TFormulaInfo pFormula,
+      final boolean extractUFs,
+      final BiConsumer<String, TFormulaInfo> pConsumer) {
+    extractVariablesAndUFs(
+        encapsulateWithTypeOf(pFormula),
+        extractUFs,
+        (name, f) -> pConsumer.accept(name, extractInfo(f)));
+  }
+  /** Extract all free variables from the formula, optionally including UFs. */
+  public void extractVariablesAndUFs(
+      final Formula pFormula,
+      final boolean extractUF,
+      final BiConsumer<String, Formula> pConsumer) {
+    visitRecursively(
+        new VariableAndUFExtractor(extractUF, pConsumer, ImmutableSet.of(), new LinkedHashSet<>()),
+        pFormula);
+  }
+  private class VariableAndUFExtractor extends DefaultFormulaVisitor<TraversalProcess> {
+    private final boolean extractUF;
+    private final BiConsumer<String, Formula> consumer;
+    private final Set<Formula> boundVariablesInContext;
+    /**
+     * let's collect all visited symbols here, to avoid redundant visitation of symbols in nested
+     * quantified formulas.
+     */
+    private final Set<Formula> alreadyVisited;
+    VariableAndUFExtractor(
+        boolean pExtractUF,
+        BiConsumer<String, Formula> pConsumer,
+        Set<Formula> pBoundVariablesInContext,
+        Set<Formula> pAlreadyVisited) {
+      extractUF = pExtractUF;
+      consumer = pConsumer;
+      boundVariablesInContext = pBoundVariablesInContext;
+      alreadyVisited = pAlreadyVisited;
+    }
+    @Override
+    protected TraversalProcess visitDefault(Formula f) {
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitFunction(
+        Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+      if (!boundVariablesInContext.contains(f) // TODO can UFs be bounded?
+          && functionDeclaration.getKind() == FunctionDeclarationKind.UF
+          && extractUF) {
+        if (alreadyVisited.add(f)) {
+          consumer.accept(functionDeclaration.getName(), f);
+        }
+      }
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitFreeVariable(Formula f, String name) {
+      // If we are inside a quantified formula, bound variables appear to be free,
+      // but they are actually bound by the surrounding context.
+      if (!boundVariablesInContext.contains(f)) {
+        if (alreadyVisited.add(f)) {
+          consumer.accept(name, f);
+        }
+      }
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitQuantifier(
+        BooleanFormula f, Quantifier q, List<Formula> boundVariables, BooleanFormula body) {
+      // We begin a new nested scope, thus we need a 'really' recursive call and
+      // use another visitor-instance which knows the corresponding bound variables.
+      visitRecursively(
+          new VariableAndUFExtractor(
+              extractUF,
+              consumer,
+              Sets.union(boundVariablesInContext, ImmutableSet.copyOf(boundVariables)),
+              alreadyVisited),
+          body);
+      // Afterwards, we skip the already finished body-formula.
+      return TraversalProcess.SKIP;
+    }
+  }
+  @SuppressWarnings("unchecked")
+  public final <T extends Formula> T callFunction(
+      FunctionDeclaration<T> declaration, List<? extends Formula> args) {
+    checkArgument(
+        args.size() >= declaration.getArgumentTypes().size(),
+        "function application '%s' requires %s arguments, but received %s arguments",
+        declaration,
+        declaration.getArgumentTypes().size(),
+        args.size());
+    for (int i = 0; i < args.size(); i++) {
+      // For chainable functions like EQ, DISTINCT, ADD, LESS, LESS_EQUAL, ..., with a variable
+      // number of arguments, we repeat the last argument-type several times.
+      int index = Math.min(i, declaration.getArgumentTypes().size() - 1);
+      checkArgument(
+          isCompatible(getFormulaType(args.get(i)), declaration.getArgumentTypes().get(index)),
+          "function application '%s' requires argument types %s, but received argument types %s",
+          declaration,
+          declaration.getArgumentTypes(),
+          Lists.transform(args, this::getFormulaType));
+    }
+    return encapsulate(
+        declaration.getType(),
+        callFunctionImpl(
+            ((FunctionDeclarationImpl<T, TFuncDecl>) declaration).getSolverDeclaration(),
+            extractInfo(args)));
+  }
+  /**
+   * This function checks whether the used type of the function argument is compatible with the
+   * declared type in the function declaration.
+   *
+   * <p>Identical types are always compatible, a subtype like INT to supertype RATIONAL is also
+   * compatible. A solver-specific wrapper can override this method if it does an explicit
+   * transformation between (some) types, e.g., from BV to BOOLEAN or from BOOLEAN to INT.
+   */
+  protected boolean isCompatible(FormulaType<?> usedType, FormulaType<?> declaredType) {
+    // INT is a subtype of RATIONAL
+    if (usedType.isIntegerType() && declaredType.isRationalType()) {
+      return true;
+    }
+    return usedType.equals(declaredType);
+  }
+  public abstract TFormulaInfo callFunctionImpl(TFuncDecl declaration, List<TFormulaInfo> args);
+  public abstract TFuncDecl declareUFImpl(String pName, TType pReturnType, List<TType> pArgTypes);
+  public TFuncDecl getBooleanVarDeclaration(BooleanFormula var) {
+    return getBooleanVarDeclarationImpl(extractInfo(var));
+  }
+  protected abstract TFuncDecl getBooleanVarDeclarationImpl(TFormulaInfo pTFormulaInfo);
+  /**
+   * Convert the formula into a Java object as far as possible, i.e., try to match a primitive or
+   * simple type like Boolean, BigInteger, Rational, or String.
+   *
+   * <p>If the formula is not a simple constant expression, we simply return <code>null</code>.
+   *
+   * @param pF the formula to be converted.
+   */
+  public Object convertValue(TFormulaInfo pF) {
+    throw new UnsupportedOperationException(
+        "This SMT solver needs a second term to determine a correct type. "
+            + "Please use the other method 'convertValue(formula, formula)'.");
+  }
+  /**
+   * Convert the formula into a Java object as far as possible, i.e., try to match a primitive or
+   * simple type.
+   *
+   * @param pAdditionalF an additional formula where the type can be received from.
+   * @param pF the formula to be converted.
+   */
+  // only some solvers require the additional (first) parameter, other solvers ignore it.
+  public Object convertValue(
+      @SuppressWarnings("unused") TFormulaInfo pAdditionalF, TFormulaInfo pF) {
+    return convertValue(pF);
+  }
+  /** Variable names (symbols) can be wrapped with "|". This function removes those chars. */
+  protected static String dequote(String s) {
+    int l = s.length();
+    if (s.charAt(0) == '|' && s.charAt(l - 1) == '|') {
+      return s.substring(1, l - 1);
+    }
+    return s;
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** Formula of the floating point sort. */
+@Immutable
+public interface FloatingPointFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the bitvector sort. */
+@Immutable
+public interface BitvectorFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the enumeration sort. */
+@Immutable
+public interface EnumerationFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import static com.google.common.base.Preconditions.checkArgument;
+import com.google.errorprone.annotations.Immutable;
+import com.microsoft.z3.Native;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.java_smt.api.ArrayFormula;
+import org.sosy_lab.java_smt.api.BitvectorFormula;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.EnumerationFormula;
+import org.sosy_lab.java_smt.api.FloatingPointFormula;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingModeFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+import org.sosy_lab.java_smt.api.RegexFormula;
+import org.sosy_lab.java_smt.api.StringFormula;
+@Immutable
+abstract class Z3Formula implements Formula {
+  private final long z3expr;
+  private final long z3context;
+  private final int hashCache;
+  private Z3Formula(long z3context, long z3expr) {
+    checkArgument(z3context != 0, "Z3 context is null");
+    checkArgument(z3expr != 0, "Z3 formula is null");
+    this.z3expr = z3expr;
+    this.z3context = z3context;
+    Native.incRef(z3context, z3expr);
+    this.hashCache = Native.getAstHash(z3context, z3expr);
+  }
+  @Override
+  public final String toString() {
+    return Native.astToString(z3context, z3expr);
+  }
+  @Override
+  public final boolean equals(@Nullable Object obj) {
+    if (obj == this) {
+      return true;
+    }
+    if (!(obj instanceof Z3Formula)) {
+      return false;
+    }
+    Z3Formula other = (Z3Formula) obj;
+    return (z3context == other.z3context) && Native.isEqAst(z3context, z3expr, other.z3expr);
+  }
+  @Override
+  public final int hashCode() {
+    return hashCache;
+  }
+  final long getFormulaInfo() {
+    return z3expr;
+  }
+  @SuppressWarnings("ClassTypeParameterName")
+  static final class Z3ArrayFormula<TI extends Formula, TE extends Formula> extends Z3Formula
+      implements ArrayFormula<TI, TE> {
+    private final FormulaType<TI> indexType;
+    private final FormulaType<TE> elementType;
+    Z3ArrayFormula(
+        long pZ3context, long pZ3expr, FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+      super(pZ3context, pZ3expr);
+      indexType = pIndexType;
+      elementType = pElementType;
+    }
+    public FormulaType<TI> getIndexType() {
+      return indexType;
+    }
+    public FormulaType<TE> getElementType() {
+      return elementType;
+    }
+  }
+  @Immutable
+  static final class Z3BitvectorFormula extends Z3Formula implements BitvectorFormula {
+    Z3BitvectorFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3FloatingPointFormula extends Z3Formula implements FloatingPointFormula {
+    Z3FloatingPointFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3FloatingPointRoundingModeFormula extends Z3Formula
+      implements FloatingPointRoundingModeFormula {
+    Z3FloatingPointRoundingModeFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3IntegerFormula extends Z3Formula implements IntegerFormula {
+    Z3IntegerFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3RationalFormula extends Z3Formula implements RationalFormula {
+    Z3RationalFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3BooleanFormula extends Z3Formula implements BooleanFormula {
+    Z3BooleanFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3StringFormula extends Z3Formula implements StringFormula {
+    Z3StringFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3RegexFormula extends Z3Formula implements RegexFormula {
+    Z3RegexFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+  @Immutable
+  static final class Z3EnumerationFormula extends Z3Formula implements EnumerationFormula {
+    Z3EnumerationFormula(long z3context, long z3expr) {
+      super(z3context, z3expr);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/**
+ * A formula of the array sort.
+ *
+ * @param <TI> Index type.
+ * @param <TE> Element type.
+ */
+@SuppressWarnings("InterfaceTypeParameterName")
+@Immutable
+public interface ArrayFormula<TI extends Formula, TE extends Formula> extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2021 Alejandro Serrano Mena
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the string sort. */
+@Immutable
+public interface RegexFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import java.math.BigInteger;
+import java.util.List;
+import org.sosy_lab.java_smt.api.NumeralFormula;
+import org.sosy_lab.java_smt.basicimpl.AbstractNumeralFormulaManager;
+@SuppressWarnings("ClassTypeParameterName")
+abstract class Z3NumeralFormulaManager<
+        ParamFormulaType extends NumeralFormula, ResultFormulaType extends NumeralFormula>
+    extends AbstractNumeralFormulaManager<
+        Long, Long, Long, ParamFormulaType, ResultFormulaType, Long> {
+  protected final long z3context;
+  Z3NumeralFormulaManager(Z3FormulaCreator pCreator, NonLinearArithmetic pNonLinearArithmetic) {
+    super(pCreator, pNonLinearArithmetic);
+    this.z3context = pCreator.getEnv();
+  }
+  protected abstract long getNumeralType();
+  @Override
+  protected boolean isNumeral(Long val) {
+    return Native.isNumeralAst(z3context, val);
+  }
+  @Override
+  protected Long makeNumberImpl(long i) {
+    long sort = getNumeralType();
+    return Native.mkInt64(z3context, i, sort);
+  }
+  @Override
+  protected Long makeNumberImpl(BigInteger pI) {
+    return makeNumberImpl(pI.toString());
+  }
+  @Override
+  protected Long makeNumberImpl(String pI) {
+    long sort = getNumeralType();
+    return Native.mkNumeral(z3context, pI, sort);
+  }
+  @Override
+  protected Long makeVariableImpl(String varName) {
+    long type = getNumeralType();
+    return getFormulaCreator().makeVariable(type, varName);
+  }
+  @Override
+  protected Long negate(Long pNumber) {
+    long sort = Native.getSort(z3context, pNumber);
+    long minusOne = Native.mkInt(z3context, -1, sort);
+    return Native.mkMul(z3context, 2, new long[] {minusOne, pNumber});
+  }
+  @Override
+  protected Long add(Long pNumber1, Long pNumber2) {
+    return Native.mkAdd(z3context, 2, new long[] {pNumber1, pNumber2});
+  }
+  @Override
+  protected Long sumImpl(List<Long> operands) {
+    return Native.mkAdd(z3context, operands.size(), Longs.toArray(operands));
+  }
+  @Override
+  protected Long subtract(Long pNumber1, Long pNumber2) {
+    return Native.mkSub(z3context, 2, new long[] {pNumber1, pNumber2});
+  }
+  @Override
+  protected Long divide(Long pNumber1, Long pNumber2) {
+    return Native.mkDiv(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long multiply(Long pNumber1, Long pNumber2) {
+    return Native.mkMul(z3context, 2, new long[] {pNumber1, pNumber2});
+  }
+  @Override
+  protected Long equal(Long pNumber1, Long pNumber2) {
+    return Native.mkEq(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long distinctImpl(List<Long> pNumbers) {
+    return Native.mkDistinct(z3context, pNumbers.size(), Longs.toArray(pNumbers));
+  }
+  @Override
+  protected Long greaterThan(Long pNumber1, Long pNumber2) {
+    return Native.mkGt(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long greaterOrEquals(Long pNumber1, Long pNumber2) {
+    return Native.mkGe(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long lessThan(Long pNumber1, Long pNumber2) {
+    return Native.mkLt(z3context, pNumber1, pNumber2);
+  }
+  @Override
+  protected Long lessOrEquals(Long pNumber1, Long pNumber2) {
+    return Native.mkLe(z3context, pNumber1, pNumber2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import com.google.common.base.Preconditions;
+import com.google.common.base.VerifyException;
+import com.google.common.collect.ImmutableList;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.Native.LongPtr;
+import com.microsoft.z3.Z3Exception;
+import com.microsoft.z3.enumerations.Z3_decl_kind;
+import com.microsoft.z3.enumerations.Z3_sort_kind;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.java_smt.basicimpl.AbstractModel;
+import org.sosy_lab.java_smt.basicimpl.AbstractProver;
+final class Z3Model extends AbstractModel<Long, Long, Long> {
+  private final long model;
+  private final long z3context;
+  private static final Pattern Z3_IRRELEVANT_MODEL_TERM_PATTERN = Pattern.compile(".*![0-9]+");
+  private final Z3FormulaCreator z3creator;
+  Z3Model(AbstractProver<?> pProver, long z3context, long z3model, Z3FormulaCreator pCreator) {
+    super(pProver, pCreator);
+    Native.modelIncRef(z3context, z3model);
+    model = z3model;
+    this.z3context = z3context;
+    z3creator = pCreator;
+  }
+  @Override
+  public ImmutableList<ValueAssignment> asList() {
+    Preconditions.checkState(!isClosed());
+    ImmutableList.Builder<ValueAssignment> out = ImmutableList.builder();
+    try {
+      // Iterate through constants.
+      for (int constIdx = 0; constIdx < Native.modelGetNumConsts(z3context, model); constIdx++) {
+        long keyDecl = Native.modelGetConstDecl(z3context, model, constIdx);
+        Native.incRef(z3context, keyDecl);
+        out.addAll(getConstAssignments(keyDecl));
+        Native.decRef(z3context, keyDecl);
+      }
+      // Iterate through function applications.
+      for (int funcIdx = 0; funcIdx < Native.modelGetNumFuncs(z3context, model); funcIdx++) {
+        long funcDecl = Native.modelGetFuncDecl(z3context, model, funcIdx);
+        Native.incRef(z3context, funcDecl);
+        if (!isInternalSymbol(funcDecl)) {
+          String functionName = z3creator.symbolToString(Native.getDeclName(z3context, funcDecl));
+          out.addAll(getFunctionAssignments(funcDecl, funcDecl, functionName));
+        }
+        Native.decRef(z3context, funcDecl);
+      }
+    } catch (Z3Exception e) {
+      throw z3creator.handleZ3ExceptionAsRuntimeException(e);
+    }
+    return out.build();
+  }
+  /**
+   * The symbol "!" is part of temporary symbols used for quantified formulas or aliases. This
+   * method is only a heuristic, because the user can also create a symbol containing "!".
+   */
+  private boolean isInternalSymbol(long funcDecl) {
+    switch (Z3_decl_kind.fromInt(Native.getDeclKind(z3context, funcDecl))) {
+      case Z3_OP_SELECT:
+      case Z3_OP_ARRAY_EXT:
+        return true;
+      default:
+        return Z3_IRRELEVANT_MODEL_TERM_PATTERN
+            .matcher(z3creator.symbolToString(Native.getDeclName(z3context, funcDecl)))
+            .matches();
+    }
+  }
+  /**
+   * @return ValueAssignments for a constant declaration in the model
+   */
+  private Collection<ValueAssignment> getConstAssignments(long keyDecl) {
+    Preconditions.checkArgument(
+        Native.getArity(z3context, keyDecl) == 0, "Declaration is not a constant");
+    long var = Native.mkApp(z3context, keyDecl, 0, new long[] {});
+    long value = Native.modelGetConstInterp(z3context, model, keyDecl);
+    checkReturnValue(value, keyDecl);
+    Native.incRef(z3context, value);
+    long equality = Native.mkEq(z3context, var, value);
+    Native.incRef(z3context, equality);
+    try {
+      long symbol = Native.getDeclName(z3context, keyDecl);
+      if (z3creator.isConstant(value)) {
+        return ImmutableList.of(
+            new ValueAssignment(
+                z3creator.encapsulateWithTypeOf(var),
+                z3creator.encapsulateWithTypeOf(value),
+                z3creator.encapsulateBoolean(equality),
+                z3creator.symbolToString(symbol),
+                z3creator.convertValue(value),
+                ImmutableList.of()));
+      } else if (Native.isAsArray(z3context, value)) {
+        long arrayFormula = Native.mkConst(z3context, symbol, Native.getSort(z3context, value));
+        Native.incRef(z3context, arrayFormula);
+        return getArrayAssignments(symbol, arrayFormula, value, ImmutableList.of());
+      } else if (Native.isApp(z3context, value)) {
+        long decl = Native.getAppDecl(z3context, value);
+        Native.incRef(z3context, decl);
+        Z3_sort_kind sortKind =
+            Z3_sort_kind.fromInt(Native.getSortKind(z3context, Native.getSort(z3context, value)));
+        assert sortKind == Z3_sort_kind.Z3_ARRAY_SORT : "unexpected sort: " + sortKind;
+        try {
+          return getConstantArrayAssignment(symbol, value, decl);
+        } finally {
+          Native.decRef(z3context, decl);
+        }
+      }
+      throw new UnsupportedOperationException(
+          "unknown model evaluation: " + Native.astToString(z3context, value));
+    } finally {
+      // cleanup outdated data
+      Native.decRef(z3context, value);
+    }
+  }
+  /** unrolls an constant array assignment. */
+  private Collection<ValueAssignment> getConstantArrayAssignment(
+      long arraySymbol, long value, long decl) {
+    long arrayFormula = Native.mkConst(z3context, arraySymbol, Native.getSort(z3context, value));
+    Native.incRef(z3context, arrayFormula);
+    Z3_decl_kind declKind = Z3_decl_kind.fromInt(Native.getDeclKind(z3context, decl));
+    int numArgs = Native.getAppNumArgs(z3context, value);
+    List<ValueAssignment> out = new ArrayList<>();
+    // avoid doubled ValueAssignments for cases like "(store (store ARR 0 0) 0 1)",
+    // where we could (but should not!) unroll the array into "[ARR[0]=1, ARR[0]=1]"
+    Set<Long> indizes = new HashSet<>();
+    // unroll an array...
+    while (Z3_decl_kind.Z3_OP_STORE == declKind) {
+      assert numArgs == 3;
+      long arrayIndex = Native.getAppArg(z3context, value, 1);
+      Native.incRef(z3context, arrayIndex);
+      if (indizes.add(arrayIndex)) {
+        long select = Native.mkSelect(z3context, arrayFormula, arrayIndex);
+        Native.incRef(z3context, select);
+        long nestedValue = Native.getAppArg(z3context, value, 2);
+        Native.incRef(z3context, nestedValue);
+        long equality = Native.mkEq(z3context, select, nestedValue);
+        Native.incRef(z3context, equality);
+        out.add(
+            new ValueAssignment(
+                z3creator.encapsulateWithTypeOf(select),
+                z3creator.encapsulateWithTypeOf(nestedValue),
+                z3creator.encapsulateBoolean(equality),
+                z3creator.symbolToString(arraySymbol),
+                z3creator.convertValue(nestedValue),
+                ImmutableList.of(evaluateImpl(arrayIndex))));
+      }
+      Native.decRef(z3context, arrayIndex);
+      // recursive unrolling
+      value = Native.getAppArg(z3context, value, 0);
+      decl = Native.getAppDecl(z3context, value);
+      declKind = Z3_decl_kind.fromInt(Native.getDeclKind(z3context, decl));
+      numArgs = Native.getAppNumArgs(z3context, value);
+    }
+    // ...until its end
+    if (Z3_decl_kind.Z3_OP_CONST_ARRAY == declKind) {
+      assert numArgs == 1;
+      // We have an array of zeros (=default value) as "((as const (Array Int Int)) 0)".
+      // There is no way of modeling a whole array, thus we ignore it.
+    }
+    return out;
+  }
+  /**
+   * Z3 models an array as an uninterpreted function.
+   *
+   * @return a list of assignments {@code a[1]=0; a[2]=0; a[5]=0}.
+   */
+  private Collection<ValueAssignment> getArrayAssignments(
+      long arraySymbol, long arrayFormula, long value, List<Object> upperIndices) {
+    long evalDecl = Native.getAsArrayFuncDecl(z3context, value);
+    Native.incRef(z3context, evalDecl);
+    long interp = Native.modelGetFuncInterp(z3context, model, evalDecl);
+    checkReturnValue(interp, evalDecl);
+    Native.funcInterpIncRef(z3context, interp);
+    Collection<ValueAssignment> lst = new ArrayList<>();
+    // get all assignments for the array
+    int numInterpretations = Native.funcInterpGetNumEntries(z3context, interp);
+    for (int interpIdx = 0; interpIdx < numInterpretations; interpIdx++) {
+      long entry = Native.funcInterpGetEntry(z3context, interp, interpIdx);
+      Native.funcEntryIncRef(z3context, entry);
+      long arrayValue = Native.funcEntryGetValue(z3context, entry);
+      Native.incRef(z3context, arrayValue);
+      int noArgs = Native.funcEntryGetNumArgs(z3context, entry);
+      assert noArgs == 1 : "array modelled as UF is expected to have only one parameter, aka index";
+      long arrayIndex = Native.funcEntryGetArg(z3context, entry, 0);
+      Native.incRef(z3context, arrayIndex);
+      long select = Native.mkSelect(z3context, arrayFormula, arrayIndex);
+      Native.incRef(z3context, select);
+      List<Object> innerIndices = new ArrayList<>(upperIndices);
+      innerIndices.add(evaluateImpl(arrayIndex));
+      if (z3creator.isConstant(arrayValue)) {
+        long equality = Native.mkEq(z3context, select, arrayValue);
+        Native.incRef(z3context, equality);
+        lst.add(
+            new ValueAssignment(
+                z3creator.encapsulateWithTypeOf(select),
+                z3creator.encapsulateWithTypeOf(arrayValue),
+                z3creator.encapsulateBoolean(equality),
+                z3creator.symbolToString(arraySymbol),
+                z3creator.convertValue(arrayValue),
+                innerIndices));
+      } else if (Native.isAsArray(z3context, arrayValue)) {
+        lst.addAll(getArrayAssignments(arraySymbol, select, arrayValue, innerIndices));
+      }
+      Native.decRef(z3context, arrayIndex);
+      Native.funcEntryDecRef(z3context, entry);
+    }
+    Native.funcInterpDecRef(z3context, interp);
+    Native.decRef(z3context, evalDecl);
+    return lst;
+  }
+  private void checkReturnValue(long value, long funcDecl) {
+    if (value == 0) {
+      throw new VerifyException(
+          "Z3 unexpectedly claims that the value of "
+              + Native.funcDeclToString(z3context, funcDecl)
+              + " does not matter in model.");
+    }
+  }
+  /**
+   * get all ValueAssignments for a function declaration in the model.
+   *
+   * @param evalDecl function declaration where the evaluation comes from
+   * @param funcDecl function declaration where the function name comes from
+   * @param functionName the name of the funcDecl
+   */
+  private Collection<ValueAssignment> getFunctionAssignments(
+      long evalDecl, long funcDecl, String functionName) {
+    long interp = Native.modelGetFuncInterp(z3context, model, evalDecl);
+    checkReturnValue(interp, evalDecl);
+    Native.funcInterpIncRef(z3context, interp);
+    List<ValueAssignment> lst = new ArrayList<>();
+    int numInterpretations = Native.funcInterpGetNumEntries(z3context, interp);
+    if (numInterpretations == 0) {
+      // we found an alias in the model, follow the alias
+      long elseInterp = Native.funcInterpGetElse(z3context, interp);
+      Native.incRef(z3context, elseInterp);
+      long aliasDecl = Native.getAppDecl(z3context, elseInterp);
+      Native.incRef(z3context, aliasDecl);
+      if (isInternalSymbol(aliasDecl)) {
+        lst.addAll(getFunctionAssignments(aliasDecl, funcDecl, functionName));
+        // TODO Can we guarantee termination of this recursive call?
+        //      A chain of aliases should end after several steps.
+      } else {
+        // ignore functionDeclarations like "ite", "and",...
+      }
+      Native.decRef(z3context, aliasDecl);
+      Native.decRef(z3context, elseInterp);
+    } else {
+      for (int interpIdx = 0; interpIdx < numInterpretations; interpIdx++) {
+        long entry = Native.funcInterpGetEntry(z3context, interp, interpIdx);
+        Native.funcEntryIncRef(z3context, entry);
+        long entryValue = Native.funcEntryGetValue(z3context, entry);
+        if (z3creator.isConstant(entryValue)) {
+          lst.add(getFunctionAssignment(functionName, funcDecl, entry, entryValue));
+        } else {
+          // ignore values of complex types, e.g. Arrays
+        }
+        Native.funcEntryDecRef(z3context, entry);
+      }
+    }
+    Native.funcInterpDecRef(z3context, interp);
+    return lst;
+  }
+  /**
+   * @return ValueAssignment for an entry (one evaluation) of an uninterpreted function in the
+   *     model.
+   */
+  private ValueAssignment getFunctionAssignment(
+      String functionName, long funcDecl, long entry, long entryValue) {
+    Object value = z3creator.convertValue(entryValue);
+    int numArgs = Native.funcEntryGetNumArgs(z3context, entry);
+    long[] args = new long[numArgs];
+    List<Object> argumentInterpretation = new ArrayList<>();
+    for (int k = 0; k < numArgs; k++) {
+      long arg = Native.funcEntryGetArg(z3context, entry, k);
+      Native.incRef(z3context, arg);
+      // indirect assignments
+      assert !Native.isAsArray(z3context, arg)
+          : String.format(
+              "unexpected array-reference '%s' as evaluation of a UF parameter for UF '%s'.",
+              Native.astToString(z3context, arg), Native.funcDeclToString(z3context, funcDecl));
+      argumentInterpretation.add(z3creator.convertValue(arg));
+      args[k] = arg;
+    }
+    long func = Native.mkApp(z3context, funcDecl, args.length, args);
+    // Clean up memory.
+    for (long arg : args) {
+      Native.decRef(z3context, arg);
+    }
+    long equality = Native.mkEq(z3context, func, entryValue);
+    Native.incRef(z3context, equality);
+    return new ValueAssignment(
+        z3creator.encapsulateWithTypeOf(func),
+        z3creator.encapsulateWithTypeOf(entryValue),
+        z3creator.encapsulateBoolean(equality),
+        functionName,
+        value,
+        argumentInterpretation);
+  }
+  @Override
+  public String toString() {
+    Preconditions.checkState(!isClosed());
+    return Native.modelToString(z3context, model);
+  }
+  @Override
+  public void close() {
+    if (!isClosed()) {
+      Native.modelDecRef(z3context, model);
+    }
+    super.close();
+  }
+  @Override
+  @Nullable
+  protected Long evalImpl(Long formula) {
+    LongPtr resultPtr = new LongPtr();
+    boolean satisfiableModel = false;
+    try {
+      satisfiableModel = Native.modelEval(z3context, model, formula, false, resultPtr);
+    } catch (Z3Exception e) {
+      throw z3creator.handleZ3ExceptionAsRuntimeException(e);
+    }
+    Preconditions.checkState(satisfiableModel);
+    if (resultPtr.value == 0) {
+      // unknown evaluation
+      return null;
+    } else {
+      Native.incRef(z3context, resultPtr.value);
+      return resultPtr.value;
+    }
+  }
+}

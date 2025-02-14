@@ -1,0 +1,5188 @@
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LabeledData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ *
+ * Simple implementation of Labeled Line Chart. This class can/should be extended.
+ *
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {
+    JqPlotResources.DateAxisRenderer,
+    JqPlotResources.CanvasTextRenderer,
+    JqPlotResources.CategoryAxisRenderer,
+    JqPlotResources.DateAxisRenderer,
+    JqPlotResources.CanvasAxisLabelRenderer,
+    JqPlotResources.CanvasAxisTickRenderer
+})
+public class LabeledLineChart<T extends Number> extends AbstractChart<LabeledData<T>,String> {
+	private static final long serialVersionUID = -6833884146696085085L;
+	private final ChartConfiguration<String> chartConfig;
+	private LabeledData<T> labeledData = new LabeledData<>();
+    /**
+     * Construtor
+     */
+    public LabeledLineChart() {
+        this(null, null, null, 15);
+    }
+    /**
+     * Construtor
+     * @param title title
+     * @param labelX labelX
+     * @param labelY labelY
+     */
+    public LabeledLineChart(String title, String labelX, String labelY) {
+        this(title, labelX, labelY, 15);
+    }
+    /**
+     * Construtor
+     *
+	 * @param title title
+	 * @param labelX labelX
+	 * @param labelY labelY
+     * @param tickAngle tickAngle
+     */
+    public LabeledLineChart(String title, String labelX, String labelY,
+            Integer tickAngle) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.setLabelX(labelX)
+    		.setLabelY(labelY)
+    		.axesInstance()
+    		.xAxisInstance()
+    		.setRenderer(JqPlotResources.DateAxisRenderer)
+    		.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer)
+    		.tickOptionsInstance()
+    		.setAngle(tickAngle);
+    	chartConfig
+    		.axesInstance()
+    		.yAxisInstance()
+    		.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer);
+    }
+    /**
+     * Add a value
+     * @param value Add a {@link LabeledItem}
+     */
+    public void addValue(LabeledItem<T> value) {
+        labeledData.addValue(value);
+    }
+	/**
+	 * Add a value
+	 * @param values value Add a {@link LabeledItem}
+	 */
+    public void addValues(@SuppressWarnings("unchecked") LabeledItem<T>... values) {
+        labeledData.addValues(values);
+    }
+    /**
+     *
+     * @return LabeledData
+     */
+    @Override
+	public LabeledData<T> getChartData() {
+        return labeledData;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.axis.X2Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.Y2Axis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+/**
+ * Axes options are specified within an axes object at the top level of the plot
+ * options like so:
+ * 
+ * <pre>
+ *  {
+ *   axes: {
+ *      xaxis: {min: 5},
+ *        yaxis: {min: 2, max: 8, numberTicks:4},
+ *        x2axis: {pad: 1.5},
+ *        y2axis: {ticks:[22, 44, 66, 88]}
+ *    }
+ *  }
+ * </pre>
+ * 
+ * There are 2 x axes, 'xaxis' and 'x2axis', and 9 yaxes, 'yaxis', 'y2axis'.
+ * 'y3axis', ... Any or all of which may be specified.
+ * 
+ * @author inaiat
+ * 
+ */
+public class Axes<T extends Serializable> implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = -1464182411022493685L;
+    private XAxis<T> xaxis;
+    private YAxis<T> yaxis;
+    private X2Axis<T> x2axis;
+    private Y2Axis<T> y2axis;
+    
+    public XAxis<T> xAxisInstance() {
+	if (xaxis==null) {
+	    xaxis = new XAxis<T>();
+	}
+	return xaxis;
+    }
+    
+    public YAxis<T> yAxisInstance() {
+	if (yaxis==null) {
+	    yaxis = new YAxis<T>();
+	}
+	return yaxis;
+    }
+    
+    public X2Axis<T> x2axisInstance() {
+	if (x2axis==null) {
+	    x2axis = new X2Axis<T>();
+	}
+	return x2axis;
+    }
+    
+    public Y2Axis<T> y2axisInstance() {
+	if (y2axis==null) {
+	    y2axis = new Y2Axis<T>();
+	}
+	return y2axis;
+    }
+    /**
+     * @return the xaxis
+     */
+    public XAxis<T> getXaxis() {
+	return xaxis;
+    }
+    /**
+     * @param xaxis
+     *            the xaxis to set
+	 * @return Axes
+     */
+    public Axes<T> setXaxis(XAxis<T> xaxis) {
+	this.xaxis = xaxis;
+	return this;
+    }
+    /**
+     * @return the yaxis
+     */
+    public YAxis<T> getYaxis() {
+	return yaxis;
+    }
+    /**
+     * @param yaxis
+     *            the yaxis to set
+	 * @return Axes
+     */
+    public Axes<T> setYaxis(YAxis<T> yaxis) {
+	this.yaxis = yaxis;
+	return this;
+    }
+    /**
+     * @return the x2axis
+     */
+    public X2Axis<T> getX2axis() {
+	return x2axis;
+    }
+    /**
+     * @param x2axis
+     *            the x2axis to set
+	 * @return Axes
+	 */
+    public Axes<T> setX2axis(X2Axis<T> x2axis) {
+	this.x2axis = x2axis;
+	return this;
+    }
+    /**
+     * @return the y2axis
+     */
+    public Y2Axis<T> getY2axis() {
+	return y2axis;
+    }
+    /**
+     * @param y2axis
+     *            the y2axis to set
+	 * @return Axes
+     */
+    public Axes<T> setY2axis(Y2Axis<T> y2axis) {
+	this.y2axis = y2axis;
+	return this;
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+/**
+ * Plot Title object.
+ *
+ * @author inaiat
+ */
+public class Title implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = -277067293084389272L;
+    
+    /** The text. */
+    private String text;
+    
+    /** The show. */
+    private Boolean show;
+    
+    /** The font family. */
+    private String fontFamily;
+    
+    /** The font size. */
+    private String fontSize;
+    /** The font weight. */
+    private String fontWeight;
+    /** The text align. */
+    private String textAlign;
+    
+    /** The text color. */
+    private String textColor;
+    /** The renderer. */
+    private String renderer;
+    
+    /** The renderer options. */
+    private String rendererOptions;
+    
+    /** The escape html. */
+    private String escapeHtml;
+    /**
+     * Instantiates a new title.
+     */
+    public Title() {
+    }
+    /**
+     * Instantiates a new title.
+     *
+     * @param text the text
+     */
+    public Title(String text) {
+        this.text = text;
+    }
+    /**
+     * Gets the text.
+     *
+     * @return the text
+     */
+    public String getText() {
+        return text;
+    }
+    /**
+     * Sets the show.
+     *
+     * @param show the new show
+	 * @return Title
+     */
+    public Title setShow(boolean show) {
+        this.setShow((Boolean) show);
+        return this;
+    }
+    /**
+     * Gets the font family.
+     *
+     * @return the font family
+     */
+    public String getFontFamily() {
+        return fontFamily;
+    }
+    /**
+     * Sets the font family.
+     *
+     * @param fontFamily the new font family
+	 * @return Title
+     */
+    public Title setFontFamily(String fontFamily) {
+        this.fontFamily = fontFamily;
+        return this;
+    }
+    /**
+     * Gets the font size.
+     *
+     * @return the fontSize
+     */
+    public String getFontSize() {
+        return fontSize;
+    }
+    /**
+     * Sets the font size.
+     *
+     * @param fontSize the fontSize to set
+	 * @return Title
+     */
+    public Title setFontSize(String fontSize) {
+        this.fontSize = fontSize;
+        return this;
+    }
+    /**
+     * Gets the font weight.
+     *
+     * @return the fontWeight
+     */
+    public String getFontWeight() {
+        return fontWeight;
+    }
+    /**
+     * Sets the font weight.
+     *
+     * @param fontWeight the fontWeight to set
+	 * @return Title
+     */
+    public Title setFontWeight(String fontWeight) {
+        this.fontWeight = fontWeight;
+        return this;
+    }
+    /**
+     * Gets the text align.
+     *
+     * @return the textAlign
+     */
+    public String getTextAlign() {
+        return textAlign;
+    }
+    /**
+     * Sets the text align.
+     *
+     * @param textAlign the textAlign to set
+	 * @return Title
+     */
+    public Title setTextAlign(String textAlign) {
+        this.textAlign = textAlign;
+        return this;
+    }
+    /**
+     * Gets the text color.
+     *
+     * @return the textColor
+     */
+    public String getTextColor() {
+        return textColor;
+    }
+    /**
+     * Sets the text color.
+     *
+     * @param textColor the textColor to set
+	 * @return Title
+     */
+    public Title setTextColor(String textColor) {
+        this.textColor = textColor;
+        return this;
+    }
+    /**
+     * Gets the renderer.
+     *
+     * @return the renderer
+     */
+    public String getRenderer() {
+        return renderer;
+    }
+    /**
+     * @param renderer the renderer to set
+	 * @return Title
+     */
+    public Title setRenderer(String renderer) {
+        this.renderer = renderer;
+        return this;
+    }
+    /**
+     * Gets the renderer options.
+     *
+     * @return the rendererOptions
+     */
+    public String getRendererOptions() {
+        return rendererOptions;
+    }
+    /**
+     * Sets the renderer options.
+     *
+     * @param rendererOptions the rendererOptions to set
+	 * @return Title
+     */
+    public Title setRendererOptions(String rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+    /**
+     * Gets the escape html.
+     *
+     * @return the escapeHtml
+     */
+    public String getEscapeHtml() {
+        return escapeHtml;
+    }
+    /**
+     * Sets the escape html.
+     *
+     * @param escapeHtml the escapeHtml to set
+	 * @return Title
+     */
+    public Title setEscapeHtml(String escapeHtml) {
+        this.escapeHtml = escapeHtml;
+        return this;
+    }
+    /**
+     * Gets the show.
+     *
+     * @return the show
+     */
+    public Boolean getShow() {
+        return show;
+    }
+    /**
+     * Sets the show.
+     *
+     * @param show the show to set
+	 * @return Title
+     */
+    public Title setShow(Boolean show) {
+        this.show = show;
+        return this;
+    }
+    /**
+     * Sets the text.
+     *
+     * @param text the text to set
+	 * @return Title
+     */
+    public Title setText(String text) {
+        this.text = text;
+        return this;
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.elements.RendererOptions;
+import org.wicketstuff.jqplot.lib.elements.TickOptions;
+/**
+ * An individual axis object. Cannot be instantiated directly, but created by
+ * the Plot oject. Axis properties can be set or overriden by the options passed
+ * in from the user.
+ *
+ * See http://www.jqplot.com/docs/files/jqplot-core-js.html#Axis
+ *
+ * @param <T>
+ *            type of Axis, can be String, Number, Date, etc. This is necessary
+ *            because min,max and tickInterval can be variants types.
+ *
+ * @author inaiat
+ */
+public class Axis<T extends Serializable> implements Serializable {
+	/** The Constant serialVersionUID. */
+	private static final long serialVersionUID = -5426777530263336010L;
+	/** The show. */
+	private Boolean show;
+	/** The renderer. */
+	private JqPlotResources renderer;
+    /** The renderer options. */
+    private RendererOptions rendererOptions;
+	/** The auto scale. */
+	private Boolean autoScale;
+	/** The tick options. */
+	private TickOptions tickOptions;
+	/** The ticks. */
+	private String[] ticks;
+	/** The label renderer. */
+	private JqPlotResources labelRenderer;
+	/** The tick renderer. */
+	private JqPlotResources tickRenderer;
+	/** The label. */
+	private String label;
+	/** The pad. */
+	private Float pad;
+	/** The pad min. */
+	private Float padMin;
+	/** The pad max. */
+	private Float padMax;
+	/** The min. */
+	private Serializable min;
+	/** The max. */
+	private Serializable max;
+	/** The tick interval. */
+	private Serializable tickInterval;
+	/**
+	 * Gets the tick interval.
+	 *
+	 * @return the tick interval
+	 */
+	public Serializable getTickInterval() {
+		return tickInterval;
+	}
+	/**
+	 * Sets the tick interval.
+	 *
+	 * @param tickInterval
+	 *            the new tick interval
+	 */
+	public void setTickInterval(Serializable tickInterval) {
+		this.tickInterval = tickInterval;
+	}
+	/**
+	 * Gets the pad min.
+	 *
+	 * @return the pad min
+	 */
+	public Float getPadMin() {
+		return padMin;
+	}
+	/**
+	 * Sets the pad min.
+	 *
+	 * @param padMin
+	 *            the new pad min
+	 */
+	public void setPadMin(Float padMin) {
+		this.padMin = padMin;
+	}
+	/**
+	 * Gets the pad max.
+	 *
+	 * @return the pad max
+	 */
+	public Float getPadMax() {
+		return padMax;
+	}
+	/**
+	 * Sets the pad max.
+	 *
+	 * @param padMax
+	 *            the new pad max
+	 */
+	public void setPadMax(Float padMax) {
+		this.padMax = padMax;
+	}
+	/**
+	 * Gets the show.
+	 *
+	 * @return the show
+	 */
+	public Boolean getShow() {
+		return show;
+	}
+	/**
+	 * Sets the show.
+	 *
+	 * @param show
+	 *            the show to set
+	 */
+	public void setShow(Boolean show) {
+		this.show = show;
+	}
+	/**
+	 * Gets the auto scale.
+	 *
+	 * @return the autoScale
+	 */
+	public Boolean getAutoScale() {
+		return autoScale;
+	}
+	/**
+	 * Sets the auto scale.
+	 *
+	 * @param autoScale
+	 *            the autoScale to set
+	 * @return Axis
+	 */
+	public Axis<T> setAutoScale(Boolean autoScale) {
+		this.autoScale = autoScale;
+		return this;
+	}
+	/**
+	 * Gets the tick options.
+	 *
+	 * @return the tickOptions
+	 */
+	public TickOptions getTickOptions() {
+		return tickOptions;
+	}
+	/**
+	 * Sets the tick options.
+	 *
+	 * @param tickOptions
+	 *            the tickOptions to set
+	 * @return Axis
+	 */
+	public Axis<T> setTickOptions(TickOptions tickOptions) {
+		this.tickOptions = tickOptions;
+		return this;
+	}
+	/**
+	 * Gets the label renderer.
+	 *
+	 * @return the labelRenderer
+	 */
+	public JqPlotResources getLabelRenderer() {
+		return labelRenderer;
+	}
+	/**
+	 * Sets the label renderer.
+	 *
+	 * @param labelRenderer
+	 *            the labelRenderer to set
+	 * @return Axis
+	 */
+	public Axis<T> setLabelRenderer(JqPlotResources labelRenderer) {
+		this.labelRenderer = labelRenderer;
+		return this;
+	}
+	/**
+	 * Gets the tick renderer.
+	 *
+	 * @return the tickRenderer
+	 */
+	public JqPlotResources getTickRenderer() {
+		return tickRenderer;
+	}
+	/**
+	 * Sets the tick renderer.
+	 *
+	 * @param tickRenderer
+	 *            the tickRenderer to set
+	 * @return Axis
+	 */
+	public Axis<T> setTickRenderer(JqPlotResources tickRenderer) {
+		this.tickRenderer = tickRenderer;
+		return this;
+	}
+    /**
+     * Renderer options.
+     *
+     * @param rendererOptions the renderer options
+     * @return the serie
+     */
+    public Axis<T> rendererOptions(RendererOptions rendererOptions) {
+    	this.rendererOptions = rendererOptions;
+    	return this;
+    }
+    /**
+     * Gets the renderer options.
+     *
+     * @return the renderer options
+     */
+    public RendererOptions getRendererOptions() {
+        return rendererOptions;
+    }
+    /**
+     * Sets the renderer options.
+     *
+     * @param rendererOptions the new renderer options
+	 * @return Axis
+     */
+    public Axis<T> setRendererOptions(RendererOptions rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+	/**
+	 * Gets the label.
+	 *
+	 * @return the label
+	 */
+	public String getLabel() {
+		return label;
+	}
+	/**
+	 * Sets the label.
+	 *
+	 * @param label
+	 *            the label to set
+	 * @return Axis
+	 */
+	public Axis<T> setLabel(String label) {
+		this.label = label;
+		return this;
+	}
+	/**
+	 * Gets the pad.
+	 *
+	 * @return the pad
+	 */
+	public Float getPad() {
+		return pad;
+	}
+	/**
+	 * Sets the pad.
+	 *
+	 * @param pad
+	 *            the pad to set
+	 * @return Axis
+	 */
+	public Axis<T> setPad(Float pad) {
+		this.pad = pad;
+		return this;
+	}
+	/**
+	 * Gets the renderer.
+	 *
+	 * @return the renderer
+	 */
+	public JqPlotResources getRenderer() {
+		return renderer;
+	}
+	/**
+	 * Sets the renderer.
+	 *
+	 * @param renderer
+	 *            the renderer to set
+	 * @return Axis
+	 */
+	public Axis<T> setRenderer(JqPlotResources renderer) {
+		this.renderer = renderer;
+		return this;
+	}
+	/**
+	 * Gets the ticks.
+	 *
+	 * @return the ticks
+	 * @return Array of String
+	 */
+	public String[] getTicks() {
+		return ticks;
+	}
+	/**
+	 * Sets the ticks.
+	 *
+	 * @param ticks
+	 *            the ticks to set
+	 * @return Axis
+	 */
+	public Axis<T> setTicks(String... ticks) {
+		this.ticks = ticks;
+		return this;
+	}
+	/**
+	 * Gets the min.
+	 *
+	 * @return the min
+	 */
+	public Serializable getMin() {
+		return min;
+	}
+	/**
+	 * Sets the min.
+	 *
+	 * @param min
+	 *            the new min
+	 * @return Axis
+	 */
+	public Axis<T> setMin(Serializable min) {
+		this.min = min;
+		return this;
+	}
+	/**
+	 * Gets the max.
+	 *
+	 * @return the max
+	 */
+	public Serializable getMax() {
+		return max;
+	}
+	/**
+	 * Sets the max.
+	 *
+	 * @param max
+	 *            the new max
+	 * @return Axis
+	 */
+	public Axis<T> setMax(Serializable max) {
+		this.max = max;
+		return this;
+	}
+	public TickOptions tickOptionsInstance() {
+		if (tickOptions==null) {
+			tickOptions = new TickOptions();
+		}
+		return tickOptions;
+	}
+	public RendererOptions rendererOptionsInstance() {
+		if (rendererOptions==null) {
+			this.rendererOptions = new RendererOptions();
+		}
+		return rendererOptions;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LineSeriesData;
+import org.wicketstuff.jqplot.lib.data.item.LineSeriesItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ *
+ * Simple implementation of Line Series Chart. This class can/should be
+ * extended.
+ *
+ * @author inaiat
+ *
+ * @param <I>
+ *            type of index of serie
+ * @param <V>
+ *            type of value of serie
+ */
+@JqPlotPlugin(values = { JqPlotResources.CanvasTextRenderer,
+	JqPlotResources.CategoryAxisRenderer,
+	JqPlotResources.CanvasAxisLabelRenderer,
+	JqPlotResources.CanvasAxisTickRenderer,
+	JqPlotResources.CanvasOverlay,
+	JqPlotResources.DateAxisRenderer })
+public class LineSeriesChart<I extends Number, V extends Number> extends
+		AbstractChart<LineSeriesData<I, V>, String> {
+	private static final long serialVersionUID = -563079287340319412L;
+	private final ChartConfiguration<String> chartConfig;
+	private LineSeriesData<I, V> data = new LineSeriesData<>();
+	public LineSeriesChart(String title) {
+		this(title, null, null);
+	}
+	public LineSeriesChart(String title, String labelX, String labelY) {
+		this.chartConfig = new ChartConfiguration<>();
+		chartConfig.setTitle(new Title(title))
+			.setLabelX(labelX)
+			.setLabelY(labelY);
+	}
+	@Override
+	public LineSeriesData<I, V> getChartData() {
+		return data;
+	}
+	public void addValue(Collection<LineSeriesItem<I, V>> value) {
+		data.addValue(value);
+	}
+	public void addValues(@SuppressWarnings("unchecked") Collection<LineSeriesItem<I, V>>... values) {
+		data.addValues(values);
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+import org.wicketstuff.jqplot.lib.elements.Axes;
+import org.wicketstuff.jqplot.lib.elements.CanvasOverlay;
+import org.wicketstuff.jqplot.lib.elements.Cursor;
+import org.wicketstuff.jqplot.lib.elements.Grid;
+import org.wicketstuff.jqplot.lib.elements.GridPadding;
+import org.wicketstuff.jqplot.lib.elements.Highlighter;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Serie;
+import org.wicketstuff.jqplot.lib.elements.SeriesDefaults;
+import org.wicketstuff.jqplot.lib.elements.Title;
+/**
+ *
+ * Base configuration of JqPlot Chart. See jqplot documention
+ * http://www.jqplot.com/docs/files/usage-txt.html
+ *
+ * @param <T>
+ *            Type of {@link Axis}
+ *
+ * @author inaiat
+ */
+public class ChartConfiguration<T extends Serializable> implements Serializable {
+	/** The Constant serialVersionUID. */
+	private static final long serialVersionUID = 7082325039222592701L;
+	/** The series. */
+	protected Collection<Serie> series;
+	/** The axes. */
+	protected Axes<T> axes;
+	/** The title. */
+	protected Title title;
+	/** The axes defaults. */
+	protected Axis<T> axesDefaults;
+	/** The series defaults. */
+	private SeriesDefaults seriesDefaults;
+	/** The stack series. */
+	private Boolean stackSeries;
+	/** The show marker. */
+	private Boolean showMarker;
+	/** The legend. */
+	private Legend legend;
+	/** The capture right click. */
+	private Boolean captureRightClick = null;
+	/** The series colors. */
+	private Collection<String> seriesColors;
+	/** The animate. */
+	private Boolean animate;
+	/** The highlighter. */
+	private Highlighter highlighter;
+	/** The grid. */
+	private Grid<T> grid;
+	/** The cursor. */
+	private Cursor cursor;
+	/** The gridPadding attribute */
+	private GridPadding gridPadding;
+	/** The canvas overlay. */
+	private CanvasOverlay canvasOverlay;
+	/**
+	 * Checks if is capture right click.
+	 *
+	 * @return the boolean
+	 */
+	public Boolean isCaptureRightClick() {
+		return captureRightClick;
+	}
+	/**
+	 * Sets the capture right click.
+	 *
+	 * @param captureRightClick
+	 *            the new capture right click
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setCaptureRightClick(Boolean captureRightClick) {
+		this.captureRightClick = captureRightClick;
+		return this;
+	}
+	/**
+	 * Gets the legend.
+	 *
+	 * @return the legend
+	 */
+	public Legend getLegend() {
+		return legend;
+	}
+	/**
+	 * Sets the legend.
+	 *
+	 * @param legend
+	 *            the new legend
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setLegend(Legend legend) {
+		this.legend = legend;
+		return this;
+	}
+	/**
+	 * Sets the simple title.
+	 *
+	 * @param title
+	 *            the new simple title
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setSimpleTitle(String title) {
+		if (title == null) {
+			this.title = new Title(title);
+		} else {
+			this.title.setText(title);
+		}
+		return this;
+	}
+	/**
+	 * Instantiates the cursor.
+	 *
+	 * @return the cursor
+	 */
+	public Cursor cursorInstance() {
+		if (cursor == null) {
+			cursor = new Cursor();
+		}
+		return cursor;
+	}
+	/**
+	 * Instantiates the grid.
+	 *
+	 * @return the grid
+	 */
+	public Grid<T> gridInstance() {
+		if (grid == null) {
+			grid = new Grid<>();
+		}
+		return grid;
+	}
+	/**
+	 * Instantiates the axes.
+	 *
+	 * @return the axes
+	 */
+	public Axes<T> axesInstance() {
+		if (axes == null) {
+			this.axes = new Axes<>();
+		}
+		return this.axes;
+	}
+	/**
+	 * Instantiates the axes defaults.
+	 *
+	 * @return the axis
+	 */
+	public Axis<T> axesDefaultsInstance() {
+		if (axesDefaults == null) {
+			axesDefaults = new Axis<>();
+		}
+		return axesDefaults;
+	}
+	public XAxis<T> xAxisInstance() {
+		return axesInstance().xAxisInstance();
+	}
+	public YAxis<T> yAxisInstance() {
+		return axesInstance().yAxisInstance();
+	}
+	public Collection<Serie> seriesInstance() {
+		if (series == null) {
+			series = new ArrayList<>();
+		}
+		return series;
+	}
+	public SeriesDefaults seriesDefaultsInstance() {
+		if (seriesDefaults == null) {
+			seriesDefaults = new SeriesDefaults();
+		}
+		return seriesDefaults;
+	}
+	public Collection<String> seriesColorsInstance() {
+		if (this.seriesColors == null) {
+			this.seriesColors = new ArrayList<>();
+		}
+		return seriesColors;
+	}
+	public Highlighter highlighterInstance() {
+		if (highlighter == null) {
+			highlighter = new Highlighter();
+		}
+		return highlighter;
+	}
+	/**
+	 * Sets the label x.
+	 *
+	 * @param label
+	 *            the new label x
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setLabelX(String label) {
+		if (label != null) {
+			axesInstance().xAxisInstance().setLabel(label);
+		}
+		return this;
+	}
+	/**
+	 * Sets the label y.
+	 *
+	 * @param label
+	 *            the new label y
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setLabelY(String label) {
+		if (label != null) {
+			axesInstance().yAxisInstance().setLabel(label);
+		}
+		return this;
+	}
+	/**
+	 * Gets the series.
+	 *
+	 * @return the series
+	 */
+	public Collection<Serie> getSeries() {
+		return series;
+	}
+	/**
+	 * Sets the series.
+	 *
+	 * @param series
+	 *            the series to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setSeries(Collection<Serie> series) {
+		this.series = series;
+		return this;
+	}
+	/**
+	 * Adds the series.
+	 *
+	 * @param serie
+	 *            the serie
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> addSeries(Serie serie) {
+		this.seriesInstance().add(serie);
+		return this;
+	}
+	/**
+	 * Gets the title.
+	 *
+	 * @return the title
+	 */
+	public Title getTitle() {
+		return title;
+	}
+	/**
+	 * Sets the title.
+	 *
+	 * @param title
+	 *            the title to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setTitle(Title title) {
+		this.title = title;
+		return this;
+	}
+	/**
+	 * Gets the axes defaults.
+	 *
+	 * @return the axesDefaults
+	 */
+	public Axis<T> getAxesDefaults() {
+		return axesDefaults;
+	}
+	/**
+	 * Sets the axes defaults.
+	 *
+	 * @param axesDefaults
+	 *            the axesDefaults to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setAxesDefaults(Axis<T> axesDefaults) {
+		this.axesDefaults = axesDefaults;
+		return this;
+	}
+	/**
+	 * Gets the axes.
+	 *
+	 * @return the axes
+	 */
+	public Axes<T> getAxes() {
+		return axes;
+	}
+	/**
+	 * Sets the axes.
+	 *
+	 * @param axes
+	 *            the axes to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setAxes(Axes<T> axes) {
+		this.axes = axes;
+		return this;
+	}
+	/**
+	 * Gets the series defaults.
+	 *
+	 * @return the seriesDefaults
+	 */
+	public SeriesDefaults getSeriesDefaults() {
+		return seriesDefaults;
+	}
+	/**
+	 * Sets the series defaults.
+	 *
+	 * @param seriesDefaults
+	 *            the seriesDefaults to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setSeriesDefaults(SeriesDefaults seriesDefaults) {
+		this.seriesDefaults = seriesDefaults;
+		return this;
+	}
+	/**
+	 * Gets the stack series.
+	 *
+	 * @return the stackSeries
+	 */
+	public Boolean getStackSeries() {
+		return stackSeries;
+	}
+	/**
+	 * Sets the stack series.
+	 *
+	 * @param stackSeries
+	 *            the stackSeries to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setStackSeries(Boolean stackSeries) {
+		this.stackSeries = stackSeries;
+		return this;
+	}
+	/**
+	 * Gets the show marker.
+	 *
+	 * @return the showMarker
+	 */
+	public Boolean getShowMarker() {
+		return showMarker;
+	}
+	/**
+	 * Sets the show marker.
+	 *
+	 * @param showMarker
+	 *            the showMarker to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setShowMarker(Boolean showMarker) {
+		this.showMarker = showMarker;
+		return this;
+	}
+	/**
+	 * Gets the series colors.
+	 *
+	 * @return the series colors
+	 */
+	public Collection<String> getSeriesColors() {
+		return seriesColors;
+	}
+	/**
+	 * Sets the series colors.
+	 *
+	 * @param seriesColor
+	 *            the new series colors
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setSeriesColors(Collection<String> seriesColor) {
+		this.seriesColors = seriesColor;
+		return this;
+	}
+	/**
+	 * Gets the animate.
+	 *
+	 * @return animate property
+	 */
+	public Boolean getAnimate() {
+		return animate;
+	}
+	/**
+	 * Turns on animation for all series in this plot.
+	 *
+	 * @param animate
+	 *            true, false
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setAnimate(Boolean animate) {
+		this.animate = animate;
+		return this;
+	}
+	/**
+	 * Gets the highlighter.
+	 *
+	 * @return hightLighter
+	 */
+	public Highlighter getHighlighter() {
+		return highlighter;
+	}
+	/**
+	 * set the highlighter.
+	 *
+	 * @param highlighter
+	 *            property
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setHighlighter(Highlighter highlighter) {
+		this.highlighter = highlighter;
+		return this;
+	}
+	/**
+	 * Gets the grid.
+	 *
+	 * @return the grid
+	 */
+	public Grid<T> getGrid() {
+		return grid;
+	}
+	/**
+	 * Sets the grid.
+	 *
+	 * @param grid
+	 *            the new grid
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setGrid(Grid<T> grid) {
+		this.grid = grid;
+		return this;
+	}
+	/**
+	 * Gets the cursor.
+	 *
+	 * @return the cursor
+	 */
+	public Cursor getCursor() {
+		return cursor;
+	}
+	/**
+	 * Sets the cursor.
+	 *
+	 * @param cursor
+	 *            the new cursor
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setCursor(Cursor cursor) {
+		this.cursor = cursor;
+		return this;
+	}
+	/**
+	 * Gets gridPadding
+	 *
+	 * @return GridPadding
+	 */
+	public GridPadding getGridPadding() {
+		return gridPadding;
+	}
+	/**
+	 * Sets the gridPadding
+	 *
+	 * @param gridPadding
+	 *            the new gridPadding
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setGridPadding(GridPadding gridPadding) {
+		this.gridPadding = gridPadding;
+		return this;
+	}
+	/**
+	 * Get instance of GridPadding
+	 * @return GridPadding
+	 */
+	public GridPadding gridPaddingInstance() {
+		if (gridPadding == null) {
+			gridPadding = new GridPadding();
+		}
+		return gridPadding;
+	}
+	/**
+	 * Instantiates the canvas overlay.
+	 *
+	 * @return the canvas overlay
+	 */
+	public CanvasOverlay canvasOverlayInstance() {
+		if (canvasOverlay == null) {
+			this.canvasOverlay = new CanvasOverlay();
+		}
+		return this.canvasOverlay;
+	}
+	/**
+	 * Gets the canvas overlay.
+	 *
+	 * @return the canvas overlay
+	 */
+	public CanvasOverlay getCanvasOverlay() {
+		return canvasOverlay;
+	}
+	/**
+	 * Sets the canvas overlay.
+	 *
+	 * @param canvasOverlay
+	 *            the canvasOverlay to set
+	 * @return ChartConfiguration
+	 */
+	public ChartConfiguration<T> setCanvasOverlay(CanvasOverlay canvasOverlay) {
+		this.canvasOverlay = canvasOverlay;
+		return this;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.Chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+import org.wicketstuff.jqplot.lib.axis.XAxis;
+import org.wicketstuff.jqplot.lib.axis.YAxis;
+import org.wicketstuff.jqplot.lib.data.ChartData;
+import org.wicketstuff.jqplot.lib.elements.Axes;
+import org.wicketstuff.jqplot.lib.elements.CanvasOverlay;
+import org.wicketstuff.jqplot.lib.elements.GridPadding;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Serie;
+import org.wicketstuff.jqplot.lib.elements.SeriesDefaults;
+import org.wicketstuff.jqplot.lib.elements.Title;
+/**
+ * Abstract class to help build charts.
+ *
+ * @author inaiat
+ *
+ * @param <S>
+ *            Type of {@link Axis}
+ *
+ */
+public abstract class AbstractChart<T extends ChartData<?>, S extends Serializable>
+		implements Chart<T> {
+	private static final long serialVersionUID = -5744130130488157491L;
+	public AbstractChart<T, S> addSeriesColors(String... colors) {
+		getChartConfiguration().seriesColorsInstance().addAll(
+				Arrays.asList(colors));
+		return this;
+	}
+	public AbstractChart<T, S> addSeriesColors(Collection<String> colors) {
+		getChartConfiguration().seriesColorsInstance().addAll(colors);
+		return this;
+	}
+	public AbstractChart<T, S> setSeriesColors(Collection<String> colors) {
+		getChartConfiguration().setSeriesColors(colors);
+		return this;
+	}
+	public Collection<String> getSeriesColors() {
+		return getChartConfiguration().seriesColorsInstance();
+	}
+	/**
+	 * Adiciona uma serie
+	 *
+	 * @param serie Add serie of chart
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> addSerie(Serie serie) {
+		Collection<Serie> series = getSeries();
+		if (series == null) {
+			series = new ArrayList<>();
+		}
+		series.add(serie);
+		return this;
+	}
+	/**
+	 * Add a collection of series
+	 *
+	 * @param series Add series of chart
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> addSeries(Serie... series) {
+		Collection<Serie> chartSeries = getSeries();
+		if (chartSeries == null) {
+			chartSeries = new ArrayList<>();
+		}
+		for (int i = series.length - 1; i >= 0; i--) {
+			chartSeries.add(series[i]);
+		}
+		return this;
+	}
+	/**
+	 *
+	 * @return chartConfiguration
+	 */
+	@Override
+	public abstract ChartConfiguration<S> getChartConfiguration();
+	/**
+	 *
+	 * @param title Set title of chart
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setSimpleTitle(String title) {
+		getChartConfiguration().setSimpleTitle(title);
+		return this;
+	}
+	/**
+	 *
+	 * @param label Set label for axis X
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setLabelX(String label) {
+		getChartConfiguration().setLabelX(label);
+		return this;
+	}
+	/**
+	 *
+	 * @param label Set label for axis Y
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setLabelY(String label) {
+		getChartConfiguration().setLabelY(label);
+		return this;
+	}
+	/**
+	 * @return the series
+	 */
+	public Collection<Serie> getSeries() {
+		return getChartConfiguration().seriesInstance();
+	}
+	/**
+	 * @param series
+	 *            the series to set
+	 *
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setSeries(Collection<Serie> series) {
+		this.getChartConfiguration().setSeries(series);
+		return this;
+	}
+	/**
+	 * @return the title
+	 */
+	public Title getTitle() {
+		return getChartConfiguration().getTitle();
+	}
+	/**
+	 * @param title
+	 *            the title to set
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setTitle(Title title) {
+		getChartConfiguration().setTitle(title);
+		return this;
+	}
+	/**
+	 * @return the axesDefaults
+	 */
+	public Axis<S> getAxesDefaults() {
+		return getChartConfiguration().axesDefaultsInstance();
+	}
+	/**
+	 * @param axesDefaults
+	 *            the axesDefaults to set
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setAxesDefaults(Axis<S> axesDefaults) {
+		getChartConfiguration().setAxesDefaults(axesDefaults);
+		return this;
+	}
+	/**
+	 * @return the seriesDefaults
+	 */
+	public SeriesDefaults getSeriesDefaults() {
+		return getChartConfiguration().seriesDefaultsInstance();
+	}
+	/**
+	 * @param seriesDefaults
+	 *            the seriesDefaults to set
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setSeriesDefaults(SeriesDefaults seriesDefaults) {
+		getChartConfiguration().setSeriesDefaults(seriesDefaults);
+		return this;
+	}
+	/**
+	 *
+	 * @param values Set values for interval colors
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> addIntervalColors(String... values) {
+		getChartConfiguration().seriesDefaultsInstance().getRendererOptions()
+				.getIntervalColors().addAll(Arrays.asList(values));
+		return this;
+	}
+	/**
+	 *
+	 * @param values Set interval values
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> addIntervals(Integer... values) {
+		getChartConfiguration().seriesDefaultsInstance().getRendererOptions()
+				.getIntervals().addAll(Arrays.asList(values));
+		return this;
+	}
+	/**
+	 *
+	 * @param stackSeries Enable/Disable stackSeries
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setStackSeries(Boolean stackSeries) {
+		getChartConfiguration().setStackSeries(stackSeries);
+		return this;
+	}
+	/**
+	 *
+	 * @param captureRightClick Enable/Disable captureRightClick
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setCaptureRightClick(Boolean captureRightClick) {
+		getChartConfiguration().setCaptureRightClick(captureRightClick);
+		return this;
+	}
+	/**
+	 *
+	 * @param highlightMouseDown Enable/Disable  highlighMouseDown
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setHighlightMouseDown(Boolean highlightMouseDown) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setHighlightMouseDown(highlightMouseDown);
+		return this;
+	}
+	/**
+	 *
+	 * @param margin Set value of margin
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setBarMargin(Integer margin) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setBarMargin(margin);
+		return this;
+	}
+	/**
+	 *
+	 * @param margin Set value o slice margin
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setSliceMargin(Integer margin) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setSliceMargin(margin);
+		return this;
+	}
+	/**
+	 *
+	 * @param dataLabels Set data labels
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setDataLabels(String dataLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setDataLabels(dataLabels);
+		return this;
+	}
+	/**
+	 *
+	 * @param width Set line width
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setLineWidth(Integer width) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setLineWidth(width);
+		return this;
+	}
+	/**
+	 *
+	 * @param showDataLabels Enable/Disable show data labels
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setShowDataLabels(Boolean showDataLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setShowDataLabels(showDataLabels);
+		return this;
+	}
+	/**
+	 *
+	 * @param fill Enable/Disable  fill
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setFill(Boolean fill) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setFill(fill);
+		return this;
+	}
+	/**
+	 *
+	 * @param alpha Set value for bubble alpha
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setBubbleAlpha(Float alpha) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setBubbleAlpha(alpha);
+		return this;
+	}
+	/**
+	 *
+	 * @param alpha Set value for highlight alpha
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setHighlightAlpha(Float alpha) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setHighlightAlpha(alpha);
+		return this;
+	}
+	/**
+	 *
+	 * @param showLabels Enable/Disable show labels
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setShowLabels(Boolean showLabels) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setShowLables(showLabels);
+		return this;
+	}
+	/**
+	 *
+	 * @param alpha Set value for shadow alpha
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setShadowAlpha(String alpha) {
+		getChartConfiguration().seriesDefaultsInstance().setShadowAlpha(alpha);
+		return this;
+	}
+	/**
+	 *
+	 * @param fillZero Enable/Disable fill zeros
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setFillZero(Boolean fillZero) {
+		getChartConfiguration().seriesDefaultsInstance().rendererOptionsInstance()
+				.setFillZero(fillZero);
+		return this;
+	}
+	/**
+	 *
+	 * @param shadow Enable/Disable  shadow
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setShadow(Boolean shadow) {
+		getChartConfiguration().getSeriesDefaults().setShadow(shadow);
+		return this;
+	}
+	/**
+	 *
+	 * @param legend Set {@link Legend} object
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setLegend(Legend legend) {
+		getChartConfiguration().setLegend(legend);
+		return this;
+	}
+	/**
+	 *
+	 * @param gridPadding Set {@link GridPadding} object
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setGridPadding(GridPadding gridPadding) {
+		getChartConfiguration().setGridPadding(gridPadding);
+		return this;
+	}
+	public GridPadding getGridPadding() {
+		return getChartConfiguration().getGridPadding();
+	}
+	/**
+	 * @return the axes
+	 */
+	public Axes<S> getAxes() {
+		return getChartConfiguration().axesInstance();
+	}
+	/**
+	 * @param axes
+	 *            the axes to set
+	 * @return AbstractChart
+	 */
+	public AbstractChart<T, S> setAxes(Axes<S> axes) {
+		getChartConfiguration().setAxes(axes);
+		return this;
+	}
+	public XAxis<S> getXAxis() {
+		return getChartConfiguration().xAxisInstance();
+	}
+	public YAxis<S> getYAxis() {
+		return getChartConfiguration().yAxisInstance();
+	}
+	/**
+	 * @return the canvas overlay
+	 */
+	public CanvasOverlay getCanvasOverlay() {
+		return getChartConfiguration().canvasOverlayInstance();
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+/**
+ * GridPadding
+ * 
+ * @author inaiat
+ * 
+ */
+public class GridPadding implements Element {
+    private static final long serialVersionUID = 5716187389339583925L;
+    private Integer top;
+    private Integer bottom;
+    private Integer right;
+    private Integer left;
+    public GridPadding(Integer top, Integer bottom, Integer left, Integer right) {
+	this.top = top;
+	this.bottom = bottom;
+	this.left = left;
+	this.right = right;
+    }
+    public GridPadding() {
+    }
+    public Integer getTop() {
+	return top;
+    }
+    public void setTop(Integer top) {
+	this.top = top;
+    }
+    public Integer getBottom() {
+	return bottom;
+    }
+    public void setBottom(Integer bottom) {
+	this.bottom = bottom;
+    }
+    public Integer getRight() {
+	return right;
+    }
+    public void setRight(Integer right) {
+	this.right = right;
+    }
+    public Integer getLeft() {
+	return left;
+    }
+    public void setLeft(Integer left) {
+	this.left = left;
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+/**
+ * SeriesDafaults
+ * 
+ * @author inaiat
+ */
+public class SeriesDefaults extends Serie {
+	private static final long serialVersionUID = -7921968769382552293L;
+	private PointLabels pointLabels;
+	private Trendline trendline;
+	/**
+	 * 
+	 * @return pointLables
+	 */
+	public PointLabels getPointLabels() {
+		return pointLabels;
+	}
+	/**
+	 * @param pointLabels Set point lables
+	 * @return SeriesDafaults
+	 */
+	public SeriesDefaults setPointLabels(PointLabels pointLabels) {
+		this.pointLabels = pointLabels;
+		return this;
+	}
+	public Trendline getTrendline() {
+		return trendline;
+	}
+	public SeriesDefaults setTrendline(Trendline trendline) {
+		this.trendline = trendline;
+		return this;
+	}
+	public Trendline trendlineInstance() {
+		if (trendline == null) {
+			trendline = new Trendline();
+		}
+		return trendline;
+	}
+	public PointLabels pointLabelsInstance() {
+		if (pointLabels == null) {
+			pointLabels = new PointLabels();
+		}
+		return pointLabels;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+/**
+ * Legend object.  
+ * 
+ * Legend properties can be set or overriden by the options passed in from the user.
+ *
+ * @author inaiat
+ */
+public class Legend implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = 7228235274262615669L;
+    
+    /** The options. */
+    private String options;
+    
+    /** The placement. */
+    private String placement;
+    
+    /** The location. */
+    private Location location;
+    
+    /** The border. */
+    private String border;
+    
+    /** The background. */
+    private String background;
+    
+    /** The font family. */
+    private String fontFamily;
+    
+    /** The margin top. */
+    private String marginTop;
+    
+    /** The margin right. */
+    private String marginRight;
+    
+    /** The margin bottom. */
+    private String marginBottom;
+    
+    /** The margin left. */
+    private String marginLeft;
+    
+    /** The renderer. */
+    private JqPlotResources renderer;
+    
+    /** The xoffset. */
+    private Double xoffset;
+    
+    /** The yoffset. */
+    private Double yoffset;
+    
+    /** The show. */
+    private Boolean show;
+    
+    /** The show lables. */
+    private Boolean showLables;
+    
+    /** The show swatches. */
+    private Boolean showSwatches;
+    
+    /** The pre draw. */
+    private Boolean preDraw;
+    
+    /** The escape html. */
+    private Boolean escapeHtml;
+    
+    /** The lables. */
+    private String[] lables;
+    /** The Render Options */
+    private LegendRenderer rendererOptions;
+    /**
+     * Instantiates a new legend.
+     */
+    public Legend() {
+    }
+    /**
+     * Instantiates a new legend.
+     *
+     * @param show the show
+     * @param location the location
+     */
+    public Legend(boolean show, Location location) {
+        this.show = show;
+        this.location = location;
+    }
+    /**
+     * Instantiates a new legend.
+     *
+     * @param options the options
+     */
+    public Legend(String options) {
+        this.options = options;
+    }
+    /**
+     * Gets the background.
+     *
+     * @return the background
+     */
+    public String getBackground() {
+        return background;
+    }
+    /**
+     * Sets the background.
+     *
+     * @param background the new background
+     */
+    public void setBackground(String background) {
+        this.background = background;
+    }
+    /**
+     * Gets the border.
+     *
+     * @return the border
+     */
+    public String getBorder() {
+        return border;
+    }
+    /**
+     * Sets the border.
+     *
+     * @param border the new border
+     */
+    public void setBorder(String border) {
+        this.border = border;
+    }
+    /**
+     * Gets the escape html.
+     *
+     * @return the escape html
+     */
+    public Boolean getEscapeHtml() {
+        return escapeHtml;
+    }
+    /**
+     * Sets the escape html.
+     *
+     * @param escapeHtml the new escape html
+     */
+    public void setEscapeHtml(Boolean escapeHtml) {
+        this.escapeHtml = escapeHtml;
+    }
+    /**
+     * Gets the font family.
+     *
+     * @return the font family
+     */
+    public String getFontFamily() {
+        return fontFamily;
+    }
+    /**
+     * Sets the font family.
+     *
+     * @param fontFamily the new font family
+     */
+    public void setFontFamily(String fontFamily) {
+        this.fontFamily = fontFamily;
+    }
+    /**
+     * Gets the lables.
+     *
+     * @return the lables
+     */
+    public String[] getLables() {
+        return lables;
+    }
+    /**
+     * Sets the lables.
+     *
+     * @param lables the new lables
+     */
+    public void setLables(String[] lables) {
+        this.lables = lables;
+    }
+    /**
+     * Gets the location.
+     *
+     * @return the location
+     */
+    public Location getLocation() {
+        return location;
+    }
+    /**
+     * Sets the location.
+     *
+     * @param location the new location
+     */
+    public void setLocation(Location location) {
+        this.location = location;
+    }
+    /**
+     * Gets the margin bottom.
+     *
+     * @return the margin bottom
+     */
+    public String getMarginBottom() {
+        return marginBottom;
+    }
+    /**
+     * Sets the margin bottom.
+     *
+     * @param marginBottom the new margin bottom
+     */
+    public void setMarginBottom(String marginBottom) {
+        this.marginBottom = marginBottom;
+    }
+    /**
+     * Gets the margin left.
+     *
+     * @return the margin left
+     */
+    public String getMarginLeft() {
+        return marginLeft;
+    }
+    /**
+     * Sets the margin left.
+     *
+     * @param marginLeft the new margin left
+     */
+    public void setMarginLeft(String marginLeft) {
+        this.marginLeft = marginLeft;
+    }
+    /**
+     * Gets the margin right.
+     *
+     * @return the margin right
+     */
+    public String getMarginRight() {
+        return marginRight;
+    }
+    /**
+     * Sets the margin right.
+     *
+     * @param marginRight the new margin right
+     */
+    public void setMarginRight(String marginRight) {
+        this.marginRight = marginRight;
+    }
+    /**
+     * Gets the margin top.
+     *
+     * @return the margin top
+     */
+    public String getMarginTop() {
+        return marginTop;
+    }
+    /**
+     * Sets the margin top.
+     *
+     * @param marginTop the new margin top
+     */
+    public void setMarginTop(String marginTop) {
+        this.marginTop = marginTop;
+    }
+    /**
+     * Gets the placement.
+     *
+     * @return the placement
+     */
+    public String getPlacement() {
+        return placement;
+    }
+    /**
+     * Sets the placement.
+     *
+     * @param placement the new placement
+     */
+    public void setPlacement(String placement) {
+        this.placement = placement;
+    }
+    /**
+     * Gets the pre draw.
+     *
+     * @return the pre draw
+     */
+    public Boolean getPreDraw() {
+        return preDraw;
+    }
+    /**
+     * Sets the pre draw.
+     *
+     * @param preDraw the new pre draw
+     */
+    public void setPreDraw(Boolean preDraw) {
+        this.preDraw = preDraw;
+    }
+    /**
+     * Gets the renderer.
+     *
+     * @return the renderer
+     */
+    public JqPlotResources getRenderer() {
+        return renderer;
+    }
+    /**
+     * Sets the renderer.
+     *
+     * @param renderer the new renderer
+     */
+    public void setRenderer(JqPlotResources renderer) {
+        this.renderer = renderer;
+    }
+    /**
+     * Gets the show.
+     *
+     * @return the show
+     */
+    public Boolean getShow() {
+        return show;
+    }
+    /**
+     * Sets the show.
+     *
+     * @param show the new show
+     */
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    /**
+     * Gets the show lables.
+     *
+     * @return the show lables
+     */
+    public Boolean getShowLables() {
+        return showLables;
+    }
+    /**
+     * Sets the show lables.
+     *
+     * @param showLables the new show lables
+     */
+    public void setShowLables(Boolean showLables) {
+        this.showLables = showLables;
+    }
+    /**
+     * Gets the show swatches.
+     *
+     * @return the show swatches
+     */
+    public Boolean getShowSwatches() {
+        return showSwatches;
+    }
+    /**
+     * Sets the show swatches.
+     *
+     * @param showSwatches the new show swatches
+     */
+    public void setShowSwatches(Boolean showSwatches) {
+        this.showSwatches = showSwatches;
+    }
+    /**
+     * Gets the xoffset.
+     *
+     * @return the xoffset
+     */
+    public Double getXoffset() {
+        return xoffset;
+    }
+    /**
+     * Sets the xoffset.
+     *
+     * @param xoffset the new xoffset
+     */
+    public void setXoffset(Double xoffset) {
+        this.xoffset = xoffset;
+    }
+    /**
+     * Gets the yoffset.
+     *
+     * @return the yoffset
+     */
+    public Double getYoffset() {
+        return yoffset;
+    }
+    /**
+     * Sets the yoffset.
+     *
+     * @param yoffset the new yoffset
+     */
+    public void setYoffset(Double yoffset) {
+        this.yoffset = yoffset;
+    }
+    /**
+     * Gets the options.
+     *
+     * @return the options
+     */
+    public String getOptions() {
+        return options;
+    }
+    /**
+     * Sets the options.
+     *
+     * @param options the new options
+     */
+    public void setOptions(String options) {
+        this.options = options;
+    }
+    /**
+     *  Gets the {@link RendererOptions}
+	 * @return LegendRenderer
+     */
+	public LegendRenderer getRendererOptions()
+	{
+		return rendererOptions;
+	}
+    /**
+     *  Sets the {@link RendererOptions}
+	 *  @param rendererOptions set the LegendRenderer
+     */
+	public void setRendererOptions(LegendRenderer rendererOptions)
+	{
+		this.rendererOptions = rendererOptions;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+import java.util.ArrayList;
+import java.util.Collection;
+/**
+ * CanvasOverlay object.  
+ * 
+ * CanvasOverlay properties can be set or overriden by the options passed in from the user.
+ *
+ * @author inaiat
+ */
+public class CanvasOverlay implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = 7228237274262615669L;
+    
+    /** The name. */
+    private String name;
+    
+    /** The show. */
+    private Boolean show;
+    /** The line width. */
+    private Integer lineWidth;
+    /** The line cap. */
+    private String lineCap;
+    /** The color. */
+    private String color;
+    /** The shadow. */
+    private Boolean shadow;
+    /** The showTooltip. */
+    private Boolean showTooltip;
+    /** The showTooltipPrecision. */
+    private Float showTooltipPrecision;
+    /** The tooltipLocation. */
+    private String tooltipLocation;
+    /** The fadeTooltip. */
+    private Boolean fadeTooltip;
+    /** The tooltipFadeSpeed. */
+    private String tooltipFadeSpeed;
+    /** The tooltipOffset. */
+    private Integer tooltipOffset;
+    /** The tooltipFormatString. */
+    private String tooltipFormatString;
+    /** The xOffset. */
+    private String xOffset;
+    
+    /** The objects */
+    private Collection<LineObject> objects;
+    /**
+     * Instantiates a new canvas overlay.
+     */
+    public CanvasOverlay() {
+    }
+    /**
+     * Instantiates a new canvas overlay.
+     *
+     * @param name the name
+     */
+    public CanvasOverlay(String name) {
+        this.name = name;
+    }
+    /**
+     * Gets the name.
+     *
+     * @return the name
+     */
+    public String getName() {
+        return name;
+    }
+    /**
+     * Sets the name.
+     *
+     * @param name the new name
+     */
+    public void setName(String name) {
+        this.name = name;
+    }
+    /**
+     * Gets the show.
+     *
+     * @return the show
+     */
+    public Boolean getShow() {
+        return show;
+    }
+    /**
+     * Sets the show.
+     *
+     * @param show the new show
+     */
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    /**
+     * Gets the line width.
+     *
+     * @return lineWidth
+     */
+    public Integer getLineWidth() {
+        return lineWidth;
+    }
+    /**
+     * Sets the line width.
+     *
+     * @param lineWidth the new line width
+	 * @return CanvasOverlay
+     */
+    public CanvasOverlay setLineWidth(Integer lineWidth) {
+        this.lineWidth = lineWidth;
+        return this;
+    }
+    /**
+     * Gets the line cap.
+     *
+     * @return lineCap
+     */
+    public String getLineCap() {
+        return lineCap;
+    }
+    /**
+     * Sets the line cap.
+     *
+     * @param lineCap the new line cap
+	 * @return CanvasOverlay
+	 */
+    public CanvasOverlay setLineCap(String lineCap) {
+        this.lineCap = lineCap;
+        return this;
+    }
+    /**
+     * Gets the color.
+     *
+     * @return the color
+     */
+    public String getColor() {
+        return color;
+    }
+    /**
+     * Sets the color.
+     *
+     * @param color the new color
+	 * @return CanvasOverlay
+	 */
+    public CanvasOverlay setColor(String color) {
+        this.color = color;
+        return this;
+    }
+    /**
+     * Gets the shadow.
+     *
+     * @return shadow
+     */
+    public Boolean getShadow() {
+        return shadow;
+    }
+    /**
+     * Sets the shadow.
+     *
+     * @param shadow the new shadow
+	 * @return CanvasOverlay
+	 */
+    public CanvasOverlay setShadow(Boolean shadow) {
+        this.shadow = shadow;
+        return this;
+    }
+    /**
+     * Gets the showTooltip.
+     *
+     * @return the showTooltip
+     */
+    public Boolean getShowTooltip() {
+        return showTooltip;
+    }
+    /**
+     * Sets the showTooltip.
+     *
+     * @param showTooltip the new showTooltip
+     */
+    public void setShowTooltip(Boolean showTooltip) {
+        this.showTooltip = showTooltip;
+    }
+    /**
+     * Gets the showTooltipPrecision.
+     *
+     * @return the showTooltipPrecision
+     */
+    public Float getShowTooltipPrecision() {
+        return showTooltipPrecision;
+    }
+    /**
+     * Sets the showTooltipPrecision.
+     *
+     * @param showTooltipPrecision the new showTooltipPrecision
+     */
+    public void setShowTooltipPrecision(Float showTooltipPrecision) {
+        this.showTooltipPrecision = showTooltipPrecision;
+    }
+    /**
+     * Gets the tooltipLocation.
+     *
+     * @return the tooltipLocation
+     */
+    public String getTooltipLocation() {
+        return tooltipLocation;
+    }
+    /**
+     * Sets the tooltipLocation.
+     *
+     * @param tooltipLocation the new tooltipLocation
+     */
+    public void setTooltipLocation(String tooltipLocation) {
+        this.tooltipLocation = tooltipLocation;
+    }
+    /**
+     * Gets the fadeTooltip.
+     *
+     * @return the fadeTooltip
+     */
+    public Boolean getFadeTooltip() {
+        return fadeTooltip;
+    }
+    /**
+     * Sets the fadeTooltip.
+     *
+     * @param fadeTooltip the new fadeTooltip
+     */
+    public void setFadeTooltip(Boolean fadeTooltip) {
+        this.fadeTooltip = fadeTooltip;
+    }
+    /**
+     * Gets the tooltipFadeSpeed.
+     *
+     * @return the tooltipFadeSpeed
+     */
+    public String getTooltipFadeSpeed() {
+        return tooltipFadeSpeed;
+    }
+    /**
+     * Sets the tooltipFadeSpeed.
+     *
+     * @param tooltipFadeSpeed the new tooltipFadeSpeed
+     */
+    public void setTooltipFadeSpeed(String tooltipFadeSpeed) {
+        this.tooltipFadeSpeed = tooltipFadeSpeed;
+    }
+    /**
+     * Gets the tooltipOffset.
+     *
+     * @return the tooltipOffset
+     */
+    public Integer getTooltipOffset() {
+        return tooltipOffset;
+    }
+    /**
+     * Sets the tooltipOffset.
+     *
+     * @param tooltipOffset the new tooltipOffset
+     */
+    public void setTooltipOffset(Integer tooltipOffset) {
+        this.tooltipOffset = tooltipOffset;
+    }
+    /**
+     * Gets the tooltipFormatString.
+     *
+     * @return the tooltipFormatString
+     */
+    public String getTooltipFormatString() {
+        return tooltipFormatString;
+    }
+    /**
+     * Sets the tooltipFormatString.
+     *
+     * @param tooltipFormatString the new tooltipFormatString
+     */
+    public void setTooltipFormatString(String tooltipFormatString) {
+        this.tooltipFormatString = tooltipFormatString;
+    }
+    /**
+     * Gets the xOffset.
+     *
+     * @return the xOffset
+     */
+    public String getXOffset() {
+        return xOffset;
+    }
+    /**
+     * Sets the xOffset.
+     *
+     * @param xOffset the new xOffset
+	 * @return CanvasOverlay
+	 */
+    public CanvasOverlay setXOffset(String xOffset) {
+        this.xOffset = xOffset;
+        return this;
+    }
+	/**
+	 * Instantiates the objects.
+	 * 
+	 * @return the objects
+	 */
+	public Collection<LineObject> objectsInstance() {
+		if (objects == null) {
+			this.objects = new ArrayList<LineObject>();
+		}
+		return this.objects;
+	}
+	/**
+	 * Gets the objects.
+	 * 
+	 * @return the objects
+	 */
+	public Collection<LineObject> getObjects() {
+		return objects;
+	}
+	/**
+	 * Sets the objects.
+	 * 
+	 * @param objects
+	 *            the objects to set
+	 * @return CanvasOverlay
+	 */
+	public CanvasOverlay setObjects(Collection<LineObject> objects) {
+		this.objects = objects;
+		return this;
+	}
+	/**
+	 * Get a {@link DashedHorizontalLine} instance
+	 * @return DashedHorizontalLine
+	 */
+	public DashedHorizontalLine dashedHorizontalLineInstance() {
+           LineObject lineObject = new LineObject();
+           DashedHorizontalLine dashedHorizontalLine = lineObject.dashedHorizontalLineInstance();
+		objectsInstance().add(lineObject);
+		return dashedHorizontalLine;
+	}
+	/**
+	 * Get a {@link DashedVerticalLine} instance
+	 * @return DashedVerticalLine
+	 */
+	public DashedVerticalLine dashedVerticalLineInstance() {
+           LineObject lineObject = new LineObject();
+           DashedVerticalLine dashedVerticalLine = lineObject.dashedVerticalLineInstance();
+		objectsInstance().add(lineObject);
+		return dashedVerticalLine;
+	}
+	/**
+	 * Get a {@link HorizontalLine} instance
+	 * @return HorizontalLine
+	 */
+	public HorizontalLine horizontalLineInstance() {
+           LineObject lineObject = new LineObject();
+           HorizontalLine horizontalLine = lineObject.horizontalLineInstance();
+		objectsInstance().add(lineObject);
+		return horizontalLine;
+	}
+	/**
+	 * Get a {@link VerticalLine} instance
+	 * @return VerticalLine
+	 */
+	public VerticalLine verticalLineInstance() {
+           LineObject lineObject = new LineObject();
+           VerticalLine verticalLine = lineObject.verticalLineInstance();
+		objectsInstance().add(lineObject);
+		return verticalLine;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+/**
+ * The Class Serie.
+ *
+ * @author inaiat
+ */
+public class Serie implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = 7138260563176853708L;
+    
+    /** The label. */
+    private String label;
+    
+    /** The renderer. */
+    private JqPlotResources renderer;
+    
+    /** The renderer options. */
+    private RendererOptions rendererOptions;
+    
+    /** The fill. */
+    private Boolean fill;
+    
+    /** The line width. */
+    private Integer lineWidth;
+    
+    /** The marker options. */
+    private MarkerOptions markerOptions;
+    
+    /** The show marker. */
+    private Boolean showMarker;
+    
+    /** The show alpha. */
+    private Boolean showAlpha;
+    
+    /** The shadow. */
+    private Boolean shadow;
+    
+    /** The shadow alpha. */
+    private String shadowAlpha;
+    /** The shadow depth. */
+    private Integer shadowDepth;
+    
+    /** The show line. */
+    private Boolean showLine;
+    
+    /** The color. */
+    private String color;
+    /**
+     * Instantiates a new serie.
+     */
+    public Serie() {
+    }  
+    /**
+     * Instantiates a new serie.
+     *
+     * @param label the label
+     */
+    public Serie(String label) {
+    	this.label = label;
+    }
+    /**
+     * Line width.
+     *
+     * @param lineWidth the line width
+     * @return the serie
+     */
+    public Serie lineWidth(Integer lineWidth) {
+    	this.lineWidth = lineWidth;
+    	return this;
+    }
+    
+    /**
+     * Marker options.
+     *
+     * @param markerOptions the marker options
+     * @return the serie
+     */
+    public Serie markerOptions(MarkerOptions markerOptions) {
+    	this.markerOptions = markerOptions;
+    	return this;
+    }
+    
+    /**
+     * Show line.
+     *
+     * @param showLine the show line
+     * @return the serie
+     */
+    public Serie showLine(Boolean showLine) {
+    	this.setShowLine(showLine);
+    	return this;
+    }
+    
+    /**
+     * Renderer options.
+     *
+     * @param rendererOptions the renderer options
+     * @return the serie
+     */
+    public Serie rendererOptions(RendererOptions rendererOptions) {
+    	this.rendererOptions = rendererOptions;
+    	return this;
+    }
+    
+    /**
+     * Renderer.
+     *
+     * @param renderer the renderer
+     * @return the serie
+     */
+    public Serie renderer(JqPlotResources renderer) {
+    	this.renderer = renderer;
+    	return this;
+    }
+    /**
+     * Gets the shadow alpha.
+     *
+     * @return shadowAlpha
+     */
+    public String getShadowAlpha() {
+        return shadowAlpha;
+    }
+    /**
+     * Sets the shadow alpha.
+     *
+     * @param shadowAlpha the new shadow alpha
+	 * @return Serie
+     */
+    public Serie setShadowAlpha(String shadowAlpha) {
+        this.shadowAlpha = shadowAlpha;
+        return this;
+    }
+    /**
+     * Gets the shadow depth.
+     *
+     * @return shadowDepth
+     */
+    public Integer getShadowDepth() {
+        return shadowDepth;
+    }
+    /**
+     * Sets the shadow depth.
+     *
+     * @param shadowDepth the new shadow depth
+	 * @return Serie
+     */
+    public Serie setShadowDepth(Integer shadowDepth) {
+        this.shadowDepth = shadowDepth;
+        return this;
+    }
+    /**
+     * Gets the show alpha.
+     *
+     * @return showAlpha true ou false
+     */
+    public Boolean getShowAlpha() {
+        return showAlpha;
+    }
+    /**
+     * Sets the show alpha.
+     *
+     * @param showAlpha the new show alpha
+	 * @return Serie
+     */
+    public Serie setShowAlpha(Boolean showAlpha) {
+        this.showAlpha = showAlpha;
+        return this;
+    }
+    /**
+     * Gets the shadow.
+     *
+     * @return shadow
+     */
+    public Boolean getShadow() {
+        return shadow;
+    }
+    /**
+     * Sets the shadow.
+     *
+     * @param shadow the new shadow
+	 * @return Serie
+     */
+    public Serie setShadow(Boolean shadow) {
+        this.shadow = shadow;
+        return this;
+    }
+    /**
+     * Gets the show marker.
+     *
+     * @return the show marker
+     */
+    public Boolean getShowMarker() {
+        return showMarker;
+    }
+    /**
+     * Sets the show marker.
+     *
+     * @param showMarker the new show marker
+	 * @return Serie
+	 */
+    public Serie setShowMarker(Boolean showMarker) {
+        this.showMarker = showMarker;
+        return this;
+    }
+    
+    /**
+     * Gets the marker options.
+     *
+     * @return the marker options
+     */
+    public MarkerOptions getMarkerOptions() {
+        return markerOptions;
+    }
+    /**
+     * Sets the marker options.
+     *
+     * @param markerOptions the new marker options
+	 * @return Serie
+     */
+    public Serie setMarkerOptions(MarkerOptions markerOptions) {
+        this.markerOptions = markerOptions;
+        return this;
+    }
+    /**
+     * Gets the line width.
+     *
+     * @return the line width
+     */
+    public Integer getLineWidth() {
+        return lineWidth;
+    }
+    /**
+     * Sets the line width.
+     *
+     * @param lineWidth the new line width
+	 * @return Serie
+     */
+    public Serie setLineWidth(Integer lineWidth) {
+        this.lineWidth = lineWidth;
+        return this;
+    }
+    /**
+     * Gets the renderer options.
+     *
+     * @return the renderer options
+     */
+    public RendererOptions getRendererOptions() {
+        return rendererOptions;
+    }
+    /**
+     * Sets the renderer options.
+     *
+     * @param rendererOptions the new renderer options
+	 * @return Serie
+     */
+    public Serie setRendererOptions(RendererOptions rendererOptions) {
+        this.rendererOptions = rendererOptions;
+        return this;
+    }
+    
+    /**
+     * Gets the label.
+     *
+     * @return the label
+     */
+    public String getLabel() {
+        return label;
+    }
+    /**
+     * Sets the label.
+     *
+     * @param label the label to set
+	 * @return Serie
+     */
+    public Serie setLabel(String label) {
+        this.label = label;
+        return this;
+    }
+    /**
+     * Gets the renderer.
+     *
+     * @return the renderer
+     */
+    public JqPlotResources getRenderer() {
+        return renderer;
+    }
+    /**
+     * Sets the renderer.
+     *
+     * @param renderer the renderer to set
+	 * @return Serie
+     */
+    public Serie setRenderer(JqPlotResources renderer) {
+        this.renderer = renderer;
+        return this;
+    }
+    /**
+     * Gets the fill.
+     *
+     * @return the fill
+     */
+    public Boolean getFill() {
+        return fill;
+    }
+    /**
+     * Sets the fill.
+     *
+     * @param fill the fill to set
+	 * @return Serie
+	 */
+    public Serie setFill(Boolean fill) {
+        this.fill = fill;
+        return this;
+    }
+    /**
+     * Gets the color.
+     *
+     * @return the color
+     */
+    public String getColor() {
+        return color;
+    }
+    /**
+     * Sets the color.
+     *
+     * @param color the new color
+	 * @return Serie
+     */
+    public Serie setColor(String color) {
+        this.color = color;
+        return this;
+    }
+	
+	/**
+	 * Gets the show line.
+	 *
+	 * @return the show line
+	 */
+	public Boolean getShowLine() {
+		return showLine;
+	}
+	/**
+	 * Sets the show line.
+	 *
+	 * @param showLine the new show line
+	 * @return Serie
+	 */
+	public Serie setShowLine(Boolean showLine) {
+		this.showLine = showLine;
+		return this;
+	}
+	/**
+	 * Get renderer options instance
+	 * @return RendererOptions
+	 */
+	public RendererOptions rendererOptionsInstance() {
+		if (rendererOptions==null) {
+			this.rendererOptions = new RendererOptions();
+		}
+		return rendererOptions;
+	}
+	
+	public MarkerOptions markerOptionsInstance() {
+		if (markerOptions==null) {
+			markerOptions = new MarkerOptions();
+		}
+		return markerOptions;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+/**
+ * which x axis to use with this series, either 'xaxis' or 'x2axis'.
+ * 
+ * @author inaiat
+ */
+public class XAxis<T extends Serializable> extends Axis<T> {
+	private static final long serialVersionUID = -6656658483757126503L;
+    
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.axis;
+import java.io.Serializable;
+/**
+ * which y axis to use with this series, either 'yaxis' or 'y2axis'.
+ * 
+ * @author inaiat
+ */
+public class YAxis<T extends Serializable> extends Axis<T> {
+    private static final long serialVersionUID = 1964421050362233742L;
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.data.ChartData;
+/**
+ *
+ * Base of all charts
+ *
+ * @author inaiat
+ */
+public interface Chart<T extends ChartData<?>> extends Serializable {
+	/**
+	 * Return chart configuration
+	 * @return {@link ChartConfiguration}
+	 */
+	ChartConfiguration<?> getChartConfiguration();
+	/**
+	 * Return chart data.
+	 * @return {@link ChartData}
+	 */
+	T getChartData();
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.BubbleData;
+import org.wicketstuff.jqplot.lib.data.item.BubbleItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * 
+ * Simple implementation of Bubble Chart. This class can/should be extended.
+ * 
+ * @author inaiat
+ */
+@JqPlotPlugin(values = { JqPlotResources.BubbleRenderer })
+public class BubbleChart extends AbstractChart<BubbleData<BubbleItem>, String> {
+	private static final long serialVersionUID = -8122703368130701972L;
+	private final ChartConfiguration<String> chartConfig;
+	private BubbleData<BubbleItem> bubbleData = new BubbleData<BubbleItem>();
+	/**
+	 * Construtor
+	 */
+	public BubbleChart() {
+		this(null);
+	}
+	/**
+	 * Construtor
+	 * 
+	 * @param title The title
+	 */
+	public BubbleChart(String title) {
+		this.chartConfig = new ChartConfiguration<String>();
+		chartConfig
+			.setTitle(new Title(title))
+			.seriesDefaultsInstance()
+			.setRenderer((JqPlotResources.BubbleRenderer));
+	}
+	/**
+	 * 
+	 * @return chartData
+	 */
+	public BubbleData<BubbleItem> getChartData() {
+		return bubbleData;
+	}
+	/**
+	 * Add a value
+	 * @param item Add a {@link BubbleItem}
+	 */
+	public void addValue(BubbleItem item) {
+		bubbleData.addValue(item);
+	}
+	/**
+	 * Add a value
+	 * @param x x
+	 * @param y y
+	 * @param radius radius
+	 * @param label label
+	 */
+	public void addValue(Float x, Float y, Float radius, String label) {
+		bubbleData.addValue(new BubbleItem(x, y, radius, label));
+	}
+	/**
+	 * Add a value
+	 * @param x x
+	 * @param y y
+	 * @param radius radius
+	 * @param label label
+	 */
+	public void addValue(Integer x, Integer y, Integer radius, String label) {
+		bubbleData.addValue(new BubbleItem(x, y, radius, label));
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		// TODO Auto-generated method stub
+		return null;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+import java.io.Serializable;
+import org.wicketstuff.jqplot.lib.axis.Axis;
+// TODO: Auto-generated Javadoc
+/**
+ * Object representing the grid on which the plot is drawn.  The grid in this context is the area bounded by the axes, 
+ * the area which will contain the series.  Note, the series are drawn on their own canvas.  
+ * The Grid object cannot be instantiated directly, but is created by the Plot oject.  
+ * Grid properties can be set or overriden by the options passed in from the user. 
+ * 
+ * @param <T> Type of {@link Axis}
+ * 
+ * @author inaiat
+ */
+public class Grid<T extends Serializable> implements Element {
+    /** The Constant serialVersionUID. */
+    private static final long serialVersionUID = 5478580499167992682L;
+    
+    /** The draw grid lines. */
+    private Boolean drawGridLines;
+    
+    /** The grid line color. */
+    private String gridLineColor;
+    
+    /** The grid line width. */
+    private Double gridLineWidth;    
+    
+    /** The background. */
+    private String background;
+    
+    /** The border color. */
+    private String borderColor;
+    
+    /** The border width. */
+    private Double borderWidth;
+    
+    /** The draw border. */
+    private Boolean drawBorder;
+    
+    /** The shadow. */
+    private Boolean shadow;
+    
+    /** The shadow angle. */
+    private Double shadowAngle;
+    
+    /** The shadow offset. */
+    private Double shadowOffset;
+    
+    /** The shadow width. */
+    private Double shadowWidth;
+    
+    /** The shadow depth. */
+    private Double shadowDepth;
+    
+    /** The shadow color. */
+    private String shadowColor;
+    
+    /** The shadow alpha. */
+    private String shadowAlpha;
+    
+    /** The left. */
+    private Float left;
+    
+    /** The top. */
+    private Float top;
+    
+    /** The right. */
+    private Float right;
+    
+    /** The bottom. */
+    private Float bottom;
+    
+    /** The width. */
+    private Float width;
+    
+    /** The height. */
+    private Float height;
+    
+    /** The axis. */
+    private Axis<T>[] axis;
+    
+    /** The renderer options. */
+    private String[] rendererOptions;
+    /**
+     * Gets the axis.
+     *
+     * @return array de Axis
+     */
+    public Axis<T>[] getAxis() {
+        return axis;
+    }
+    /**
+     * Sets the axis.
+     *
+     * @param axis the new axis
+     */
+    public void setAxis(Axis<T>[] axis) {
+        this.axis = axis;
+    }
+    /**
+     * Gets the background.
+     *
+     * @return background
+     */
+    public String getBackground() {
+        return background;
+    }
+    /**
+     * Sets the background.
+     *
+     * @param background the new background
+     */
+    public void setBackground(String background) {
+        this.background = background;
+    }
+    /**
+     * Gets the border color.
+     *
+     * @return borderColor
+     */
+    public String getBorderColor() {
+        return borderColor;
+    }
+    /**
+     * Sets the border color.
+     *
+     * @param borderColor the new border color
+     */
+    public void setBorderColor(String borderColor) {
+        this.borderColor = borderColor;
+    }
+    /**
+     * Gets the border width.
+     *
+     * @return borderWidth
+     */
+    public Double getBorderWidth() {
+        return borderWidth;
+    }
+    /**
+     * Sets the border width.
+     *
+     * @param borderWidth the new border width
+     */
+    public void setBorderWidth(Double borderWidth) {
+        this.borderWidth = borderWidth;
+    }
+    /**
+     * Gets the bottom.
+     *
+     * @return bottom
+     */
+    public Float getBottom() {
+        return bottom;
+    }
+    /**
+     * Sets the bottom.
+     *
+     * @param bottom the new bottom
+     */
+    public void setBottom(Float bottom) {
+        this.bottom = bottom;
+    }
+    /**
+     * Gets the draw border.
+     *
+     * @return drawBorder true ou false
+     */
+    public Boolean getDrawBorder() {
+        return drawBorder;
+    }
+    /**
+     * Sets the draw border.
+     *
+     * @param drawBorder the new draw border
+     */
+    public void setDrawBorder(Boolean drawBorder) {
+        this.drawBorder = drawBorder;
+    }
+    /**
+     * Gets the draw grid lines.
+     *
+     * @return drawGridLines true ou false
+     */
+    public Boolean getDrawGridLines() {
+        return drawGridLines;
+    }
+    /**
+     * Sets the draw grid lines.
+     *
+     * @param drawGridLines the new draw grid lines
+     */
+    public void setDrawGridLines(Boolean drawGridLines) {
+        this.drawGridLines = drawGridLines;
+    }
+    /**
+     * Gets the grid line color.
+     *
+     * @return gridLineColor
+     */
+    public String getGridLineColor() {
+        return gridLineColor;
+    }
+    /**
+     * Sets the grid line color.
+     *
+     * @param gridLineColor the new grid line color
+     */
+    public void setGridLineColer(String gridLineColor) {
+        this.gridLineColor = gridLineColor;
+    }
+    /**
+     * Gets the grid line width.
+     *
+     * @return gridLineWidth
+     */
+    public Double getGridLineWidth() {
+        return gridLineWidth;
+    }
+    /**
+     * Sets the grid line width.
+     *
+     * @param gridLineWidth the new grid line width
+     */
+    public void setGridLineWidth(Double gridLineWidth) {
+        this.gridLineWidth = gridLineWidth;
+    }
+    /**
+     * Gets the height.
+     *
+     * @return height
+     */
+    public Float getHeight() {
+        return height;
+    }
+    /**
+     * Sets the height.
+     *
+     * @param height the new height
+     */
+    public void setHeight(Float height) {
+        this.height = height;
+    }
+    /**
+     * Gets the left.
+     *
+     * @return left
+     */
+    public Float getLeft() {
+        return left;
+    }
+    /**
+     * Sets the left.
+     *
+     * @param left the new left
+     */
+    public void setLeft(Float left) {
+        this.left = left;
+    }
+    /**
+     * Gets the renderer options.
+     *
+     * @return rendererOptions
+     */
+    public String[] getRendererOptions() {
+        return rendererOptions;
+    }
+    /**
+     * Sets the renderer options.
+     *
+     * @param rendererOptions the new renderer options
+     */
+    public void setRendererOptions(String[] rendererOptions) {
+        this.rendererOptions = rendererOptions;
+    }
+    /**
+     * Gets the right.
+     *
+     * @return right
+     */
+    public Float getRight() {
+        return right;
+    }
+    /**
+     * Sets the right.
+     *
+     * @param right the new right
+     */
+    public void setRight(Float right) {
+        this.right = right;
+    }
+    /**
+     * Gets the shadow.
+     *
+     * @return shadow
+     */
+    public Boolean getShadow() {
+        return shadow;
+    }
+    /**
+     * Sets the shadow.
+     *
+     * @param shadow the new shadow
+     */
+    public void setShadow(Boolean shadow) {
+        this.shadow = shadow;
+    }
+    /**
+     * Gets the shadow alpha.
+     *
+     * @return shadowAlpha
+     */
+    public String getShadowAlpha() {
+        return shadowAlpha;
+    }
+    /**
+     * Sets the shadow alpha.
+     *
+     * @param shadowAlpha the new shadow alpha
+     */
+    public void setShadowAlpha(String shadowAlpha) {
+        this.shadowAlpha = shadowAlpha;
+    }
+    /**
+     * Gets the shadow angle.
+     *
+     * @return shadowAngle
+     */
+    public Double getShadowAngle() {
+        return shadowAngle;
+    }
+    /**
+     * Sets the shadow angle.
+     *
+     * @param shadowAngle the new shadow angle
+     */
+    public void setShadowAngle(Double shadowAngle) {
+        this.shadowAngle = shadowAngle;
+    }
+    /**
+     * Gets the shadow color.
+     *
+     * @return shadowColor
+     */
+    public String getShadowColor() {
+        return shadowColor;
+    }
+    /**
+     * Sets the shadow color.
+     *
+     * @param shadowColor the new shadow color
+     */
+    public void setShadowColor(String shadowColor) {
+        this.shadowColor = shadowColor;
+    }
+    /**
+     * Gets the shadow depth.
+     *
+     * @return shadowDepth
+     */
+    public Double getShadowDepth() {
+        return shadowDepth;
+    }
+    /**
+     * Sets the shadow depth.
+     *
+     * @param shadowDepth the new shadow depth
+     */
+    public void setShadowDepth(Double shadowDepth) {
+        this.shadowDepth = shadowDepth;
+    }
+    /**
+     * Gets the shadow offset.
+     *
+     * @return shadowOffSet
+     */
+    public Double getShadowOffset() {
+        return shadowOffset;
+    }
+    /**
+     * Sets the shadow offset.
+     *
+     * @param shadowOffset the new shadow offset
+     */
+    public void setShadowOffset(Double shadowOffset) {
+        this.shadowOffset = shadowOffset;
+    }
+    /**
+     * Gets the shadow width.
+     *
+     * @return shadowWidth
+     */
+    public Double getShadowWidth() {
+        return shadowWidth;
+    }
+    /**
+     * Sets the shadow width.
+     *
+     * @param shadowWidth the new shadow width
+     */
+    public void setShadowWidth(Double shadowWidth) {
+        this.shadowWidth = shadowWidth;
+    }
+    /**
+     * Gets the top.
+     *
+     * @return top
+     */
+    public Float getTop() {
+        return top;
+    }
+    /**
+     * Sets the top.
+     *
+     * @param top the new top
+     */
+    public void setTop(Float top) {
+        this.top = top;
+    }
+    /**
+     * Gets the width.
+     *
+     * @return width
+     */
+    public Float getWidth() {
+        return width;
+    }
+    /**
+     * Sets the width.
+     *
+     * @param width the new width
+     */
+    public void setWidth(Float width) {
+        this.width = width;
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.PieDonutData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Pie Donut Chart. This class can/should be extended.
+ * 
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {JqPlotResources.DonutRenderer})
+public class PieDonutChart<T extends Number> extends AbstractChart<PieDonutData<T>,String> {
+	private static final long serialVersionUID = -4671992800819368331L;
+	PieDonutData<T> data = new PieDonutData<T>();
+	
+	private final ChartConfiguration<String> chartConfig;
+    /**
+     * Construtor
+     */
+    public PieDonutChart() {
+        this(null);
+    }
+    /**
+     * 
+     * @param title The title
+     */
+    public PieDonutChart(String title) {
+    	this.chartConfig = new ChartConfiguration<String>(); 
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.seriesDefaultsInstance()
+    		.setRenderer(JqPlotResources.DonutRenderer)
+    		.rendererOptionsInstance()
+    		.setSliceMargin(4)
+    		.setShowDataLabels(true)
+    		.setDataLabels("value");
+    }
+    /**
+     * 
+     * @param value Collection of {@link LabeledItem}
+     */
+    public void addValue(Collection<LabeledItem<T>> value) {
+        data.addValue(value);
+    }
+    /**
+     * 
+     * @return PieDonutData
+     */
+    public PieDonutData<T> getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LineSeriesData;
+import org.wicketstuff.jqplot.lib.data.item.LineSeriesItem;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Bar Chart. This class can/should be extended.
+ *
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {JqPlotResources.CategoryAxisRenderer,
+    JqPlotResources.BarRenderer,
+    JqPlotResources.PointLabels,
+    JqPlotResources.CanvasTextRenderer,
+    JqPlotResources.CanvasAxisLabelRenderer,
+    JqPlotResources.CanvasAxisTickRenderer,
+    JqPlotResources.CanvasOverlay,
+    JqPlotResources.DateAxisRenderer })
+public class BarSeriesChart<I extends Number, V extends Number> extends
+		AbstractChart<LineSeriesData<I, V>, String> {
+	private static final long serialVersionUID = 3650210485517566138L;
+	private final ChartConfiguration<String> chartConfig;
+	private LineSeriesData<I, V> barData = new LineSeriesData<>();
+    /**
+     * Construtor
+     */
+    public BarSeriesChart() {
+        this(null, null, null);
+    }
+    /**
+     * Construtor
+     * @param title Title for bar chart
+     */
+    public BarSeriesChart(String title) {
+        this(title, null, null);
+    }
+    /**
+     * Construtor
+     *
+     * @param title Title
+     * @param labelX label for axis x
+     * @param labelY label for axys y
+     */
+    public BarSeriesChart(String title, String labelX, String labelY)
+    {
+      this.chartConfig = new ChartConfiguration<>();
+      chartConfig.setTitle(new Title(title))
+        .setLabelX(labelX)
+        .setLabelY(labelY)
+        .seriesDefaultsInstance()
+        .pointLabelsInstance();
+      chartConfig
+        .seriesDefaultsInstance()
+        .setRenderer(JqPlotResources.BarRenderer)
+        .setFill(true);
+     }
+	public void addValue(Collection<LineSeriesItem<I, V>> value) {
+		barData.addValue(value);
+	}
+	public void addValues(@SuppressWarnings("unchecked") Collection<LineSeriesItem<I, V>>... values) {
+		barData.addValues(values);
+	}
+	@Override
+	public LineSeriesData<I, V> getChartData() {
+		return barData;
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return this.chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.Arrays;
+import java.util.Collection;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.BarData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Bar Chart. This class can/should be extended.
+ *
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {JqPlotResources.CategoryAxisRenderer, JqPlotResources.BarRenderer, JqPlotResources.PointLabels})
+public class BarChart<T extends Number> extends AbstractChart<BarData<T>, Long> {
+	private static final long serialVersionUID = 3650210485517566138L;
+	private final ChartConfiguration<Long> chartConfig;
+	private BarData<T> barData = new BarData<>();
+    /**
+     * Construtor
+     */
+    public BarChart() {
+        this(null, null, null);
+    }
+    /**
+     * Construtor
+     * @param title  Set title of bar chart
+     */
+    public BarChart(String title) {
+        this(title, null, null);
+    }
+    /**
+     * Construtor
+     *
+     * @param title Tilte
+     * @param labelX Label for axis x
+     * @param labelY Label for axis y
+     */
+    public BarChart(String title, String labelX, String labelY) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+        	.seriesDefaultsInstance()
+        	.pointLabelsInstance();
+    	chartConfig
+        	.setLabelX(labelX)
+        	.setLabelY(labelY)
+        	.seriesDefaultsInstance()
+        	.setRenderer(JqPlotResources.BarRenderer)
+        	.setFill(true);
+    	chartConfig
+        	.axesInstance()
+        	.xAxisInstance()
+        	.setRenderer(JqPlotResources.CategoryAxisRenderer)
+			.rendererOptionsInstance();
+    }
+    /**
+     * Add a value for bar chart
+     * @param value  Set collection of values
+     */
+    public void addValue(Collection<T> value) {
+        barData.addValue(value);
+    }
+	/**
+	 * Add a value for bar chart
+	 * @param value  Set collection of values
+	 */
+    public void addValues(@SuppressWarnings("unchecked") Collection<T>... value) {
+        barData.addValues(value);
+    }
+	/**
+	 * Add a value for bar chart
+	 * @param values Set values
+	 */
+	@SuppressWarnings("unchecked")
+	public void addValues(T... values) {
+        barData.addValues(Arrays.<T>asList(values));
+    }
+    /**
+     *
+     * @return charData
+     */
+    @Override
+	public BarData<T> getChartData() {
+        return barData;
+    }
+	@Override
+	public ChartConfiguration<Long> getChartConfiguration() {
+		return this.chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.MeterData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Meter Gauge Chart. This class can/should be extended.
+ * 
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {JqPlotResources.MeterGaugeRenderer})
+public class MeterGaugeChart extends AbstractChart<MeterData,String> {
+    private static final long serialVersionUID = -8122703368130701972L;
+    
+	private final ChartConfiguration<String> chartConfig;
+    
+    private MeterData data = new MeterData(0F);
+    /**
+     * Construtor
+     */
+    public MeterGaugeChart() {
+        this(null);
+    }
+    /**
+     * Construtor
+     * @param title The title
+     */
+    public MeterGaugeChart(String title) {
+        this.chartConfig = new ChartConfiguration<String>();
+        chartConfig
+        .setTitle(new Title(title))
+        .seriesDefaultsInstance()
+        .setRenderer(JqPlotResources.MeterGaugeRenderer)
+        .rendererOptionsInstance();
+    }
+    /**
+     *
+     * @param value value
+     */
+    public void setValue(Float value) {
+        data.setValue(value);
+    }
+    /**
+     * 
+     * @param value value
+     */
+    public void setValue(Integer value) {
+        data.setValue(value.floatValue());
+    }
+    public MeterData getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+package org.wicketstuff.jqplot.lib.elements;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+@JqPlotPlugin(values = {JqPlotResources.Highlighter})
+public class Highlighter implements Element {
+    private static final long serialVersionUID = 6872308828768070373L;
+    /** true to show the highlight **/
+    private Boolean show;
+    /** true to show a tooltip with the point values. */
+    private Boolean showTooltip;
+    /** sprintf format string for the tooltip. */
+    private String tooltipFormatString;
+    /** true to show the marker */
+    private Boolean showMarker;
+    /** Pixels to add to the lineWidth of the highlight. */
+    private Double lineWidthAdjust;
+    /** Pixels to add to the overall size of the highlight. */
+    private Double sizeAdjust;
+    /** Where to position tooltip, ‘n’, ‘ne’, ‘e’, ‘se’, ‘s’, ‘sw’, ‘w’, ‘nw’ */
+    private Location tooltipLocation;
+    /** true = fade in/out tooltip, false = show/hide tooltip */
+    private Boolean fadeTooltip;
+    /** ‘slow’, ‘def’, ‘fast’, or number of milliseconds. */
+    private String tooltipFadeSpeed;
+    /** Pixel offset of tooltip from the highlight. */
+    private Double tooltipOffset;
+    /**
+     * Which axes to display in tooltip, ‘x’, ‘y’ or ‘both’, ‘xy’ or ‘yx’ ‘both’ and ‘xy’ are equivalent,
+     * ‘yx’ reverses order of labels.
+     */
+    private TooltipAxes tooltipAxes;
+    /**
+     * Use the x and y axes formatters to format the text in the tooltip. Must be 'false' for
+     * the 'tooltipFormatString' to take effect
+     */
+	private Boolean useAxesFormatters;
+    /**
+	 * alternative to tooltipFormatString will format the whole tooltip text, populating
+	 * with x, y values as indicated by tooltipAxes option.
+	 */
+	private String formatString;
+    /**
+     * Number of y values to expect in the data point array.
+     * Typically this is 1. Certain plots, like OHLC, will have more y values in each data point array
+     */
+	private Integer yvalues;
+    /** true to bring the series of the highlighted point to the front of other series **/
+    private Boolean bringSeriesToFront;
+    public Boolean getShow() {
+        return show;
+    }
+    public void setShow(Boolean show) {
+        this.show = show;
+    }
+    public Boolean getShowTooltip() {
+        return showTooltip;
+    }
+    public void setShowTooltip(Boolean showTooltip) {
+        this.showTooltip = showTooltip;
+    }
+    public String getTooltipFormatString() {
+        return tooltipFormatString;
+    }
+    public void setTooltipFormatString(String tooltipFormatString) {
+        this.tooltipFormatString = tooltipFormatString;
+    }
+    public Boolean getShowMarker() {
+        return showMarker;
+    }
+    public void setShowMarker(Boolean showMarker) {
+        this.showMarker = showMarker;
+    }
+    public Double getLineWidthAdjust() {
+        return lineWidthAdjust;
+    }
+    public void setLineWidthAdjust(Double lineWidthAdjust) {
+        this.lineWidthAdjust = lineWidthAdjust;
+    }
+    public Double getSizeAdjust() {
+        return sizeAdjust;
+    }
+    public void setSizeAdjust(Double sizeAdjust) {
+        this.sizeAdjust = sizeAdjust;
+    }
+    public Location getTooltipLocation() {
+        return tooltipLocation;
+    }
+    public void setTooltipLocation(Location tooltipLocation) {
+        this.tooltipLocation = tooltipLocation;
+    }
+    public Boolean getFadeTooltip() {
+        return fadeTooltip;
+    }
+    public void setFadeTooltip(Boolean fadeTooltip) {
+        this.fadeTooltip = fadeTooltip;
+    }
+    public String getTooltipFadeSpeed() {
+        return tooltipFadeSpeed;
+    }
+    public void setTooltipFadeSpeed(String tooltipFadeSpeed) {
+        this.tooltipFadeSpeed = tooltipFadeSpeed;
+    }
+    public Double getTooltipOffset() {
+        return tooltipOffset;
+    }
+    public void setTooltipOffset(Double tooltipOffset) {
+        this.tooltipOffset = tooltipOffset;
+    }
+    public TooltipAxes getTooltipAxes() {
+        return tooltipAxes;
+    }
+    public void setTooltipAxes(TooltipAxes tooltipAxes) {
+        this.tooltipAxes = tooltipAxes;
+    }
+    public Boolean getUseAxesFormatters() {
+        return useAxesFormatters;
+    }
+    public void setUseAxesFormatters(Boolean useAxesFormatters) {
+        this.useAxesFormatters = useAxesFormatters;
+    }
+    public String getFormatString() {
+        return formatString;
+    }
+    public void setFormatString(String formatString) {
+        this.formatString = formatString;
+    }
+    public Integer getYvalues() {
+        return yvalues;
+    }
+    public void setYvalues(Integer yvalues) {
+        this.yvalues = yvalues;
+    }
+    public Boolean getBringSeriesToFront() {
+        return bringSeriesToFront;
+    }
+    public void setBringSeriesToFront(Boolean bringSeriesToFront) {
+        this.bringSeriesToFront = bringSeriesToFront;
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.elements;
+/**
+ * Plugin class representing the cursor as displayed on the plot.
+ * 
+ * @author inaiat
+ *
+ */
+public class Cursor implements Element {
+	/** The Constant serialVersionUID. */
+	private static final long serialVersionUID = -2573578555244857373L;
+	
+	/** The style. */
+	private String style;
+	
+	/** The show. */
+	private Boolean show = true;
+	
+	/** The show tooltip. */
+	private Boolean showTooltip;
+	
+	/** The follow mouse. */
+	private Boolean followMouse;
+	
+	/** The tooltip location. */
+	private Location tooltipLocation;
+	
+	/** The tooltip offset. */
+	private Integer tooltipOffset;
+	
+	/** The show tooltip grid position. */
+	private Boolean showTooltipGridPosition;
+	
+	/** The show tooltip unit position. */
+	private Boolean showTooltipUnitPosition;
+	
+	/** The show tooltip data position. */
+	private Boolean showTooltipDataPosition;
+	
+	/** The tooltip format string. */
+	private String tooltipFormatString;
+	
+	/** The use axes formatters. */
+	private Boolean useAxesFormatters;
+	
+	/** The zoom. */
+	private Boolean zoom;
+	
+	/** The loose zoom. */
+	private Boolean looseZoom;
+	
+	/** The click reset. */
+	private Boolean clickReset;
+	
+	/** The dbl click reset. */
+	private Boolean dblClickReset;
+	
+	/** The show vertical line. */
+	private Boolean showVerticalLine;
+	
+	/** The show horizontal line. */
+	private Boolean showHorizontalLine;
+	
+	/** 'none', 'x' or 'y'. */
+	private String constrainZoomTo; 
+	
+	/** The intersection threshold. */
+	private Integer intersectionThreshold;
+	
+	/** The show cursor legend. */
+	private Boolean showCursorLegend;
+	
+	/** The cursor legend format string. */
+	private String cursorLegendFormatString;
+	
+	/** The constrain outside zoom. */
+	private Boolean constrainOutsideZoom;
+	
+	/** The show tooltip outside zoom. */
+	private Boolean showTooltipOutsideZoom;
+	
+	/** 
+	 * Show position for the specified axes.  
+	 * This is an array like [['xaxis', 'yaxis'], ['xaxis', 'y2axis']] 
+	 * Default is to compute automatically for all visible axes.
+	 */
+	private String tooltipAxisGroups;
+	/**
+	 * Gets the style.
+	 *
+	 * @return the style
+	 */
+	public String getStyle() {
+		return style;
+	}
+	/**
+	 * Sets the style.
+	 *
+	 * @param style the new style
+	 */
+	public void setStyle(String style) {
+		this.style = style;
+	}
+	/**
+	 * Gets the show.
+	 *
+	 * @return the show
+	 */
+	public Boolean getShow() {
+		return show;
+	}
+	/**
+	 * Sets the show.
+	 *
+	 * @param show the new show
+	 */
+	public void setShow(Boolean show) {
+		this.show = show;
+	}
+	/**
+	 * Gets the show tooltip.
+	 *
+	 * @return the show tooltip
+	 */
+	public Boolean getShowTooltip() {
+		return showTooltip;
+	}
+	/**
+	 * Sets the show tooltip.
+	 *
+	 * @param showTooltip the new show tooltip
+	 */
+	public void setShowTooltip(Boolean showTooltip) {
+		this.showTooltip = showTooltip;
+	}
+	/**
+	 * Gets the follow mouse.
+	 *
+	 * @return the follow mouse
+	 */
+	public Boolean getFollowMouse() {
+		return followMouse;
+	}
+	/**
+	 * Sets the follow mouse.
+	 *
+	 * @param followMouse the new follow mouse
+	 */
+	public void setFollowMouse(Boolean followMouse) {
+		this.followMouse = followMouse;
+	}
+	/**
+	 * Gets the tooltip location.
+	 *
+	 * @return the tooltip location
+	 */
+	public Location getTooltipLocation() {
+		return tooltipLocation;
+	}
+	/**
+	 * Sets the tooltip location.
+	 *
+	 * @param tooltipLocation the new tooltip location
+	 */
+	public void setTooltipLocation(Location tooltipLocation) {
+		this.tooltipLocation = tooltipLocation;
+	}
+	/**
+	 * Gets the tooltip offset.
+	 *
+	 * @return the tooltip offset
+	 */
+	public Integer getTooltipOffset() {
+		return tooltipOffset;
+	}
+	/**
+	 * Sets the tooltip offset.
+	 *
+	 * @param tooltipOffset the new tooltip offset
+	 */
+	public void setTooltipOffset(Integer tooltipOffset) {
+		this.tooltipOffset = tooltipOffset;
+	}
+	/**
+	 * Gets the show tooltip grid position.
+	 *
+	 * @return the show tooltip grid position
+	 */
+	public Boolean getShowTooltipGridPosition() {
+		return showTooltipGridPosition;
+	}
+	/**
+	 * Sets the show tooltip grid position.
+	 *
+	 * @param showTooltipGridPosition the new show tooltip grid position
+	 */
+	public void setShowTooltipGridPosition(Boolean showTooltipGridPosition) {
+		this.showTooltipGridPosition = showTooltipGridPosition;
+	}
+	/**
+	 * Gets the show tooltip unit position.
+	 *
+	 * @return the show tooltip unit position
+	 */
+	public Boolean getShowTooltipUnitPosition() {
+		return showTooltipUnitPosition;
+	}
+	/**
+	 * Sets the show tooltip unit position.
+	 *
+	 * @param showTooltipUnitPosition the new show tooltip unit position
+	 */
+	public void setShowTooltipUnitPosition(Boolean showTooltipUnitPosition) {
+		this.showTooltipUnitPosition = showTooltipUnitPosition;
+	}
+	/**
+	 * Gets the show tooltip data position.
+	 *
+	 * @return the show tooltip data position
+	 */
+	public Boolean getShowTooltipDataPosition() {
+		return showTooltipDataPosition;
+	}
+	/**
+	 * Sets the show tooltip data position.
+	 *
+	 * @param showTooltipDataPosition the new show tooltip data position
+	 */
+	public void setShowTooltipDataPosition(Boolean showTooltipDataPosition) {
+		this.showTooltipDataPosition = showTooltipDataPosition;
+	}
+	/**
+	 * Gets the tooltip format string.
+	 *
+	 * @return the tooltip format string
+	 */
+	public String getTooltipFormatString() {
+		return tooltipFormatString;
+	}
+	/**
+	 * Sets the tooltip format string.
+	 *
+	 * @param tooltipFormatString the new tooltip format string
+	 */
+	public void setTooltipFormatString(String tooltipFormatString) {
+		this.tooltipFormatString = tooltipFormatString;
+	}
+	/**
+	 * Gets the use axes formatters.
+	 *
+	 * @return the use axes formatters
+	 */
+	public Boolean getUseAxesFormatters() {
+		return useAxesFormatters;
+	}
+	/**
+	 * Sets the use axes formatters.
+	 *
+	 * @param useAxesFormatters the new use axes formatters
+	 */
+	public void setUseAxesFormatters(Boolean useAxesFormatters) {
+		this.useAxesFormatters = useAxesFormatters;
+	}
+	/**
+	 * Gets the zoom.
+	 *
+	 * @return the zoom
+	 */
+	public Boolean getZoom() {
+		return zoom;
+	}
+	/**
+	 * Sets the zoom.
+	 *
+	 * @param zoom the new zoom
+	 */
+	public void setZoom(Boolean zoom) {
+		this.zoom = zoom;
+	}
+	/**
+	 * Gets the loose zoom.
+	 *
+	 * @return the loose zoom
+	 */
+	public Boolean getLooseZoom() {
+		return looseZoom;
+	}
+	/**
+	 * Sets the loose zoom.
+	 *
+	 * @param looseZoom the new loose zoom
+	 */
+	public void setLooseZoom(Boolean looseZoom) {
+		this.looseZoom = looseZoom;
+	}
+	/**
+	 * Gets the click reset.
+	 *
+	 * @return the click reset
+	 */
+	public Boolean getClickReset() {
+		return clickReset;
+	}
+	/**
+	 * Sets the click reset.
+	 *
+	 * @param clickReset the new click reset
+	 */
+	public void setClickReset(Boolean clickReset) {
+		this.clickReset = clickReset;
+	}
+	/**
+	 * Gets the dbl click reset.
+	 *
+	 * @return the dbl click reset
+	 */
+	public Boolean getDblClickReset() {
+		return dblClickReset;
+	}
+	/**
+	 * Sets the dbl click reset.
+	 *
+	 * @param dblClickReset the new dbl click reset
+	 */
+	public void setDblClickReset(Boolean dblClickReset) {
+		this.dblClickReset = dblClickReset;
+	}
+	/**
+	 * Gets the show vertical line.
+	 *
+	 * @return the show vertical line
+	 */
+	public Boolean getShowVerticalLine() {
+		return showVerticalLine;
+	}
+	/**
+	 * Sets the show vertical line.
+	 *
+	 * @param showVerticalLine the new show vertical line
+	 */
+	public void setShowVerticalLine(Boolean showVerticalLine) {
+		this.showVerticalLine = showVerticalLine;
+	}
+	/**
+	 * Gets the show horizontal line.
+	 *
+	 * @return the show horizontal line
+	 */
+	public Boolean getShowHorizontalLine() {
+		return showHorizontalLine;
+	}
+	/**
+	 * Sets the show horizontal line.
+	 *
+	 * @param showHorizontalLine the new show horizontal line
+	 */
+	public void setShowHorizontalLine(Boolean showHorizontalLine) {
+		this.showHorizontalLine = showHorizontalLine;
+	}
+	/**
+	 * Gets the constrain zoom to.
+	 *
+	 * @return the constrain zoom to
+	 */
+	public String getConstrainZoomTo() {
+		return constrainZoomTo;
+	}
+	/**
+	 * Sets the constrain zoom to.
+	 *
+	 * @param constrainZoomTo the new constrain zoom to
+	 */
+	public void setConstrainZoomTo(String constrainZoomTo) {
+		this.constrainZoomTo = constrainZoomTo;
+	}
+	/**
+	 * Gets the intersection threshold.
+	 *
+	 * @return the intersection threshold
+	 */
+	public Integer getIntersectionThreshold() {
+		return intersectionThreshold;
+	}
+	/**
+	 * Sets the intersection threshold.
+	 *
+	 * @param intersectionThreshold the new intersection threshold
+	 */
+	public void setIntersectionThreshold(Integer intersectionThreshold) {
+		this.intersectionThreshold = intersectionThreshold;
+	}
+	/**
+	 * Gets the show cursor legend.
+	 *
+	 * @return the show cursor legend
+	 */
+	public Boolean getShowCursorLegend() {
+		return showCursorLegend;
+	}
+	/**
+	 * Sets the show cursor legend.
+	 *
+	 * @param showCursorLegend the new show cursor legend
+	 */
+	public void setShowCursorLegend(Boolean showCursorLegend) {
+		this.showCursorLegend = showCursorLegend;
+	}
+	/**
+	 * Gets the cursor legend format string.
+	 *
+	 * @return the cursor legend format string
+	 */
+	public String getCursorLegendFormatString() {
+		return cursorLegendFormatString;
+	}
+	/**
+	 * Sets the cursor legend format string.
+	 *
+	 * @param cursorLegendFormatString the new cursor legend format string
+	 */
+	public void setCursorLegendFormatString(String cursorLegendFormatString) {
+		this.cursorLegendFormatString = cursorLegendFormatString;
+	}
+	/**
+	 * Gets the constrain outside zoom.
+	 *
+	 * @return the constrain outside zoom
+	 */
+	public Boolean getConstrainOutsideZoom() {
+		return constrainOutsideZoom;
+	}
+	/**
+	 * Sets the constrain outside zoom.
+	 *
+	 * @param constrainOutsideZoom the new constrain outside zoom
+	 */
+	public void setConstrainOutsideZoom(Boolean constrainOutsideZoom) {
+		this.constrainOutsideZoom = constrainOutsideZoom;
+	}
+	/**
+	 * Gets the show tooltip outside zoom.
+	 *
+	 * @return the show tooltip outside zoom
+	 */
+	public Boolean getShowTooltipOutsideZoom() {
+		return showTooltipOutsideZoom;
+	}
+	/**
+	 * Sets the show tooltip outside zoom.
+	 *
+	 * @param showTooltipOutsideZoom the new show tooltip outside zoom
+	 */
+	public void setShowTooltipOutsideZoom(Boolean showTooltipOutsideZoom) {
+		this.showTooltipOutsideZoom = showTooltipOutsideZoom;
+	}
+	/**
+	 * Gets the tooltip axis groups.
+	 *
+	 * @return the tooltip axis groups
+	 */
+	public String getTooltipAxisGroups() {
+		return tooltipAxisGroups;
+	}
+	
+	/**
+	 * Sets the tooltip axis groups.
+	 *
+	 * @param tooltipAxisGroups the new tooltip axis groups
+	 */
+	public void setTooltipAxisGroups(String tooltipAxisGroups) {
+		this.tooltipAxisGroups = tooltipAxisGroups;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.PieData;
+import org.wicketstuff.jqplot.lib.data.item.LabeledItem;
+import org.wicketstuff.jqplot.lib.elements.Legend;
+import org.wicketstuff.jqplot.lib.elements.Location;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Pie Chart. This class can/should be extended.
+ *
+ * @author inaiat
+ */
+@JqPlotPlugin(values = {JqPlotResources.PieRenderer})
+public class PieChart<T extends Number> extends AbstractChart<PieData<T>,String> {
+	private static final long serialVersionUID = -9078771567964143651L;
+	private final ChartConfiguration<String> chartConfig;
+	private PieData<T> data = new PieData<>();
+    /**
+     * Construtor
+     */
+    public PieChart() {
+        this(null);
+    }
+    /**
+     * Construtor
+     * @param title The title
+     */
+    public PieChart(String title) {
+    	this.chartConfig = new ChartConfiguration<>();
+    	chartConfig
+    		.setTitle(new Title(title))
+    		.setLegend(new Legend(true, Location.e))
+    		.seriesDefaultsInstance()
+    		.setRenderer(JqPlotResources.PieRenderer)
+    		.rendererOptionsInstance()
+    		.setShowLables(true);
+    }
+    /**
+     *
+     * @param label label
+     * @param value value
+     */
+    public void addValue(String label, T value) {
+        data.addValue(new LabeledItem<>(label, value));
+    }
+    /**
+     *
+     * @param value value
+     */
+    public void addValue(LabeledItem<T> value) {
+        data.addValue(value);
+    }
+    /**
+     *
+     * @param values values
+     */
+    public void addValues(@SuppressWarnings("unchecked") LabeledItem<T>... values) {
+        data.addValues(values);
+    }
+    /**
+     *
+     * @return chartData
+     */
+    @Override
+	public PieData<T> getChartData() {
+        return data;
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.LinedData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+/**
+ * Simple implementation of Line Chart. This class can/should be extended.
+ *
+ * @author inaiat
+ */
+@JqPlotPlugin(values = { JqPlotResources.CanvasTextRenderer,
+		JqPlotResources.CategoryAxisRenderer })
+public class LineChart<T extends Number> extends
+		AbstractChart<LinedData<T>, String> {
+	private static final long serialVersionUID = -643105267124184518L;
+	private final ChartConfiguration<String> chartConfig;
+	private LinedData<T> linedData = new LinedData<>();
+	/**
+	 * Line chart construcotr
+	 */
+	public LineChart() {
+		this(null, null, null);
+	}
+	/**
+	 * Construtor
+	 *
+	 * @param title Title of chart
+	 */
+	public LineChart(String title) {
+		this(title, null, null);
+	}
+	/**
+	 * Construtor
+	 *
+	 * @param title title
+	 * @param labelX labelX
+	 * @param labelY labelY
+ 	 */
+	public LineChart(String title, String labelX, String labelY) {
+		this.chartConfig = new ChartConfiguration<>();
+		chartConfig
+				.setTitle(new Title(title))
+				.setLabelX(labelX)
+				.setLabelY(labelY)
+				.axesDefaultsInstance()
+				.setLabelRenderer(JqPlotResources.CanvasAxisLabelRenderer);
+		chartConfig.axesInstance().xAxisInstance().setPad(0F);
+	}
+	/**
+	 * Add a value
+	 * @param value Add a value
+	 */
+	public void addValue(T value) {
+		linedData.addValue(value);
+	}
+	/**
+	 * Add a value
+	 * @param values value Add values
+	 */
+	public void addValues(@SuppressWarnings("unchecked") T... values) {
+		linedData.addValues(values);
+	}
+	/**
+	 * Get Chart Data
+	 * @return LinedData
+	 */
+	@Override
+	public LinedData<T> getChartData() {
+		return linedData;
+	}
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ * 
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ * 
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib;
+import com.thoughtworks.xstream.XStream;
+import com.thoughtworks.xstream.converters.MarshallingContext;
+import com.thoughtworks.xstream.converters.enums.EnumConverter;
+import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
+import com.thoughtworks.xstream.io.json.JsonHierarchicalStreamDriver;
+import com.thoughtworks.xstream.io.json.JsonWriter;
+import java.io.Writer;
+import java.util.ArrayList;
+import java.util.List;
+import org.wicketstuff.jqplot.lib.metadata.JqPlotPlugin;
+import org.wicketstuff.jqplot.lib.support.JqPlotJsonMapHierarchicalWriter;
+/**
+ * Utility class to provide json from {@link Chart} object.
+ * 
+ * @author inaiat
+ */
+public class JqPlotUtils {
+    /**
+     * Retorna os recursos de javascript
+     * @param chart Chart
+     * @return lista de com os javascripts dos gráficos
+     */
+    public static List<String> retriveJavaScriptResources(Chart<?> chart) {
+        List<String> resources = new ArrayList<String>();
+        Class<?> clazz = chart.getClass();
+        if (clazz.isAnnotationPresent(JqPlotPlugin.class)) {
+            JqPlotResources[] jqPlotResourceses = clazz.getAnnotation(
+                    JqPlotPlugin.class).values();
+            for (JqPlotResources jqPlotResources : jqPlotResourceses) {
+                resources.add(jqPlotResources.getResource());
+            }
+        }
+        //can it/should we make this more generic?
+        if(chart.getChartConfiguration().getHighlighter() != null) {
+            resources.add(JqPlotResources.Highlighter.getResource());
+        }
+        return resources;
+    }
+    /**
+     * Cria um comando jquery
+     * @param chart Chart
+     * @param divId id of element div
+     * @return jquery javascript
+     */
+    public static String createJquery(Chart<?> chart, String divId) {
+        return createJquery(chart, divId, null);
+    }
+    /**
+     * Cria um comando jquery
+     * @param chart Chart
+     * @param divId id of element div
+     * @param javaScriptVar javascript variable
+     * @return jquery javascript
+     */
+    public static String createJquery(Chart<?> chart, String divId, String javaScriptVar) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("$(document).ready(function(){\r\n");
+        if (javaScriptVar != null) {
+            builder.append("   var ").append(javaScriptVar).append("=");
+        }
+        builder.append("   $.jqplot('").append(divId).append("', ");
+        builder.append(chart.getChartData().toJsonString());
+        builder.append(", ");
+        builder.append(jqPlotToJson(chart.getChartConfiguration()));
+        builder.append(");\r\n");
+        builder.append("});\r\n");
+        return builder.toString();
+    }
+    /**
+     * Retorna o um json a partir de uma configuração jqplot
+     * @param jqPlot ChartConfiguration
+     * @return String of JSON content
+     */
+    public static String jqPlotToJson(ChartConfiguration<?> jqPlot) {
+        XStream xstream = new XStream(new JsonHierarchicalStreamDriver() {
+            @Override
+            public HierarchicalStreamWriter createWriter(Writer writer) {
+                return new JqPlotJsonMapHierarchicalWriter(writer, JsonWriter.DROP_ROOT_MODE) {
+                    @Override
+                    public void addAttribute(String name, String value) {
+                        if (!name.contains("class")) {
+                            super.addAttribute(name, value);
+                        }
+                    }
+                };
+            }
+        }) {
+        };
+        EnumConverter converter = new EnumConverter() {
+            @Override
+            public void marshal(Object source, HierarchicalStreamWriter writer,
+                    MarshallingContext context) {
+                if(source instanceof JqPlotResources) {
+                    JqPlotResources plugin = (JqPlotResources) source;
+                    writer.setValue(plugin.getClassName());
+                } else {
+                    super.marshal(source, writer, context);
+                }
+            }
+        };
+        converter.canConvert(JqPlotResources.class);
+        xstream.registerConverter(converter);
+        return xstream.toXML(jqPlot);
+    }
+}
+/*
+ *  Copyright 2011 Inaiat H. Moraes.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *  under the License.
+ */
+package org.wicketstuff.jqplot.lib.chart;
+import java.util.List;
+import org.wicketstuff.jqplot.lib.ChartConfiguration;
+import org.wicketstuff.jqplot.lib.JqPlotResources;
+import org.wicketstuff.jqplot.lib.data.AreaFillData;
+import org.wicketstuff.jqplot.lib.elements.Title;
+/**
+ * Simple implementation of Area Chart. This class can/should be extended.
+ *
+ * @param <T> the generic type
+ * @author inaiat
+ */
+public class AreaChart<T extends Number> extends AbstractChart<AreaFillData<T>,String> {
+	/** The Constant serialVersionUID. */
+	private static final long serialVersionUID = 6050878600406620553L;
+	private final ChartConfiguration<String> chartConfig;
+	/** The data. */
+	private AreaFillData<T> data = new AreaFillData<>();
+    /**
+     * Instantiates a new area chart.
+     */
+    public AreaChart() {
+        this(null);
+    }
+    /**
+     * Instantiates a new area chart.
+     *
+     * @param title the title
+     */
+    public AreaChart(String title) {
+    	chartConfig= new ChartConfiguration<>();
+    	chartConfig
+        	.setTitle(new Title(title))
+        	.setStackSeries(true)
+        	.setShowMarker(false)
+        	.seriesDefaultsInstance()
+        	.setFill(true);
+    	chartConfig
+        	.axesInstance()
+        	.xAxisInstance()
+        	.setRenderer(JqPlotResources.CategoryAxisRenderer);
+    }
+    /* (non-Javadoc)
+     * @see org.wicketstuff.jqplot.lib.Chart#getChartData()
+     */
+    @Override
+	public AreaFillData<T> getChartData() {
+        return data;
+    }
+    /**
+     * Adds the value.
+     *
+     * @param value the value
+     */
+    public void addValue(List<T> value) {
+        data.addValue(value);
+    }
+    /**
+     * Adds the values.
+     *
+     * @param value the value
+     */
+    public void addValues(@SuppressWarnings("unchecked") List<T>... value) {
+        data.addValues(value);
+    }
+	@Override
+	public ChartConfiguration<String> getChartConfiguration() {
+		return chartConfig;
+	}
+}

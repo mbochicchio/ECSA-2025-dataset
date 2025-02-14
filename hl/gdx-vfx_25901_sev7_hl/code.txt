@@ -1,0 +1,1659 @@
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.scene2d;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.g2d.Batch;
+import com.badlogic.gdx.math.MathUtils;
+import com.badlogic.gdx.math.Matrix4;
+import com.badlogic.gdx.math.Rectangle;
+import com.badlogic.gdx.scenes.scene2d.Stage;
+import com.badlogic.gdx.scenes.scene2d.ui.WidgetGroup;
+import com.badlogic.gdx.utils.viewport.Viewport;
+import com.crashinvaders.vfx.VfxManager;
+import com.crashinvaders.vfx.framebuffer.VfxFrameBuffer;
+/**
+ * A widget group that manages {@link VfxManager} internally and applies the effects to the child actors.
+ * <p>
+ * The group renders all the children into internal {@link VfxFrameBuffer},
+ * pass it to the {@link VfxManager} instance for processing and then renders the result to the screen.
+ * <p>
+ * All the internal VFX related instances are managed by the widget itself and should not be disposed or resized manually.
+ * However you're still responsible for all the {@link com.crashinvaders.vfx.effects.VfxEffect effects}' lifecyle and shall dispose them as usual.
+ * <p>
+ * While working with VFX effects within {@link Stage} actor hierarchy keep in mind
+ * that not every effect made to support transparency and there might be issues.
+ */
+public class VfxWidgetGroup extends WidgetGroup {
+    private final VfxManager vfxManager;
+    private final CustomRendererAdapter rendererAdapter;
+    private boolean initialized = false;
+    private boolean resizePending = false;
+    /** If true, the internal {@link VfxManager} will be resized to match {@link VfxWidgetGroup}'s size.
+     * Means framebuffer pixels will correspond to the virtual units of stage's viewport. */
+    private boolean matchWidgetSize = false;
+    /** Whether internal {@link VfxManager} instance should be updated
+     * with {@link com.badlogic.gdx.scenes.scene2d.Actor#act(float)} calls. */
+    private boolean updateManager = true;
+    public VfxWidgetGroup(Pixmap.Format pixelFormat) {
+        vfxManager = new VfxManager(pixelFormat);
+        rendererAdapter = new CustomRendererAdapter();
+        super.setTransform(false);
+    }
+    public VfxManager getVfxManager() {
+        return vfxManager;
+    }
+    /** @see #matchWidgetSize */
+    public boolean isMatchWidgetSize() {
+        return matchWidgetSize;
+    }
+    /** @see #matchWidgetSize */
+    public void setMatchWidgetSize(boolean matchWidgetSize) {
+        if (this.matchWidgetSize == matchWidgetSize) return;
+        this.matchWidgetSize = matchWidgetSize;
+        resizePending = true;
+    }
+    /** @see #updateManager */
+    public boolean isUpdateManager() {
+        return updateManager;
+    }
+    /** @see #updateManager */
+    public void setUpdateManager(boolean updateManager) {
+        this.updateManager = updateManager;
+    }
+    @Override
+    protected void setStage(Stage stage) {
+        super.setStage(stage);
+        if (stage != null) {
+            initialize();
+        } else {
+            reset();
+        }
+    }
+    @Override
+    protected void sizeChanged() {
+        super.sizeChanged();
+        resizePending = true;
+    }
+    @Override
+    public void act(float delta) {
+        super.act(delta);
+        if (updateManager) {
+            // Update effects chain.
+            vfxManager.update(delta);
+        }
+    }
+    @Override
+    public void draw(Batch batch, float parentAlpha) {
+        validate();
+//        //TODO Check if there are any active effects before start capturing/processing.
+//        if (!vfxManager.anyEnabledEffects()) {
+//            this.drawChildren(batch, parentAlpha);
+//            return;
+//        }
+        VfxFrameBuffer captureBuffer = vfxManager.getResultBuffer();
+        batch.end();
+        performPendingResize();
+        vfxManager.cleanUpBuffers();
+        captureBuffer.addRenderer(rendererAdapter);
+        vfxManager.beginInputCapture();
+        batch.begin();
+        validate();
+        drawChildren(batch, parentAlpha);
+        batch.end();
+        vfxManager.endInputCapture();
+        captureBuffer.removeRenderer(rendererAdapter);
+        vfxManager.applyEffects();
+        batch.begin();
+        // Render result to the screen.
+        Color color = getColor();
+        batch.setColor(color.r, color.g, color.b, color.a * parentAlpha);
+        batch.draw(vfxManager.getResultBuffer().getFbo().getColorBufferTexture(),
+                getX(), getY(), getWidth(), getHeight(),
+                0f, 0f, 1f, 1f);
+    }
+    @Override
+    protected void drawChildren(Batch batch, float parentAlpha) {
+        boolean capturing = vfxManager.isCapturing();
+        if (capturing) {
+            // Imitate "transform" child drawing for when capturing into VfxManager.
+            super.setTransform(true);
+        }
+        if (!capturing) {
+            // Clip children to VfxWidget area when not capturing into FBO.
+            clipBegin();
+        }
+        super.drawChildren(batch, parentAlpha);
+        batch.flush();
+        if (capturing) {
+            super.setTransform(false);
+        }
+        if (!capturing) {
+            clipEnd();
+        }
+    }
+    /** VfxWidgetGroup doesn't support culling area. Any calls to it will be ignored. */
+    @Deprecated
+    @Override
+    public void setCullingArea(Rectangle cullingArea) {
+//        throw new UnsupportedOperationException("VfxWidgetGroup doesn't support culling area.");
+    }
+    /** VfxWidgetGroup doesn't support transform. Any calls to the method be ignored. */
+    @Deprecated
+    @Override
+    public void setTransform(boolean transform) {
+//        throw new UnsupportedOperationException("VfxWidgetGroup doesn't support transform.");
+    }
+    private void initialize() {
+        if (initialized) return;
+        performPendingResize();
+        rendererAdapter.initialize(getStage().getBatch());
+        resizePending = false;
+        initialized = true;
+    }
+    private void reset() {
+        if (!initialized) return;
+        vfxManager.dispose();
+        rendererAdapter.reset();
+        resizePending = false;
+        initialized = false;
+    }
+    private void performPendingResize() {
+        if (!resizePending) return;
+        final int width;
+        final int height;
+        // Size may be zero if the widget wasn't laid out yet.
+        if ((int)getWidth() == 0 || (int)getHeight() == 0) {
+            // If the size of the widget is not defined,
+            // just resize to a small buffer to keep the memory footprint low.
+            width = 16;
+            height = 16;
+        } else if (matchWidgetSize) {
+            // Set buffer to match the size of the widget.
+            width = MathUtils.floor(getWidth());
+            height = MathUtils.floor(getHeight());
+        } else {
+            // Set buffer to match the screen pixel density.
+            Viewport viewport = getStage().getViewport();
+            float ppu = viewport.getScreenWidth() / viewport.getWorldWidth();
+            width = MathUtils.floor(getWidth() * ppu);
+            height = MathUtils.floor(getHeight() * ppu);
+            rendererAdapter.updateOwnProjection();
+        }
+        vfxManager.resize(width, height);
+        resizePending = false;
+    }
+    private class CustomRendererAdapter implements VfxFrameBuffer.Renderer {
+        private final Matrix4 preservedProjection = new Matrix4();
+        private final Matrix4 ownProjection = new Matrix4();
+        private Batch batch;
+        public void initialize(Batch batch) {
+            this.batch = batch;
+        }
+        private void reset() {
+            batch = null;
+        }
+        @Override
+        public void flush() {
+            batch.flush();
+        }
+        @Override
+        public void assignLocalMatrices(Matrix4 projection, Matrix4 transform) {
+            preservedProjection.set(batch.getProjectionMatrix());
+            if (!matchWidgetSize) {
+                projection = ownProjection;
+            }
+            batch.setProjectionMatrix(projection);
+        }
+        @Override
+        public void restoreOwnMatrices() {
+            batch.setProjectionMatrix(preservedProjection);
+        }
+        public void updateOwnProjection() {
+            ownProjection.setToOrtho2D(0f, 0f, getWidth(), getHeight());
+        }
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.Pixmap.Format;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.Disposable;
+import com.badlogic.gdx.utils.Scaling;
+import com.crashinvaders.vfx.effects.ChainVfxEffect;
+import com.crashinvaders.vfx.framebuffer.*;
+import com.crashinvaders.vfx.utils.PrioritizedArray;
+/**
+ * Provides a way to beginCapture the rendered scene to an off-screen buffer and to apply a chain of effects on it before rendering to
+ * screen.
+ * <p>
+ * Effects can be added or removed via {@link #addEffect(ChainVfxEffect)} and {@link #removeEffect(ChainVfxEffect)}.
+ *
+ * @author metaphore
+ */
+public final class VfxManager implements Disposable {
+    /**
+     * The maximum side size of a frame buffer managed by any VfxManager instance.
+     * This value constrains the internal size of a VfxManager and in case width or height is greater than this value
+     * the result size values will be fitted within MAX_FRAME_BUFFER_SIDE by MAX_FRAME_BUFFER_SIDE square keeping the aspect ratio.
+     */
+    public static final int MAX_FRAME_BUFFER_SIDE = 8192;
+    private static final Vector2 tmpVec = new Vector2();
+    private final PrioritizedArray<ChainVfxEffect> effects = new PrioritizedArray<>();
+    private final Array<ChainVfxEffect> tmpEffectArray = new Array<>(); // Utility array instance.
+    private final VfxRenderContext context;
+    private final VfxPingPongWrapper pingPongWrapper;
+    private boolean capturing = false;
+    private boolean disabled = false; //TODO Remove the property.
+    private boolean applyingEffects = false;
+    private boolean blendingEnabled = false;
+    private int width, height;
+    public VfxManager(Format fboFormat) {
+        this(fboFormat, Gdx.graphics.getBackBufferWidth(), Gdx.graphics.getBackBufferHeight());
+    }
+    public VfxManager(Format fboFormat, int bufferWidth, int bufferHeight) {
+        this.width = bufferWidth;
+        this.height = bufferHeight;
+        this.context = new VfxRenderContext(fboFormat, bufferWidth, bufferHeight);
+        // VfxFrameBufferPool will manage both ping-pong VfxFrameBuffer instances for us.
+        this.pingPongWrapper = new VfxPingPongWrapper(context.getBufferPool());
+    }
+    @Override
+    public void dispose() {
+        pingPongWrapper.reset();
+        context.dispose();
+    }
+    public int getWidth() {
+        return width;
+    }
+    public int getHeight() {
+        return height;
+    }
+    public boolean isCapturing() {
+        return capturing;
+    }
+    public boolean isDisabled() {
+        return disabled;
+    }
+    /** Sets whether or not the post-processor should be disabled */
+    public void setDisabled(boolean disabled) {
+        this.disabled = disabled;
+    }
+    public boolean isBlendingEnabled() {
+        return blendingEnabled;
+    }
+    /**
+     * Enables OpenGL blending for the effect chain rendering stage.
+     * Disabled by default.
+     */
+    public void setBlendingEnabled(boolean blendingEnabled) {
+        this.blendingEnabled = blendingEnabled;
+    }
+    /**
+     * Returns the internal framebuffers' pixel format, computed from the parameters specified during construction. NOTE: the returned
+     * Format will be valid after construction and NOT early!
+     */
+    public Format getPixelFormat() {
+        return context.getPixelFormat();
+    }
+    public void setEffectTextureParams(
+            Texture.TextureWrap textureWrapU,
+            Texture.TextureWrap textureWrapV,
+            Texture.TextureFilter textureFilterMin,
+            Texture.TextureFilter textureFilterMag) {
+        this.context.getBufferPool().setTextureParams(textureWrapU, textureWrapV, textureFilterMin, textureFilterMag);
+    }
+    public boolean isApplyingEffects() {
+        return applyingEffects;
+    }
+    /** @return the last active destination frame buffer. */
+    public VfxFrameBuffer getResultBuffer() {
+        return pingPongWrapper.getDstBuffer();
+    }
+    /** @return the internal ping-pong buffer. */
+    public VfxPingPongWrapper getPingPongWrapper() {
+        return pingPongWrapper;
+    }
+    public VfxRenderContext getRenderContext() {
+        return context;
+    }
+    /**
+     * Adds an effect to the effect chain and transfers ownership to the VfxManager.
+     * The order of the inserted effects IS important, since effects will be applied in a FIFO fashion,
+     * the first added is the first being applied.
+     * <p>
+     * For more control over the order supply the effect with a priority - {@link #addEffect(ChainVfxEffect, int)}.
+     * @see #addEffect(ChainVfxEffect, int)
+     */
+    public void addEffect(ChainVfxEffect effect) {
+        addEffect(effect, 0);
+    }
+    public void addEffect(ChainVfxEffect effect, int priority) {
+        effects.add(effect, priority);
+        effect.resize(width, height);
+    }
+    /** Removes the specified effect from the effect chain. */
+    public void removeEffect(ChainVfxEffect effect) {
+        effects.remove(effect);
+    }
+    /** Removes all effects from the effect chain. */
+    public void removeAllEffects() {
+        effects.clear();
+    }
+    /** Changes the order of the effect in the effect chain. */
+    public void setEffectPriority(ChainVfxEffect effect, int priority) {
+        effects.setPriority(effect, priority);
+    }
+    /** Cleans up the {@link VfxPingPongWrapper}'s buffers with {@link Color#CLEAR}. */
+    public void cleanUpBuffers() {
+        cleanUpBuffers(Color.CLEAR);
+    }
+    /** Cleans up the {@link VfxPingPongWrapper}'s buffers with the color specified. */
+    public void cleanUpBuffers(Color color) {
+        if (applyingEffects) throw new IllegalStateException("Cannot clean up buffers when applying effects.");
+        if (capturing) throw new IllegalStateException("Cannot clean up buffers when capturing a scene.");
+        pingPongWrapper.cleanUpBuffers(color);
+    }
+    public void resize(int width, int height) {
+        Vector2 constrainedSize = constrainFrameBufferSize(width, height);
+        this.width = width = (int)constrainedSize.x;
+        this.height = height = (int)constrainedSize.y;
+        context.resize(width, height);
+        for (int i = 0; i < effects.size(); i++) {
+            effects.get(i).resize(width, height);
+        }
+    }
+    //TODO Do we need this method?
+    public void rebind() {
+        context.rebind();
+        for (int i = 0; i < effects.size(); i++) {
+            effects.get(i).rebind();
+        }
+    }
+    public void update(float delta) {
+        for (int i = 0; i < effects.size(); i++) {
+            effects.get(i).update(delta);
+        }
+    }
+    /** Starts capturing the input buffer. */
+    public void beginInputCapture() {
+        if (applyingEffects) {
+            throw new IllegalStateException("Capture is not available when VfxManager is applying the effects.");
+        }
+        if (capturing) return;
+        capturing = true;
+        pingPongWrapper.begin();
+    }
+    /** Stops capturing the input buffer. */
+    public void endInputCapture() {
+        if (!capturing) throw new IllegalStateException("The capturing is not started. Forgot to call #beginInputCapture()?");
+        capturing = false;
+        pingPongWrapper.end();
+    }
+    /** @see VfxManager#useAsInput(Texture)  */
+    public void useAsInput(VfxFrameBuffer frameBuffer) {
+        useAsInput(frameBuffer.getTexture());
+    }
+    /** Sets up a (captured?) source scene that will be used later as an input for effect processing.
+     * Updates the effect chain src buffer with the data provided. */
+    public void useAsInput(Texture texture) {
+        if (capturing) {
+            throw new IllegalStateException("Cannot set captured input when capture helper is currently capturing.");
+        }
+        if (applyingEffects) {
+            throw new IllegalStateException("Cannot update the input buffer when applying effects.");
+        }
+        context.getBufferRenderer().renderToFbo(texture, pingPongWrapper.getDstBuffer());
+    }
+    /** Applies the effect chain. */
+    public void applyEffects() {
+        if (capturing) {
+            throw new IllegalStateException("You should call VfxManager.endCapture() before applying the effects.");
+        }
+        if (disabled) return;
+        Array<ChainVfxEffect> effectChain = filterEnabledEffects(tmpEffectArray);
+        if (effectChain.size == 0) {
+            effectChain.clear();
+            return;
+        }
+        applyingEffects = true;
+        // Enable blending to preserve buffer's alpha values.
+        if (blendingEnabled) {
+            Gdx.gl.glEnable(GL20.GL_BLEND);
+        }
+        Gdx.gl.glDisable(GL20.GL_CULL_FACE);
+        Gdx.gl.glDisable(GL20.GL_DEPTH_TEST);
+        pingPongWrapper.swap(); // Swap buffers to get the input buffer in the src buffer.
+        pingPongWrapper.begin();
+        // Render the effect chain.
+        for (int i = 0; i < effectChain.size; i++) {
+            ChainVfxEffect effect = effectChain.get(i);
+            effect.render(context, pingPongWrapper);
+            if (i < effectChain.size - 1) {
+                pingPongWrapper.swap();
+            }
+        }
+        effectChain.clear();
+        pingPongWrapper.end();
+        // Ensure default texture unit #0 is active.
+        Gdx.gl.glActiveTexture(GL20.GL_TEXTURE0);
+        if (blendingEnabled) {
+            Gdx.gl.glDisable(GL20.GL_BLEND);
+        }
+        applyingEffects = false;
+    }
+    public void renderToScreen() {
+        if (capturing) {
+            throw new IllegalStateException("You should call endCapture() before rendering the result.");
+        }
+        // Enable blending to preserve buffer's alpha values.
+        if (blendingEnabled) { Gdx.gl.glEnable(GL20.GL_BLEND); }
+        context.getBufferRenderer().renderToScreen(pingPongWrapper.getDstBuffer());
+        if (blendingEnabled) { Gdx.gl.glDisable(GL20.GL_BLEND); }
+    }
+    public void renderToScreen(int x, int y, int width, int height) {
+        if (capturing) {
+            throw new IllegalStateException("You should call endCapture() before rendering the result.");
+        }
+        // Enable blending to preserve buffer's alpha values.
+        if (blendingEnabled) { Gdx.gl.glEnable(GL20.GL_BLEND); }
+        context.getBufferRenderer().renderToScreen(pingPongWrapper.getDstBuffer(), x, y, width, height);
+        if (blendingEnabled) { Gdx.gl.glDisable(GL20.GL_BLEND); }
+    }
+    public void renderToFbo(VfxFrameBuffer output) {
+        if (capturing) {
+            throw new IllegalStateException("You should call endCapture() before rendering the result.");
+        }
+        // Enable blending to preserve buffer's alpha values.
+        if (blendingEnabled) { Gdx.gl.glEnable(GL20.GL_BLEND); }
+        context.getBufferRenderer().renderToFbo(pingPongWrapper.getDstBuffer(), output);
+        if (blendingEnabled) { Gdx.gl.glDisable(GL20.GL_BLEND); }
+    }
+    public boolean anyEnabledEffects() {
+        for (int i = 0; i < effects.size(); i++) {
+            if (!effects.get(i).isDisabled()) {
+                return true;
+            }
+        }
+        return false;
+    }
+    private Array<ChainVfxEffect> filterEnabledEffects(Array<ChainVfxEffect> out) {
+        for (int i = 0; i < effects.size(); i++) {
+            ChainVfxEffect effect = effects.get(i);
+            if (!effect.isDisabled()) {
+                out.add(effect);
+            }
+        }
+        return out;
+    }
+    public static Vector2 constrainFrameBufferSize(int width, int height) {
+        // Can't have zero or negative size.
+        if (width < 1) width = 1;
+        if (height < 1) height = 1;
+        if (width <= MAX_FRAME_BUFFER_SIDE &&
+                height <= MAX_FRAME_BUFFER_SIDE) {
+            return tmpVec.set(width, height);
+        }
+        // Fit the desired aspect ration in the maximum size square.
+        tmpVec.set(Scaling.fit.apply(
+                width,
+                height,
+                MAX_FRAME_BUFFER_SIDE,
+                MAX_FRAME_BUFFER_SIDE));
+        if (tmpVec.x < 1) tmpVec.x = 1;
+        if (tmpVec.y < 1) tmpVec.y = 1;
+        return tmpVec;
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.framebuffer;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.OrthographicCamera;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.Batch;
+import com.badlogic.gdx.graphics.glutils.FrameBuffer;
+import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
+import com.badlogic.gdx.math.Matrix4;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.Disposable;
+import com.badlogic.gdx.utils.Pool;
+import com.crashinvaders.vfx.gl.VfxGLUtils;
+import com.crashinvaders.vfx.gl.VfxGlViewport;
+/**
+ * Wraps {@link FrameBuffer} and manages currently bound OpenGL FBO.
+ * <p>
+ * This implementation supports nested frame buffer drawing approach.
+ * You can use multiple instances of this class to draw into one frame buffer while you drawing into another one,
+ * the OpenGL state will be managed properly.
+ * <br>
+ * Here's an example:
+ * <pre>
+ * FboWrapper buffer0, buffer1;
+ * // ...
+ * void render() {
+ *      // Any drawing here will be performed directly to the screen.
+ *      buffer0.begin();
+ *      // Any drawing here will be performed into buffer0's FBO.
+ *      buffer1.begin();
+ *      // Any drawing here will be performed into buffer1's FBO.
+ *      buffer1.end();
+ *      // Any drawing here will be performed into buffer0's FBO.
+ *      buffer0.end();
+ *      // Any drawing here will be performed directly to the screen.
+ * }
+ * </pre>
+ * <p>
+ * {@link VfxFrameBuffer} internally switches GL viewport between {@link #begin()} and {@link #end()}.
+ * <br>
+ * If you use any kind of batch renders (e.g. {@link Batch} or {@link ShapeRenderer}),
+ * you should update their transform and projection matrices to setup viewport to the target frame buffer's size.
+ * You can do so by registering {@link Renderer} using {@link #addRenderer(Renderer)} and {@link #removeRenderer(Renderer)}.
+ * The registered renderers will automatically switch their matrices back and forth respectively upon {@link #begin()} and {@link #end()} calls.
+ * They will also be flushed in the right time.
+ * <p>
+ * <b>NOTE:</b> Depth and stencil buffers are not supported.
+ *
+ * @author metaphore
+ */
+public class VfxFrameBuffer implements Disposable {
+    /** Current depth of buffer nesting rendering (keeps track of how many buffers are currently activated). */
+    private static int bufferNesting = 0;
+    /** @see #bufferNesting */
+    public static int getBufferNesting() { return bufferNesting; }
+    private static final OrthographicCamera tmpCam = new OrthographicCamera();
+    private static final Matrix4 zeroTransform = new Matrix4();
+    private final Matrix4 localProjection = new Matrix4();
+    private final Matrix4 localTransform = new Matrix4();
+    private final RendererManager renderers = new RendererManager();
+    private final VfxGlViewport preservedViewport = new VfxGlViewport();
+    private final Pixmap.Format pixelFormat;    //TODO Shall be non-final and become a parameter of #initialize().
+    private int previousFboHandle;
+    private FrameBuffer fbo = null;
+    private boolean initialized;
+    private boolean drawing;
+    public VfxFrameBuffer(Pixmap.Format pixelFormat) {
+        this.pixelFormat = pixelFormat;
+    }
+    @Override
+    public void dispose() {
+        reset();
+    }
+    public void initialize(int width, int height) {
+        if (initialized) { dispose(); }
+        initialized = true;
+        int boundFboHandle = getBoundFboHandle();
+        fbo = new FrameBuffer(pixelFormat, width, height, false);
+        fbo.getColorBufferTexture().setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
+        Gdx.gl20.glBindFramebuffer(GL20.GL_FRAMEBUFFER, boundFboHandle);
+        OrthographicCamera cam = tmpCam;
+        cam.setToOrtho(false, width, height);
+        localProjection.set(cam.combined);
+        localTransform.set(zeroTransform);
+    }
+    public void reset() {
+        if (!initialized) return;
+        initialized = false;
+        fbo.dispose();
+        fbo = null;
+    }
+    public FrameBuffer getFbo() {
+        return fbo;
+    }
+    public Texture getTexture() {
+        return fbo == null ? null : fbo.getColorBufferTexture();
+    }
+    public Pixmap.Format getPixelFormat() {
+        return pixelFormat;
+    }
+    public boolean isInitialized() {
+        return initialized;
+    }
+    /** @return true means {@link VfxFrameBuffer#begin()} has been called */
+    public boolean isDrawing() {
+        return drawing;
+    }
+    public void addRenderer(Renderer renderer) {
+        renderers.addRenderer(renderer);
+    }
+    public void removeRenderer(Renderer renderer) {
+        renderers.removeRenderer(renderer);
+    }
+    public void clearRenderers() {
+        renderers.clearRenderers();
+    }
+    public void setProjectionMatrix(Matrix4 matrix) {
+        localProjection.set(matrix);
+    }
+    public void setTransformMatrix(Matrix4 matrix) {
+        localTransform.set(matrix);
+    }
+    public Matrix4 getProjectionMatrix() {
+        return localProjection;
+    }
+    public Matrix4 getTransformMatrix() {
+        return localTransform;
+    }
+    public void begin() {
+        bufferNesting++;
+        if (!initialized) throw new IllegalStateException("VfxFrameBuffer must be initialized first");
+        if (drawing) throw new IllegalStateException("Already drawing");
+        drawing = true;
+        renderers.flush();
+        previousFboHandle = getBoundFboHandle();
+        preservedViewport.set(getViewport());
+        Gdx.gl20.glBindFramebuffer(GL20.GL_FRAMEBUFFER, fbo.getFramebufferHandle());
+        Gdx.gl20.glViewport(0, 0, getFbo().getWidth(), getFbo().getHeight());
+        renderers.assignLocalMatrices(localProjection, localTransform);
+    }
+    public void end() {
+        bufferNesting--;
+        if (!initialized) throw new IllegalStateException("VfxFrameBuffer must be initialized first");
+        if (!drawing) throw new IllegalStateException("Is not drawing");
+        if (getBoundFboHandle() != fbo.getFramebufferHandle()) {
+            throw new IllegalStateException("Current bound OpenGL FBO's handle doesn't match to wrapped one. It seems like begin/end order was violated.");
+        }
+        drawing = false;
+        renderers.flush();
+        Gdx.gl20.glBindFramebuffer(GL20.GL_FRAMEBUFFER, previousFboHandle);
+        Gdx.gl20.glViewport(preservedViewport.x, preservedViewport.y, preservedViewport.width, preservedViewport.height);
+        renderers.restoreOwnMatrices();
+    }
+    protected int getBoundFboHandle() {
+        int boundFboHandle = VfxGLUtils.getBoundFboHandle();
+        return boundFboHandle;
+    }
+    protected VfxGlViewport getViewport() {
+        VfxGlViewport viewport = VfxGLUtils.getViewport();
+        return viewport;
+    }
+    private static class RendererManager implements Renderer {
+        private final Array<Renderer> renderers = new Array<>();
+        // Closed CTOR
+        RendererManager() { }
+        public void addRenderer(Renderer renderer) {
+            renderers.add(renderer);
+        }
+        public void removeRenderer(Renderer renderer) {
+            renderers.removeValue(renderer, true);
+        }
+        public void clearRenderers() {
+            renderers.clear();
+        }
+        @Override
+        public void flush() {
+            for (int i = 0; i < renderers.size; i++) {
+                renderers.get(i).flush();
+            }
+        }
+        @Override
+        public void assignLocalMatrices(Matrix4 projection, Matrix4 transform) {
+            for (int i = 0; i < renderers.size; i++) {
+                renderers.get(i).assignLocalMatrices(projection, transform);
+            }
+        }
+        @Override
+        public void restoreOwnMatrices() {
+            for (int i = 0; i < renderers.size; i++) {
+                renderers.get(i).restoreOwnMatrices();
+            }
+        }
+    }
+    public interface Renderer {
+        void flush();
+        void assignLocalMatrices(Matrix4 projection, Matrix4 transform);
+        void restoreOwnMatrices();
+    }
+    public static abstract class RendererAdapter implements Renderer {
+        private final Matrix4 preservedProjection = new Matrix4();
+        private final Matrix4 preservedTransform = new Matrix4();
+        @Override
+        public void assignLocalMatrices(Matrix4 projection, Matrix4 transform) {
+            preservedProjection.set(getProjection());
+            preservedTransform.set(getTransform());
+            setProjection(projection);
+//            setTransform(transform);
+        }
+        @Override
+        public void restoreOwnMatrices() {
+            setProjection(preservedProjection);
+//            setTransform(preservedTransform);
+        }
+        protected abstract Matrix4 getProjection();
+        protected abstract Matrix4 getTransform();
+        protected abstract void setProjection(Matrix4 projection);
+        protected abstract void setTransform(Matrix4 transform);
+    }
+    public static class BatchRendererAdapter extends RendererAdapter implements Pool.Poolable {
+        private Batch batch;
+        public BatchRendererAdapter() {
+        }
+        public BatchRendererAdapter(Batch batch) {
+            initialize(batch);
+        }
+        public BatchRendererAdapter initialize(Batch batch) {
+            this.batch = batch;
+            return this;
+        }
+        @Override
+        public void reset() {
+            batch = null;
+        }
+        public Batch getBatch() {
+            return batch;
+        }
+        @Override
+        public void flush() {
+            batch.isDrawing(); {
+                batch.flush();
+            }
+        }
+        @Override
+        protected Matrix4 getProjection() {
+            return batch.getProjectionMatrix();
+        }
+        @Override
+        protected Matrix4 getTransform() {
+            return batch.getTransformMatrix();
+        }
+        @Override
+        protected void setProjection(Matrix4 projection) {
+            batch.setProjectionMatrix(projection);
+        }
+        @Override
+        protected void setTransform(Matrix4 transform) {
+            batch.setTransformMatrix(transform);
+        }
+    }
+    public static class ShapeRendererAdapter extends RendererAdapter implements Pool.Poolable {
+        private ShapeRenderer shapeRenderer;
+        public ShapeRendererAdapter() {
+        }
+        public ShapeRendererAdapter(ShapeRenderer shapeRenderer) {
+            initialize(shapeRenderer);
+        }
+        public ShapeRendererAdapter initialize(ShapeRenderer shapeRenderer) {
+            this.shapeRenderer = shapeRenderer;
+            return this;
+        }
+        @Override
+        public void reset() {
+            shapeRenderer = null;
+        }
+        public ShapeRenderer getShapeRenderer() {
+            return shapeRenderer;
+        }
+        @Override
+        public void flush() {
+            if (shapeRenderer.isDrawing()) {
+                shapeRenderer.flush();
+            }
+        }
+        @Override
+        protected Matrix4 getProjection() {
+            return shapeRenderer.getProjectionMatrix();
+        }
+        @Override
+        protected Matrix4 getTransform() {
+            return shapeRenderer.getTransformMatrix();
+        }
+        @Override
+        protected void setProjection(Matrix4 projection) {
+            shapeRenderer.setProjectionMatrix(projection);
+        }
+        @Override
+        protected void setTransform(Matrix4 transform) {
+            shapeRenderer.setTransformMatrix(transform);
+        }
+    }
+}
+package com.crashinvaders.vfx.demo.screens.example;
+import com.badlogic.gdx.ApplicationAdapter;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
+import com.crashinvaders.vfx.VfxManager;
+import com.crashinvaders.vfx.effects.GaussianBlurEffect;
+public class VfxExample extends ApplicationAdapter {
+    private ShapeRenderer shapeRenderer;
+    private VfxManager vfxManager;
+    private GaussianBlurEffect vfxEffect;
+    @Override
+    public void create() {
+        shapeRenderer = new ShapeRenderer();
+        // VfxManager is a host for the effects.
+        // It captures rendering into internal off-screen buffer and applies a chain of defined effects.
+        // Off-screen buffers may have any pixel format, for this example we will use RGBA8888.
+        vfxManager = new VfxManager(Pixmap.Format.RGBA8888);
+        // Create and add an effect.
+        // VfxEffect derivative classes serve as controllers for the effects.
+        // They provide public properties to configure and control them.
+        vfxEffect = new GaussianBlurEffect();
+        vfxManager.addEffect(vfxEffect);
+    }
+    @Override
+    public void resize(int width, int height) {
+        // VfxManager manages internal off-screen buffers,
+        // which should always match the required viewport (whole screen in our case).
+        vfxManager.resize(width, height);
+        shapeRenderer.getProjectionMatrix().setToOrtho2D(0f, 0f, width, height);
+        shapeRenderer.updateMatrices();
+    }
+    @Override
+    public void render() {
+        // Clean up the screen.
+        Gdx.gl.glClearColor(0f, 0f, 0f, 1f);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+        // Clean up internal buffers, as we don't need any information from the last render.
+        vfxManager.cleanUpBuffers();
+        // Begin render to an off-screen buffer.
+        vfxManager.beginInputCapture();
+        // Here's where game render should happen.
+        // For demonstration purposes we just render some simple geometry.
+        shapeRenderer.begin(ShapeRenderer.ShapeType.Filled);
+        shapeRenderer.setColor(Color.PINK);
+        shapeRenderer.rect(250f, 100f, 250f, 175f);
+        shapeRenderer.setColor(Color.ORANGE);
+        shapeRenderer.circle(200f, 250f, 100f);
+        shapeRenderer.end();
+        // End render to an off-screen buffer.
+        vfxManager.endInputCapture();
+        // Apply the effects chain to the captured frame.
+        // In our case, only one effect (gaussian blur) will be applied.
+        vfxManager.applyEffects();
+        // Render result to the screen.
+        vfxManager.renderToScreen();
+    }
+    @Override
+    public void dispose() {
+        // Since VfxManager has internal frame buffers,
+        // it implements Disposable interface and thus should be utilized properly.
+        vfxManager.dispose();
+        // *** PLEASE NOTE ***
+        // VfxManager doesn't dispose attached VfxEffects.
+        // This is your responsibility to manage their lifecycle.
+        vfxEffect.dispose();
+        shapeRenderer.dispose();
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.demo.screens.demo.controllers;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.scenes.scene2d.Group;
+import com.badlogic.gdx.scenes.scene2d.InputEvent;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.VerticalGroup;
+import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.ArrayMap;
+import com.badlogic.gdx.utils.Disposable;
+import com.crashinvaders.vfx.common.lml.CommonLmlParser;
+import com.crashinvaders.vfx.common.lml.LmlUtils;
+import com.crashinvaders.vfx.common.viewcontroller.LmlViewController;
+import com.crashinvaders.vfx.common.viewcontroller.ViewControllerManager;
+import com.crashinvaders.vfx.VfxManager;
+import com.crashinvaders.vfx.effects.*;
+import com.crashinvaders.vfx.effects.util.CopyEffect;
+import com.crashinvaders.vfx.effects.util.GammaThresholdEffect;
+import com.crashinvaders.vfx.effects.util.MixEffect;
+import com.github.czyzby.lml.annotation.LmlActor;
+import com.github.czyzby.lml.parser.LmlParser;
+public class EffectRosterViewController extends LmlViewController {
+    private final Array<EffectEntryModel> effectsRoster = new Array<>(true, 16);
+    private final ArrayMap<EffectEntryModel, EffectEntryViewController> effectsChain = new ArrayMap<>(true, 16);
+    private VfxManager vfxManager;
+    private VerticalGroup vgEffectsRoster;
+    private VerticalGroup vgEffectsChain;
+    public EffectRosterViewController(ViewControllerManager viewControllers, CommonLmlParser lmlParser) {
+        super(viewControllers, lmlParser);
+    }
+    @Override
+    public void onViewCreated(Group sceneRoot) {
+        super.onViewCreated(sceneRoot);
+        // Bloom
+        {
+            BloomEffect filter = new BloomEffect();
+            effectsRoster.add(new EffectEntryModel("Bloom", filter));
+        }
+        // Copy
+        {
+            CopyEffect filter = new CopyEffect();
+            effectsRoster.add(new EffectEntryModel("Copy", filter));
+        }
+        // Radial Distortion
+        {
+            RadialDistortionEffect filter = new RadialDistortionEffect();
+            filter.setZoom(0.9f);
+            filter.setDistortion(0.3f);
+            effectsRoster.add(new EffectEntryModel("Radial Distortion", filter));
+        }
+        // Gamma Threshold
+        {
+            GammaThresholdEffect filter = new GammaThresholdEffect(GammaThresholdEffect.Type.RGB);
+            filter.setGamma(0.9f);
+            effectsRoster.add(new EffectEntryModel("Gamma Threshold", filter));
+        }
+        // Zoom
+        {
+            ZoomEffect filter = new ZoomEffect();
+            filter.setZoom(0.9f);
+            effectsRoster.add(new EffectEntryModel("Zoom", filter));
+        }
+        // Vignetting
+        {
+            VignettingEffect filter = new VignettingEffect(false);
+            effectsRoster.add(new EffectEntryModel("Vignetting", filter));
+        }
+        // CRT
+        {
+            CrtEffect filter = new CrtEffect(CrtEffect.LineStyle.HORIZONTAL_SMOOTH, 1.3f, 0.8f);
+            filter.setSizeSource(CrtEffect.SizeSource.VIEWPORT);
+            effectsRoster.add(new EffectEntryModel("CRT", filter));
+        }
+        // FXAA
+        {
+            FxaaEffect filter = new FxaaEffect();
+            effectsRoster.add(new EffectEntryModel("FXAA", filter));
+        }
+        // NFAA
+        {
+            NfaaEffect filter = new NfaaEffect(false);
+            effectsRoster.add(new EffectEntryModel("NFAA", filter));
+        }
+        // Lens Flare
+        {
+            LensFlareEffect filter = new LensFlareEffect();
+            effectsRoster.add(new EffectEntryModel("Lens Flare", filter));
+        }
+        // Fisheye
+        {
+            FisheyeEffect filter = new FisheyeEffect();
+            effectsRoster.add(new EffectEntryModel("Fisheye", filter));
+        }
+        // Film Grain
+        {
+            FilmGrainEffect filter = new FilmGrainEffect();
+            filter.setNoiseAmount(0.18f);
+            effectsRoster.add(new EffectEntryModel("Film Grain", filter));
+        }
+        // Motion Blur (MIX)
+        {
+            MotionBlurEffect filter = new MotionBlurEffect(Pixmap.Format.RGBA8888, MixEffect.Method.MIX, 0.75f);
+            effectsRoster.add(new EffectEntryModel("Motion Blur (MIX)", filter));
+        }
+        // Motion Blur (MAX)
+        {
+            MotionBlurEffect filter = new MotionBlurEffect(Pixmap.Format.RGBA8888, MixEffect.Method.MAX, 0.75f);
+            effectsRoster.add(new EffectEntryModel("Motion Blur (MAX)", filter));
+        }
+        // Old TV
+        {
+            OldTvEffect filter = new OldTvEffect();
+            effectsRoster.add(new EffectEntryModel("Old TV", filter));
+        }
+        // Levels
+        {
+            LevelsEffect filter = new LevelsEffect();
+            filter.setHue(0.95f);
+            effectsRoster.add(new EffectEntryModel("Levels", filter));
+        }
+        // Chrom. Aberration
+        {
+            ChromaticAberrationEffect filter = new ChromaticAberrationEffect(12);
+            effectsRoster.add(new EffectEntryModel("Chrom. Aberration", filter));
+        }
+        // Radial Blur
+        {
+            RadialBlurEffect filter = new RadialBlurEffect(8);
+            effectsRoster.add(new EffectEntryModel("Radial Blur", filter));
+        }
+        // Gaussian Blur
+        {
+            GaussianBlurEffect filter = new GaussianBlurEffect(GaussianBlurEffect.BlurType.Gaussian5x5);
+            filter.setPasses(8);
+            effectsRoster.add(new EffectEntryModel("Gaussian Blur", filter));
+        }
+        // Underwater
+        {
+            WaterDistortionEffect filter = new WaterDistortionEffect(1f, 1f);
+            effectsRoster.add(new EffectEntryModel("Water Distortion", filter));
+        }
+        vfxManager = getController(VfxViewController.class).getVfxManager();
+        vgEffectsRoster = sceneRoot.findActor("vgEffectsRoster");
+        vgEffectsChain = sceneRoot.findActor("vgEffectsChain");
+        for (int i = 0; i < effectsRoster.size; i++) {
+            final EffectEntryModel effectModel = effectsRoster.get(i);
+            final EffectEntryViewController viewController = new EffectEntryViewController(lmlParser, effectModel);
+            final Group viewRoot = viewController.getViewRoot();
+            vgEffectsRoster.addActor(viewRoot);
+            viewRoot.addListener(new ClickListener() {
+                @Override
+                public void clicked(InputEvent event, float x, float y) {
+                    addEffectToChain(effectModel);
+                }
+            });
+        }
+    }
+    @Override
+    public void dispose() {
+        super.dispose();
+    }
+    private void addEffectToChain(final EffectEntryModel effectModel) {
+        if (effectsChain.containsKey(effectModel)) {
+            // If the effect is already in the chain, re-add it to the end of the list.
+            removeEffectFromChain(effectModel);
+        }
+        EffectEntryViewController viewController = new EffectEntryViewController(lmlParser, effectModel);
+        Group viewRoot = viewController.getViewRoot();
+        vgEffectsChain.addActor(viewRoot);
+        effectsChain.put(viewController.getModel(), viewController);
+        vfxManager.addEffect(viewController.getModel().getEffect());
+        viewRoot.addListener(new ClickListener() {
+            @Override
+            public void clicked(InputEvent event, float x, float y) {
+                removeEffectFromChain(effectModel);
+            }
+        });
+    }
+    private void removeEffectFromChain(final EffectEntryModel effectModel) {
+        EffectEntryViewController viewController = effectsChain.get(effectModel);
+        if (viewController == null) return;
+        vgEffectsChain.removeActor(viewController.getViewRoot());
+        effectsChain.removeKey(effectModel);
+        vfxManager.removeEffect(viewController.getModel().getEffect());
+    }
+    private static class EffectEntryModel implements Disposable {
+        private final String name;
+        private final ChainVfxEffect effect;
+        public EffectEntryModel(String name, ChainVfxEffect effect) {
+            this.name = name;
+            this.effect = effect;
+        }
+        @Override
+        public void dispose() {
+            effect.dispose();
+        }
+        public String getName() {
+            return name;
+        }
+        public ChainVfxEffect getEffect() {
+            return effect;
+        }
+    }
+    public static class EffectEntryViewController {
+        @LmlActor("lblName") Label lblName;
+        private final EffectEntryModel model;
+        private final Group viewRoot;
+        EffectEntryViewController(LmlParser lmlParser, EffectEntryModel model) {
+            this.model = model;
+            // Create view.
+            viewRoot = LmlUtils.parseLmlTemplate(lmlParser, this, Gdx.files.internal("lml/screen-demo/effect-list-item.lml"));
+            viewRoot.setUserObject(this);
+            updateViewFromModel();
+        }
+        public void updateViewFromModel() {
+            lblName.setText(model.getName());
+        }
+        public Group getViewRoot() {
+            return viewRoot;
+        }
+        public EffectEntryModel getModel() {
+            return model;
+        }
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.effects;
+import com.crashinvaders.vfx.VfxRenderContext;
+import com.crashinvaders.vfx.framebuffer.VfxPingPongWrapper;
+/** Any effect that is compatible with {@link com.crashinvaders.vfx.VfxManager}'s render chain, should implement this interface.*/
+public interface ChainVfxEffect extends VfxEffect {
+    void render(VfxRenderContext context, VfxPingPongWrapper buffers);
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.framebuffer;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.utils.Pool;
+//TODO Update the javadocs.
+/**
+ * Encapsulates a pair of {@link VfxFrameBuffer}s with the ability to swap between them.
+ * <p>
+ *
+ * Upon {@link #begin()} the buffer is reset to a known initial state, this is usually done just before the first usage of the buffer.
+ * Subsequent {@link #swap()} calls will initiate writing to the next available buffer, effectively ping-ponging between the two.
+ * Chained rendering will be possible by retrieving the
+ * necessary buffers via {@link #getSrcBuffer()}, {@link #getDstBuffer()}, {@link #getSrcTexture()} or
+ * {@link #getDstTexture}.
+ * <br/>
+ * When rendering is finished, {@link #end()} should be called to stop capturing.
+ * <p>
+ *
+ * {@link VfxPingPongWrapper} only wraps to provided buffers but doesn't manage them.
+ * So it's your responsibility to call {@link VfxFrameBuffer#initialize(int, int)} and {@link VfxFrameBuffer#dispose()} for them.
+ * <br/>
+ * You also may use the benefits of {@link VfxFrameBufferPool} if you have one
+ * (all the {@link com.crashinvaders.vfx.effects.ChainVfxEffect} have access to one from {@link com.crashinvaders.vfx.VfxRenderContext}).
+ * <br/>
+ * Simply use {@link VfxPingPongWrapper (VfxFrameBufferPool)} or {@link #initialize(VfxFrameBufferPool)} and the buffers will be created,
+ * resized and destroyed for you,
+ * just don't forget to call {@link VfxPingPongWrapper#reset()} when you're done with this instance.
+ *
+ * @author metaphore
+ */
+public class VfxPingPongWrapper implements Pool.Poolable {
+    protected VfxFrameBuffer bufDst;
+    protected VfxFrameBuffer bufSrc;
+    /** Where capturing is started. Should be true between {@link #begin()} and {@link #end()}. */
+    protected boolean capturing;
+    protected VfxFrameBufferPool bufferPool = null;
+    public VfxPingPongWrapper() {
+    }
+    public VfxPingPongWrapper(VfxFrameBufferPool bufferPool) {
+        initialize(bufferPool);
+    }
+    public VfxPingPongWrapper(VfxFrameBuffer bufDst, VfxFrameBuffer bufSrc) {
+        initialize(bufSrc, bufDst);
+    }
+    public VfxPingPongWrapper initialize(VfxFrameBufferPool bufferPool) {
+        this.bufferPool = bufferPool;
+        VfxFrameBuffer bufDst = bufferPool.obtain();
+        VfxFrameBuffer bufSrc = bufferPool.obtain();
+        return initialize(bufDst, bufSrc);
+    }
+    public VfxPingPongWrapper initialize(VfxFrameBuffer bufSrc, VfxFrameBuffer bufDst) {
+        if (capturing) {
+            throw new IllegalStateException("Ping pong buffer cannot be initialized during capturing stage. It seems the instance is already initialized.");
+        }
+        if (isInitialized()) {
+            reset();
+        }
+        this.bufSrc = bufSrc;
+        this.bufDst = bufDst;
+        return this;
+    }
+    @Override
+    public void reset() {
+        if (capturing) {
+            throw new IllegalStateException("Ping pong buffer cannot be reset during capturing stage. Forgot to call end()?");
+        }
+        // If the buffers were create using VfxBufferPool, we shall free them properly.
+        if (bufferPool != null) {
+            bufferPool.free(bufSrc);
+            bufferPool.free(bufDst);
+            bufferPool = null;
+        }
+        bufSrc = null;
+        bufDst = null;
+    }
+    public boolean isInitialized() {
+        return bufDst != null && bufSrc != null;
+    }
+    /**
+     * Start capturing into the destination buffer.
+     * To swap buffers during capturing, call {@link #swap()}.
+     * {@link #end()} shall be called after rendering to ping-pong buffer is done.
+     */
+    public void begin() {
+        if (capturing) {
+            throw new IllegalStateException("Ping pong buffer is already in capturing state.");
+        }
+        capturing = true;
+        bufDst.begin();
+    }
+    /**
+     * Finishes ping-ponging. Must be called after {@link #begin()}.
+     **/
+    public void end() {
+        if (!capturing) {
+            throw new IllegalStateException("Ping pong is not in capturing state. You should call begin() before calling end().");
+        }
+        bufDst.end();
+        capturing = false;
+    }
+    /**
+     * Swaps source/target buffers.
+     * May be called outside of capturing state.
+     */
+    public void swap() {
+        if (capturing) {
+            bufDst.end();
+        }
+        // Swap buffers
+        VfxFrameBuffer tmp = this.bufDst;
+        bufDst = bufSrc;
+        bufSrc = tmp;
+        if (capturing) {
+            bufDst.begin();
+        }
+    }
+    public boolean isCapturing() {
+        return capturing;
+    }
+    /** @return the source texture of the current ping-pong chain. */
+    public Texture getSrcTexture() {
+        return bufSrc.getFbo().getColorBufferTexture();
+    }
+    /** @return the source buffer of the current ping-pong chain. */
+    public VfxFrameBuffer getSrcBuffer() {
+        return bufSrc;
+    }
+    /** @return the result's texture of the latest {@link #swap()}. */
+    public Texture getDstTexture() {
+        return bufDst.getFbo().getColorBufferTexture();
+    }
+    /** @return Returns the result's buffer of the latest {@link #swap()}. */
+    public VfxFrameBuffer getDstBuffer() {
+        return bufDst;
+    }
+    /** Cleans up managed {@link VfxFrameBuffer}s' with the color specified. */
+    public void cleanUpBuffers(Color clearColor) {
+        cleanUpBuffers(clearColor.r, clearColor.g, clearColor.b, clearColor.a);
+    }
+    /** Cleans up managed {@link VfxFrameBuffer}s' with the color specified. */
+    public void cleanUpBuffers(float r, float g, float b, float a) {
+        final boolean wasCapturing = this.capturing;
+        if (!wasCapturing) { begin(); }
+        Gdx.gl.glClearColor(r, g, b, a);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+        swap();
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
+        if (!wasCapturing) { end(); }
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.utils.Disposable;
+import com.crashinvaders.vfx.framebuffer.VfxFrameBufferPool;
+import com.crashinvaders.vfx.framebuffer.VfxFrameBufferRenderer;
+import com.crashinvaders.vfx.utils.ViewportQuadMesh;
+public class VfxRenderContext implements Disposable {
+    private final VfxFrameBufferPool bufferPool;
+    private final VfxFrameBufferRenderer bufferRenderer;
+    private final Pixmap.Format pixelFormat;
+    private int bufferWidth;
+    private int bufferHeight;
+    public VfxRenderContext(Pixmap.Format pixelFormat, int bufferWidth, int bufferHeight) {
+        this.bufferPool = new VfxFrameBufferPool(pixelFormat, bufferWidth, bufferHeight, 8);
+        this.bufferRenderer = new VfxFrameBufferRenderer();
+        this.pixelFormat = pixelFormat;
+        this.bufferWidth = bufferWidth;
+        this.bufferHeight = bufferHeight;
+    }
+    @Override
+    public void dispose() {
+        bufferPool.dispose();
+        bufferRenderer.dispose();
+    }
+    public void resize(int bufferWidth, int bufferHeight) {
+        this.bufferWidth = bufferWidth;
+        this.bufferHeight = bufferHeight;
+        this.bufferPool.resize(bufferWidth, bufferHeight);
+    }
+    public VfxFrameBufferPool getBufferPool() {
+        return bufferPool;
+    }
+    public void rebind() {
+        bufferRenderer.rebind();
+    }
+    public Pixmap.Format getPixelFormat() {
+        return pixelFormat;
+    }
+    public VfxFrameBufferRenderer getBufferRenderer() {
+        return bufferRenderer;
+    }
+    public ViewportQuadMesh getViewportMesh() {
+        return bufferRenderer.getMesh();
+    }
+    public int getBufferWidth() {
+        return bufferWidth;
+    }
+    public int getBufferHeight() {
+        return bufferHeight;
+    }
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.utils;
+import com.badlogic.gdx.utils.Array;
+import com.badlogic.gdx.utils.GdxRuntimeException;
+import com.badlogic.gdx.utils.Pool;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+public class PrioritizedArray<T> implements Iterable<T> {
+    private final WrapperComparator<T> comparator = new WrapperComparator<T>();
+    private final ValueArrayMap<T, Wrapper<T>> items;
+    private PrioritizedArrayIterable<T> iterable;
+    public PrioritizedArray() {
+        items = new ValueArrayMap<>();
+    }
+    public PrioritizedArray(int capacity) {
+        items = new ValueArrayMap<>(capacity);
+    }
+    public T get(int index) {
+        return items.getValueAt(index).item;
+    }
+    public void add(T item) {
+        add(item, 0);
+    }
+    public void add(T item, int priority) {
+        items.put(item, Wrapper.pool.obtain().initialize(item, priority));
+        items.sort(comparator);
+    }
+    public void remove(int index) {
+        Wrapper<T> wrapper = items.getValueAt(index);
+        remove(wrapper.item);
+    }
+    public void remove(T item) {
+        Wrapper<T> wrapper = items.remove(item);
+        if (wrapper != null) {
+            Wrapper.pool.free(wrapper);
+        }
+    }
+    public boolean contains(T item) {
+        return items.contains(item);
+    }
+    public void clear() {
+        for (int i = 0; i < items.size(); i++) {
+            Wrapper<T> wrapper = items.getValueAt(i);
+            Wrapper.pool.free(wrapper);
+        }
+        items.clear();
+    }
+    public int size() {
+        return items.size();
+    }
+    public void setPriority(T item, int priority) {
+        items.get(item).priority = priority;
+        items.sort(comparator);
+    }
+    /** Returns an iterator for the items in the array. Remove is supported. Note that the same iterator instance is returned each
+     * time this method is called. Use the {@link Array.ArrayIterator} constructor for nested or multithreaded iteration. */
+    public Iterator<T> iterator () {
+        if (iterable == null) iterable = new PrioritizedArrayIterable<T>(this);
+        return iterable.iterator();
+    }
+    @Override
+    public String toString() {
+        return items.toString();
+    }
+    public String toString(String separator) {
+        return items.toString(separator);
+    }
+    private static class Wrapper<T> implements Pool.Poolable {
+        private static final Pool<Wrapper> pool = new Pool<Wrapper>() {
+            @Override
+            protected Wrapper newObject() {
+                return new Wrapper();
+            }
+        };
+        T item;
+        int priority;
+        public Wrapper initialize(T item, int priority) {
+            this.item = item;
+            this.priority = priority;
+            return this;
+        }
+        @Override
+        public void reset() {
+            item = null;
+            priority = 0;
+        }
+        @Override
+        public String toString() {
+            return item + "[" + priority + "]";
+        }
+    }
+    private static class WrapperComparator<T> implements Comparator<Wrapper<T>> {
+        @Override
+        public int compare(Wrapper l, Wrapper r) {
+            return CommonUtils.compare(l.priority, r.priority);
+        }
+    }
+    //region Iterator implementation
+    public static class PrioritizedArrayIterator<T> implements Iterator<T>, Iterable<T> {
+        private final PrioritizedArray<T> array;
+        private final boolean allowRemove;
+        int index;
+        boolean valid = true;
+        public PrioritizedArrayIterator (PrioritizedArray<T> array) {
+            this(array, true);
+        }
+        public PrioritizedArrayIterator (PrioritizedArray<T> array, boolean allowRemove) {
+            this.array = array;
+            this.allowRemove = allowRemove;
+        }
+        public boolean hasNext () {
+            if (!valid) {
+                throw new GdxRuntimeException("#iterator() cannot be used nested.");
+            }
+            return index < array.size();
+        }
+        public T next () {
+            if (index >= array.size()) throw new NoSuchElementException(String.valueOf(index));
+            if (!valid) {
+                throw new GdxRuntimeException("#iterator() cannot be used nested.");
+            }
+            return array.items.getValueAt(index++).item;
+        }
+        public void remove () {
+            if (!allowRemove) throw new GdxRuntimeException("Remove not allowed.");
+            index--;
+            array.remove(index);
+        }
+        public void reset () {
+            index = 0;
+        }
+        public Iterator<T> iterator () {
+            return this;
+        }
+    }
+    public static class PrioritizedArrayIterable<T> implements Iterable<T> {
+        private final PrioritizedArray<T> array;
+        private final boolean allowRemove;
+        private PrioritizedArray.PrioritizedArrayIterator<T> iterator1, iterator2;
+        public PrioritizedArrayIterable (PrioritizedArray<T> array) {
+            this(array, true);
+        }
+        public PrioritizedArrayIterable (PrioritizedArray<T> array, boolean allowRemove) {
+            this.array = array;
+            this.allowRemove = allowRemove;
+        }
+        public Iterator<T> iterator () {
+            if (iterator1 == null) {
+                iterator1 = new PrioritizedArrayIterator<T>(array, allowRemove);
+                iterator2 = new PrioritizedArrayIterator<T>(array, allowRemove);
+            }
+            if (!iterator1.valid) {
+                iterator1.index = 0;
+                iterator1.valid = true;
+                iterator2.valid = false;
+                return iterator1;
+            }
+            iterator2.index = 0;
+            iterator2.valid = true;
+            iterator1.valid = false;
+            return iterator2;
+        }
+    }
+    //endregion
+}
+/*******************************************************************************
+ * Copyright 2019 metaphore
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ ******************************************************************************/
+package com.crashinvaders.vfx.demo.screens.demo.controllers;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.scenes.scene2d.Group;
+import com.badlogic.gdx.scenes.scene2d.Touchable;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.Widget;
+import com.crashinvaders.vfx.VfxManager;
+import com.crashinvaders.vfx.common.lml.CommonLmlParser;
+import com.crashinvaders.vfx.common.viewcontroller.LmlViewController;
+import com.crashinvaders.vfx.common.viewcontroller.ViewControllerManager;
+import com.crashinvaders.vfx.scene2d.VfxWidgetGroup;
+import com.github.czyzby.lml.annotation.LmlActor;
+public class StatisticPanelViewController extends LmlViewController {
+    @LmlActor("lblFboSize") Label lblFboSize;
+    @LmlActor("lblFps") Label lblFps;
+    private VfxManager vfxManager;;
+    public StatisticPanelViewController(ViewControllerManager viewControllers, CommonLmlParser lmlParser) {
+        super(viewControllers, lmlParser);
+    }
+    @Override
+    public void onViewCreated(Group sceneRoot) {
+        super.onViewCreated(sceneRoot);
+        processLmlFields(this);
+        VfxWidgetGroup vfxGroup = sceneRoot.findActor("vfxGroup");
+        vfxManager = vfxGroup.getVfxManager();
+    }
+    @Override
+    public void update(float delta) {
+        super.update(delta);
+        updateFpsView();
+        updateFboSizeView();
+    }
+    public void updateFboSizeView() {
+        lblFboSize.setText(vfxManager.getWidth() + "x" + vfxManager.getHeight());
+    }
+    public void updateFpsView() {
+        int fps = Gdx.graphics.getFramesPerSecond();
+        lblFps.setText(String.valueOf(fps));
+    }
+}

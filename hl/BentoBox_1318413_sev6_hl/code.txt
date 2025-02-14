@@ -1,0 +1,2340 @@
+package world.bentobox.bentobox.database;
+import java.util.Arrays;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+import world.bentobox.bentobox.database.sql.postgresql.PostgreSQLDatabase;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.Json2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2PostgreSQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.MariaDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MongoDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MySQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.PostgreSQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.SQLite2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2SQLiteDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author Poslovitch, tastybento
+ */
+public interface DatabaseSetup {
+    /**
+     * Gets the type of database being used.
+     * Currently supported options are YAML, JSON, MYSQL, MARIADB and MONGODB.
+     * Default is JSON.
+     * @return Database type
+     */
+    static DatabaseSetup getDatabase() {
+        BentoBox plugin = BentoBox.getInstance();
+        return Arrays.stream(DatabaseType.values())
+                .filter(plugin.getSettings().getDatabaseType()::equals)
+                .findFirst()
+                .map(t -> t.database)
+                .orElseGet(() -> DatabaseType.JSON.database);
+    }
+    /**
+     * Database types
+     *
+     */
+    enum DatabaseType {
+        YAML(new YamlDatabase()),
+        /**
+         * Transition database, from YAML to JSON
+         * @since 1.5.0
+         */
+        YAML2JSON(new Yaml2JsonDatabase()),
+        /**
+         * Transition database, from YAML to MySQL
+         * @since 1.5.0
+         */
+        YAML2MYSQL(new Yaml2MySQLDatabase()),
+        /**
+         * Transition database, from YAML to MySQL (MariaDB)
+         * @since 1.5.0
+         */
+        YAML2MARIADB(new Yaml2MariaDBDatabase()),
+        /**
+         * Transition database, from YAML to MongoDB
+         * @since 1.6.0
+         */
+        YAML2MONGODB(new Yaml2MongoDBDatabase()),
+        /**
+         * Transition database, from YAML to SQLite
+         * @since 1.6.0
+         */
+        YAML2SQLITE(new Yaml2SQLiteDatabase()),
+        JSON(new JSONDatabase()),
+        /**
+         * Transition database, from JSON to MySQL
+         * @since 1.5.0
+         */
+        JSON2MYSQL(new Json2MySQLDatabase()),
+        /**
+         * Transition database, from JSON to MySQL (MariaDB)
+         * @since 1.5.0
+         */
+        JSON2MARIADB(new Json2MariaDBDatabase()),
+        /**
+         * Transition database, from JSON to MongoDB
+         * @since 1.6.0
+         */
+        JSON2MONGODB(new Json2MongoDBDatabase()),
+        /**
+         * Transition database, from JSON to SQLite
+         * @since 1.6.0
+         */
+        JSON2SQLITE(new Json2SQLiteDatabase()),
+        /**
+         * Transition database, from JSON to PostgreSQL
+         * @since 1.6.0
+         */
+        JSON2POSTGRESQL(new Json2PostgreSQLDatabase()),
+        MYSQL(new MySQLDatabase()),
+        /**
+         * Transition database, from MySQL to JSON
+         * @since 1.5.0
+         */
+        MYSQL2JSON(new MySQL2JsonDatabase()),
+        /**
+         * @since 1.1
+         */
+        MARIADB(new MariaDBDatabase()),
+        /**
+         * Transition database, from MariaDB to JSON
+         * @since 1.6.0
+         */
+        MARIADB2JSON(new MariaDB2JsonDatabase()),
+        MONGODB(new MongoDBDatabase()),
+        /**
+         * Transition database, from MongoDB to JSON
+         * @since 1.6.0
+         */
+        MONGODB2JSON(new MongoDB2JsonDatabase()),
+        /**
+         * @since 1.6.0
+         */
+        SQLITE(new SQLiteDatabase()),
+        /**
+         * Transition database, from SQLite to JSON
+         * @since 1.6.0
+         */
+        SQLITE2JSON(new SQLite2JsonDatabase()),
+        /**
+         * @since 1.6.0
+         */
+        POSTGRESQL(new PostgreSQLDatabase()),
+        /**
+         * Transition database, from PostgreSQL to JSON
+         * @since 1.6.0
+         */
+        POSTGRESQL2JSON(new PostgreSQL2JsonDatabase());
+        DatabaseSetup database;
+        DatabaseType(DatabaseSetup database){
+            this.database = database;
+        }
+    }
+    /**
+     * Gets a database handler that will store and retrieve classes of type dataObjectClass
+     * @param <T> - Class type
+     * @param dataObjectClass - class of the object to be stored in the database
+     * @return handler for this database object
+     */
+    <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass);
+}
+package world.bentobox.bentobox.database.json;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+public class JSONDatabase implements DatabaseSetup {
+    private final JSONDatabaseConnector connector = new JSONDatabaseConnector(BentoBox.getInstance());
+    /* (non-Javadoc)
+     * @see world.bentobox.bentobox.database.DatabaseSetup#getHandler(java.lang.Class)
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass) {
+        return new JSONDatabaseHandler<>(BentoBox.getInstance(), dataObjectClass, connector);
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class Json2SQLiteDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new JSONDatabase().getHandler(type), new SQLiteDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.sql.sqlite;
+import java.io.File;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+/**
+ * @since 1.6.0
+ * @author Poslovitch
+ */
+public class SQLiteDatabase implements DatabaseSetup
+{
+    /**
+     * Database file name.
+     */
+    private static final String DATABASE_FOLDER_NAME = "database";
+    /**
+     * SQLite Database Connector.
+     */
+    private SQLiteDatabaseConnector connector;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass)
+    {
+        if (this.connector == null)
+        {
+            BentoBox plugin = BentoBox.getInstance();
+            File dataFolder = new File(plugin.getDataFolder(), DATABASE_FOLDER_NAME);
+            if (!dataFolder.exists() && !dataFolder.mkdirs())
+            {
+                plugin.logError("Could not create database folder!");
+                // Trigger plugin shutdown.
+                plugin.onDisable();
+                return null;
+            }
+            this.connector = new SQLiteDatabaseConnector("jdbc:sqlite:" + dataFolder.getAbsolutePath() + File.separator + "database.db");
+        }
+        return new SQLiteDatabaseHandler<>(BentoBox.getInstance(), dataObjectClass, this.connector);
+    }
+}
+package world.bentobox.bentobox.database;
+import java.beans.IntrospectionException;
+import java.lang.reflect.InvocationTargetException;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.api.addons.Addon;
+/**
+ * An abstract class that handles insert/select-operations into/from a database
+ *
+ * @author tastybento
+ *
+ * @param <T>
+ */
+public abstract class AbstractDatabaseHandler<T> {
+    /**
+     * FIFO queue for saves or deletions. Note that the assumption here is that most database objects will be held
+     * in memory because loading is not handled with this queue. That means that it is theoretically
+     * possible to load something before it has been saved. So, in general, load your objects and then
+     * save them async only when you do not need the data again immediately.
+     */
+    protected Queue<Runnable> processQueue;
+    /**
+     * Async save task that runs repeatedly
+     */
+    private BukkitTask asyncSaveTask;
+    private boolean inSave;
+    protected boolean shutdown;
+    /**
+     * Name of the folder where databases using files will live
+     */
+    protected static final String DATABASE_FOLDER_NAME = "database";
+    /**
+     * The data object that should be created and filled with values
+     * from the database or inserted into the database
+     */
+    protected Class<T> dataObject;
+    /**
+     * Contains the settings to create a connection to the database like
+     * host/port/database/user/password
+     */
+    protected DatabaseConnector databaseConnector;
+    protected BentoBox plugin;
+    /**
+     * The addon that is accessing the database, if any.
+     */
+    @Nullable
+    private Addon addon;
+    /**
+     * Get the addon that is accessing the database, if any. May be null.
+     * @return the addon
+     */
+    @Nullable
+    public Addon getAddon() {
+        return addon;
+    }
+    /**
+     * Set the addon that is accessing the database, if any.
+     * @param addon the addon to set
+     */
+    public void setAddon(@Nullable Addon addon) {
+        this.addon = addon;
+    }
+    /**
+     * Constructor
+     *
+     * @param type
+     *            The type of the objects that should be created and filled with
+     *            values from the database or inserted into the database
+     * @param databaseConnector
+     *            Contains the settings to create a connection to the database
+     *            like host/port/database/user/password
+     */
+    protected AbstractDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector) {
+        this.plugin = plugin;
+        this.databaseConnector = databaseConnector;
+        this.dataObject = type;
+        // Return if plugin disabled
+        if (!plugin.isEnabled()) return;
+        // Run async queue
+        processQueue = new ConcurrentLinkedQueue<>();
+        asyncSaveTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            // Check shutdown
+            if(shutdown || plugin.isShutdown()) {
+                // Cancel - this will only get called if the plugin is shutdown separately to the server
+                databaseConnector.closeConnection(dataObject);
+                asyncSaveTask.cancel();
+            } else if (!inSave && !processQueue.isEmpty()) {
+                inSave = true;
+                while(!processQueue.isEmpty()) {
+                    processQueue.poll().run();
+                }
+                inSave = false;
+            }
+        }, 0L, 1L);
+    }
+    protected AbstractDatabaseHandler() {}
+    /**
+     * Loads all the records in this table and returns a list of them
+     * @return list of <T>
+     */
+    public abstract List<T> loadObjects() throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    /**
+     * Creates a <T> filled with values from the corresponding
+     * database file
+     * @param uniqueId - unique ID
+     * @return <T>
+     */
+    @Nullable
+    public abstract T loadObject(@NonNull String uniqueId) throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    /**
+     * Loads all the records in this table and returns a list of them async
+     * @return CompletableFuture List of <T>
+     * @since 2.7.0
+     */
+    public CompletableFuture<List<T>> loadObjectsASync() {
+        CompletableFuture<List<T>> completableFuture = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(BentoBox.getInstance(), () -> {
+            try {
+                completableFuture.complete(loadObjects()); // Complete the future with the result
+            } catch (Exception e) {
+                completableFuture.completeExceptionally(e); // Complete exceptionally if an error occurs
+                plugin.logError("Failed to load objects asynchronously: " + e.getMessage());
+            }
+        });
+        return completableFuture;
+    }
+    /**
+     * Save T into the corresponding database
+     *
+     * @param instance that should be inserted into the database
+     * @return completable future that is true if saved
+     */
+    public abstract CompletableFuture<Boolean> saveObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    /**
+     * Deletes the object with the unique id from the database. If the object does not exist, it will fail silently.
+     * Use {@link #objectExists(String)} if you need to know if the object is in the database beforehand.
+     * @param instance - object instance
+     */
+    public abstract void deleteObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    /**
+     * Checks if a unique id exists or not
+     * @param uniqueId - uniqueId to check
+     * @return true if this uniqueId exists
+     */
+    public abstract boolean objectExists(String uniqueId);
+    /**
+     * Closes the database
+     */
+    public abstract void close();
+    /**
+     * Attempts to delete the object with the uniqueId. If the object does not exist, it will fail silently.
+     * Use {@link #objectExists(String)} if you need to know if the object is in the database beforehand.
+     * @param uniqueId - uniqueId of object
+     * @since 1.1
+     */
+    public abstract void deleteID(String uniqueId);
+}
+package world.bentobox.bentobox.database.sql.postgresql;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+/**
+ * @since 1.6.0
+ * @author Poslovitch
+ */
+public class PostgreSQLDatabase implements DatabaseSetup
+{
+    /**
+     * PostgreSQL Database Connector.
+     */
+    PostgreSQLDatabaseConnector connector;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass)
+    {
+        BentoBox plugin = BentoBox.getInstance();
+        if (this.connector == null)
+        {
+            this.connector = new PostgreSQLDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL(),
+                    plugin.getSettings().getMaximumPoolSize()));
+        }
+        return new PostgreSQLDatabaseHandler<>(plugin, dataObjectClass, this.connector);
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class Json2MongoDBDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new JSONDatabase().getHandler(type), new MongoDBDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.mongodb;
+import org.bukkit.Bukkit;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+public class MongoDBDatabase implements DatabaseSetup {
+    private MongoDBDatabaseConnector connector;
+    /* (non-Javadoc)
+     * @see world.bentobox.bentobox.database.DatabaseSetup#getHandler(java.lang.Class)
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        BentoBox plugin = BentoBox.getInstance();
+        // Check if the MongoDB plugin exists
+        if (Bukkit.getPluginManager().getPlugin("BsbMongo") == null) {
+            plugin.logError("You must install BsbMongo plugin for MongoDB support!");
+            plugin.logError("See: https://github.com/tastybento/bsbMongo/releases/");
+            Bukkit.getPluginManager().disablePlugin(plugin);
+            return null;
+        }
+        if (connector == null) {
+            connector = new MongoDBDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL()
+            ), plugin.getSettings().getMongodbConnectionUri());
+        }
+        return new MongoDBDatabaseHandler<>(plugin, type, connector);
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class Json2MySQLDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new JSONDatabase().getHandler(type), new MySQLDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.postgresql.PostgreSQLDatabase;
+/**
+ * @author Poslovitch
+ * @since 1.6.0
+ */
+public class PostgreSQL2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass) {
+        return new TransitionDatabaseHandler<>(dataObjectClass, new PostgreSQLDatabase().getHandler(dataObjectClass), new JSONDatabase().getHandler(dataObjectClass));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class MongoDB2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new MongoDBDatabase().getHandler(type), new JSONDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class Yaml2MariaDBDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new YamlDatabase().getHandler(type), new MariaDBDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class Yaml2MySQLDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new YamlDatabase().getHandler(type), new MySQLDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class MySQL2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new MySQLDatabase().getHandler(type), new JSONDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.sql.mysql;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+public class MySQLDatabase implements DatabaseSetup
+{
+    /**
+     * MySQL Database Connector
+     */
+    private MySQLDatabaseConnector connector;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type)
+    {
+        BentoBox plugin = BentoBox.getInstance();
+        if (this.connector == null)
+        {
+            this.connector = new MySQLDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL(),
+                    plugin.getSettings().getMaximumPoolSize()));
+        }
+        return new MySQLDatabaseHandler<>(plugin, type, this.connector);
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class MariaDB2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new MariaDBDatabase().getHandler(type), new JSONDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.sql.mariadb;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+/**
+ * @author barpec12
+ * @since 1.1
+ */
+public class MariaDBDatabase implements DatabaseSetup
+{
+    /**
+     * MariaDB Database Connector.
+     */
+    private MariaDBDatabaseConnector connector;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type)
+    {
+        BentoBox plugin = BentoBox.getInstance();
+        if (this.connector == null)
+        {
+            this.connector = new MariaDBDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL(),
+                    plugin.getSettings().getMaximumPoolSize()));
+        }
+        return new MariaDBDatabaseHandler<>(plugin, type, this.connector);
+    }
+}
+package world.bentobox.bentobox;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import org.apache.commons.lang.exception.ExceptionUtils;
+import org.bukkit.Bukkit;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.server.ServerCommandEvent;
+import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.api.configuration.Config;
+import world.bentobox.bentobox.api.events.BentoBoxReadyEvent;
+import world.bentobox.bentobox.api.localization.TextVariables;
+import world.bentobox.bentobox.api.user.Notifier;
+import world.bentobox.bentobox.api.user.User;
+import world.bentobox.bentobox.commands.BentoBoxCommand;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.hooks.FancyNpcsHook;
+import world.bentobox.bentobox.hooks.ItemsAdderHook;
+import world.bentobox.bentobox.hooks.MultipaperHook;
+import world.bentobox.bentobox.hooks.MultiverseCoreHook;
+import world.bentobox.bentobox.hooks.MyWorldsHook;
+import world.bentobox.bentobox.hooks.MythicMobsHook;
+import world.bentobox.bentobox.hooks.SlimefunHook;
+import world.bentobox.bentobox.hooks.VaultHook;
+import world.bentobox.bentobox.hooks.ZNPCsPlusHook;
+import world.bentobox.bentobox.hooks.placeholders.PlaceholderAPIHook;
+import world.bentobox.bentobox.listeners.BannedCommands;
+import world.bentobox.bentobox.listeners.BlockEndDragon;
+import world.bentobox.bentobox.listeners.DeathListener;
+import world.bentobox.bentobox.listeners.JoinLeaveListener;
+import world.bentobox.bentobox.listeners.PanelListenerManager;
+import world.bentobox.bentobox.listeners.PrimaryIslandListener;
+import world.bentobox.bentobox.listeners.SeedWorldMakerListener;
+import world.bentobox.bentobox.listeners.StandardSpawnProtectionListener;
+import world.bentobox.bentobox.listeners.teleports.EntityTeleportListener;
+import world.bentobox.bentobox.listeners.teleports.PlayerTeleportListener;
+import world.bentobox.bentobox.managers.AddonsManager;
+import world.bentobox.bentobox.managers.BlueprintsManager;
+import world.bentobox.bentobox.managers.CommandsManager;
+import world.bentobox.bentobox.managers.FlagsManager;
+import world.bentobox.bentobox.managers.HooksManager;
+import world.bentobox.bentobox.managers.IslandDeletionManager;
+import world.bentobox.bentobox.managers.IslandWorldManager;
+import world.bentobox.bentobox.managers.IslandsManager;
+import world.bentobox.bentobox.managers.LocalesManager;
+import world.bentobox.bentobox.managers.PlaceholdersManager;
+import world.bentobox.bentobox.managers.PlayersManager;
+import world.bentobox.bentobox.managers.RanksManager;
+import world.bentobox.bentobox.managers.WebManager;
+import world.bentobox.bentobox.util.heads.HeadGetter;
+import world.bentobox.bentobox.versions.ServerCompatibility;
+/**
+ * Main BentoBox class
+ * @author tastybento, Poslovitch
+ */
+public class BentoBox extends JavaPlugin implements Listener {
+    private static BentoBox instance;
+    // Databases
+    private PlayersManager playersManager;
+    private IslandsManager islandsManager;
+    // Managers
+    private CommandsManager commandsManager;
+    private LocalesManager localesManager;
+    private AddonsManager addonsManager;
+    private FlagsManager flagsManager;
+    private IslandWorldManager islandWorldManager;
+    private BlueprintsManager blueprintsManager;
+    private HooksManager hooksManager;
+    private PlaceholdersManager placeholdersManager;
+    private IslandDeletionManager islandDeletionManager;
+    private WebManager webManager;
+    // Settings
+    private Settings settings;
+    // Notifier
+    private Notifier notifier;
+    private HeadGetter headGetter;
+    private boolean isLoaded;
+    // Metrics
+    @Nullable
+    private BStats metrics;
+    private Config<Settings> configObject;
+    private BukkitTask blueprintLoadingTask;
+    private boolean shutdown;
+    @Override
+    public void onEnable(){
+        setInstance(this);
+        if (!ServerCompatibility.getInstance().checkCompatibility().isCanLaunch()) {
+            // The server's most likely incompatible.
+            // Show a warning
+            logWarning("************ Disclaimer **************");
+            logWarning("BentoBox may not be compatible with this server!");
+            logWarning("BentoBox is tested only on the following Spigot versions:");
+            List<String> versions = ServerCompatibility.ServerVersion.getVersions(ServerCompatibility.Compatibility.COMPATIBLE, ServerCompatibility.Compatibility.SUPPORTED)
+                    .stream().map(ServerCompatibility.ServerVersion::toString).toList();
+            logWarning(String.join(", ", versions));
+            logWarning("**************************************");
+        }
+        // Not loaded
+        isLoaded = false;
+        // Store the current millis time so we can tell how many ms it took for BSB to fully load.
+        final long loadStart = System.currentTimeMillis();
+        // Save the default config from config.yml
+        saveDefaultConfig();
+        // Load Flags
+        flagsManager = new FlagsManager(this);
+        if (!loadSettings()) {
+            // We're aborting the load.
+            return;
+        }
+        // Saving the config now.
+        saveConfig();
+        // Start Database managers
+        playersManager = new PlayersManager(this);
+        // Check if this plugin is now disabled (due to bad database handling)
+        if (!this.isEnabled()) {
+            return;
+        }
+        islandsManager = new IslandsManager(this);
+        // Start head getter
+        headGetter = new HeadGetter(this);
+        // Load Notifier
+        notifier = new Notifier();
+        // Set up command manager
+        commandsManager = new CommandsManager();
+        // Load BentoBox commands
+        new BentoBoxCommand();
+        // Start Island Worlds Manager
+        islandWorldManager = new IslandWorldManager(this);
+        // Load blueprints manager
+        blueprintsManager = new BlueprintsManager(this);
+        // Locales manager must be loaded before addons
+        localesManager = new LocalesManager(this);
+        // Load hooks
+        hooksManager = new HooksManager(this);
+        // Load addons. Addons may load worlds, so they must go before islands are loaded.
+        addonsManager = new AddonsManager(this);
+        addonsManager.loadAddons();
+        final long loadTime = System.currentTimeMillis() - loadStart;
+        Bukkit.getScheduler().runTask(instance, () -> {
+            try {
+                completeSetup(loadTime);
+            } catch (Exception e) {
+                fireCriticalError(e.getMessage(), "");
+                e.printStackTrace();
+            }
+        });
+    }
+    private void completeSetup(long loadTime) {
+        final long enableStart = System.currentTimeMillis();
+        hooksManager.registerHook(new MultipaperHook());
+        hooksManager.registerHook(new VaultHook());
+        // FancyNpcs
+        hooksManager.registerHook(new FancyNpcsHook());
+        // ZNPCsPlus
+        hooksManager.registerHook(new ZNPCsPlusHook());
+        // MythicMobs
+        hooksManager.registerHook(new MythicMobsHook());
+        hooksManager.registerHook(new PlaceholderAPIHook());
+        // Setup the Placeholders manager
+        placeholdersManager = new PlaceholdersManager(this);
+        // Enable addons
+        addonsManager.enableAddons();
+        // Register default gamemode placeholders
+        addonsManager.getGameModeAddons().forEach(placeholdersManager::registerDefaultPlaceholders);
+        // Register Listeners
+        registerListeners();
+        // Load islands from database - need to wait until all the worlds are loaded
+        log("Loading islands from database...");
+        try {
+            islandsManager.load();
+        } catch (Exception e) {
+            fireCriticalError(e.getMessage(), "Could not load islands!");
+            return;
+        }
+        // Make sure all flag listeners are registered.
+        flagsManager.registerListeners();
+        // Load metrics
+        metrics = new BStats(this);
+        metrics.registerMetrics();
+        // Register Multiverse hook - MV loads AFTER BentoBox
+        // Make sure all worlds are already registered to Multiverse.
+        hooksManager.registerHook(new MultiverseCoreHook());
+        hooksManager.registerHook(new MyWorldsHook());
+        islandWorldManager.registerWorldsToMultiverse(true);
+        // Register Slimefun
+        hooksManager.registerHook(new SlimefunHook());
+        // Register ItemsAdder
+        hooksManager.registerHook(new ItemsAdderHook(this));
+        // TODO: re-enable after implementation
+        //hooksManager.registerHook(new DynmapHook());
+        // TODO: re-enable after rework
+        //hooksManager.registerHook(new LangUtilsHook());
+        webManager = new WebManager(this);
+        final long enableTime = System.currentTimeMillis() - enableStart;
+        // Show banner
+        User.getInstance(Bukkit.getConsoleSender()).sendMessage("successfully-loaded",
+                TextVariables.VERSION, instance.getDescription().getVersion(),
+                "[time]", String.valueOf(loadTime + enableTime));
+        // Poll for blueprints loading to be finished - async so could be a completely variable time
+        blueprintLoadingTask = Bukkit.getScheduler().runTaskTimer(instance, () -> {
+            if (getBlueprintsManager().isBlueprintsLoaded()) {
+                blueprintLoadingTask.cancel();
+                // Tell all addons that everything is loaded
+                isLoaded = true;
+                this.addonsManager.allLoaded();
+                // Run ready commands
+                settings.getReadyCommands().forEach(cmd -> Bukkit.getServer().dispatchCommand(getServer().getConsoleSender(), cmd));
+                // Fire plugin ready event - this should go last after everything else
+                Bukkit.getPluginManager().callEvent(new BentoBoxReadyEvent());
+                instance.log("All blueprints loaded.");
+            }
+        }, 0L, 1L);
+        if (getSettings().getDatabaseType().equals(DatabaseSetup.DatabaseType.YAML)) {
+            logWarning("*** You're still using YAML database ! ***");
+            logWarning("This database type is being deprecated from BentoBox as some official addons encountered difficulties supporting it correctly.");
+            logWarning("You should switch ASAP to an alternative database type. Please refer to the comments in BentoBox's config.yml.");
+            logWarning("There is NO guarantee YAML database will remain properly supported in the following updates, and its usage should as such be considered a non-viable situation.");
+            logWarning("*** *** *** *** *** *** *** *** *** *** ***");
+        }
+    }
+    private void fireCriticalError(String message, String error) {
+        logError("*****************CRITICAL ERROR!******************");
+        logError(message);
+        logError(error + " Disabling BentoBox...");
+        logError("*************************************************");
+        // Stop all addons
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        // Do not save players or islands, just shutdown
+        shutdown = true;
+        instance.setEnabled(false);
+    }
+    /**
+     * Registers listeners.
+     */
+    private void registerListeners() {
+        PluginManager manager = getServer().getPluginManager();
+        // Player join events
+        manager.registerEvents(new JoinLeaveListener(this), this);
+        // Panel listener manager
+        manager.registerEvents(new PanelListenerManager(), this);
+        // Standard Nether/End spawns protection
+        manager.registerEvents(new StandardSpawnProtectionListener(this), this);
+        // Player portals
+        manager.registerEvents(new PlayerTeleportListener(this), this);
+        // Entity portals
+        manager.registerEvents(new EntityTeleportListener(this), this);
+        // End dragon blocking
+        manager.registerEvents(new BlockEndDragon(this), this);
+        // Banned visitor commands
+        manager.registerEvents(new BannedCommands(this), this);
+        // Death counter
+        manager.registerEvents(new DeathListener(this), this);
+        // MV unregister
+        manager.registerEvents(this, this);
+        // Island Delete Manager
+        islandDeletionManager = new IslandDeletionManager(this);
+        manager.registerEvents(islandDeletionManager, this);
+        // Primary Island Listener
+        manager.registerEvents(new PrimaryIslandListener(this), this);
+        // Seed world chunk generator
+        manager.registerEvents(new SeedWorldMakerListener(this), this);
+    }
+    @Override
+    public void onDisable() {
+        // Stop all async database tasks
+        shutdown = true;
+        HeadGetter.shutdown();
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        // Save data
+        if (playersManager != null) {
+            playersManager.shutdown();
+        }
+        if (islandsManager != null) {
+            islandsManager.shutdown();
+        }
+    }
+    @EventHandler
+    public void onServerStop(ServerCommandEvent e) {
+        /* This is no longer needed as with https://github.com/Multiverse/Multiverse-Core/releases/tag/4.3.12 (or maybe earlier) the issue
+         * is fixed where the generator was not remembered across reboots.
+         */
+        /*
+        if (islandWorldManager != null && (e.getCommand().equalsIgnoreCase("stop") || e.getCommand().equalsIgnoreCase("restart"))) {
+            // Unregister any MV worlds            if () {
+            //islandWorldManager.registerWorldsToMultiverse(false);
+        }*/
+    }
+    /**
+     * Returns the player manager
+     * @return the player manager
+     * @see #getPlayersManager()
+     */
+    public PlayersManager getPlayers() {
+        return playersManager;
+    }
+    /**
+     * Returns the player manager
+     * @return the player manager
+     * @see #getPlayers()
+     * @since 1.16.0
+     */
+    public PlayersManager getPlayersManager() {
+        return getPlayers();
+    }
+    /**
+     * Returns the island manager
+     * @return the island manager
+     * @see #getIslandsManager()
+     */
+    public IslandsManager getIslands() {
+        return islandsManager;
+    }
+    /**
+     * Returns the island manager
+     * @return the island manager
+     * @see #getIslands()
+     * @since 1.16.0
+     */
+    public IslandsManager getIslandsManager() {
+        return getIslands();
+    }
+    private static void setInstance(BentoBox plugin) {
+        BentoBox.instance = plugin;
+    }
+    public static BentoBox getInstance() {
+        return instance;
+    }
+    /**
+     * @return the Commands manager
+     */
+    public CommandsManager getCommandsManager() {
+        return commandsManager;
+    }
+    /**
+     * @return the Locales manager
+     */
+    public LocalesManager getLocalesManager() {
+        return localesManager;
+    }
+    /**
+     * @return the Addons manager
+     */
+    public AddonsManager getAddonsManager() {
+        return addonsManager;
+    }
+    /**
+     * @return the Flags manager
+     */
+    public FlagsManager getFlagsManager() {
+        return flagsManager;
+    }
+    /**
+     * @return the ranksManager
+     * @deprecated Just use {@code RanksManager.getInstance()}
+     */
+    @Deprecated(since = "2.0.0", forRemoval = true)
+    public RanksManager getRanksManager() {
+        return RanksManager.getInstance();
+    }
+    /**
+     * @return the Island World Manager
+     */
+    public IslandWorldManager getIWM() {
+        return islandWorldManager;
+    }
+    /**
+     * @return the settings
+     */
+    public Settings getSettings() {
+        return settings;
+    }
+    /**
+     * Loads the settings from the config file.
+     * If it fails, it can shut the plugin down.
+     * @return {@code true} if it loaded successfully.
+     * @since 1.3.0
+     */
+    public boolean loadSettings() {
+        log("Loading Settings from config.yml...");
+        // Load settings from config.yml. This will check if there are any issues with it too.
+        if (configObject == null) configObject = new Config<>(this, Settings.class);
+        settings = configObject.loadConfigObject();
+        if (settings == null) {
+            // Settings did not load correctly. Disable plugin.
+            logError("Settings did not load correctly - disabling plugin - please check config.yml");
+            getPluginLoader().disablePlugin(this);
+            return false;
+        }
+        log("Saving default panels...");
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_creation_panel.yml"))) {
+            log("Saving default island_creation_panel...");
+            this.saveResource("panels/island_creation_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "language_panel.yml"))) {
+            log("Saving default language_panel...");
+            this.saveResource("panels/language_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_homes_panel.yml"))) {
+            log("Saving default island_homes_panel...");
+            this.saveResource("panels/island_homes_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_invite_panel.yml"))) {
+            log("Saving default team_invite_panel...");
+            this.saveResource("panels/team_invite_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_panel.yml"))) {
+            log("Saving default team_panel...");
+            this.saveResource("panels/team_panel.yml", false);
+        }
+        return true;
+    }
+    @Override
+    public void saveConfig() {
+        if (settings != null) configObject.saveConfigObject(settings);
+    }
+    /**
+     * @return the notifier
+     */
+    public Notifier getNotifier() {
+        return notifier;
+    }
+    /**
+     * @return the headGetter
+     */
+    public HeadGetter getHeadGetter() {
+        return headGetter;
+    }
+    public void log(String string) {
+        getLogger().info(() -> string);
+    }
+    public void logDebug(Object object) {
+        getLogger().info(() -> "DEBUG: " + object);
+    }
+    public void logError(String error) {
+        getLogger().severe(() -> error);
+    }
+    /**
+     * Logs the stacktrace of a Throwable that was thrown by an error.
+     * It should be used preferably instead of {@link Throwable#printStackTrace()} as it does not risk exposing sensitive information.
+     * @param throwable the Throwable that was thrown by an error.
+     * @since 1.3.0
+     */
+    public void logStacktrace(@NonNull Throwable throwable) {
+        logError(ExceptionUtils.getStackTrace(throwable));
+    }
+    public void logWarning(String warning) {
+        getLogger().warning(() -> warning);
+    }
+    /**
+     * Returns the instance of the {@link BlueprintsManager}.
+     * @return the {@link BlueprintsManager}.
+     * @since 1.5.0
+     */
+    public BlueprintsManager getBlueprintsManager() {
+        return blueprintsManager;
+    }
+    /**
+     * Returns whether BentoBox is fully loaded or not.
+     * This basically means that all managers are instantiated and can therefore be safely accessed.
+     * @return whether BentoBox is fully loaded or not.
+     */
+    public boolean isLoaded() {
+        return isLoaded;
+    }
+    /**
+     * @return the HooksManager
+     */
+    public HooksManager getHooks() {
+        return hooksManager;
+    }
+    /**
+     * Convenience method to get the VaultHook.
+     * @return the Vault hook
+     */
+    public Optional<VaultHook> getVault() {
+        return Optional.ofNullable((VaultHook) hooksManager.getHook("Vault").orElse(null));
+    }
+    /**
+     * @return the PlaceholdersManager.
+     */
+    public PlaceholdersManager getPlaceholdersManager() {
+        return placeholdersManager;
+    }
+    /**
+     * @return the islandDeletionManager
+     * @since 1.1
+     */
+    public IslandDeletionManager getIslandDeletionManager() {
+        return islandDeletionManager;
+    }
+    /**
+     * @return an optional of the Bstats instance
+     * @since 1.1
+     */
+    @NonNull
+    public Optional<BStats> getMetrics() {
+        return Optional.ofNullable(metrics);
+    }
+    /**
+     * @return the {@link WebManager}.
+     * @since 1.5.0
+     */
+    public WebManager getWebManager() {
+        return webManager;
+    }
+    // Overriding default JavaPlugin methods
+    /* (non-Javadoc)
+     * @see org.bukkit.plugin.java.JavaPlugin#getDefaultWorldGenerator(java.lang.String, java.lang.String)
+     */
+    @Override
+    public ChunkGenerator getDefaultWorldGenerator(@NonNull String worldName, String id) {
+        return addonsManager.getDefaultWorldGenerator(worldName, id);
+    }
+    /* (non-Javadoc)
+     * @see org.bukkit.plugin.java.JavaPlugin#reloadConfig()
+     */
+    @Override
+    public void reloadConfig() {
+        loadSettings();
+    }
+    /**
+     * Check if plug has shutdown. Used to close databases that are running async.
+     * @return true if plugin has shutdown
+     * @since 1.13.0
+     */
+    public boolean isShutdown() {
+        return shutdown;
+    }
+}
+package world.bentobox.bentobox;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import org.bukkit.Material;
+import com.google.common.collect.ImmutableList;
+import world.bentobox.bentobox.api.configuration.ConfigComment;
+import world.bentobox.bentobox.api.configuration.ConfigEntry;
+import world.bentobox.bentobox.api.configuration.ConfigObject;
+import world.bentobox.bentobox.api.configuration.StoreAt;
+import world.bentobox.bentobox.database.DatabaseSetup.DatabaseType;
+/**
+ * All the plugin settings are here
+ *
+ * @author tastybento
+ */
+@StoreAt(filename = "config.yml") // Explicitly call out what name this should have.
+@ConfigComment("BentoBox v[version] configuration file.")
+@ConfigComment("")
+public class Settings implements ConfigObject {
+    /* GENERAL */
+    @ConfigComment("Default language for new players.")
+    @ConfigComment("This is the filename in the locale folder without .yml.")
+    @ConfigComment("If this does not exist, the default en-US will be used.")
+    @ConfigEntry(path = "general.default-language")
+    private String defaultLanguage = "en-US";
+    @ConfigComment("Use economy or not. If true, an economy plugin is required. If false, no money is used or given.")
+    @ConfigComment("If there is no economy plugin present anyway, money will be automatically disabled.")
+    @ConfigEntry(path = "general.use-economy")
+    private boolean useEconomy = true;
+    /* COMMANDS */
+    @ConfigComment("Console commands to run when BentoBox has loaded all worlds and addons.")
+    @ConfigComment("Commands are run as the console.")
+    @ConfigComment("e.g. set aliases for worlds in Multiverse here, or anything you need to")
+    @ConfigComment("run after the plugin is fully loaded.")
+    @ConfigEntry(path = "general.ready-commands", since = "1.24.2")
+    private List<String> readyCommands = new ArrayList<>();
+    // Database
+    @ConfigComment("JSON, MYSQL, MARIADB, MONGODB, SQLITE, and POSTGRESQL.")
+    @ConfigComment("Transition database options are:")
+    @ConfigComment("  JSON2MARIADB, JSON2MYSQL, JSON2MONGODB, JSON2SQLITE, JSON2POSTGRESQL")
+    @ConfigComment("  MYSQL2JSON, MARIADB2JSON, MONGODB2JSON, SQLITE2JSON, POSTGRESQL2JSON")
+    @ConfigComment("If you need others, please make a feature request.")
+    @ConfigComment("Minimum required versions:")
+    @ConfigComment("   MySQL versions 5.7 or later")
+    @ConfigComment("   MariaDB versions 10.2.3 or later")
+    @ConfigComment("   MongoDB versions 3.6 or later")
+    @ConfigComment("   SQLite versions 3.28 or later")
+    @ConfigComment("   PostgreSQL versions 9.4 or later")
+    @ConfigComment("Transition options enable migration from one database type to another. Use /bbox migrate.")
+    @ConfigComment("JSON is a file-based database.")
+    @ConfigComment("MYSQL might not work with all implementations: if available, use a dedicated database type (e.g. MARIADB).")
+    @ConfigComment("BentoBox uses HikariCP for connecting with SQL databases.")
+    @ConfigComment("If you use MONGODB, you must also run the BSBMongo plugin (not addon).")
+    @ConfigComment("See https://github.com/tastybento/bsbMongo/releases/.")
+    @ConfigEntry(path = "general.database.type", video = "https://youtu.be/FFzCk5-y7-g")
+    private DatabaseType databaseType = DatabaseType.JSON;
+    @ConfigEntry(path = "general.database.host")
+    private String databaseHost = "localhost";
+    @ConfigComment("Port 3306 is MySQL's default. Port 27017 is MongoDB's default.")
+    @ConfigEntry(path = "general.database.port")
+    private int databasePort = 3306;
+    @ConfigEntry(path = "general.database.name")
+    private String databaseName = "bentobox";
+    @ConfigEntry(path = "general.database.username")
+    private String databaseUsername = "username";
+    @ConfigEntry(path = "general.database.password")
+    private String databasePassword = "password";
+    @ConfigComment("How often the data will be saved to file in mins. Default is 5 minutes.")
+    @ConfigComment("This helps prevent issues if the server crashes.")
+    @ConfigComment("Data is also saved at important points in the game.")
+    @ConfigEntry(path = "general.database.backup-period")
+    private int databaseBackupPeriod = 5;
+    @ConfigComment("How many players will be saved in one tick. Default is 200")
+    @ConfigComment("Reduce if you experience lag while saving.")
+    @ConfigComment("Do not set this too low or data might get lost!")
+    @ConfigEntry(path = "general.database.max-saved-players-per-tick")
+    private int maxSavedPlayersPerTick = 20;
+    @ConfigComment("How many islands will be saved in one tick. Default is 200")
+    @ConfigComment("Reduce if you experience lag while saving.")
+    @ConfigComment("Do not set this too low or data might get lost!")
+    @ConfigEntry(path = "general.database.max-saved-islands-per-tick")
+    private int maxSavedIslandsPerTick = 20;
+    @ConfigComment("Number of active connections to the SQL database at the same time.")
+    @ConfigComment("Default 10.")
+    @ConfigEntry(path = "general.database.max-pool-size", since = "1.21.0")
+    private int maximumPoolSize = 10;
+    @ConfigComment("Enable SSL connection to MongoDB, MariaDB, MySQL and PostgreSQL databases.")
+    @ConfigEntry(path = "general.database.use-ssl", since = "1.12.0")
+    private boolean useSSL = false;
+    @ConfigComment("Database table prefix. Adds a prefix to the database tables. Not used by flatfile databases.")
+    @ConfigComment("Only the characters A-Z, a-z, 0-9 can be used. Invalid characters will become an underscore.")
+    @ConfigComment("Set this to a unique value if you are running multiple BentoBox instances that share a database.")
+    @ConfigComment("Be careful about length - databases usually have a limit of 63 characters for table lengths")
+    @ConfigEntry(path = "general.database.prefix-character", since = "1.13.0")
+    private String databasePrefix = "";
+    @ConfigComment("Custom connection datasource properties that will be applied to connection pool.")
+    @ConfigComment("Check available values to your SQL driver implementation.")
+    @ConfigComment("Example: ")
+    @ConfigComment("  custom-properties: ")
+    @ConfigComment("    cachePrepStmts: 'true'")
+    @ConfigComment("    prepStmtCacheSize: '250'")
+    @ConfigComment("    prepStmtCacheSqlLimit: '2048'")
+    @ConfigEntry(path = "general.database.custom-properties", since = "1.21.0")
+    private Map<String, String> customPoolProperties = new HashMap<>();
+    @ConfigComment("MongoDB client connection URI to override default connection options.")
+    @ConfigComment("See: https://docs.mongodb.com/manual/reference/connection-string/")
+    @ConfigEntry(path = "general.database.mongodb-connection-uri", since = "1.14.0")
+    private String mongodbConnectionUri = "";
+    @ConfigComment("Allow FTB Autonomous Activator to work (will allow a pseudo player [CoFH] to place and break blocks and hang items)")
+    @ConfigComment("Add other fake player names here if required")
+    @ConfigEntry(path = "general.fakeplayers", experimental = true)
+    private Set<String> fakePlayers = new HashSet<>();
+    /* PANELS */
+    @ConfigComment("Toggle whether panels should be closed or not when the player clicks anywhere outside of the inventory view.")
+    @ConfigEntry(path = "panel.close-on-click-outside")
+    private boolean closePanelOnClickOutside = true;
+    @ConfigComment("Defines the Material of the item that fills the gaps (in the header, etc.) of most panels.")
+    @ConfigEntry(path = "panel.filler-material", since = "1.14.0")
+    private Material panelFillerMaterial = Material.LIGHT_BLUE_STAINED_GLASS_PANE;
+    @ConfigComment("Toggle whether player head texture should be gathered from Mojang API or mc-heads.net cache server.")
+    @ConfigComment("Mojang API sometime may be slow and may limit requests to the player data, so this will allow to")
+    @ConfigComment("get player heads a bit faster then Mojang API.")
+    @ConfigEntry(path = "panel.use-cache-server", since = "1.16.0")
+    private boolean useCacheServer = false;
+    @ConfigComment("Defines how long player skin texture link is stored into local cache before it is requested again.")
+    @ConfigComment("Defined value is in the minutes.")
+    @ConfigComment("Value 0 will not clear cache until server restart.")
+    @ConfigEntry(path = "panel.head-cache-time", since = "1.14.1")
+    private long playerHeadCacheTime = 60;
+    @ConfigComment("Defines a number of player heads requested per tasks.")
+    @ConfigComment("Setting it too large may lead to temporarily being blocked from head gatherer API.")
+    @ConfigEntry(path = "panel.heads-per-call", since = "1.16.0")
+    private int headsPerCall = 9;
+    @ConfigComment("Defines a number of ticks between each player head request task.")
+    @ConfigComment("Setting it too large may lead to temporarily being blocked from head gatherer API.")
+    @ConfigEntry(path = "panel.ticks-between-calls", since = "1.16.0", needsRestart = true)
+    private long ticksBetweenCalls = 10;
+    /*
+     * Logs
+     */
+    @ConfigComment("Toggle whether superflat chunks regeneration should be logged in the server logs or not.")
+    @ConfigComment("It can be spammy if there are a lot of superflat chunks to regenerate.")
+    @ConfigComment("However, as superflat chunks regeneration can be performance-intensive, it is recommended to keep")
+    @ConfigComment("this setting set to true, as it will help you know if there are regenerations taking place.")
+    @ConfigEntry(path = "logs.clean-super-flat-chunks", since = "1.2.0")
+    private boolean logCleanSuperFlatChunks = true;
+    @ConfigComment("Toggle whether downloading data from GitHub should be logged in the server logs or not.")
+    @ConfigEntry(path = "logs.github-download-data", since = "1.5.0")
+    private boolean logGithubDownloadData = true;
+    /*
+     * Island
+     */
+    @ConfigComment("Override island distance mismatch checking. BentoBox normally refuses to run if")
+    @ConfigComment("the island distance in the gamemode config is different to the one stored in the database")
+    @ConfigComment("for safety. This overrides that check. You should never need this, and if you do not understand it")
+    @ConfigComment("keep it as false")
+    @ConfigEntry(path = "island.override-safety-check")
+    private boolean overrideSafetyCheck = false;
+    // Number of islands
+    @ConfigComment("The default number of concurrent islands a player may have.")
+    @ConfigComment("This may be overridden by individual game mode config settings.")
+    @ConfigEntry(path = "island.concurrent-islands")
+    private int islandNumber = 1;
+    @ConfigComment("Hide used blueprints.")
+    @ConfigComment("Blueprints can have a maximum use when players have concurrent islands.")
+    @ConfigComment("If this is true, then ones that are used up will not be shown in the island create menu.")
+    @ConfigEntry(path = "island.hide-used-blueprints", since = "2.3.0")
+    private boolean hideUsedBlueprints = false;
+    // Cooldowns
+    @ConfigComment("How long a player must wait until they can rejoin a team island after being kicked in minutes.")
+    @ConfigComment("This slows the effectiveness of players repeating challenges")
+    @ConfigComment("by repetitively being invited to a team island.")
+    @ConfigEntry(path = "island.cooldown.time.invite")
+    private int inviteCooldown = 60;
+    @ConfigComment("How long a player must wait until they can coop a player in minutes.")
+    @ConfigEntry(path = "island.cooldown.time.coop")
+    private int coopCooldown = 5;
+    @ConfigComment("How long a player must wait until they can trust a player in minutes.")
+    @ConfigEntry(path = "island.cooldown.time.trust")
+    private int trustCooldown = 5;
+    @ConfigComment("How long a player must wait until they can ban a player after unbanning them. In minutes.")
+    @ConfigEntry(path = "island.cooldown.time.ban")
+    private int banCooldown = 10;
+    @ConfigComment("How long a player must wait before they can reset their island again in seconds.")
+    @ConfigEntry(path = "island.cooldown.time.reset")
+    private int resetCooldown = 300;
+    @ConfigComment("Whether the reset cooldown should be applied when the player creates an island for the first time or not.")
+    @ConfigEntry(path = "island.cooldown.options.set-reset-cooldown-on-create", since = "1.2.0")
+    private boolean resetCooldownOnCreate = true;
+    // Timeout for team kick and leave commands
+    @ConfigComment("Time in seconds that players have to confirm sensitive commands, e.g. island reset.")
+    @ConfigEntry(path = "island.confirmation.time")
+    private int confirmationTime = 10;
+    // Timeout for team kick and leave commands
+    @ConfigComment("Time in seconds that players have to stand still before teleport commands activate, e.g. island go.")
+    @ConfigEntry(path = "island.delay.time")
+    private int delayTime = 0;
+    @ConfigComment("Ask the player to confirm the command he is using by typing it again.")
+    @ConfigEntry(path = "island.confirmation.commands.kick")
+    private boolean kickConfirmation = true;
+    @ConfigEntry(path = "island.confirmation.commands.leave")
+    private boolean leaveConfirmation = true;
+    @ConfigEntry(path = "island.confirmation.commands.reset")
+    private boolean resetConfirmation = true;
+    @ConfigComment("Ask the recipient to confirm trust or coop invites.")
+    @ConfigComment("Team invites will always require confirmation, for safety concerns.")
+    @ConfigEntry(path = "island.confirmation.invites", since = "1.8.0")
+    private boolean inviteConfirmation = false;
+    @ConfigComment("Sets the minimum length an island custom name is required to have.")
+    @ConfigEntry(path = "island.name.min-length")
+    private int nameMinLength = 4;
+    @ConfigComment("Sets the maximum length an island custom name cannot exceed.")
+    @ConfigEntry(path = "island.name.max-length")
+    private int nameMaxLength = 20;
+    @ConfigComment("Requires island custom names to be unique in the gamemode the island is in.")
+    @ConfigComment("As a result, only one island per gamemode are allowed to share the same name.")
+    @ConfigComment("Note that island names are purely cosmetics and are not used as a way to programmatically identify islands.")
+    @ConfigEntry(path = "island.name.uniqueness", since = "1.7.0")
+    private boolean nameUniqueness = false;
+    @ConfigComment("Remove hostile mob on teleport box radius")
+    @ConfigComment("If hostile mobs are cleared on player teleport, then this sized box will be cleared")
+    @ConfigComment("around the player. e.g. 5 means a 10 x 10 x 10 box around the player")
+    @ConfigComment("Be careful not to make this too big. Does not cover standard nether or end teleports.")
+    @ConfigEntry(path = "island.clear-radius", since = "1.6.0")
+    private int clearRadius = 5;
+    @ConfigComment("Minimum nether portal search radius. If this is too low, duplicate portals may appear.")
+    @ConfigComment("Vanilla default is 128.")
+    @ConfigEntry(path = "island.portal-search-radius", since = "1.16.2")
+    private int minPortalSearchRadius = 64;
+    @ConfigComment("Number of blocks to paste per tick when pasting blueprints.")
+    @ConfigComment("Smaller values will help reduce noticeable lag but will make pasting take slightly longer.")
+    @ConfigComment("On the contrary, greater values will make pasting take less time, but this benefit is quickly severely impacted by the")
+    @ConfigComment("resulting amount of chunks that must be loaded to fulfill the process, which often causes the server to hang out.")
+    @ConfigEntry(path = "island.paste-speed")
+    private int pasteSpeed = 64;
+    @ConfigComment("Island deletion: Number of chunks per world to regenerate per second.")
+    @ConfigComment("If there is a nether and end then 3x this number will be regenerated per second.")
+    @ConfigComment("Smaller values will help reduce noticeable lag but will make deleting take longer.")
+    @ConfigComment("A setting of 0 will leave island blocks (not recommended).")
+    @ConfigEntry(path = "island.delete-speed", since = "1.7.0")
+    private int deleteSpeed = 1;
+    // Island deletion related settings
+    @ConfigComment("Toggles whether islands, when players are resetting them, should be kept in the world or deleted.")
+    @ConfigComment("* If set to 'true', whenever a player resets his island, his previous island will become unowned and won't be deleted from the world.")
+    @ConfigComment("  You can, however, still delete those unowned islands through purging.")
+    @ConfigComment("  On bigger servers, this can lead to an increasing world size.")
+    @ConfigComment("  Yet, this allows admins to retrieve a player's old island in case of an improper use of the reset command.")
+    @ConfigComment("  Admins can indeed re-add the player to his old island by registering him to it.")
+    @ConfigComment("* If set to 'false', whenever a player resets his island, his previous island will be deleted from the world.")
+    @ConfigComment("  This is the default behaviour.")
+    @ConfigEntry(path = "island.deletion.keep-previous-island-on-reset", since = "1.13.0")
+    private boolean keepPreviousIslandOnReset = false;
+    @ConfigComment("Toggles how the islands are deleted.")
+    @ConfigComment("* If set to 'false', all islands will be deleted at once.")
+    @ConfigComment("  This is fast but may cause an impact on the performance")
+    @ConfigComment("  as it'll load all the chunks of the in-deletion islands.")
+    @ConfigComment("* If set to 'true', the islands will be deleted one by one.")
+    @ConfigComment("  This is slower but will not cause any impact on the performance.")
+    @ConfigEntry(path = "island.deletion.slow-deletion", since = "1.19.1")
+    private boolean slowDeletion = false;
+    @ConfigComment("By default, If the destination is not safe, the plugin will try to search for a safe spot around the destination,")
+    @ConfigComment("then it will try to expand the y-coordinate up and down from the destination.")
+    @ConfigComment("This setting limits how far the y-coordinate will be expanded.")
+    @ConfigComment("If set to 0 or lower, the plugin will not expand the y-coordinate.")
+    @ConfigEntry(path = "island.safe-spot-search-vertical-range", since = "1.19.1")
+    private int safeSpotSearchVerticalRange = 400;
+    @ConfigComment("By default, if the destination is not safe, the plugin will try to search for a safe spot around the destination.")
+    @ConfigComment("This allows to change the distance for searching this spot. Larger value will mean longer position search.")
+    @ConfigComment("This value is also used for valid nether portal linking between dimension.")
+    @ConfigEntry(path = "island.safe-spot-search-range", since = "1.21.0")
+    private int safeSpotSearchRange = 16;
+    /* WEB */
+    @ConfigComment("Toggle whether BentoBox can connect to GitHub to get data about updates and addons.")
+    @ConfigComment("Disabling this will result in the deactivation of the update checker and of some other")
+    @ConfigComment("features that rely on the data downloaded from the GitHub API.")
+    @ConfigComment("It does not send any data.")
+    @ConfigEntry(path = "web.github.download-data", since = "1.5.0")
+    private boolean githubDownloadData = true;
+    @ConfigComment("Time in minutes between each connection to the GitHub API.")
+    @ConfigComment("This allows for up-to-the-minute information gathering.")
+    @ConfigComment("However, as the GitHub API data does not get updated instantly, this value cannot be set to less than 60 minutes.")
+    @ConfigComment("Setting this to 0 will make BentoBox download data only at startup.")
+    @ConfigEntry(path = "web.github.connection-interval", since = "1.5.0")
+    private int githubConnectionInterval = 120;
+    @ConfigEntry(path = "web.updater.check-updates.bentobox", since = "1.3.0", hidden = true)
+    private boolean checkBentoBoxUpdates = true;
+    @ConfigEntry(path = "web.updater.check-updates.addons", since = "1.3.0", hidden = true)
+    private boolean checkAddonsUpdates = true;
+    // ---------------------------------------------
+    // Getters and setters
+    public String getDefaultLanguage() {
+        return defaultLanguage;
+    }
+    public void setDefaultLanguage(String defaultLanguage) {
+        this.defaultLanguage = defaultLanguage;
+    }
+    public boolean isUseEconomy() {
+        return useEconomy;
+    }
+    public void setUseEconomy(boolean useEconomy) {
+        this.useEconomy = useEconomy;
+    }
+    public DatabaseType getDatabaseType() {
+        return databaseType;
+    }
+    public void setDatabaseType(DatabaseType databaseType) {
+        this.databaseType = databaseType;
+    }
+    public String getDatabaseHost() {
+        return databaseHost;
+    }
+    public void setDatabaseHost(String databaseHost) {
+        this.databaseHost = databaseHost;
+    }
+    public int getDatabasePort() {
+        return databasePort;
+    }
+    /**
+     * This method returns the useSSL value.
+     * 
+     * @return the value of useSSL.
+     * @since 1.12.0
+     */
+    public boolean isUseSSL() {
+        return useSSL;
+    }
+    /**
+     * This method sets the useSSL value.
+     * 
+     * @param useSSL the useSSL new value.
+     * @since 1.12.0
+     */
+    public void setUseSSL(boolean useSSL) {
+        this.useSSL = useSSL;
+    }
+    public void setDatabasePort(int databasePort) {
+        this.databasePort = databasePort;
+    }
+    public String getDatabaseName() {
+        return databaseName;
+    }
+    public void setDatabaseName(String databaseName) {
+        this.databaseName = databaseName;
+    }
+    public String getDatabaseUsername() {
+        return databaseUsername;
+    }
+    public void setDatabaseUsername(String databaseUsername) {
+        this.databaseUsername = databaseUsername;
+    }
+    public String getDatabasePassword() {
+        return databasePassword;
+    }
+    public void setDatabasePassword(String databasePassword) {
+        this.databasePassword = databasePassword;
+    }
+    public int getDatabaseBackupPeriod() {
+        return databaseBackupPeriod;
+    }
+    public void setDatabaseBackupPeriod(int databaseBackupPeriod) {
+        this.databaseBackupPeriod = databaseBackupPeriod;
+    }
+    /**
+     * @since 1.15.3
+     */
+    public int getMaxSavedPlayersPerTick() {
+        return maxSavedPlayersPerTick;
+    }
+    /**
+     * @since 1.15.3
+     */
+    public void setMaxSavedPlayersPerTick(int maxSavedPlayersPerTick) {
+        this.maxSavedPlayersPerTick = maxSavedPlayersPerTick;
+    }
+    /**
+     * @since 1.15.3
+     */
+    public int getMaxSavedIslandsPerTick() {
+        return maxSavedIslandsPerTick;
+    }
+    /**
+     * @since 1.15.3
+     */
+    public void setMaxSavedIslandsPerTick(int maxSavedIslandsPerTick) {
+        this.maxSavedIslandsPerTick = maxSavedIslandsPerTick;
+    }
+    public Set<String> getFakePlayers() {
+        return fakePlayers;
+    }
+    public void setFakePlayers(Set<String> fakePlayers) {
+        this.fakePlayers = fakePlayers;
+    }
+    public boolean isClosePanelOnClickOutside() {
+        return closePanelOnClickOutside;
+    }
+    public void setClosePanelOnClickOutside(boolean closePanelOnClickOutside) {
+        this.closePanelOnClickOutside = closePanelOnClickOutside;
+    }
+    public int getInviteCooldown() {
+        return inviteCooldown;
+    }
+    public void setInviteCooldown(int inviteCooldown) {
+        this.inviteCooldown = inviteCooldown;
+    }
+    public int getCoopCooldown() {
+        return coopCooldown;
+    }
+    public void setCoopCooldown(int coopCooldown) {
+        this.coopCooldown = coopCooldown;
+    }
+    public int getTrustCooldown() {
+        return trustCooldown;
+    }
+    public void setTrustCooldown(int trustCooldown) {
+        this.trustCooldown = trustCooldown;
+    }
+    public int getBanCooldown() {
+        return banCooldown;
+    }
+    public void setBanCooldown(int banCooldown) {
+        this.banCooldown = banCooldown;
+    }
+    public int getResetCooldown() {
+        return resetCooldown;
+    }
+    public void setResetCooldown(int resetCooldown) {
+        this.resetCooldown = resetCooldown;
+    }
+    public int getConfirmationTime() {
+        return confirmationTime;
+    }
+    public void setConfirmationTime(int confirmationTime) {
+        this.confirmationTime = confirmationTime;
+    }
+    public boolean isKickConfirmation() {
+        return kickConfirmation;
+    }
+    public void setKickConfirmation(boolean kickConfirmation) {
+        this.kickConfirmation = kickConfirmation;
+    }
+    public boolean isLeaveConfirmation() {
+        return leaveConfirmation;
+    }
+    public void setLeaveConfirmation(boolean leaveConfirmation) {
+        this.leaveConfirmation = leaveConfirmation;
+    }
+    public boolean isResetConfirmation() {
+        return resetConfirmation;
+    }
+    public void setResetConfirmation(boolean resetConfirmation) {
+        this.resetConfirmation = resetConfirmation;
+    }
+    public int getNameMinLength() {
+        return nameMinLength;
+    }
+    public void setNameMinLength(int nameMinLength) {
+        this.nameMinLength = nameMinLength;
+    }
+    public int getNameMaxLength() {
+        return nameMaxLength;
+    }
+    public void setNameMaxLength(int nameMaxLength) {
+        this.nameMaxLength = nameMaxLength;
+    }
+    /**
+     * @since 1.7.0
+     */
+    public boolean isNameUniqueness() {
+        return nameUniqueness;
+    }
+    /**
+     * @since 1.7.0
+     */
+    public void setNameUniqueness(boolean nameUniqueness) {
+        this.nameUniqueness = nameUniqueness;
+    }
+    /**
+     * @param pasteSpeed the pasteSpeed to set
+     */
+    public void setPasteSpeed(int pasteSpeed) {
+        this.pasteSpeed = pasteSpeed;
+    }
+    /**
+     * @return paste speed in blocks per tick
+     */
+    public int getPasteSpeed() {
+        return this.pasteSpeed;
+    }
+    /**
+     * @return the deleteSpeed
+     * @since 1.7.0
+     */
+    public int getDeleteSpeed() {
+        return deleteSpeed;
+    }
+    /**
+     * @param deleteSpeed the deleteSpeed to set
+     * @since 1.7.0
+     */
+    public void setDeleteSpeed(int deleteSpeed) {
+        this.deleteSpeed = deleteSpeed;
+    }
+    public boolean isLogCleanSuperFlatChunks() {
+        return logCleanSuperFlatChunks;
+    }
+    public void setLogCleanSuperFlatChunks(boolean logCleanSuperFlatChunks) {
+        this.logCleanSuperFlatChunks = logCleanSuperFlatChunks;
+    }
+    public boolean isResetCooldownOnCreate() {
+        return resetCooldownOnCreate;
+    }
+    public void setResetCooldownOnCreate(boolean resetCooldownOnCreate) {
+        this.resetCooldownOnCreate = resetCooldownOnCreate;
+    }
+    public boolean isGithubDownloadData() {
+        return githubDownloadData;
+    }
+    public void setGithubDownloadData(boolean githubDownloadData) {
+        this.githubDownloadData = githubDownloadData;
+    }
+    public int getGithubConnectionInterval() {
+        return githubConnectionInterval;
+    }
+    public void setGithubConnectionInterval(int githubConnectionInterval) {
+        this.githubConnectionInterval = githubConnectionInterval;
+    }
+    public boolean isCheckBentoBoxUpdates() {
+        return checkBentoBoxUpdates;
+    }
+    public void setCheckBentoBoxUpdates(boolean checkBentoBoxUpdates) {
+        this.checkBentoBoxUpdates = checkBentoBoxUpdates;
+    }
+    public boolean isCheckAddonsUpdates() {
+        return checkAddonsUpdates;
+    }
+    public void setCheckAddonsUpdates(boolean checkAddonsUpdates) {
+        this.checkAddonsUpdates = checkAddonsUpdates;
+    }
+    public boolean isLogGithubDownloadData() {
+        return logGithubDownloadData;
+    }
+    public void setLogGithubDownloadData(boolean logGithubDownloadData) {
+        this.logGithubDownloadData = logGithubDownloadData;
+    }
+    public int getDelayTime() {
+        return delayTime;
+    }
+    /**
+     * @param delayTime the delayTime to set
+     */
+    public void setDelayTime(int delayTime) {
+        this.delayTime = delayTime;
+    }
+    /**
+     * @return the clearRadius
+     */
+    public int getClearRadius() {
+        if (clearRadius < 0)
+            clearRadius = 0;
+        return clearRadius;
+    }
+    /**
+     * @param clearRadius the clearRadius to set. Cannot be negative.
+     */
+    public void setClearRadius(int clearRadius) {
+        if (clearRadius < 0)
+            clearRadius = 0;
+        this.clearRadius = clearRadius;
+    }
+    /**
+     * @return the inviteConfirmation
+     * @since 1.8.0
+     */
+    public boolean isInviteConfirmation() {
+        return inviteConfirmation;
+    }
+    /**
+     * @param inviteConfirmation the inviteConfirmation to set
+     * @since 1.8.0
+     */
+    public void setInviteConfirmation(boolean inviteConfirmation) {
+        this.inviteConfirmation = inviteConfirmation;
+    }
+    /**
+     * @return the databasePrefix
+     */
+    public String getDatabasePrefix() {
+        if (databasePrefix == null)
+            databasePrefix = "";
+        return databasePrefix.isEmpty() ? "" : databasePrefix.replaceAll("[^a-zA-Z0-9]", "_");
+    }
+    /**
+     * @param databasePrefix the databasePrefix to set
+     */
+    public void setDatabasePrefix(String databasePrefix) {
+        this.databasePrefix = databasePrefix;
+    }
+    /**
+     * Returns whether islands, when reset, should be kept or deleted.
+     * 
+     * @return {@code true} if islands, when reset, should be kept; {@code false}
+     *         otherwise.
+     * @since 1.13.0
+     */
+    public boolean isKeepPreviousIslandOnReset() {
+        return keepPreviousIslandOnReset;
+    }
+    /**
+     * Sets whether islands, when reset, should be kept or deleted.
+     * 
+     * @param keepPreviousIslandOnReset {@code true} if islands, when reset, should
+     *                                  be kept; {@code false} otherwise.
+     * @since 1.13.0
+     */
+    public void setKeepPreviousIslandOnReset(boolean keepPreviousIslandOnReset) {
+        this.keepPreviousIslandOnReset = keepPreviousIslandOnReset;
+    }
+    /**
+     * Returns a MongoDB client connection URI to override default connection
+     * options.
+     *
+     * @return mongodb client connection.
+     * @see <a href=
+     *      "https://docs.mongodb.com/manual/reference/connection-string/">MongoDB
+     *      Documentation</a>
+     * @since 1.14.0
+     */
+    public String getMongodbConnectionUri() {
+        return mongodbConnectionUri;
+    }
+    /**
+     * Set the MongoDB client connection URI.
+     * 
+     * @param mongodbConnectionUri connection URI.
+     * @since 1.14.0
+     */
+    public void setMongodbConnectionUri(String mongodbConnectionUri) {
+        this.mongodbConnectionUri = mongodbConnectionUri;
+    }
+    /**
+     * Returns the Material of the item to preferably use when one needs to fill
+     * gaps in Panels.
+     * 
+     * @return the Material of the item to preferably use when one needs to fill
+     *         gaps in Panels.
+     * @since 1.14.0
+     */
+    public Material getPanelFillerMaterial() {
+        return panelFillerMaterial;
+    }
+    /**
+     * Sets the Material of the item to preferably use when one needs to fill gaps
+     * in Panels.
+     * 
+     * @param panelFillerMaterial the Material of the item to preferably use when
+     *                            one needs to fill gaps in Panels.
+     * @since 1.14.0
+     */
+    public void setPanelFillerMaterial(Material panelFillerMaterial) {
+        this.panelFillerMaterial = panelFillerMaterial;
+    }
+    /**
+     * Method Settings#getPlayerHeadCacheTime returns the playerHeadCacheTime of
+     * this object.
+     *
+     * @return the playerHeadCacheTime (type long) of this object.
+     * @since 1.14.1
+     */
+    public long getPlayerHeadCacheTime() {
+        return playerHeadCacheTime;
+    }
+    /**
+     * Method Settings#setPlayerHeadCacheTime sets new value for the
+     * playerHeadCacheTime of this object.
+     * 
+     * @param playerHeadCacheTime new value for this object.
+     * @since 1.14.1
+     */
+    public void setPlayerHeadCacheTime(long playerHeadCacheTime) {
+        this.playerHeadCacheTime = playerHeadCacheTime;
+    }
+    /**
+     * Is use cache server boolean.
+     *
+     * @return the boolean
+     * @since 1.16.0
+     */
+    public boolean isUseCacheServer() {
+        return useCacheServer;
+    }
+    /**
+     * Sets use cache server.
+     *
+     * @param useCacheServer the use cache server
+     * @since 1.16.0
+     */
+    public void setUseCacheServer(boolean useCacheServer) {
+        this.useCacheServer = useCacheServer;
+    }
+    /**
+     * Gets heads per call.
+     *
+     * @return the heads per call
+     * @since 1.16.0
+     */
+    public int getHeadsPerCall() {
+        return headsPerCall;
+    }
+    /**
+     * Sets heads per call.
+     *
+     * @param headsPerCall the heads per call
+     * @since 1.16.0
+     */
+    public void setHeadsPerCall(int headsPerCall) {
+        this.headsPerCall = headsPerCall;
+    }
+    /**
+     * Gets ticks between calls.
+     *
+     * @return the ticks between calls
+     * @since 1.16.0
+     */
+    public long getTicksBetweenCalls() {
+        return ticksBetweenCalls;
+    }
+    /**
+     * Sets ticks between calls.
+     *
+     * @param ticksBetweenCalls the ticks between calls
+     * @since 1.16.0
+     */
+    public void setTicksBetweenCalls(long ticksBetweenCalls) {
+        this.ticksBetweenCalls = ticksBetweenCalls;
+    }
+    /**
+     * @return the minPortalSearchRadius
+     */
+    public int getMinPortalSearchRadius() {
+        return minPortalSearchRadius;
+    }
+    /**
+     * @param minPortalSearchRadius the minPortalSearchRadius to set
+     */
+    public void setMinPortalSearchRadius(int minPortalSearchRadius) {
+        this.minPortalSearchRadius = minPortalSearchRadius;
+    }
+    /**
+     * Gets safe spot search vertical range.
+     *
+     * @return the safe spot search vertical range
+     */
+    public int getSafeSpotSearchVerticalRange() {
+        return safeSpotSearchVerticalRange;
+    }
+    /**
+     * Sets safe spot search vertical range.
+     *
+     * @param safeSpotSearchVerticalRange the safe spot search vertical range
+     */
+    public void setSafeSpotSearchVerticalRange(int safeSpotSearchVerticalRange) {
+        this.safeSpotSearchVerticalRange = safeSpotSearchVerticalRange;
+    }
+    /**
+     * Is slow deletion boolean.
+     *
+     * @return the boolean
+     */
+    public boolean isSlowDeletion() {
+        return slowDeletion;
+    }
+    /**
+     * Sets slow deletion.
+     *
+     * @param slowDeletion the slow deletion
+     */
+    public void setSlowDeletion(boolean slowDeletion) {
+        this.slowDeletion = slowDeletion;
+    }
+    /**
+     * Gets maximum pool size.
+     *
+     * @return the maximum pool size
+     */
+    public int getMaximumPoolSize() {
+        return maximumPoolSize;
+    }
+    /**
+     * Gets safe spot search range.
+     *
+     * @return the safe spot search range
+     */
+    public int getSafeSpotSearchRange() {
+        return safeSpotSearchRange;
+    }
+    /**
+     * Sets maximum pool size.
+     *
+     * @param maximumPoolSize the maximum pool size
+     */
+    public void setMaximumPoolSize(int maximumPoolSize) {
+        this.maximumPoolSize = maximumPoolSize;
+    }
+    /**
+     * Gets custom pool properties.
+     *
+     * @return the custom pool properties
+     */
+    public Map<String, String> getCustomPoolProperties() {
+        return customPoolProperties;
+    }
+    /**
+     * Sets custom pool properties.
+     *
+     * @param customPoolProperties the custom pool properties
+     */
+    public void setCustomPoolProperties(Map<String, String> customPoolProperties) {
+        this.customPoolProperties = customPoolProperties;
+    }
+    /**
+     * Sets safe spot search range.
+     *
+     * @param safeSpotSearchRange the safe spot search range
+     */
+    public void setSafeSpotSearchRange(int safeSpotSearchRange) {
+        this.safeSpotSearchRange = safeSpotSearchRange;
+    }
+    /**
+     * @return an immutable list of readyCommands
+     */
+    public List<String> getReadyCommands() {
+        return ImmutableList.copyOf(Objects.requireNonNullElse(readyCommands, Collections.emptyList()));
+    }
+    /**
+     * @param readyCommands the readyCommands to set
+     */
+    public void setReadyCommands(List<String> readyCommands) {
+        this.readyCommands = readyCommands;
+    }
+    /**
+     * @return the islandNumber
+     * @since 2.0.0
+     */
+    public int getIslandNumber() {
+        return islandNumber;
+    }
+    /**
+     * @param islandNumber the islandNumber to set
+     * @since 2.0.0
+     */
+    public void setIslandNumber(int islandNumber) {
+        this.islandNumber = islandNumber;
+    }
+    /**
+     * @return the hideUsedBlueprints
+     */
+    public boolean isHideUsedBlueprints() {
+        return hideUsedBlueprints;
+    }
+    /**
+     * @param hideUsedBlueprints the hideUsedBlueprints to set
+     */
+    public void setHideUsedBlueprints(boolean hideUsedBlueprints) {
+        this.hideUsedBlueprints = hideUsedBlueprints;
+    }
+    /**
+     * @return the overrideSafetyCheck
+     */
+    public boolean isOverrideSafetyCheck() {
+        return overrideSafetyCheck;
+    }
+    /**
+     * @param overrideSafetyCheck the overrideSafetyCheck to set
+     */
+    public void setOverrideSafetyCheck(boolean overrideSafetyCheck) {
+        this.overrideSafetyCheck = overrideSafetyCheck;
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class Yaml2SQLiteDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new YamlDatabase().getHandler(type), new SQLiteDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.yaml;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+public class YamlDatabase implements DatabaseSetup {
+    private final YamlDatabaseConnector connector = new YamlDatabaseConnector(BentoBox.getInstance());
+    /**
+     * Get the config
+     * @param <T> - Class type
+     * @param type - config object type
+     * @return - the config handler
+     */
+    public <T> AbstractDatabaseHandler<T> getConfig(Class<T> type) {
+        return new ConfigHandler<>(BentoBox.getInstance(), type, connector);
+    }
+    /* (non-Javadoc)
+     * @see world.bentobox.bentobox.database.DatabaseSetup#getHandler(java.lang.Class)
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new YamlDatabaseHandler<>(BentoBox.getInstance(), type, connector);
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class Yaml2MongoDBDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new YamlDatabase().getHandler(type), new MongoDBDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+/**
+ * @author BONNe
+ * @since 1.6.0
+ */
+public class SQLite2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new SQLiteDatabase().getHandler(type), new JSONDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.postgresql.PostgreSQLDatabase;
+/**
+ * @author Poslovitch
+ * @since 1.6.0
+ */
+public class Json2PostgreSQLDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass) {
+        return new TransitionDatabaseHandler<>(dataObjectClass, new JSONDatabase().getHandler(dataObjectClass), new PostgreSQLDatabase().getHandler(dataObjectClass));
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class Yaml2JsonDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new YamlDatabase().getHandler(type), new JSONDatabase().getHandler(type));
+    }
+}
+package world.bentobox.bentobox.database;
+import java.beans.IntrospectionException;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.Logger;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.api.addons.Addon;
+import world.bentobox.bentobox.database.objects.DataObject;
+/**
+ * Handy class to store and load Java POJOs in the Database
+ * @author tastybento
+ *
+ * @param <T>
+ */
+public class Database<T> {
+    private final AbstractDatabaseHandler<T> handler;
+    private final Logger logger;
+    private static DatabaseSetup databaseSetup = DatabaseSetup.getDatabase();
+    private static final Set<Class<? extends DataObject>> dataObjects = new HashSet<>();
+    /**
+     * Construct a database
+     * @param plugin - plugin
+     * @param type - to store this type
+     */
+    @SuppressWarnings("unchecked")
+    public Database(BentoBox plugin, Class<T> type)  {
+        this.logger = plugin.getLogger();
+        handler = databaseSetup.getHandler(type);
+        // Log any database classes
+        dataObjects.add((Class<? extends DataObject>) type);
+    }
+    /**
+     * Construct a database
+     * @param addon - addon requesting
+     * @param type - to store this type
+     */
+    @SuppressWarnings("unchecked")
+    public Database(Addon addon, Class<T> type)  {
+        this.logger = addon.getLogger();
+        handler = databaseSetup.getHandler(type);
+        // Log any database classes
+        dataObjects.add((Class<? extends DataObject>) type);
+    }
+    /**
+     * Load all the config objects and supply them as a list
+     * @return list of config objects or an empty list if they cannot be loaded
+     */
+    @NonNull
+    public List<T> loadObjects() {
+        List<T> result = new ArrayList<>();
+        try {
+            result = handler.loadObjects();
+        } catch (InstantiationException | IllegalAccessException | IllegalArgumentException
+                | InvocationTargetException | ClassNotFoundException | IntrospectionException
+                | NoSuchMethodException | SecurityException e) {
+            logger.severe(() -> "Could not load objects from database! Error: " + e.getMessage());
+        }
+        return result;
+    }
+    /**
+     * Loads the config object
+     * @param uniqueId - unique id of the object
+     * @return the object or null if it cannot be loaded
+     */
+    @Nullable
+    public T loadObject(String uniqueId) {
+        T result = null;
+        try {
+            result = handler.loadObject(uniqueId);
+        } catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException
+                | ClassNotFoundException | IntrospectionException | SecurityException e) {
+            logger.severe(() -> "Could not load object from database! " + e.getMessage());
+        } catch (NoSuchMethodException e) {
+            logger.severe(() -> "Could not load object from database! " + e.getMessage());
+            logger.severe(() -> "Did you forget the JavaBean no-arg default constructor?");
+        }
+        return result;
+    }
+    /**
+     * Save object async. Saving may be done sync, depending on the underlying database.
+     * @param instance to save
+     * @return Completable future that results in true if successful.
+     * @since 1.13.0
+     */
+    public CompletableFuture<Boolean> saveObjectAsync(T instance) {
+        try {
+            return handler.saveObject(instance);
+        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException | SecurityException
+                | IntrospectionException e) {
+            logger.severe(() -> "Could not save object to database! Error: " + e.getMessage());
+            return new CompletableFuture<>();
+        }
+    }
+    /**
+     * Save object. Saving is done async. Same as {@link #saveObjectAsync(Object)}, which is recommended.
+     * @param instance to save
+     * @return true - always.
+     * @since 1.13.0
+     */
+    public boolean saveObject(T instance) {
+        saveObjectAsync(instance).thenAccept(r -> {
+            if (Boolean.FALSE.equals(r)) logger.severe(() -> "Could not save object to database!");
+        });
+        return true;
+    }
+    /**
+     * Checks if a config object exists or not
+     * @param name - unique name of the config object
+     * @return true if it exists
+     */
+    public boolean objectExists(String name) {
+        return handler.objectExists(name);
+    }
+    /**
+     * Attempts to delete the object with the uniqueId
+     * @param uniqueId - uniqueId of object
+     * @since 1.1
+     */
+    public void deleteID(String uniqueId) {
+        handler.deleteID(uniqueId);
+    }
+    /**
+     * Delete object from database
+     * @param object - object to delete
+     */
+    public void deleteObject(T object) {
+        try {
+            handler.deleteObject(object);
+        } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException
+                | IntrospectionException e) {
+            logger.severe(() -> "Could not delete object! Error: " + e.getMessage());
+        }
+    }
+    /**
+     * Close the database
+     */
+    public void close() {
+        handler.close();
+    }
+    /**
+     * @return the dataobjects
+     */
+    public static Set<Class<? extends DataObject>> getDataobjects() {
+        return dataObjects;
+    }
+    /**
+     * Load all objects asynchronously.
+     * @return {@code CompletableFuture<List<T>>}
+     */
+    public @NonNull CompletableFuture<List<T>> loadObjectsASync() {
+        return handler.loadObjectsASync();
+    }
+}
+package world.bentobox.bentobox.database.transition;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+/**
+ * @author tastybento
+ * @since 1.5.0
+ */
+public class Json2MariaDBDatabase implements DatabaseSetup {
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> type) {
+        return new TransitionDatabaseHandler<>(type, new JSONDatabase().getHandler(type), new MariaDBDatabase().getHandler(type));
+    }
+}

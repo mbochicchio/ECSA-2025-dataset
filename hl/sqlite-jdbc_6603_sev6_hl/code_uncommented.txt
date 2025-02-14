@@ -1,0 +1,4711 @@
+package org.sqlite.core;
+import java.sql.BatchUpdateException;
+import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.sqlite.BusyHandler;
+import org.sqlite.Collation;
+import org.sqlite.Function;
+import org.sqlite.ProgressHandler;
+import org.sqlite.SQLiteCommitListener;
+import org.sqlite.SQLiteConfig;
+import org.sqlite.SQLiteErrorCode;
+import org.sqlite.SQLiteException;
+import org.sqlite.SQLiteUpdateListener;
+public abstract class DB implements Codes {
+    private final String url;
+    private final String fileName;
+    private final SQLiteConfig config;
+    private final AtomicBoolean closed = new AtomicBoolean(true);
+    volatile SafeStmtPtr begin;
+    volatile SafeStmtPtr commit;
+    private final Set<SafeStmtPtr> stmts = ConcurrentHashMap.newKeySet();
+    private final Set<SQLiteUpdateListener> updateListeners = new HashSet<>();
+    private final Set<SQLiteCommitListener> commitListeners = new HashSet<>();
+    public DB(String url, String fileName, SQLiteConfig config) throws SQLException {
+        this.url = url;
+        this.fileName = fileName;
+        this.config = config;
+    }
+    public String getUrl() {
+        return url;
+    }
+    public boolean isClosed() {
+        return closed.get();
+    }
+    public SQLiteConfig getConfig() {
+        return config;
+    }
+    public abstract void interrupt() throws SQLException;
+    public abstract void busy_timeout(int ms) throws SQLException;
+    public abstract void busy_handler(BusyHandler busyHandler) throws SQLException;
+    abstract String errmsg() throws SQLException;
+    public abstract String libversion() throws SQLException;
+    public abstract long changes() throws SQLException;
+    public abstract long total_changes() throws SQLException;
+    public abstract int shared_cache(boolean enable) throws SQLException;
+    public abstract int enable_load_extension(boolean enable) throws SQLException;
+    public final synchronized void exec(String sql, boolean autoCommit) throws SQLException {
+        SafeStmtPtr pointer = prepare(sql);
+        try {
+            int rc = pointer.safeRunInt(DB::step);
+            switch (rc) {
+                case SQLITE_DONE:
+                    ensureAutoCommit(autoCommit);
+                    return;
+                case SQLITE_ROW:
+                    return;
+                default:
+                    throwex(rc);
+            }
+        } finally {
+            pointer.close();
+        }
+    }
+    public final synchronized void open(String file, int openFlags) throws SQLException {
+        _open(file, openFlags);
+        closed.set(false);
+        if (fileName.startsWith("file:") && !fileName.contains("cache=")) {
+            shared_cache(config.isEnabledSharedCache());
+        }
+        enable_load_extension(config.isEnabledLoadExtension());
+        busy_timeout(config.getBusyTimeout());
+    }
+    public final synchronized void close() throws SQLException {
+        for (SafeStmtPtr element : stmts) {
+            element.close();
+        }
+        if (begin != null) begin.close();
+        if (commit != null) commit.close();
+        closed.set(true);
+        _close();
+    }
+    public final synchronized void prepare(CoreStatement stmt) throws SQLException {
+        if (stmt.sql == null) {
+            throw new NullPointerException();
+        }
+        if (stmt.pointer != null) {
+            stmt.pointer.close();
+        }
+        stmt.pointer = prepare(stmt.sql);
+        final boolean added = stmts.add(stmt.pointer);
+        if (!added) {
+            throw new IllegalStateException("Already added pointer to statements set");
+        }
+    }
+    public synchronized int finalize(SafeStmtPtr safePtr, long ptr) throws SQLException {
+        try {
+            return finalize(ptr);
+        } finally {
+            stmts.remove(safePtr);
+        }
+    }
+    protected abstract void _open(String filename, int openFlags) throws SQLException;
+    protected abstract void _close() throws SQLException;
+    public abstract int _exec(String sql) throws SQLException;
+    protected abstract SafeStmtPtr prepare(String sql) throws SQLException;
+    protected abstract int finalize(long stmt) throws SQLException;
+    public abstract int step(long stmt) throws SQLException;
+    public abstract int reset(long stmt) throws SQLException;
+    public abstract int clear_bindings(long stmt) throws SQLException; 
+    abstract int bind_parameter_count(long stmt) throws SQLException;
+    public abstract int column_count(long stmt) throws SQLException;
+    public abstract int column_type(long stmt, int col) throws SQLException;
+    public abstract String column_decltype(long stmt, int col) throws SQLException;
+    public abstract String column_table_name(long stmt, int col) throws SQLException;
+    public abstract String column_name(long stmt, int col) throws SQLException;
+    public abstract String column_text(long stmt, int col) throws SQLException;
+    public abstract byte[] column_blob(long stmt, int col) throws SQLException;
+    public abstract double column_double(long stmt, int col) throws SQLException;
+    public abstract long column_long(long stmt, int col) throws SQLException;
+    public abstract int column_int(long stmt, int col) throws SQLException;
+    abstract int bind_null(long stmt, int pos) throws SQLException;
+    abstract int bind_int(long stmt, int pos, int v) throws SQLException;
+    abstract int bind_long(long stmt, int pos, long v) throws SQLException;
+    abstract int bind_double(long stmt, int pos, double v) throws SQLException;
+    abstract int bind_text(long stmt, int pos, String v) throws SQLException;
+    abstract int bind_blob(long stmt, int pos, byte[] v) throws SQLException;
+    public abstract void result_null(long context) throws SQLException;
+    public abstract void result_text(long context, String val) throws SQLException;
+    public abstract void result_blob(long context, byte[] val) throws SQLException;
+    public abstract void result_double(long context, double val) throws SQLException;
+    public abstract void result_long(long context, long val) throws SQLException;
+    public abstract void result_int(long context, int val) throws SQLException;
+    public abstract void result_error(long context, String err) throws SQLException;
+    public abstract String value_text(Function f, int arg) throws SQLException;
+    public abstract byte[] value_blob(Function f, int arg) throws SQLException;
+    public abstract double value_double(Function f, int arg) throws SQLException;
+    public abstract long value_long(Function f, int arg) throws SQLException;
+    public abstract int value_int(Function f, int arg) throws SQLException;
+    public abstract int value_type(Function f, int arg) throws SQLException;
+    public abstract int create_function(String name, Function f, int nArgs, int flags)
+            throws SQLException;
+    public abstract int destroy_function(String name) throws SQLException;
+    public abstract int create_collation(String name, Collation c) throws SQLException;
+    public abstract int destroy_collation(String name) throws SQLException;
+    public abstract int backup(String dbName, String destFileName, ProgressObserver observer)
+            throws SQLException;
+    public abstract int backup(
+            String dbName,
+            String destFileName,
+            ProgressObserver observer,
+            int sleepTimeMillis,
+            int nTimeouts,
+            int pagesPerStep)
+            throws SQLException;
+    public abstract int restore(String dbName, String sourceFileName, ProgressObserver observer)
+            throws SQLException;
+    public abstract int restore(
+            String dbName,
+            String sourceFileName,
+            ProgressObserver observer,
+            int sleepTimeMillis,
+            int nTimeouts,
+            int pagesPerStep)
+            throws SQLException;
+    public abstract int limit(int id, int value) throws SQLException;
+    public interface ProgressObserver {
+        void progress(int remaining, int pageCount);
+    }
+    public abstract void register_progress_handler(int vmCalls, ProgressHandler progressHandler)
+            throws SQLException;
+    public abstract void clear_progress_handler() throws SQLException;
+    abstract boolean[][] column_metadata(long stmt) throws SQLException;
+    public final synchronized String[] column_names(long stmt) throws SQLException {
+        String[] names = new String[column_count(stmt)];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = column_name(stmt, i);
+        }
+        return names;
+    }
+    final synchronized int sqlbind(long stmt, int pos, Object v) throws SQLException {
+        pos++;
+        if (v == null) {
+            return bind_null(stmt, pos);
+        } else if (v instanceof Integer) {
+            return bind_int(stmt, pos, (Integer) v);
+        } else if (v instanceof Short) {
+            return bind_int(stmt, pos, ((Short) v).intValue());
+        } else if (v instanceof Long) {
+            return bind_long(stmt, pos, (Long) v);
+        } else if (v instanceof Float) {
+            return bind_double(stmt, pos, ((Float) v).doubleValue());
+        } else if (v instanceof Double) {
+            return bind_double(stmt, pos, (Double) v);
+        } else if (v instanceof String) {
+            return bind_text(stmt, pos, (String) v);
+        } else if (v instanceof byte[]) {
+            return bind_blob(stmt, pos, (byte[]) v);
+        } else {
+            throw new SQLException("unexpected param type: " + v.getClass());
+        }
+    }
+    final synchronized long[] executeBatch(
+            SafeStmtPtr stmt, int count, Object[] vals, boolean autoCommit) throws SQLException {
+        return stmt.safeRun((db, ptr) -> this.executeBatch(ptr, count, vals, autoCommit));
+    }
+    private synchronized long[] executeBatch(
+            long stmt, int count, Object[] vals, boolean autoCommit) throws SQLException {
+        if (count < 1) {
+            throw new SQLException("count (" + count + ") < 1");
+        }
+        final int params = bind_parameter_count(stmt);
+        int rc;
+        long[] changes = new long[count];
+        try {
+            for (int i = 0; i < count; i++) {
+                reset(stmt);
+                for (int j = 0; j < params; j++) {
+                    rc = sqlbind(stmt, j, vals[(i * params) + j]);
+                    if (rc != SQLITE_OK) {
+                        throwex(rc);
+                    }
+                }
+                rc = step(stmt);
+                if (rc != SQLITE_DONE) {
+                    reset(stmt);
+                    if (rc == SQLITE_ROW) {
+                        throw new BatchUpdateException(
+                                "batch entry " + i + ": query returns results",
+                                null,
+                                0,
+                                changes,
+                                null);
+                    }
+                    throwex(rc);
+                }
+                changes[i] = changes();
+            }
+        } finally {
+            ensureAutoCommit(autoCommit);
+        }
+        reset(stmt);
+        return changes;
+    }
+    public final synchronized boolean execute(CoreStatement stmt, Object[] vals)
+            throws SQLException {
+        int statusCode = stmt.pointer.safeRunInt((db, ptr) -> execute(ptr, vals));
+        switch (statusCode & 0xFF) {
+            case SQLITE_DONE:
+                ensureAutoCommit(stmt.conn.getAutoCommit());
+                return false;
+            case SQLITE_ROW:
+                return true;
+            case SQLITE_BUSY:
+            case SQLITE_LOCKED:
+            case SQLITE_MISUSE:
+            case SQLITE_CONSTRAINT:
+                throw newSQLException(statusCode);
+            default:
+                stmt.pointer.close();
+                throw newSQLException(statusCode);
+        }
+    }
+    private synchronized int execute(long ptr, Object[] vals) throws SQLException {
+        if (vals != null) {
+            final int params = bind_parameter_count(ptr);
+            if (params > vals.length) {
+                throw new SQLException(
+                        "assertion failure: param count ("
+                                + params
+                                + ") > value count ("
+                                + vals.length
+                                + ")");
+            }
+            for (int i = 0; i < params; i++) {
+                int rc = sqlbind(ptr, i, vals[i]);
+                if (rc != SQLITE_OK) {
+                    throwex(rc);
+                }
+            }
+        }
+        int statusCode = step(ptr);
+        if ((statusCode & 0xFF) == SQLITE_DONE) reset(ptr);
+        return statusCode;
+    }
+    final synchronized boolean execute(String sql, boolean autoCommit) throws SQLException {
+        int statusCode = _exec(sql);
+        switch (statusCode) {
+            case SQLITE_OK:
+                return false;
+            case SQLITE_DONE:
+                ensureAutoCommit(autoCommit);
+                return false;
+            case SQLITE_ROW:
+                return true;
+            default:
+                throw newSQLException(statusCode);
+        }
+    }
+    public final synchronized long executeUpdate(CoreStatement stmt, Object[] vals)
+            throws SQLException {
+        try {
+            if (execute(stmt, vals)) {
+                throw new SQLException("query returns results");
+            }
+        } finally {
+            if (!stmt.pointer.isClosed()) {
+                stmt.pointer.safeRunInt(DB::reset);
+            }
+        }
+        return changes();
+    }
+    abstract void set_commit_listener(boolean enabled);
+    abstract void set_update_listener(boolean enabled);
+    public synchronized void addUpdateListener(SQLiteUpdateListener listener) {
+        if (updateListeners.add(listener) && updateListeners.size() == 1) {
+            set_update_listener(true);
+        }
+    }
+    public synchronized void addCommitListener(SQLiteCommitListener listener) {
+        if (commitListeners.add(listener) && commitListeners.size() == 1) {
+            set_commit_listener(true);
+        }
+    }
+    public synchronized void removeUpdateListener(SQLiteUpdateListener listener) {
+        if (updateListeners.remove(listener) && updateListeners.isEmpty()) {
+            set_update_listener(false);
+        }
+    }
+    public synchronized void removeCommitListener(SQLiteCommitListener listener) {
+        if (commitListeners.remove(listener) && commitListeners.isEmpty()) {
+            set_commit_listener(false);
+        }
+    }
+    void onUpdate(int type, String database, String table, long rowId) {
+        Set<SQLiteUpdateListener> listeners;
+        synchronized (this) {
+            listeners = new HashSet<>(updateListeners);
+        }
+        for (SQLiteUpdateListener listener : listeners) {
+            SQLiteUpdateListener.Type operationType;
+            switch (type) {
+                case 18:
+                    operationType = SQLiteUpdateListener.Type.INSERT;
+                    break;
+                case 9:
+                    operationType = SQLiteUpdateListener.Type.DELETE;
+                    break;
+                case 23:
+                    operationType = SQLiteUpdateListener.Type.UPDATE;
+                    break;
+                default:
+                    throw new AssertionError("Unknown type: " + type);
+            }
+            listener.onUpdate(operationType, database, table, rowId);
+        }
+    }
+    void onCommit(boolean commit) {
+        Set<SQLiteCommitListener> listeners;
+        synchronized (this) {
+            listeners = new HashSet<>(commitListeners);
+        }
+        for (SQLiteCommitListener listener : listeners) {
+            if (commit) listener.onCommit();
+            else listener.onRollback();
+        }
+    }
+    final void throwex() throws SQLException {
+        throw new SQLException(errmsg());
+    }
+    public final void throwex(int errorCode) throws SQLException {
+        throw newSQLException(errorCode);
+    }
+    static void throwex(int errorCode, String errorMessage) throws SQLException {
+        throw newSQLException(errorCode, errorMessage);
+    }
+    public static SQLiteException newSQLException(int errorCode, String errorMessage) {
+        SQLiteErrorCode code = SQLiteErrorCode.getErrorCode(errorCode);
+        String msg;
+        if (code == SQLiteErrorCode.UNKNOWN_ERROR) {
+            msg = String.format("%s:%s (%s)", code, errorCode, errorMessage);
+        } else {
+            msg = String.format("%s (%s)", code, errorMessage);
+        }
+        return new SQLiteException(msg, code);
+    }
+    private SQLiteException newSQLException(int errorCode) throws SQLException {
+        return newSQLException(errorCode, errmsg());
+    }
+    final void ensureAutoCommit(boolean autoCommit) throws SQLException {
+        if (!autoCommit) {
+            return;
+        }
+        ensureBeginAndCommit();
+        begin.safeRunConsume(
+                (db, beginPtr) -> {
+                    commit.safeRunConsume(
+                            (db2, commitPtr) -> ensureAutocommit(beginPtr, commitPtr));
+                });
+    }
+    private void ensureBeginAndCommit() throws SQLException {
+        if (begin == null) {
+            synchronized (this) {
+                if (begin == null) {
+                    begin = prepare("begin;");
+                }
+            }
+        }
+        if (commit == null) {
+            synchronized (this) {
+                if (commit == null) {
+                    commit = prepare("commit;");
+                }
+            }
+        }
+    }
+    private void ensureAutocommit(long beginPtr, long commitPtr) throws SQLException {
+        try {
+            if (step(beginPtr) != SQLITE_DONE) {
+                return; 
+            }
+            int rc = step(commitPtr);
+            if (rc != SQLITE_DONE) {
+                reset(commitPtr);
+                throwex(rc);
+            }
+        } finally {
+            reset(beginPtr);
+            reset(commitPtr);
+        }
+    }
+    public abstract byte[] serialize(String schema) throws SQLException;
+    public abstract void deserialize(String schema, byte[] buff) throws SQLException;
+}
+package org.sqlite.core;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.regex.Pattern;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.SQLiteConnectionConfig;
+import org.sqlite.jdbc3.JDBC3Connection;
+import org.sqlite.jdbc4.JDBC4ResultSet;
+public abstract class CoreStatement implements Codes {
+    public final SQLiteConnection conn;
+    protected final CoreResultSet rs;
+    public SafeStmtPtr pointer;
+    protected String sql = null;
+    protected int batchPos;
+    protected Object[] batch = null;
+    protected boolean resultsWaiting = false;
+    private Statement generatedKeysStat = null;
+    private ResultSet generatedKeysRs = null;
+    private static final Pattern INSERT_PATTERN =
+            Pattern.compile(
+                    "^\\s*(?:with\\s+.+\\(.+?\\))*\\s*(?:insert|replace)\\s*",
+                    Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    protected CoreStatement(SQLiteConnection c) {
+        conn = c;
+        rs = new JDBC4ResultSet(this);
+    }
+    public DB getDatabase() {
+        return conn.getDatabase();
+    }
+    public SQLiteConnectionConfig getConnectionConfig() {
+        return conn.getConnectionConfig();
+    }
+    protected final void checkOpen() throws SQLException {
+        if (pointer.isClosed()) throw new SQLException("statement is not executing");
+    }
+    boolean isOpen() throws SQLException {
+        return !pointer.isClosed();
+    }
+    protected boolean exec() throws SQLException {
+        if (sql == null) throw new SQLException("SQLiteJDBC internal error: sql==null");
+        if (rs.isOpen()) throw new SQLException("SQLite JDBC internal error: rs.isOpen() on exec.");
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        boolean success = false;
+        boolean rc = false;
+        try {
+            rc = conn.getDatabase().execute(this, null);
+            success = true;
+        } finally {
+            notifyFirstStatementExecuted();
+            resultsWaiting = rc;
+            if (!success) {
+                this.pointer.close();
+            }
+        }
+        return pointer.safeRunInt(DB::column_count) != 0;
+    }
+    protected boolean exec(String sql) throws SQLException {
+        if (sql == null) throw new SQLException("SQLiteJDBC internal error: sql==null");
+        if (rs.isOpen()) throw new SQLException("SQLite JDBC internal error: rs.isOpen() on exec.");
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        boolean rc = false;
+        boolean success = false;
+        try {
+            rc = conn.getDatabase().execute(sql, conn.getAutoCommit());
+            success = true;
+        } finally {
+            notifyFirstStatementExecuted();
+            resultsWaiting = rc;
+            if (!success && pointer != null) {
+                pointer.close();
+            }
+        }
+        return pointer.safeRunInt(DB::column_count) != 0;
+    }
+    protected void internalClose() throws SQLException {
+        if (this.pointer != null && !this.pointer.isClosed()) {
+            if (conn.isClosed()) throw DB.newSQLException(SQLITE_ERROR, "Connection is closed");
+            rs.close();
+            batch = null;
+            batchPos = 0;
+            int resp = this.pointer.close();
+            if (resp != SQLITE_OK && resp != SQLITE_MISUSE) conn.getDatabase().throwex(resp);
+        }
+    }
+    protected void notifyFirstStatementExecuted() {
+        conn.setFirstStatementExecuted(true);
+    }
+    public abstract ResultSet executeQuery(String sql, boolean closeStmt) throws SQLException;
+    protected void checkIndex(int index) throws SQLException {
+        if (batch == null) {
+            throw new SQLException("No parameter has been set yet");
+        }
+        if (index < 1 || index > batch.length) {
+            throw new SQLException("Parameter index is invalid");
+        }
+    }
+    protected void clearGeneratedKeys() throws SQLException {
+        if (generatedKeysRs != null && !generatedKeysRs.isClosed()) {
+            generatedKeysRs.close();
+        }
+        generatedKeysRs = null;
+        if (generatedKeysStat != null && !generatedKeysStat.isClosed()) {
+            generatedKeysStat.close();
+        }
+        generatedKeysStat = null;
+    }
+    public void updateGeneratedKeys() throws SQLException {
+        if (conn.getConnectionConfig().isGetGeneratedKeys()) {
+            clearGeneratedKeys();
+            if (sql != null && INSERT_PATTERN.matcher(sql).find()) {
+                generatedKeysStat = conn.createStatement();
+                generatedKeysRs = generatedKeysStat.executeQuery("SELECT last_insert_rowid();");
+            }
+        }
+    }
+    public ResultSet getGeneratedKeys() throws SQLException {
+        if (generatedKeysRs == null) {
+            generatedKeysStat = conn.createStatement();
+            generatedKeysRs = generatedKeysStat.executeQuery("SELECT 1 WHERE 1 = 2;");
+        }
+        return generatedKeysRs;
+    }
+}
+package org.sqlite.jdbc4;
+import java.io.InputStream;
+import java.io.Reader;
+import java.sql.NClob;
+import java.sql.ParameterMetaData;
+import java.sql.PreparedStatement;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLXML;
+import java.util.Arrays;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.jdbc3.JDBC3PreparedStatement;
+public class JDBC4PreparedStatement extends JDBC3PreparedStatement
+        implements PreparedStatement, ParameterMetaData {
+    @Override
+    public String toString() {
+        return sql + " \n parameters=" + Arrays.toString(batch);
+    }
+    public JDBC4PreparedStatement(SQLiteConnection conn, String sql) throws SQLException {
+        super(conn, sql);
+    }
+    public void setRowId(int parameterIndex, RowId x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNString(int parameterIndex, String value) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNCharacterStream(int parameterIndex, Reader value, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNClob(int parameterIndex, NClob value) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setClob(int parameterIndex, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setBlob(int parameterIndex, InputStream inputStream, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNClob(int parameterIndex, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setSQLXML(int parameterIndex, SQLXML xmlObject) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setAsciiStream(int parameterIndex, InputStream x, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setBinaryStream(int parameterIndex, InputStream x, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setCharacterStream(int parameterIndex, Reader reader, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setAsciiStream(int parameterIndex, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setBinaryStream(int parameterIndex, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setCharacterStream(int parameterIndex, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNCharacterStream(int parameterIndex, Reader value) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setClob(int parameterIndex, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setBlob(int parameterIndex, InputStream inputStream) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void setNClob(int parameterIndex, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+}
+package org.sqlite.jdbc3;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.Reader;
+import java.io.UnsupportedEncodingException;
+import java.math.BigDecimal;
+import java.net.URL;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.JDBCType;
+import java.sql.ParameterMetaData;
+import java.sql.Ref;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.Calendar;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.core.CorePreparedStatement;
+import org.sqlite.core.DB;
+public abstract class JDBC3PreparedStatement extends CorePreparedStatement {
+    protected JDBC3PreparedStatement(SQLiteConnection conn, String sql) throws SQLException {
+        super(conn, sql);
+    }
+    public void clearParameters() throws SQLException {
+        checkOpen();
+        pointer.safeRunConsume(DB::clear_bindings);
+        if (batch != null) for (int i = batchPos; i < batchPos + paramCount; i++) batch[i] = null;
+    }
+    public boolean execute() throws SQLException {
+        checkOpen();
+        rs.close();
+        pointer.safeRunConsume(DB::reset);
+        exhaustedResults = false;
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        return this.withConnectionTimeout(
+                () -> {
+                    boolean success = false;
+                    try {
+                        synchronized (conn) {
+                            resultsWaiting =
+                                    conn.getDatabase().execute(JDBC3PreparedStatement.this, batch);
+                            updateGeneratedKeys();
+                            success = true;
+                            updateCount = getDatabase().changes();
+                        }
+                        return 0 != columnCount;
+                    } finally {
+                        if (!success && !pointer.isClosed()) pointer.safeRunConsume(DB::reset);
+                    }
+                });
+    }
+    public ResultSet executeQuery() throws SQLException {
+        checkOpen();
+        if (columnCount == 0) {
+            throw new SQLException("Query does not return results");
+        }
+        rs.close();
+        pointer.safeRunConsume(DB::reset);
+        exhaustedResults = false;
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        return this.withConnectionTimeout(
+                () -> {
+                    boolean success = false;
+                    try {
+                        resultsWaiting =
+                                conn.getDatabase().execute(JDBC3PreparedStatement.this, batch);
+                        success = true;
+                    } finally {
+                        if (!success && !pointer.isClosed()) {
+                            pointer.safeRunInt(DB::reset);
+                        }
+                    }
+                    return getResultSet();
+                });
+    }
+    public int executeUpdate() throws SQLException {
+        return (int) executeLargeUpdate();
+    }
+    public long executeLargeUpdate() throws SQLException {
+        checkOpen();
+        if (columnCount != 0) {
+            throw new SQLException("Query returns results");
+        }
+        rs.close();
+        pointer.safeRunConsume(DB::reset);
+        exhaustedResults = false;
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        return this.withConnectionTimeout(
+                () -> {
+                    synchronized (conn) {
+                        long rc =
+                                conn.getDatabase()
+                                        .executeUpdate(JDBC3PreparedStatement.this, batch);
+                        updateGeneratedKeys();
+                        return rc;
+                    }
+                });
+    }
+    public void addBatch() throws SQLException {
+        checkOpen();
+        batchPos += paramCount;
+        batchQueryCount++;
+        if (batch == null) {
+            batch = new Object[paramCount];
+        }
+        if (batchPos + paramCount > batch.length) {
+            Object[] nb = new Object[batch.length * 2];
+            System.arraycopy(batch, 0, nb, 0, batch.length);
+            batch = nb;
+        }
+        System.arraycopy(batch, batchPos - paramCount, batch, batchPos, paramCount);
+    }
+    public ParameterMetaData getParameterMetaData() {
+        return (ParameterMetaData) this;
+    }
+    public int getParameterCount() throws SQLException {
+        checkOpen();
+        return paramCount;
+    }
+    public String getParameterClassName(int param) throws SQLException {
+        checkOpen();
+        return "java.lang.String";
+    }
+    public String getParameterTypeName(int pos) throws SQLException {
+        checkIndex(pos);
+        return JDBCType.valueOf(getParameterType(pos)).getName();
+    }
+    public int getParameterType(int pos) throws SQLException {
+        checkIndex(pos);
+        Object paramValue = batch[pos - 1];
+        if (paramValue == null) {
+            return Types.NULL;
+        } else if (paramValue instanceof Integer
+                || paramValue instanceof Short
+                || paramValue instanceof Boolean) {
+            return Types.INTEGER;
+        } else if (paramValue instanceof Long) {
+            return Types.BIGINT;
+        } else if (paramValue instanceof Double || paramValue instanceof Float) {
+            return Types.REAL;
+        } else {
+            return Types.VARCHAR;
+        }
+    }
+    public int getParameterMode(int pos) {
+        return ParameterMetaData.parameterModeIn;
+    }
+    public int getPrecision(int pos) {
+        return 0;
+    }
+    public int getScale(int pos) {
+        return 0;
+    }
+    public int isNullable(int pos) {
+        return ParameterMetaData.parameterNullable;
+    }
+    public boolean isSigned(int pos) {
+        return true;
+    }
+    public Statement getStatement() {
+        return this;
+    }
+    public void setBigDecimal(int pos, BigDecimal value) throws SQLException {
+        batch(pos, value == null ? null : value.toString());
+    }
+    private byte[] readBytes(InputStream istream, int length) throws SQLException {
+        if (length < 0) {
+            throw new SQLException("Error reading stream. Length should be non-negative");
+        }
+        byte[] bytes = new byte[length];
+        try {
+            int bytesRead;
+            int totalBytesRead = 0;
+            while (totalBytesRead < length) {
+                bytesRead = istream.read(bytes, totalBytesRead, length - totalBytesRead);
+                if (bytesRead == -1) {
+                    throw new IOException("End of stream has been reached");
+                }
+                totalBytesRead += bytesRead;
+            }
+            return bytes;
+        } catch (IOException cause) {
+            SQLException exception = new SQLException("Error reading stream");
+            exception.initCause(cause);
+            throw exception;
+        }
+    }
+    public void setBinaryStream(int pos, InputStream istream, int length) throws SQLException {
+        if (istream == null && length == 0) {
+            setBytes(pos, null);
+        }
+        setBytes(pos, readBytes(istream, length));
+    }
+    public void setAsciiStream(int pos, InputStream istream, int length) throws SQLException {
+        setUnicodeStream(pos, istream, length);
+    }
+    public void setUnicodeStream(int pos, InputStream istream, int length) throws SQLException {
+        if (istream == null && length == 0) {
+            setString(pos, null);
+        }
+        try {
+            setString(pos, new String(readBytes(istream, length), "UTF-8"));
+        } catch (UnsupportedEncodingException e) {
+            SQLException exception = new SQLException("UTF-8 is not supported");
+            exception.initCause(e);
+            throw exception;
+        }
+    }
+    public void setBoolean(int pos, boolean value) throws SQLException {
+        setInt(pos, value ? 1 : 0);
+    }
+    public void setByte(int pos, byte value) throws SQLException {
+        setInt(pos, value);
+    }
+    public void setBytes(int pos, byte[] value) throws SQLException {
+        batch(pos, value);
+    }
+    public void setDouble(int pos, double value) throws SQLException {
+        batch(pos, new Double(value));
+    }
+    public void setFloat(int pos, float value) throws SQLException {
+        batch(pos, new Float(value));
+    }
+    public void setInt(int pos, int value) throws SQLException {
+        batch(pos, new Integer(value));
+    }
+    public void setLong(int pos, long value) throws SQLException {
+        batch(pos, new Long(value));
+    }
+    public void setNull(int pos, int u1) throws SQLException {
+        setNull(pos, u1, null);
+    }
+    public void setNull(int pos, int u1, String u2) throws SQLException {
+        batch(pos, null);
+    }
+    public void setObject(int pos, Object value) throws SQLException {
+        if (value == null) {
+            batch(pos, null);
+        } else if (value instanceof java.util.Date) {
+            setDateByMilliseconds(pos, ((java.util.Date) value).getTime(), Calendar.getInstance());
+        } else if (value instanceof Long) {
+            batch(pos, value);
+        } else if (value instanceof Integer) {
+            batch(pos, value);
+        } else if (value instanceof Short) {
+            batch(pos, new Integer(((Short) value).intValue()));
+        } else if (value instanceof Float) {
+            batch(pos, value);
+        } else if (value instanceof Double) {
+            batch(pos, value);
+        } else if (value instanceof Boolean) {
+            setBoolean(pos, ((Boolean) value).booleanValue());
+        } else if (value instanceof byte[]) {
+            batch(pos, value);
+        } else if (value instanceof BigDecimal) {
+            setBigDecimal(pos, (BigDecimal) value);
+        } else {
+            batch(pos, value.toString());
+        }
+    }
+    public void setObject(int p, Object v, int t) throws SQLException {
+        setObject(p, v);
+    }
+    public void setObject(int p, Object v, int t, int s) throws SQLException {
+        setObject(p, v);
+    }
+    public void setShort(int pos, short value) throws SQLException {
+        setInt(pos, value);
+    }
+    public void setString(int pos, String value) throws SQLException {
+        batch(pos, value);
+    }
+    public void setCharacterStream(int pos, Reader reader, int length) throws SQLException {
+        try {
+            StringBuffer sb = new StringBuffer();
+            char[] cbuf = new char[8192];
+            int cnt;
+            while ((cnt = reader.read(cbuf)) > 0) {
+                sb.append(cbuf, 0, cnt);
+            }
+            setString(pos, sb.toString());
+        } catch (IOException e) {
+            throw new SQLException(
+                    "Cannot read from character stream, exception message: " + e.getMessage());
+        }
+    }
+    public void setDate(int pos, Date x) throws SQLException {
+        setDate(pos, x, Calendar.getInstance());
+    }
+    public void setDate(int pos, Date x, Calendar cal) throws SQLException {
+        if (x == null) {
+            setObject(pos, null);
+        } else {
+            setDateByMilliseconds(pos, x.getTime(), cal);
+        }
+    }
+    public void setTime(int pos, Time x) throws SQLException {
+        setTime(pos, x, Calendar.getInstance());
+    }
+    public void setTime(int pos, Time x, Calendar cal) throws SQLException {
+        if (x == null) {
+            setObject(pos, null);
+        } else {
+            setDateByMilliseconds(pos, x.getTime(), cal);
+        }
+    }
+    public void setTimestamp(int pos, Timestamp x) throws SQLException {
+        setTimestamp(pos, x, Calendar.getInstance());
+    }
+    public void setTimestamp(int pos, Timestamp x, Calendar cal) throws SQLException {
+        if (x == null) {
+            setObject(pos, null);
+        } else {
+            setDateByMilliseconds(pos, x.getTime(), cal);
+        }
+    }
+    public ResultSetMetaData getMetaData() throws SQLException {
+        checkOpen();
+        return (ResultSetMetaData) rs;
+    }
+    protected SQLException unsupported() {
+        return new SQLFeatureNotSupportedException("not implemented by SQLite JDBC driver");
+    }
+    protected SQLException invalid() {
+        return new SQLException("method cannot be called on a PreparedStatement");
+    }
+    public void setArray(int i, Array x) throws SQLException {
+        throw unsupported();
+    }
+    public void setBlob(int i, Blob x) throws SQLException {
+        throw unsupported();
+    }
+    public void setClob(int i, Clob x) throws SQLException {
+        throw unsupported();
+    }
+    public void setRef(int i, Ref x) throws SQLException {
+        throw unsupported();
+    }
+    public void setURL(int pos, URL x) throws SQLException {
+        throw unsupported();
+    }
+    @Override
+    public boolean execute(String sql) throws SQLException {
+        throw invalid();
+    }
+    public boolean execute(String sql, int autoGeneratedKeys) throws SQLException {
+        throw invalid();
+    }
+    public boolean execute(String sql, int[] colinds) throws SQLException {
+        throw invalid();
+    }
+    public boolean execute(String sql, String[] colnames) throws SQLException {
+        throw invalid();
+    }
+    @Override
+    public int executeUpdate(String sql) throws SQLException {
+        throw invalid();
+    }
+    public int executeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        throw invalid();
+    }
+    public int executeUpdate(String sql, int[] colinds) throws SQLException {
+        throw invalid();
+    }
+    public int executeUpdate(String sql, String[] cols) throws SQLException {
+        throw invalid();
+    }
+    public long executeLargeUpdate(String sql) throws SQLException {
+        throw invalid();
+    }
+    public long executeLargeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        throw invalid();
+    }
+    public long executeLargeUpdate(String sql, int[] colinds) throws SQLException {
+        throw invalid();
+    }
+    public long executeLargeUpdate(String sql, String[] cols) throws SQLException {
+        throw invalid();
+    }
+    @Override
+    public ResultSet executeQuery(String sql) throws SQLException {
+        throw invalid();
+    }
+    @Override
+    public void addBatch(String sql) throws SQLException {
+        throw invalid();
+    }
+}
+package org.sqlite.jdbc4;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.Reader;
+import java.io.StringReader;
+import java.io.UnsupportedEncodingException;
+import java.io.Writer;
+import java.math.BigDecimal;
+import java.net.URL;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.NClob;
+import java.sql.Ref;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLXML;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Map;
+import org.sqlite.core.CoreStatement;
+import org.sqlite.jdbc3.JDBC3ResultSet;
+public class JDBC4ResultSet extends JDBC3ResultSet implements ResultSet, ResultSetMetaData {
+    public JDBC4ResultSet(CoreStatement stmt) {
+        super(stmt);
+    }
+    @Override
+    public void close() throws SQLException {
+        final boolean wasOpen = isOpen(); 
+        super.close();
+        if (wasOpen && stmt instanceof JDBC4Statement) {
+            JDBC4Statement stat = (JDBC4Statement) stmt;
+            if (stat.closeOnCompletion && !stat.isClosed()) {
+                stat.close();
+            }
+        }
+    }
+    public <T> T unwrap(Class<T> iface) throws ClassCastException {
+        return iface.cast(this);
+    }
+    public boolean isWrapperFor(Class<?> iface) {
+        return iface.isInstance(this);
+    }
+    public RowId getRowId(int columnIndex) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public RowId getRowId(String columnLabel) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateRowId(int columnIndex, RowId x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateRowId(String columnLabel, RowId x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public int getHoldability() throws SQLException {
+        return 0;
+    }
+    public boolean isClosed() throws SQLException {
+        return !isOpen();
+    }
+    public void updateNString(int columnIndex, String nString) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNString(String columnLabel, String nString) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(int columnIndex, NClob nClob) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(String columnLabel, NClob nClob) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public NClob getNClob(int columnIndex) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public NClob getNClob(String columnLabel) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public SQLXML getSQLXML(int columnIndex) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public SQLXML getSQLXML(String columnLabel) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateSQLXML(int columnIndex, SQLXML xmlObject) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateSQLXML(String columnLabel, SQLXML xmlObject) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public String getNString(int columnIndex) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public String getNString(String columnLabel) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public Reader getNCharacterStream(int col) throws SQLException {
+        String data = getString(col);
+        return getNCharacterStreamInternal(data);
+    }
+    private Reader getNCharacterStreamInternal(String data) {
+        if (data == null) {
+            return null;
+        }
+        Reader reader = new StringReader(data);
+        return reader;
+    }
+    public Reader getNCharacterStream(String col) throws SQLException {
+        String data = getString(col);
+        return getNCharacterStreamInternal(data);
+    }
+    public void updateNCharacterStream(int columnIndex, Reader x, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNCharacterStream(String columnLabel, Reader reader, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateAsciiStream(int columnIndex, InputStream x, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBinaryStream(int columnIndex, InputStream x, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateCharacterStream(int columnIndex, Reader x, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateAsciiStream(String columnLabel, InputStream x, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBinaryStream(String columnLabel, InputStream x, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateCharacterStream(String columnLabel, Reader reader, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBlob(int columnIndex, InputStream inputStream, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBlob(String columnLabel, InputStream inputStream, long length)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateClob(int columnIndex, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateClob(String columnLabel, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(int columnIndex, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(String columnLabel, Reader reader, long length) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNCharacterStream(int columnIndex, Reader x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNCharacterStream(String columnLabel, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateAsciiStream(int columnIndex, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBinaryStream(int columnIndex, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateCharacterStream(int columnIndex, Reader x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateAsciiStream(String columnLabel, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBinaryStream(String columnLabel, InputStream x) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateCharacterStream(String columnLabel, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBlob(int columnIndex, InputStream inputStream) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateBlob(String columnLabel, InputStream inputStream) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateClob(int columnIndex, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateClob(String columnLabel, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(int columnIndex, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public void updateNClob(String columnLabel, Reader reader) throws SQLException {
+        throw new SQLFeatureNotSupportedException();
+    }
+    public <T> T getObject(int columnIndex, Class<T> type) throws SQLException {
+        if (type == null) throw new SQLException("requested type cannot be null");
+        if (type == String.class) return type.cast(getString(columnIndex));
+        if (type == Boolean.class) return type.cast(getBoolean(columnIndex));
+        if (type == BigDecimal.class) return type.cast(getBigDecimal(columnIndex));
+        if (type == byte[].class) return type.cast(getBytes(columnIndex));
+        if (type == Date.class) return type.cast(getDate(columnIndex));
+        if (type == Time.class) return type.cast(getTime(columnIndex));
+        if (type == Timestamp.class) return type.cast(getTimestamp(columnIndex));
+        if (type == LocalDate.class) {
+            try {
+                Date date = getDate(columnIndex);
+                if (date != null) return type.cast(date.toLocalDate());
+                else return null;
+            } catch (SQLException sqlException) {
+                return type.cast(LocalDate.parse(getString(columnIndex)));
+            }
+        }
+        if (type == LocalTime.class) {
+            try {
+                Time time = getTime(columnIndex);
+                if (time != null) return type.cast(time.toLocalTime());
+                else return null;
+            } catch (SQLException sqlException) {
+                return type.cast(LocalTime.parse(getString(columnIndex)));
+            }
+        }
+        if (type == LocalDateTime.class) {
+            try {
+                Timestamp timestamp = getTimestamp(columnIndex);
+                if (timestamp != null) return type.cast(timestamp.toLocalDateTime());
+                else return null;
+            } catch (SQLException e) {
+                return type.cast(LocalDateTime.parse(getString(columnIndex)));
+            }
+        }
+        int columnType = safeGetColumnType(markCol(columnIndex));
+        if (type == Double.class) {
+            if (columnType == SQLITE_INTEGER || columnType == SQLITE_FLOAT)
+                return type.cast(getDouble(columnIndex));
+            throw new SQLException("Bad value for type Double");
+        }
+        if (type == Long.class) {
+            if (columnType == SQLITE_INTEGER || columnType == SQLITE_FLOAT)
+                return type.cast(getLong(columnIndex));
+            throw new SQLException("Bad value for type Long");
+        }
+        if (type == Float.class) {
+            if (columnType == SQLITE_INTEGER || columnType == SQLITE_FLOAT)
+                return type.cast(getFloat(columnIndex));
+            throw new SQLException("Bad value for type Float");
+        }
+        if (type == Integer.class) {
+            if (columnType == SQLITE_INTEGER || columnType == SQLITE_FLOAT)
+                return type.cast(getInt(columnIndex));
+            throw new SQLException("Bad value for type Integer");
+        }
+        throw unsupported();
+    }
+    public <T> T getObject(String columnLabel, Class<T> type) throws SQLException {
+        return getObject(findColumn(columnLabel), type);
+    }
+    protected SQLException unsupported() {
+        return new SQLFeatureNotSupportedException("not implemented by SQLite JDBC driver");
+    }
+    public Array getArray(int i) throws SQLException {
+        throw unsupported();
+    }
+    public Array getArray(String col) throws SQLException {
+        throw unsupported();
+    }
+    public InputStream getAsciiStream(int col) throws SQLException {
+        String data = getString(col);
+        return getAsciiStreamInternal(data);
+    }
+    public InputStream getAsciiStream(String col) throws SQLException {
+        String data = getString(col);
+        return getAsciiStreamInternal(data);
+    }
+    private InputStream getAsciiStreamInternal(String data) {
+        if (data == null) {
+            return null;
+        }
+        InputStream inputStream;
+        try {
+            inputStream = new ByteArrayInputStream(data.getBytes("ASCII"));
+        } catch (UnsupportedEncodingException e) {
+            return null;
+        }
+        return inputStream;
+    }
+    @Deprecated
+    public BigDecimal getBigDecimal(int col, int s) throws SQLException {
+        throw unsupported();
+    }
+    @Deprecated
+    public BigDecimal getBigDecimal(String col, int s) throws SQLException {
+        throw unsupported();
+    }
+    public Blob getBlob(int col) throws SQLException {
+        throw unsupported();
+    }
+    public Blob getBlob(String col) throws SQLException {
+        throw unsupported();
+    }
+    public Clob getClob(int col) throws SQLException {
+        String clob = getString(col);
+        return clob == null ? null : new SqliteClob(clob);
+    }
+    public Clob getClob(String col) throws SQLException {
+        String clob = getString(col);
+        return clob == null ? null : new SqliteClob(clob);
+    }
+    @SuppressWarnings("rawtypes")
+    public Object getObject(int col, Map map) throws SQLException {
+        throw unsupported();
+    }
+    @SuppressWarnings("rawtypes")
+    public Object getObject(String col, Map map) throws SQLException {
+        throw unsupported();
+    }
+    public Ref getRef(int i) throws SQLException {
+        throw unsupported();
+    }
+    public Ref getRef(String col) throws SQLException {
+        throw unsupported();
+    }
+    public InputStream getUnicodeStream(int col) throws SQLException {
+        return getAsciiStream(col);
+    }
+    public InputStream getUnicodeStream(String col) throws SQLException {
+        return getAsciiStream(col);
+    }
+    public URL getURL(int col) throws SQLException {
+        throw unsupported();
+    }
+    public URL getURL(String col) throws SQLException {
+        throw unsupported();
+    }
+    public void insertRow() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public void moveToCurrentRow() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public void moveToInsertRow() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public boolean last() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public boolean previous() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public boolean relative(int rows) throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public boolean absolute(int row) throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public void afterLast() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public void beforeFirst() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public boolean first() throws SQLException {
+        throw new SQLException("ResultSet is TYPE_FORWARD_ONLY");
+    }
+    public void cancelRowUpdates() throws SQLException {
+        throw unsupported();
+    }
+    public void deleteRow() throws SQLException {
+        throw unsupported();
+    }
+    public void updateArray(int col, Array x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateArray(String col, Array x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateAsciiStream(int col, InputStream x, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateAsciiStream(String col, InputStream x, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBigDecimal(int col, BigDecimal x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBigDecimal(String col, BigDecimal x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBinaryStream(int c, InputStream x, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBinaryStream(String c, InputStream x, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBlob(int col, Blob x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBlob(String col, Blob x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBoolean(int col, boolean x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBoolean(String col, boolean x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateByte(int col, byte x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateByte(String col, byte x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBytes(int col, byte[] x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateBytes(String col, byte[] x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateCharacterStream(int c, Reader x, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateCharacterStream(String c, Reader r, int l) throws SQLException {
+        throw unsupported();
+    }
+    public void updateClob(int col, Clob x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateClob(String col, Clob x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateDate(int col, Date x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateDate(String col, Date x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateDouble(int col, double x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateDouble(String col, double x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateFloat(int col, float x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateFloat(String col, float x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateInt(int col, int x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateInt(String col, int x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateLong(int col, long x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateLong(String col, long x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateNull(int col) throws SQLException {
+        throw unsupported();
+    }
+    public void updateNull(String col) throws SQLException {
+        throw unsupported();
+    }
+    public void updateObject(int c, Object x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateObject(int c, Object x, int s) throws SQLException {
+        throw unsupported();
+    }
+    public void updateObject(String col, Object x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateObject(String c, Object x, int s) throws SQLException {
+        throw unsupported();
+    }
+    public void updateRef(int col, Ref x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateRef(String c, Ref x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateRow() throws SQLException {
+        throw unsupported();
+    }
+    public void updateShort(int c, short x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateShort(String c, short x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateString(int c, String x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateString(String c, String x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateTime(int c, Time x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateTime(String c, Time x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateTimestamp(int c, Timestamp x) throws SQLException {
+        throw unsupported();
+    }
+    public void updateTimestamp(String c, Timestamp x) throws SQLException {
+        throw unsupported();
+    }
+    public void refreshRow() throws SQLException {
+        throw unsupported();
+    }
+    class SqliteClob implements NClob {
+        private String data;
+        protected SqliteClob(String data) {
+            this.data = data;
+        }
+        public void free() throws SQLException {
+            data = null;
+        }
+        public InputStream getAsciiStream() throws SQLException {
+            return getAsciiStreamInternal(data);
+        }
+        public Reader getCharacterStream() throws SQLException {
+            return getNCharacterStreamInternal(data);
+        }
+        public Reader getCharacterStream(long arg0, long arg1) throws SQLException {
+            return getNCharacterStreamInternal(data);
+        }
+        public String getSubString(long position, int length) throws SQLException {
+            if (data == null) {
+                throw new SQLException("no data");
+            }
+            if (position < 1) {
+                throw new SQLException("Position must be greater than or equal to 1");
+            }
+            if (length < 0) {
+                throw new SQLException("Length must be greater than or equal to 0");
+            }
+            int start = (int) position - 1;
+            return data.substring(start, Math.min(start + length, data.length()));
+        }
+        public long length() throws SQLException {
+            if (data == null) {
+                throw new SQLException("no data");
+            }
+            return data.length();
+        }
+        public long position(String arg0, long arg1) throws SQLException {
+            unsupported();
+            return -1;
+        }
+        public long position(Clob arg0, long arg1) throws SQLException {
+            unsupported();
+            return -1;
+        }
+        public OutputStream setAsciiStream(long arg0) throws SQLException {
+            unsupported();
+            return null;
+        }
+        public Writer setCharacterStream(long arg0) throws SQLException {
+            unsupported();
+            return null;
+        }
+        public int setString(long arg0, String arg1) throws SQLException {
+            unsupported();
+            return -1;
+        }
+        public int setString(long arg0, String arg1, int arg2, int arg3) throws SQLException {
+            unsupported();
+            return -1;
+        }
+        public void truncate(long arg0) throws SQLException {
+            unsupported();
+        }
+    }
+}
+package org.sqlite.jdbc3;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.Reader;
+import java.io.StringReader;
+import java.math.BigDecimal;
+import java.sql.Date;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.util.Calendar;
+import java.util.GregorianCalendar;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.sqlite.core.CoreResultSet;
+import org.sqlite.core.CoreStatement;
+import org.sqlite.core.DB;
+import org.sqlite.date.FastDateFormat;
+public abstract class JDBC3ResultSet extends CoreResultSet {
+    protected JDBC3ResultSet(CoreStatement stmt) {
+        super(stmt);
+    }
+    public int findColumn(String col) throws SQLException {
+        checkOpen();
+        Integer index = findColumnIndexInCache(col);
+        if (index != null) {
+            return index;
+        }
+        for (int i = 0; i < cols.length; i++) {
+            if (col.equalsIgnoreCase(cols[i])) {
+                return addColumnIndexInCache(col, i + 1);
+            }
+        }
+        throw new SQLException("no such column: '" + col + "'");
+    }
+    public boolean next() throws SQLException {
+        if (!open || emptyResultSet || pastLastRow) {
+            return false; 
+        }
+        lastCol = -1;
+        if (row == 0) {
+            row++;
+            return true;
+        }
+        if (maxRows != 0 && row == maxRows) {
+            return false;
+        }
+        int statusCode = stmt.pointer.safeRunInt(DB::step);
+        switch (statusCode) {
+            case SQLITE_DONE:
+                pastLastRow = true;
+                return false;
+            case SQLITE_ROW:
+                row++;
+                return true;
+            case SQLITE_BUSY:
+            default:
+                getDatabase().throwex(statusCode);
+                return false;
+        }
+    }
+    public int getType() {
+        return ResultSet.TYPE_FORWARD_ONLY;
+    }
+    public int getFetchSize() {
+        return limitRows;
+    }
+    public void setFetchSize(int rows) throws SQLException {
+        if (0 > rows || (maxRows != 0 && rows > maxRows)) {
+            throw new SQLException("fetch size " + rows + " out of bounds " + maxRows);
+        }
+        limitRows = rows;
+    }
+    public int getFetchDirection() throws SQLException {
+        checkOpen();
+        return ResultSet.FETCH_FORWARD;
+    }
+    public void setFetchDirection(int d) throws SQLException {
+        checkOpen();
+        if (
+        d != ResultSet.FETCH_FORWARD) {
+            throw new SQLException("only FETCH_FORWARD direction supported");
+        }
+    }
+    public boolean isAfterLast() {
+        return pastLastRow && !emptyResultSet;
+    }
+    public boolean isBeforeFirst() {
+        return !emptyResultSet && open && row == 0;
+    }
+    public boolean isFirst() {
+        return row == 1;
+    }
+    public boolean isLast() throws SQLException {
+        throw new SQLFeatureNotSupportedException("not supported by sqlite");
+    }
+    public int getRow() {
+        return row;
+    }
+    public boolean wasNull() throws SQLException {
+        return safeGetColumnType(markCol(lastCol)) == SQLITE_NULL;
+    }
+    public BigDecimal getBigDecimal(int col) throws SQLException {
+        switch (safeGetColumnType(checkCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_INTEGER:
+                return BigDecimal.valueOf(safeGetLongCol(col));
+            case SQLITE_FLOAT:
+            default:
+                final String stringValue = safeGetColumnText(col);
+                try {
+                    return new BigDecimal(stringValue);
+                } catch (NumberFormatException e) {
+                    throw new SQLException("Bad value for type BigDecimal : " + stringValue);
+                }
+        }
+    }
+    public BigDecimal getBigDecimal(String col) throws SQLException {
+        return getBigDecimal(findColumn(col));
+    }
+    public boolean getBoolean(int col) throws SQLException {
+        return getInt(col) != 0;
+    }
+    public boolean getBoolean(String col) throws SQLException {
+        return getBoolean(findColumn(col));
+    }
+    public InputStream getBinaryStream(int col) throws SQLException {
+        byte[] bytes = getBytes(col);
+        if (bytes != null) {
+            return new ByteArrayInputStream(bytes);
+        } else {
+            return null;
+        }
+    }
+    public InputStream getBinaryStream(String col) throws SQLException {
+        return getBinaryStream(findColumn(col));
+    }
+    public byte getByte(int col) throws SQLException {
+        return (byte) getInt(col);
+    }
+    public byte getByte(String col) throws SQLException {
+        return getByte(findColumn(col));
+    }
+    public byte[] getBytes(int col) throws SQLException {
+        return stmt.pointer.safeRun((db, ptr) -> db.column_blob(ptr, markCol(col)));
+    }
+    public byte[] getBytes(String col) throws SQLException {
+        return getBytes(findColumn(col));
+    }
+    public Reader getCharacterStream(int col) throws SQLException {
+        String string = getString(col);
+        return string == null ? null : new StringReader(string);
+    }
+    public Reader getCharacterStream(String col) throws SQLException {
+        return getCharacterStream(findColumn(col));
+    }
+    public Date getDate(int col) throws SQLException {
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    return new Date(
+                            getConnectionConfig().getDateFormat().parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing date", e);
+                }
+            case SQLITE_FLOAT:
+                return new Date(julianDateToCalendar(safeGetDoubleCol(col)).getTimeInMillis());
+            default: 
+                return new Date(safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+        }
+    }
+    public Date getDate(int col, Calendar cal) throws SQLException {
+        requireCalendarNotNull(cal);
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    FastDateFormat dateFormat =
+                            FastDateFormat.getInstance(
+                                    getConnectionConfig().getDateStringFormat(), cal.getTimeZone());
+                    return new java.sql.Date(dateFormat.parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing time stamp", e);
+                }
+            case SQLITE_FLOAT:
+                return new Date(julianDateToCalendar(safeGetDoubleCol(col), cal).getTimeInMillis());
+            default: 
+                cal.setTimeInMillis(
+                        safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+                return new Date(cal.getTime().getTime());
+        }
+    }
+    public Date getDate(String col) throws SQLException {
+        return getDate(findColumn(col), Calendar.getInstance());
+    }
+    public Date getDate(String col, Calendar cal) throws SQLException {
+        return getDate(findColumn(col), cal);
+    }
+    public double getDouble(int col) throws SQLException {
+        if (safeGetColumnType(markCol(col)) == SQLITE_NULL) {
+            return 0;
+        }
+        return safeGetDoubleCol(col);
+    }
+    public double getDouble(String col) throws SQLException {
+        return getDouble(findColumn(col));
+    }
+    public float getFloat(int col) throws SQLException {
+        if (safeGetColumnType(markCol(col)) == SQLITE_NULL) {
+            return 0;
+        }
+        return (float) safeGetDoubleCol(col);
+    }
+    public float getFloat(String col) throws SQLException {
+        return getFloat(findColumn(col));
+    }
+    public int getInt(int col) throws SQLException {
+        return stmt.pointer.safeRunInt((db, ptr) -> db.column_int(ptr, markCol(col)));
+    }
+    public int getInt(String col) throws SQLException {
+        return getInt(findColumn(col));
+    }
+    public long getLong(int col) throws SQLException {
+        return safeGetLongCol(col);
+    }
+    public long getLong(String col) throws SQLException {
+        return getLong(findColumn(col));
+    }
+    public short getShort(int col) throws SQLException {
+        return (short) getInt(col);
+    }
+    public short getShort(String col) throws SQLException {
+        return getShort(findColumn(col));
+    }
+    public String getString(int col) throws SQLException {
+        return safeGetColumnText(col);
+    }
+    public String getString(String col) throws SQLException {
+        return getString(findColumn(col));
+    }
+    public Time getTime(int col) throws SQLException {
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    return new Time(
+                            getConnectionConfig().getDateFormat().parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing time", e);
+                }
+            case SQLITE_FLOAT:
+                return new Time(julianDateToCalendar(safeGetDoubleCol(col)).getTimeInMillis());
+            default: 
+                return new Time(safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+        }
+    }
+    public Time getTime(int col, Calendar cal) throws SQLException {
+        requireCalendarNotNull(cal);
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    FastDateFormat dateFormat =
+                            FastDateFormat.getInstance(
+                                    getConnectionConfig().getDateStringFormat(), cal.getTimeZone());
+                    return new Time(dateFormat.parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing time", e);
+                }
+            case SQLITE_FLOAT:
+                return new Time(julianDateToCalendar(safeGetDoubleCol(col), cal).getTimeInMillis());
+            default: 
+                cal.setTimeInMillis(
+                        safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+                return new Time(cal.getTime().getTime());
+        }
+    }
+    public Time getTime(String col) throws SQLException {
+        return getTime(findColumn(col));
+    }
+    public Time getTime(String col, Calendar cal) throws SQLException {
+        return getTime(findColumn(col), cal);
+    }
+    public Timestamp getTimestamp(int col) throws SQLException {
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    return new Timestamp(
+                            getConnectionConfig().getDateFormat().parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing time stamp", e);
+                }
+            case SQLITE_FLOAT:
+                return new Timestamp(julianDateToCalendar(safeGetDoubleCol(col)).getTimeInMillis());
+            default: 
+                return new Timestamp(
+                        safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+        }
+    }
+    public Timestamp getTimestamp(int col, Calendar cal) throws SQLException {
+        requireCalendarNotNull(cal);
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+                String dateText = safeGetColumnText(col);
+                if ("".equals(dateText)) {
+                    return null;
+                }
+                try {
+                    FastDateFormat dateFormat =
+                            FastDateFormat.getInstance(
+                                    getConnectionConfig().getDateStringFormat(), cal.getTimeZone());
+                    return new Timestamp(dateFormat.parse(dateText).getTime());
+                } catch (Exception e) {
+                    throw new SQLException("Error parsing time stamp", e);
+                }
+            case SQLITE_FLOAT:
+                return new Timestamp(julianDateToCalendar(safeGetDoubleCol(col)).getTimeInMillis());
+            default: 
+                cal.setTimeInMillis(
+                        safeGetLongCol(col) * getConnectionConfig().getDateMultiplier());
+                return new Timestamp(cal.getTime().getTime());
+        }
+    }
+    public Timestamp getTimestamp(String col) throws SQLException {
+        return getTimestamp(findColumn(col));
+    }
+    public Timestamp getTimestamp(String c, Calendar ca) throws SQLException {
+        return getTimestamp(findColumn(c), ca);
+    }
+    public Object getObject(int col) throws SQLException {
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_INTEGER:
+                long val = getLong(col);
+                if (val > Integer.MAX_VALUE || val < Integer.MIN_VALUE) {
+                    return new Long(val);
+                } else {
+                    return new Integer((int) val);
+                }
+            case SQLITE_FLOAT:
+                return new Double(getDouble(col));
+            case SQLITE_BLOB:
+                return getBytes(col);
+            case SQLITE_NULL:
+                return null;
+            case SQLITE_TEXT:
+            default:
+                return getString(col);
+        }
+    }
+    public Object getObject(String col) throws SQLException {
+        return getObject(findColumn(col));
+    }
+    public Statement getStatement() {
+        return (Statement) stmt;
+    }
+    public String getCursorName() {
+        return null;
+    }
+    public SQLWarning getWarnings() {
+        return null;
+    }
+    public void clearWarnings() {}
+    protected static final Pattern COLUMN_TYPENAME = Pattern.compile("([^\\(]*)");
+    protected static final Pattern COLUMN_TYPECAST =
+            Pattern.compile("cast\\(.*?\\s+as\\s+(.*?)\\s*\\)");
+    protected static final Pattern COLUMN_PRECISION = Pattern.compile(".*?\\((.*?)\\)");
+    public ResultSetMetaData getMetaData() {
+        return (ResultSetMetaData) this;
+    }
+    public String getCatalogName(int col) throws SQLException {
+        return safeGetColumnTableName(col);
+    }
+    public String getColumnClassName(int col) throws SQLException {
+        switch (safeGetColumnType(markCol(col))) {
+            case SQLITE_INTEGER:
+                long val = getLong(col);
+                if (val > Integer.MAX_VALUE || val < Integer.MIN_VALUE) {
+                    return "java.lang.Long";
+                } else {
+                    return "java.lang.Integer";
+                }
+            case SQLITE_FLOAT:
+                return "java.lang.Double";
+            case SQLITE_BLOB:
+            case SQLITE_NULL:
+                return "java.lang.Object";
+            case SQLITE_TEXT:
+            default:
+                return "java.lang.String";
+        }
+    }
+    public int getColumnCount() throws SQLException {
+        checkCol(1);
+        return colsMeta.length;
+    }
+    public int getColumnDisplaySize(int col) {
+        return Integer.MAX_VALUE;
+    }
+    public String getColumnLabel(int col) throws SQLException {
+        return getColumnName(col);
+    }
+    public String getColumnName(int col) throws SQLException {
+        return safeGetColumnName(col);
+    }
+    public int getColumnType(int col) throws SQLException {
+        String typeName = getColumnTypeName(col);
+        int valueType = safeGetColumnType(checkCol(col));
+        if (valueType == SQLITE_INTEGER || valueType == SQLITE_NULL) {
+            if ("BOOLEAN".equals(typeName)) {
+                return Types.BOOLEAN;
+            }
+            if ("TINYINT".equals(typeName)) {
+                return Types.TINYINT;
+            }
+            if ("SMALLINT".equals(typeName) || "INT2".equals(typeName)) {
+                return Types.SMALLINT;
+            }
+            if ("BIGINT".equals(typeName)
+                    || "INT8".equals(typeName)
+                    || "UNSIGNED BIG INT".equals(typeName)) {
+                return Types.BIGINT;
+            }
+            if ("DATE".equals(typeName) || "DATETIME".equals(typeName)) {
+                return Types.DATE;
+            }
+            if ("TIMESTAMP".equals(typeName)) {
+                return Types.TIMESTAMP;
+            }
+            if (valueType == SQLITE_INTEGER
+                    || "INT".equals(typeName)
+                    || "INTEGER".equals(typeName)
+                    || "MEDIUMINT".equals(typeName)) {
+                long val = getLong(col);
+                if (val > Integer.MAX_VALUE || val < Integer.MIN_VALUE) {
+                    return Types.BIGINT;
+                } else {
+                    return Types.INTEGER;
+                }
+            }
+        }
+        if (valueType == SQLITE_FLOAT || valueType == SQLITE_NULL) {
+            if ("DECIMAL".equals(typeName)) {
+                return Types.DECIMAL;
+            }
+            if ("DOUBLE".equals(typeName) || "DOUBLE PRECISION".equals(typeName)) {
+                return Types.DOUBLE;
+            }
+            if ("NUMERIC".equals(typeName)) {
+                return Types.NUMERIC;
+            }
+            if ("REAL".equals(typeName)) {
+                return Types.REAL;
+            }
+            if (valueType == SQLITE_FLOAT || "FLOAT".equals(typeName)) {
+                return Types.FLOAT;
+            }
+        }
+        if (valueType == SQLITE_TEXT || valueType == SQLITE_NULL) {
+            if ("CHARACTER".equals(typeName)
+                    || "NCHAR".equals(typeName)
+                    || "NATIVE CHARACTER".equals(typeName)
+                    || "CHAR".equals(typeName)) {
+                return Types.CHAR;
+            }
+            if ("CLOB".equals(typeName)) {
+                return Types.CLOB;
+            }
+            if ("DATE".equals(typeName) || "DATETIME".equals(typeName)) {
+                return Types.DATE;
+            }
+            if ("TIMESTAMP".equals(typeName)) {
+                return Types.TIMESTAMP;
+            }
+            if (valueType == SQLITE_TEXT
+                    || "VARCHAR".equals(typeName)
+                    || "VARYING CHARACTER".equals(typeName)
+                    || "NVARCHAR".equals(typeName)
+                    || "TEXT".equals(typeName)) {
+                return Types.VARCHAR;
+            }
+        }
+        if (valueType == SQLITE_BLOB || valueType == SQLITE_NULL) {
+            if ("BINARY".equals(typeName)) {
+                return Types.BINARY;
+            }
+            if (valueType == SQLITE_BLOB || "BLOB".equals(typeName)) {
+                return Types.BLOB;
+            }
+        }
+        return Types.NUMERIC;
+    }
+    public String getColumnTypeName(int col) throws SQLException {
+        String declType = getColumnDeclType(col);
+        if (declType != null) {
+            Matcher matcher = COLUMN_TYPENAME.matcher(declType);
+            matcher.find();
+            return matcher.group(1).toUpperCase(Locale.ENGLISH);
+        }
+        switch (safeGetColumnType(checkCol(col))) {
+            case SQLITE_INTEGER:
+                return "INTEGER";
+            case SQLITE_FLOAT:
+                return "FLOAT";
+            case SQLITE_BLOB:
+                return "BLOB";
+            case SQLITE_TEXT:
+                return "TEXT";
+            case SQLITE_NULL:
+            default:
+                return "NUMERIC";
+        }
+    }
+    public int getPrecision(int col) throws SQLException {
+        String declType = getColumnDeclType(col);
+        if (declType != null) {
+            Matcher matcher = COLUMN_PRECISION.matcher(declType);
+            return matcher.find() ? Integer.parseInt(matcher.group(1).split(",")[0].trim()) : 0;
+        }
+        return 0;
+    }
+    private String getColumnDeclType(int col) throws SQLException {
+        String declType = stmt.pointer.safeRun((db, ptr) -> db.column_decltype(ptr, checkCol(col)));
+        if (declType == null) {
+            Matcher matcher = COLUMN_TYPECAST.matcher(safeGetColumnName(col));
+            declType = matcher.find() ? matcher.group(1) : null;
+        }
+        return declType;
+    }
+    public int getScale(int col) throws SQLException {
+        String declType = getColumnDeclType(col);
+        if (declType != null) {
+            Matcher matcher = COLUMN_PRECISION.matcher(declType);
+            if (matcher.find()) {
+                String[] array = matcher.group(1).split(",");
+                if (array.length == 2) {
+                    return Integer.parseInt(array[1].trim());
+                }
+            }
+        }
+        return 0;
+    }
+    public String getSchemaName(int col) {
+        return "";
+    }
+    public String getTableName(int col) throws SQLException {
+        final String tableName = safeGetColumnTableName(col);
+        if (tableName == null) {
+            return "";
+        }
+        return tableName;
+    }
+    public int isNullable(int col) throws SQLException {
+        checkMeta();
+        return meta[checkCol(col)][0]
+                ? ResultSetMetaData.columnNoNulls
+                : ResultSetMetaData.columnNullable;
+    }
+    public boolean isAutoIncrement(int col) throws SQLException {
+        checkMeta();
+        return meta[checkCol(col)][2];
+    }
+    public boolean isCaseSensitive(int col) {
+        return true;
+    }
+    public boolean isCurrency(int col) {
+        return false;
+    }
+    public boolean isDefinitelyWritable(int col) {
+        return true;
+    } 
+    public boolean isReadOnly(int col) {
+        return false;
+    }
+    public boolean isSearchable(int col) {
+        return true;
+    }
+    public boolean isSigned(int col) throws SQLException {
+        String typeName = getColumnTypeName(col);
+        return "NUMERIC".equals(typeName) || "INTEGER".equals(typeName) || "REAL".equals(typeName);
+    }
+    public boolean isWritable(int col) {
+        return true;
+    }
+    public int getConcurrency() {
+        return ResultSet.CONCUR_READ_ONLY;
+    }
+    public boolean rowDeleted() {
+        return false;
+    }
+    public boolean rowInserted() {
+        return false;
+    }
+    public boolean rowUpdated() {
+        return false;
+    }
+    private Calendar julianDateToCalendar(Double jd) {
+        return julianDateToCalendar(jd, Calendar.getInstance());
+    }
+    private Calendar julianDateToCalendar(Double jd, Calendar cal) {
+        if (jd == null) {
+            return null;
+        }
+        int yyyy, dd, mm, hh, mn, ss, ms, A;
+        double w = jd + 0.5;
+        int Z = (int) w;
+        double F = w - Z;
+        if (Z < 2299161) {
+            A = Z;
+        } else {
+            int alpha = (int) ((Z - 1867216.25) / 36524.25);
+            A = Z + 1 + alpha - (int) (alpha / 4.0);
+        }
+        int B = A + 1524;
+        int C = (int) ((B - 122.1) / 365.25);
+        int D = (int) (365.25 * C);
+        int E = (int) ((B - D) / 30.6001);
+        mm = E - ((E < 13.5) ? 1 : 13);
+        yyyy = C - ((mm > 2.5) ? 4716 : 4715);
+        double jjd = B - D - (int) (30.6001 * E) + F;
+        dd = (int) jjd;
+        double hhd = jjd - dd;
+        hh = (int) (24 * hhd);
+        double mnd = (24 * hhd) - hh;
+        mn = (int) (60 * mnd);
+        double ssd = (60 * mnd) - mn;
+        ss = (int) (60 * ssd);
+        double msd = (60 * ssd) - ss;
+        ms = (int) (1000 * msd);
+        cal.set(yyyy, mm - 1, dd, hh, mn, ss);
+        cal.set(Calendar.MILLISECOND, ms);
+        if (yyyy < 1) {
+            cal.set(Calendar.ERA, GregorianCalendar.BC);
+            cal.set(Calendar.YEAR, -(yyyy - 1));
+        }
+        return cal;
+    }
+    private void requireCalendarNotNull(Calendar cal) throws SQLException {
+        if (cal == null) {
+            throw new SQLException("Expected a calendar instance.", new IllegalArgumentException());
+        }
+    }
+    protected int safeGetColumnType(int col) throws SQLException {
+        return stmt.pointer.safeRunInt((db, ptr) -> db.column_type(ptr, col));
+    }
+    private long safeGetLongCol(int col) throws SQLException {
+        return stmt.pointer.safeRunLong((db, ptr) -> db.column_long(ptr, markCol(col)));
+    }
+    private double safeGetDoubleCol(int col) throws SQLException {
+        return stmt.pointer.safeRunDouble((db, ptr) -> db.column_double(ptr, markCol(col)));
+    }
+    private String safeGetColumnText(int col) throws SQLException {
+        return stmt.pointer.safeRun((db, ptr) -> db.column_text(ptr, markCol(col)));
+    }
+    private String safeGetColumnTableName(int col) throws SQLException {
+        return stmt.pointer.safeRun((db, ptr) -> db.column_table_name(ptr, checkCol(col)));
+    }
+    private String safeGetColumnName(int col) throws SQLException {
+        return stmt.pointer.safeRun((db, ptr) -> db.column_name(ptr, checkCol(col)));
+    }
+}
+package org.sqlite.core;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.HashMap;
+import java.util.Map;
+import org.sqlite.SQLiteConnectionConfig;
+public abstract class CoreResultSet implements Codes {
+    protected final CoreStatement stmt;
+    public boolean emptyResultSet = false;
+    public boolean open = false;
+    public long maxRows;
+    public String[] cols = null;
+    public String[] colsMeta = null;
+    protected boolean[][] meta = null;
+    protected int limitRows;
+    protected int row = 0;
+    protected boolean pastLastRow = false;
+    protected int lastCol;
+    public boolean closeStmt;
+    protected Map<String, Integer> columnNameToIndex = null;
+    protected CoreResultSet(CoreStatement stmt) {
+        this.stmt = stmt;
+    }
+    protected DB getDatabase() {
+        return stmt.getDatabase();
+    }
+    protected SQLiteConnectionConfig getConnectionConfig() {
+        return stmt.getConnectionConfig();
+    }
+    public boolean isOpen() {
+        return open;
+    }
+    protected void checkOpen() throws SQLException {
+        if (!open) {
+            throw new SQLException("ResultSet closed");
+        }
+    }
+    public int checkCol(int col) throws SQLException {
+        if (colsMeta == null) {
+            throw new SQLException("SQLite JDBC: inconsistent internal state");
+        }
+        if (col < 1 || col > colsMeta.length) {
+            throw new SQLException("column " + col + " out of bounds [1," + colsMeta.length + "]");
+        }
+        return --col;
+    }
+    protected int markCol(int col) throws SQLException {
+        checkCol(col);
+        lastCol = col;
+        return --col;
+    }
+    public void checkMeta() throws SQLException {
+        checkCol(1);
+        if (meta == null) {
+            meta = stmt.pointer.safeRun(DB::column_metadata);
+        }
+    }
+    public void close() throws SQLException {
+        cols = null;
+        colsMeta = null;
+        meta = null;
+        limitRows = 0;
+        row = 0;
+        pastLastRow = false;
+        lastCol = -1;
+        columnNameToIndex = null;
+        emptyResultSet = false;
+        if (stmt.pointer.isClosed() || (!open && !closeStmt)) {
+            return;
+        }
+        DB db = stmt.getDatabase();
+        synchronized (db) {
+            if (!stmt.pointer.isClosed()) {
+                stmt.pointer.safeRunInt(DB::reset);
+                if (closeStmt) {
+                    closeStmt = false; 
+                    ((Statement) stmt).close();
+                }
+            }
+        }
+        open = false;
+    }
+    protected Integer findColumnIndexInCache(String col) {
+        if (columnNameToIndex == null) {
+            return null;
+        }
+        return columnNameToIndex.get(col);
+    }
+    protected int addColumnIndexInCache(String col, int index) {
+        if (columnNameToIndex == null) {
+            columnNameToIndex = new HashMap<String, Integer>(cols.length);
+        }
+        columnNameToIndex.put(col, index);
+        return index;
+    }
+}
+package org.sqlite.core;
+import java.sql.SQLException;
+public class SafeStmtPtr {
+    private final DB db;
+    private final long ptr;
+    private volatile boolean closed = false;
+    private int closedRC;
+    private SQLException closeException;
+    public SafeStmtPtr(DB db, long ptr) {
+        this.db = db;
+        this.ptr = ptr;
+    }
+    public boolean isClosed() {
+        return closed;
+    }
+    public int close() throws SQLException {
+        synchronized (db) {
+            return internalClose();
+        }
+    }
+    private int internalClose() throws SQLException {
+        try {
+            if (closed) {
+                if (closeException != null) throw closeException;
+                return closedRC;
+            }
+            closedRC = db.finalize(this, ptr);
+            return closedRC;
+        } catch (SQLException ex) {
+            this.closeException = ex;
+            throw ex;
+        } finally {
+            this.closed = true;
+        }
+    }
+    public <E extends Throwable> int safeRunInt(SafePtrIntFunction<E> run) throws SQLException, E {
+        synchronized (db) {
+            this.ensureOpen();
+            return run.run(db, ptr);
+        }
+    }
+    public <E extends Throwable> long safeRunLong(SafePtrLongFunction<E> run)
+            throws SQLException, E {
+        synchronized (db) {
+            this.ensureOpen();
+            return run.run(db, ptr);
+        }
+    }
+    public <E extends Throwable> double safeRunDouble(SafePtrDoubleFunction<E> run)
+            throws SQLException, E {
+        synchronized (db) {
+            this.ensureOpen();
+            return run.run(db, ptr);
+        }
+    }
+    public <T, E extends Throwable> T safeRun(SafePtrFunction<T, E> run) throws SQLException, E {
+        synchronized (db) {
+            this.ensureOpen();
+            return run.run(db, ptr);
+        }
+    }
+    public <E extends Throwable> void safeRunConsume(SafePtrConsumer<E> run)
+            throws SQLException, E {
+        synchronized (db) {
+            this.ensureOpen();
+            run.run(db, ptr);
+        }
+    }
+    private void ensureOpen() throws SQLException {
+        if (this.closed) {
+            throw new SQLException("stmt pointer is closed");
+        }
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        SafeStmtPtr that = (SafeStmtPtr) o;
+        return ptr == that.ptr;
+    }
+    @Override
+    public int hashCode() {
+        return Long.hashCode(ptr);
+    }
+    @FunctionalInterface
+    public interface SafePtrIntFunction<E extends Throwable> {
+        int run(DB db, long ptr) throws E;
+    }
+    @FunctionalInterface
+    public interface SafePtrLongFunction<E extends Throwable> {
+        long run(DB db, long ptr) throws E;
+    }
+    @FunctionalInterface
+    public interface SafePtrDoubleFunction<E extends Throwable> {
+        double run(DB db, long ptr) throws E;
+    }
+    @FunctionalInterface
+    public interface SafePtrFunction<T, E extends Throwable> {
+        T run(DB db, long ptr) throws E;
+    }
+    @FunctionalInterface
+    public interface SafePtrConsumer<E extends Throwable> {
+        void run(DB db, long ptr) throws E;
+    }
+}
+package org.sqlite.jdbc3;
+import java.sql.CallableStatement;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.sql.Struct;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.sqlite.SQLiteConfig;
+import org.sqlite.SQLiteConfig.TransactionMode;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.SQLiteOpenMode;
+public abstract class JDBC3Connection extends SQLiteConnection {
+    private final AtomicInteger savePoint = new AtomicInteger(0);
+    private Map<String, Class<?>> typeMap;
+    private boolean readOnly = false;
+    protected JDBC3Connection(String url, String fileName, Properties prop) throws SQLException {
+        super(url, fileName, prop);
+    }
+    @SuppressWarnings("deprecation")
+    public void tryEnforceTransactionMode() throws SQLException {
+        if (getDatabase().getConfig().isExplicitReadOnly()
+                && !this.getAutoCommit()
+                && this.getCurrentTransactionMode() != null) {
+            if (isReadOnly()) {
+                getDatabase()._exec("PRAGMA query_only = true;");
+            } else {
+                if (getCurrentTransactionMode() == TransactionMode.DEFERRED) {
+                    if (isFirstStatementExecuted()) {
+                        throw new SQLException(
+                                "A statement has already been executed on this connection; cannot upgrade to write transaction");
+                    } else {
+                        getDatabase()._exec("commit; ");
+                        getDatabase()._exec("PRAGMA query_only = false;");
+                        getDatabase()
+                                ._exec("BEGIN IMMEDIATE; ");
+                        setCurrentTransactionMode(TransactionMode.IMMEDIATE);
+                    }
+                }
+            }
+        }
+    }
+    public String getCatalog() throws SQLException {
+        checkOpen();
+        return null;
+    }
+    public void setCatalog(String catalog) throws SQLException {
+        checkOpen();
+    }
+    public int getHoldability() throws SQLException {
+        checkOpen();
+        return ResultSet.CLOSE_CURSORS_AT_COMMIT;
+    }
+    public void setHoldability(int h) throws SQLException {
+        checkOpen();
+        if (h != ResultSet.CLOSE_CURSORS_AT_COMMIT) {
+            throw new SQLException("SQLite only supports CLOSE_CURSORS_AT_COMMIT");
+        }
+    }
+    public Map<String, Class<?>> getTypeMap() throws SQLException {
+        synchronized (this) {
+            if (this.typeMap == null) {
+                this.typeMap = new HashMap<String, Class<?>>();
+            }
+            return this.typeMap;
+        }
+    }
+    public void setTypeMap(Map map) throws SQLException {
+        synchronized (this) {
+            this.typeMap = map;
+        }
+    }
+    public boolean isReadOnly() {
+        SQLiteConfig config = getDatabase().getConfig();
+        return (
+        ((config.getOpenModeFlags() & SQLiteOpenMode.READONLY.flag) != 0)
+                || (config.isExplicitReadOnly() && this.readOnly));
+    }
+    public void setReadOnly(boolean ro) throws SQLException {
+        if (getDatabase().getConfig().isExplicitReadOnly()) {
+            if (ro != readOnly && isFirstStatementExecuted()) {
+                throw new SQLException(
+                        "Cannot change Read-Only status of this connection: the first statement was"
+                                + " already executed and the transaction is open.");
+            }
+        } else {
+            if (ro != isReadOnly()) {
+                throw new SQLException(
+                        "Cannot change read-only flag after establishing a connection."
+                                + " Use SQLiteConfig#setReadOnly and SQLiteConfig.createConnection().");
+            }
+        }
+        this.readOnly = ro;
+    }
+    public String nativeSQL(String sql) {
+        return sql;
+    }
+    public void clearWarnings() throws SQLException {}
+    public SQLWarning getWarnings() throws SQLException {
+        return null;
+    }
+    public Statement createStatement() throws SQLException {
+        return createStatement(
+                ResultSet.TYPE_FORWARD_ONLY,
+                ResultSet.CONCUR_READ_ONLY,
+                ResultSet.CLOSE_CURSORS_AT_COMMIT);
+    }
+    public Statement createStatement(int rsType, int rsConcurr) throws SQLException {
+        return createStatement(rsType, rsConcurr, ResultSet.CLOSE_CURSORS_AT_COMMIT);
+    }
+    public abstract Statement createStatement(int rst, int rsc, int rsh) throws SQLException;
+    public CallableStatement prepareCall(String sql) throws SQLException {
+        return prepareCall(
+                sql,
+                ResultSet.TYPE_FORWARD_ONLY,
+                ResultSet.CONCUR_READ_ONLY,
+                ResultSet.CLOSE_CURSORS_AT_COMMIT);
+    }
+    public CallableStatement prepareCall(String sql, int rst, int rsc) throws SQLException {
+        return prepareCall(sql, rst, rsc, ResultSet.CLOSE_CURSORS_AT_COMMIT);
+    }
+    public CallableStatement prepareCall(String sql, int rst, int rsc, int rsh)
+            throws SQLException {
+        throw new SQLException("SQLite does not support Stored Procedures");
+    }
+    public PreparedStatement prepareStatement(String sql) throws SQLException {
+        return prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+    }
+    public PreparedStatement prepareStatement(String sql, int autoC) throws SQLException {
+        return prepareStatement(sql);
+    }
+    public PreparedStatement prepareStatement(String sql, int[] colInds) throws SQLException {
+        return prepareStatement(sql);
+    }
+    public PreparedStatement prepareStatement(String sql, String[] colNames) throws SQLException {
+        return prepareStatement(sql);
+    }
+    public PreparedStatement prepareStatement(String sql, int rst, int rsc) throws SQLException {
+        return prepareStatement(sql, rst, rsc, ResultSet.CLOSE_CURSORS_AT_COMMIT);
+    }
+    public abstract PreparedStatement prepareStatement(String sql, int rst, int rsc, int rsh)
+            throws SQLException;
+    public Savepoint setSavepoint() throws SQLException {
+        checkOpen();
+        if (getAutoCommit()) {
+            getConnectionConfig().setAutoCommit(false);
+        }
+        Savepoint sp = new JDBC3Savepoint(savePoint.incrementAndGet());
+        getDatabase().exec(String.format("SAVEPOINT %s", sp.getSavepointName()), false);
+        return sp;
+    }
+    public Savepoint setSavepoint(String name) throws SQLException {
+        checkOpen();
+        if (getAutoCommit()) {
+            getConnectionConfig().setAutoCommit(false);
+        }
+        Savepoint sp = new JDBC3Savepoint(savePoint.incrementAndGet(), name);
+        getDatabase().exec(String.format("SAVEPOINT %s", sp.getSavepointName()), false);
+        return sp;
+    }
+    public void releaseSavepoint(Savepoint savepoint) throws SQLException {
+        checkOpen();
+        if (getAutoCommit()) {
+            throw new SQLException("database in auto-commit mode");
+        }
+        getDatabase()
+                .exec(String.format("RELEASE SAVEPOINT %s", savepoint.getSavepointName()), false);
+    }
+    public void rollback(Savepoint savepoint) throws SQLException {
+        checkOpen();
+        if (getAutoCommit()) {
+            throw new SQLException("database in auto-commit mode");
+        }
+        getDatabase()
+                .exec(
+                        String.format("ROLLBACK TO SAVEPOINT %s", savepoint.getSavepointName()),
+                        getAutoCommit());
+    }
+    public Struct createStruct(String t, Object[] attr) throws SQLException {
+        throw new SQLFeatureNotSupportedException("not implemented by SQLite JDBC driver");
+    }
+}
+package org.sqlite.core;
+import java.sql.Date;
+import java.sql.SQLException;
+import java.util.Arrays;
+import java.util.Calendar;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.SQLiteConnectionConfig;
+import org.sqlite.date.FastDateFormat;
+import org.sqlite.jdbc3.JDBC3Connection;
+import org.sqlite.jdbc4.JDBC4Statement;
+public abstract class CorePreparedStatement extends JDBC4Statement {
+    protected int columnCount;
+    protected int paramCount;
+    protected int batchQueryCount;
+    protected CorePreparedStatement(SQLiteConnection conn, String sql) throws SQLException {
+        super(conn);
+        this.sql = sql;
+        DB db = conn.getDatabase();
+        db.prepare(this);
+        rs.colsMeta = pointer.safeRun(DB::column_names);
+        columnCount = pointer.safeRunInt(DB::column_count);
+        paramCount = pointer.safeRunInt(DB::bind_parameter_count);
+        batchQueryCount = 0;
+        batch = null;
+        batchPos = 0;
+    }
+    @Override
+    public int[] executeBatch() throws SQLException {
+        return Arrays.stream(executeLargeBatch()).mapToInt(l -> (int) l).toArray();
+    }
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
+        if (batchQueryCount == 0) {
+            return new long[] {};
+        }
+        if (this.conn instanceof JDBC3Connection) {
+            ((JDBC3Connection) this.conn).tryEnforceTransactionMode();
+        }
+        return this.withConnectionTimeout(
+                () -> {
+                    try {
+                        return conn.getDatabase()
+                                .executeBatch(
+                                        pointer, batchQueryCount, batch, conn.getAutoCommit());
+                    } finally {
+                        clearBatch();
+                    }
+                });
+    }
+    @Override
+    public void clearBatch() throws SQLException {
+        super.clearBatch();
+        batchQueryCount = 0;
+    }
+    protected void batch(int pos, Object value) throws SQLException {
+        checkOpen();
+        if (batch == null) {
+            batch = new Object[paramCount];
+        }
+        batch[batchPos + pos - 1] = value;
+    }
+    protected void setDateByMilliseconds(int pos, Long value, Calendar calendar)
+            throws SQLException {
+        SQLiteConnectionConfig config = conn.getConnectionConfig();
+        switch (config.getDateClass()) {
+            case TEXT:
+                batch(
+                        pos,
+                        FastDateFormat.getInstance(
+                                        config.getDateStringFormat(), calendar.getTimeZone())
+                                .format(new Date(value)));
+                break;
+            case REAL:
+                batch(pos, new Double((value / 86400000.0) + 2440587.5));
+                break;
+            default: 
+                batch(pos, new Long(value / config.getDateMultiplier()));
+        }
+    }
+}
+package org.sqlite.jdbc3;
+import java.sql.BatchUpdateException;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
+import java.text.MessageFormat;
+import java.util.Arrays;
+import org.sqlite.ExtendedCommand;
+import org.sqlite.ExtendedCommand.SQLExtension;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.core.CoreStatement;
+import org.sqlite.core.DB;
+import org.sqlite.core.DB.ProgressObserver;
+import org.sqlite.util.Logger;
+import org.sqlite.util.LoggerFactory;
+public abstract class JDBC3Statement extends CoreStatement {
+    private int queryTimeout; 
+    protected long updateCount;
+    protected boolean exhaustedResults = false;
+    protected JDBC3Statement(SQLiteConnection conn) {
+        super(conn);
+        this.queryTimeout = 0;
+    }
+    public void close() throws SQLException {
+        clearGeneratedKeys();
+        internalClose();
+    }
+    public boolean execute(final String sql) throws SQLException {
+        internalClose();
+        return this.withConnectionTimeout(
+                () -> {
+                    SQLExtension ext = ExtendedCommand.parse(sql);
+                    if (ext != null) {
+                        ext.execute(conn.getDatabase());
+                        return false;
+                    }
+                    JDBC3Statement.this.sql = sql;
+                    synchronized (conn) {
+                        conn.getDatabase().prepare(JDBC3Statement.this);
+                        boolean result = exec();
+                        updateGeneratedKeys();
+                        updateCount = getDatabase().changes();
+                        exhaustedResults = false;
+                        return result;
+                    }
+                });
+    }
+    public boolean execute(String sql, int autoGeneratedKeys) throws SQLException {
+        return execute(sql);
+    }
+    public ResultSet executeQuery(String sql, boolean closeStmt) throws SQLException {
+        rs.closeStmt = closeStmt;
+        return executeQuery(sql);
+    }
+    public ResultSet executeQuery(String sql) throws SQLException {
+        internalClose();
+        this.sql = sql;
+        return this.withConnectionTimeout(
+                () -> {
+                    conn.getDatabase().prepare(JDBC3Statement.this);
+                    if (!exec()) {
+                        internalClose();
+                        throw new SQLException(
+                                "query does not return ResultSet", "SQLITE_DONE", SQLITE_DONE);
+                    }
+                    exhaustedResults = false;
+                    return getResultSet();
+                });
+    }
+    static class BackupObserver implements ProgressObserver {
+        private static final Logger logger = LoggerFactory.getLogger(BackupObserver.class);
+        public void progress(int remaining, int pageCount) {
+            logger.info(
+                    () ->
+                            MessageFormat.format(
+                                    "remaining:{0}, page count:{1}", remaining, pageCount));
+        }
+    }
+    public int executeUpdate(final String sql) throws SQLException {
+        return (int) executeLargeUpdate(sql);
+    }
+    public int executeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        return executeUpdate(sql);
+    }
+    public long executeLargeUpdate(String sql) throws SQLException {
+        internalClose();
+        this.sql = sql;
+        return this.withConnectionTimeout(
+                () -> {
+                    DB db = conn.getDatabase();
+                    long changes = 0;
+                    SQLExtension ext = ExtendedCommand.parse(sql);
+                    if (ext != null) {
+                        ext.execute(db);
+                    } else {
+                        try {
+                            synchronized (db) {
+                                changes = db.total_changes();
+                                int statusCode = db._exec(sql);
+                                if (statusCode != SQLITE_OK)
+                                    throw DB.newSQLException(statusCode, "");
+                                updateGeneratedKeys();
+                                changes = db.total_changes() - changes;
+                            }
+                        } finally {
+                            internalClose();
+                        }
+                    }
+                    return changes;
+                });
+    }
+    public long executeLargeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
+        return executeLargeUpdate(sql);
+    }
+    public ResultSet getResultSet() throws SQLException {
+        checkOpen();
+        if (exhaustedResults) return null;
+        if (rs.isOpen()) {
+            throw new SQLException("ResultSet already requested");
+        }
+        if (pointer.safeRunInt(DB::column_count) == 0) {
+            return null;
+        }
+        if (rs.colsMeta == null) {
+            rs.colsMeta = pointer.safeRun(DB::column_names);
+        }
+        rs.cols = rs.colsMeta;
+        rs.emptyResultSet = !resultsWaiting;
+        rs.open = true;
+        resultsWaiting = false;
+        return (ResultSet) rs;
+    }
+    public int getUpdateCount() throws SQLException {
+        return (int) getLargeUpdateCount();
+    }
+    public long getLargeUpdateCount() throws SQLException {
+        DB db = conn.getDatabase();
+        if (!pointer.isClosed()
+                && !rs.isOpen()
+                && !resultsWaiting
+                && pointer.safeRunInt(DB::column_count) == 0) return updateCount;
+        return -1;
+    }
+    public void addBatch(String sql) throws SQLException {
+        internalClose();
+        if (batch == null || batchPos + 1 >= batch.length) {
+            Object[] nb = new Object[Math.max(10, batchPos * 2)];
+            if (batch != null) System.arraycopy(batch, 0, nb, 0, batch.length);
+            batch = nb;
+        }
+        batch[batchPos++] = sql;
+    }
+    public void clearBatch() throws SQLException {
+        batchPos = 0;
+        if (batch != null) for (int i = 0; i < batch.length; i++) batch[i] = null;
+    }
+    public int[] executeBatch() throws SQLException {
+        return Arrays.stream(executeLargeBatch()).mapToInt(l -> (int) l).toArray();
+    }
+    public long[] executeLargeBatch() throws SQLException {
+        internalClose();
+        if (batch == null || batchPos == 0) return new long[] {};
+        long[] changes = new long[batchPos];
+        DB db = conn.getDatabase();
+        synchronized (db) {
+            try {
+                for (int i = 0; i < changes.length; i++) {
+                    try {
+                        this.sql = (String) batch[i];
+                        db.prepare(this);
+                        changes[i] = db.executeUpdate(this, null);
+                    } catch (SQLException e) {
+                        throw new BatchUpdateException(
+                                "batch entry " + i + ": " + e.getMessage(), null, 0, changes, e);
+                    } finally {
+                        if (pointer != null) pointer.close();
+                    }
+                }
+            } finally {
+                clearBatch();
+            }
+        }
+        return changes;
+    }
+    public void setCursorName(String name) {}
+    public SQLWarning getWarnings() throws SQLException {
+        return null;
+    }
+    public void clearWarnings() throws SQLException {}
+    public Connection getConnection() throws SQLException {
+        return conn;
+    }
+    public void cancel() throws SQLException {
+        conn.getDatabase().interrupt();
+    }
+    public int getQueryTimeout() throws SQLException {
+        return queryTimeout;
+    }
+    public void setQueryTimeout(int seconds) throws SQLException {
+        if (seconds < 0) {
+            throw new SQLException("query timeout must be >= 0");
+        }
+        this.queryTimeout = seconds;
+    }
+    public int getMaxRows() throws SQLException {
+        return (int) rs.maxRows;
+    }
+    public long getLargeMaxRows() throws SQLException {
+        return rs.maxRows;
+    }
+    public void setMaxRows(int max) throws SQLException {
+        setLargeMaxRows(max);
+    }
+    public void setLargeMaxRows(long max) throws SQLException {
+        if (max < 0) throw new SQLException("max row count must be >= 0");
+        rs.maxRows = max;
+    }
+    public int getMaxFieldSize() throws SQLException {
+        return 0;
+    }
+    public void setMaxFieldSize(int max) throws SQLException {
+        if (max < 0) throw new SQLException("max field size " + max + " cannot be negative");
+    }
+    public int getFetchSize() throws SQLException {
+        return ((ResultSet) rs).getFetchSize();
+    }
+    public void setFetchSize(int r) throws SQLException {
+        ((ResultSet) rs).setFetchSize(r);
+    }
+    public int getFetchDirection() throws SQLException {
+        return ResultSet.FETCH_FORWARD;
+    }
+    public void setFetchDirection(int direction) throws SQLException {
+        switch (direction) {
+            case ResultSet.FETCH_FORWARD:
+            case ResultSet.FETCH_REVERSE:
+            case ResultSet.FETCH_UNKNOWN:
+                break;
+            default:
+                throw new SQLException(
+                        "Unknown fetch direction "
+                                + direction
+                                + ". "
+                                + "Must be one of FETCH_FORWARD, FETCH_REVERSE, or FETCH_UNKNOWN in java.sql.ResultSet");
+        }
+    }
+    public boolean getMoreResults() throws SQLException {
+        return getMoreResults(Statement.CLOSE_CURRENT_RESULT);
+    }
+    public boolean getMoreResults(int current) throws SQLException {
+        checkOpen();
+        if (current == Statement.KEEP_CURRENT_RESULT || current == Statement.CLOSE_ALL_RESULTS) {
+            throw new SQLFeatureNotSupportedException(
+                    "Argument not supported: Statement.KEEP_CURRENT_RESULT or Statement.CLOSE_ALL_RESULTS");
+        }
+        if (current != Statement.CLOSE_CURRENT_RESULT) {
+            throw new SQLException("Invalid argument");
+        }
+        rs.close();
+        updateCount = -1;
+        exhaustedResults = true;
+        return false;
+    }
+    public int getResultSetConcurrency() throws SQLException {
+        return ResultSet.CONCUR_READ_ONLY;
+    }
+    public int getResultSetHoldability() throws SQLException {
+        return ResultSet.CLOSE_CURSORS_AT_COMMIT;
+    }
+    public int getResultSetType() throws SQLException {
+        return ResultSet.TYPE_FORWARD_ONLY;
+    }
+    public void setEscapeProcessing(boolean enable) {
+    }
+    protected SQLException unsupported() {
+        return new SQLFeatureNotSupportedException("not implemented by SQLite JDBC driver");
+    }
+    public boolean execute(String sql, int[] colinds) throws SQLException {
+        throw unsupported();
+    }
+    public boolean execute(String sql, String[] colnames) throws SQLException {
+        throw unsupported();
+    }
+    public int executeUpdate(String sql, int[] colinds) throws SQLException {
+        throw unsupported();
+    }
+    public int executeUpdate(String sql, String[] cols) throws SQLException {
+        throw unsupported();
+    }
+    public long executeLargeUpdate(String sql, int[] colinds) throws SQLException {
+        throw unsupported();
+    }
+    public long executeLargeUpdate(String sql, String[] cols) throws SQLException {
+        throw unsupported();
+    }
+    protected <T> T withConnectionTimeout(SQLCallable<T> callable) throws SQLException {
+        int origBusyTimeout = conn.getBusyTimeout();
+        if (queryTimeout > 0) {
+            conn.setBusyTimeout(1000 * queryTimeout);
+        }
+        try {
+            return callable.call();
+        } finally {
+            if (queryTimeout > 0) {
+                conn.setBusyTimeout(origBusyTimeout);
+            }
+        }
+    }
+    @FunctionalInterface
+    protected interface SQLCallable<T> {
+        T call() throws SQLException;
+    }
+}
+package org.sqlite.jdbc3;
+import java.io.IOException;
+import java.io.InputStream;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Statement;
+import java.sql.Struct;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import org.sqlite.SQLiteConnection;
+import org.sqlite.core.CoreDatabaseMetaData;
+import org.sqlite.core.CoreStatement;
+import org.sqlite.jdbc3.JDBC3DatabaseMetaData.ImportedKeyFinder.ForeignKey;
+import org.sqlite.util.Logger;
+import org.sqlite.util.LoggerFactory;
+import org.sqlite.util.QueryUtils;
+import org.sqlite.util.StringUtils;
+public abstract class JDBC3DatabaseMetaData extends CoreDatabaseMetaData {
+    private static String driverName;
+    private static String driverVersion;
+    static {
+        try (InputStream sqliteJdbcPropStream =
+                JDBC3DatabaseMetaData.class
+                        .getClassLoader()
+                        .getResourceAsStream("sqlite-jdbc.properties")) {
+            if (sqliteJdbcPropStream == null) {
+                throw new IOException("Cannot load sqlite-jdbc.properties from jar");
+            }
+            final Properties sqliteJdbcProp = new Properties();
+            sqliteJdbcProp.load(sqliteJdbcPropStream);
+            driverName = sqliteJdbcProp.getProperty("name");
+            driverVersion = sqliteJdbcProp.getProperty("version");
+        } catch (Exception e) {
+            driverName = "SQLite JDBC";
+            driverVersion = "3.0.0-UNKNOWN";
+        }
+    }
+    protected JDBC3DatabaseMetaData(SQLiteConnection conn) {
+        super(conn);
+    }
+    public Connection getConnection() {
+        return conn;
+    }
+    public int getDatabaseMajorVersion() throws SQLException {
+        return Integer.parseInt(conn.libversion().split("\\.")[0]);
+    }
+    public int getDatabaseMinorVersion() throws SQLException {
+        return Integer.parseInt(conn.libversion().split("\\.")[1]);
+    }
+    public int getDriverMajorVersion() {
+        return Integer.parseInt(driverVersion.split("\\.")[0]);
+    }
+    public int getDriverMinorVersion() {
+        return Integer.parseInt(driverVersion.split("\\.")[1]);
+    }
+    public int getJDBCMajorVersion() {
+        return 4;
+    }
+    public int getJDBCMinorVersion() {
+        return 2;
+    }
+    public int getDefaultTransactionIsolation() {
+        return Connection.TRANSACTION_SERIALIZABLE;
+    }
+    public int getMaxBinaryLiteralLength() {
+        return 0;
+    }
+    public int getMaxCatalogNameLength() {
+        return 0;
+    }
+    public int getMaxCharLiteralLength() {
+        return 0;
+    }
+    public int getMaxColumnNameLength() {
+        return 0;
+    }
+    public int getMaxColumnsInGroupBy() {
+        return 0;
+    }
+    public int getMaxColumnsInIndex() {
+        return 0;
+    }
+    public int getMaxColumnsInOrderBy() {
+        return 0;
+    }
+    public int getMaxColumnsInSelect() {
+        return 0;
+    }
+    public int getMaxColumnsInTable() {
+        return 0;
+    }
+    public int getMaxConnections() {
+        return 0;
+    }
+    public int getMaxCursorNameLength() {
+        return 0;
+    }
+    public int getMaxIndexLength() {
+        return 0;
+    }
+    public int getMaxProcedureNameLength() {
+        return 0;
+    }
+    public int getMaxRowSize() {
+        return 0;
+    }
+    public int getMaxSchemaNameLength() {
+        return 0;
+    }
+    public int getMaxStatementLength() {
+        return 0;
+    }
+    public int getMaxStatements() {
+        return 0;
+    }
+    public int getMaxTableNameLength() {
+        return 0;
+    }
+    public int getMaxTablesInSelect() {
+        return 0;
+    }
+    public int getMaxUserNameLength() {
+        return 0;
+    }
+    public int getResultSetHoldability() {
+        return ResultSet.CLOSE_CURSORS_AT_COMMIT;
+    }
+    public int getSQLStateType() {
+        return DatabaseMetaData.sqlStateSQL99;
+    }
+    public String getDatabaseProductName() {
+        return "SQLite";
+    }
+    public String getDatabaseProductVersion() throws SQLException {
+        return conn.libversion();
+    }
+    public String getDriverName() {
+        return driverName;
+    }
+    public String getDriverVersion() {
+        return driverVersion;
+    }
+    public String getExtraNameCharacters() {
+        return "";
+    }
+    public String getCatalogSeparator() {
+        return ".";
+    }
+    public String getCatalogTerm() {
+        return "catalog";
+    }
+    public String getSchemaTerm() {
+        return "schema";
+    }
+    public String getProcedureTerm() {
+        return "not_implemented";
+    }
+    public String getSearchStringEscape() {
+        return "\\";
+    }
+    public String getIdentifierQuoteString() {
+        return "\"";
+    }
+    public String getSQLKeywords() {
+        return "ABORT,ACTION,AFTER,ANALYZE,ATTACH,AUTOINCREMENT,BEFORE,"
+                + "CASCADE,CONFLICT,DATABASE,DEFERRABLE,DEFERRED,DESC,DETACH,"
+                + "EXCLUSIVE,EXPLAIN,FAIL,GLOB,IGNORE,INDEX,INDEXED,INITIALLY,INSTEAD,ISNULL,"
+                + "KEY,LIMIT,NOTNULL,OFFSET,PLAN,PRAGMA,QUERY,"
+                + "RAISE,REGEXP,REINDEX,RENAME,REPLACE,RESTRICT,"
+                + "TEMP,TEMPORARY,TRANSACTION,VACUUM,VIEW,VIRTUAL";
+    }
+    public String getNumericFunctions() {
+        return "";
+    }
+    public String getStringFunctions() {
+        return "";
+    }
+    public String getSystemFunctions() {
+        return "";
+    }
+    public String getTimeDateFunctions() {
+        return "DATE,TIME,DATETIME,JULIANDAY,STRFTIME";
+    }
+    public String getURL() {
+        return conn.getUrl();
+    }
+    public String getUserName() {
+        return null;
+    }
+    public boolean allProceduresAreCallable() {
+        return false;
+    }
+    public boolean allTablesAreSelectable() {
+        return true;
+    }
+    public boolean dataDefinitionCausesTransactionCommit() {
+        return false;
+    }
+    public boolean dataDefinitionIgnoredInTransactions() {
+        return false;
+    }
+    public boolean doesMaxRowSizeIncludeBlobs() {
+        return false;
+    }
+    public boolean deletesAreDetected(int type) {
+        return false;
+    }
+    public boolean insertsAreDetected(int type) {
+        return false;
+    }
+    public boolean isCatalogAtStart() {
+        return true;
+    }
+    public boolean locatorsUpdateCopy() {
+        return false;
+    }
+    public boolean nullPlusNonNullIsNull() {
+        return true;
+    }
+    public boolean nullsAreSortedAtEnd() {
+        return !nullsAreSortedAtStart();
+    }
+    public boolean nullsAreSortedAtStart() {
+        return true;
+    }
+    public boolean nullsAreSortedHigh() {
+        return true;
+    }
+    public boolean nullsAreSortedLow() {
+        return !nullsAreSortedHigh();
+    }
+    public boolean othersDeletesAreVisible(int type) {
+        return false;
+    }
+    public boolean othersInsertsAreVisible(int type) {
+        return false;
+    }
+    public boolean othersUpdatesAreVisible(int type) {
+        return false;
+    }
+    public boolean ownDeletesAreVisible(int type) {
+        return false;
+    }
+    public boolean ownInsertsAreVisible(int type) {
+        return false;
+    }
+    public boolean ownUpdatesAreVisible(int type) {
+        return false;
+    }
+    public boolean storesLowerCaseIdentifiers() {
+        return false;
+    }
+    public boolean storesLowerCaseQuotedIdentifiers() {
+        return false;
+    }
+    public boolean storesMixedCaseIdentifiers() {
+        return true;
+    }
+    public boolean storesMixedCaseQuotedIdentifiers() {
+        return false;
+    }
+    public boolean storesUpperCaseIdentifiers() {
+        return false;
+    }
+    public boolean storesUpperCaseQuotedIdentifiers() {
+        return false;
+    }
+    public boolean supportsAlterTableWithAddColumn() {
+        return false;
+    }
+    public boolean supportsAlterTableWithDropColumn() {
+        return false;
+    }
+    public boolean supportsANSI92EntryLevelSQL() {
+        return false;
+    }
+    public boolean supportsANSI92FullSQL() {
+        return false;
+    }
+    public boolean supportsANSI92IntermediateSQL() {
+        return false;
+    }
+    public boolean supportsBatchUpdates() {
+        return true;
+    }
+    public boolean supportsCatalogsInDataManipulation() {
+        return false;
+    }
+    public boolean supportsCatalogsInIndexDefinitions() {
+        return false;
+    }
+    public boolean supportsCatalogsInPrivilegeDefinitions() {
+        return false;
+    }
+    public boolean supportsCatalogsInProcedureCalls() {
+        return false;
+    }
+    public boolean supportsCatalogsInTableDefinitions() {
+        return false;
+    }
+    public boolean supportsColumnAliasing() {
+        return true;
+    }
+    public boolean supportsConvert() {
+        return false;
+    }
+    public boolean supportsConvert(int fromType, int toType) {
+        return false;
+    }
+    public boolean supportsCorrelatedSubqueries() {
+        return false;
+    }
+    public boolean supportsDataDefinitionAndDataManipulationTransactions() {
+        return true;
+    }
+    public boolean supportsDataManipulationTransactionsOnly() {
+        return false;
+    }
+    public boolean supportsDifferentTableCorrelationNames() {
+        return false;
+    }
+    public boolean supportsExpressionsInOrderBy() {
+        return true;
+    }
+    public boolean supportsMinimumSQLGrammar() {
+        return true;
+    }
+    public boolean supportsCoreSQLGrammar() {
+        return true;
+    }
+    public boolean supportsExtendedSQLGrammar() {
+        return false;
+    }
+    public boolean supportsLimitedOuterJoins() {
+        return true;
+    }
+    public boolean supportsFullOuterJoins() throws SQLException {
+        String[] version = conn.libversion().split("\\.");
+        return Integer.parseInt(version[0]) >= 3 && Integer.parseInt(version[1]) >= 39;
+    }
+    public boolean supportsGetGeneratedKeys() {
+        return true;
+    }
+    public boolean supportsGroupBy() {
+        return true;
+    }
+    public boolean supportsGroupByBeyondSelect() {
+        return false;
+    }
+    public boolean supportsGroupByUnrelated() {
+        return false;
+    }
+    public boolean supportsIntegrityEnhancementFacility() {
+        return false;
+    }
+    public boolean supportsLikeEscapeClause() {
+        return false;
+    }
+    public boolean supportsMixedCaseIdentifiers() {
+        return true;
+    }
+    public boolean supportsMixedCaseQuotedIdentifiers() {
+        return false;
+    }
+    public boolean supportsMultipleOpenResults() {
+        return false;
+    }
+    public boolean supportsMultipleResultSets() {
+        return false;
+    }
+    public boolean supportsMultipleTransactions() {
+        return true;
+    }
+    public boolean supportsNamedParameters() {
+        return true;
+    }
+    public boolean supportsNonNullableColumns() {
+        return true;
+    }
+    public boolean supportsOpenCursorsAcrossCommit() {
+        return false;
+    }
+    public boolean supportsOpenCursorsAcrossRollback() {
+        return false;
+    }
+    public boolean supportsOpenStatementsAcrossCommit() {
+        return false;
+    }
+    public boolean supportsOpenStatementsAcrossRollback() {
+        return false;
+    }
+    public boolean supportsOrderByUnrelated() {
+        return false;
+    }
+    public boolean supportsOuterJoins() {
+        return true;
+    }
+    public boolean supportsPositionedDelete() {
+        return false;
+    }
+    public boolean supportsPositionedUpdate() {
+        return false;
+    }
+    public boolean supportsResultSetConcurrency(int t, int c) {
+        return t == ResultSet.TYPE_FORWARD_ONLY && c == ResultSet.CONCUR_READ_ONLY;
+    }
+    public boolean supportsResultSetHoldability(int h) {
+        return h == ResultSet.CLOSE_CURSORS_AT_COMMIT;
+    }
+    public boolean supportsResultSetType(int t) {
+        return t == ResultSet.TYPE_FORWARD_ONLY;
+    }
+    public boolean supportsSavepoints() {
+        return true;
+    }
+    public boolean supportsSchemasInDataManipulation() {
+        return false;
+    }
+    public boolean supportsSchemasInIndexDefinitions() {
+        return false;
+    }
+    public boolean supportsSchemasInPrivilegeDefinitions() {
+        return false;
+    }
+    public boolean supportsSchemasInProcedureCalls() {
+        return false;
+    }
+    public boolean supportsSchemasInTableDefinitions() {
+        return false;
+    }
+    public boolean supportsSelectForUpdate() {
+        return false;
+    }
+    public boolean supportsStatementPooling() {
+        return false;
+    }
+    public boolean supportsStoredProcedures() {
+        return false;
+    }
+    public boolean supportsSubqueriesInComparisons() {
+        return false;
+    }
+    public boolean supportsSubqueriesInExists() {
+        return true;
+    } 
+    public boolean supportsSubqueriesInIns() {
+        return true;
+    } 
+    public boolean supportsSubqueriesInQuantifieds() {
+        return false;
+    }
+    public boolean supportsTableCorrelationNames() {
+        return false;
+    }
+    public boolean supportsTransactionIsolationLevel(int level) {
+        return level == Connection.TRANSACTION_SERIALIZABLE;
+    }
+    public boolean supportsTransactions() {
+        return true;
+    }
+    public boolean supportsUnion() {
+        return true;
+    }
+    public boolean supportsUnionAll() {
+        return true;
+    }
+    public boolean updatesAreDetected(int type) {
+        return false;
+    }
+    public boolean usesLocalFilePerTable() {
+        return false;
+    }
+    public boolean usesLocalFiles() {
+        return true;
+    }
+    public boolean isReadOnly() throws SQLException {
+        return conn.isReadOnly();
+    }
+    public ResultSet getAttributes(String c, String s, String t, String a) throws SQLException {
+        if (getAttributes == null) {
+            getAttributes =
+                    conn.prepareStatement(
+                            "select null as TYPE_CAT, null as TYPE_SCHEM, "
+                                    + "null as TYPE_NAME, null as ATTR_NAME, null as DATA_TYPE, "
+                                    + "null as ATTR_TYPE_NAME, null as ATTR_SIZE, null as DECIMAL_DIGITS, "
+                                    + "null as NUM_PREC_RADIX, null as NULLABLE, null as REMARKS, null as ATTR_DEF, "
+                                    + "null as SQL_DATA_TYPE, null as SQL_DATETIME_SUB, null as CHAR_OCTET_LENGTH, "
+                                    + "null as ORDINAL_POSITION, null as IS_NULLABLE, null as SCOPE_CATALOG, "
+                                    + "null as SCOPE_SCHEMA, null as SCOPE_TABLE, null as SOURCE_DATA_TYPE limit 0;");
+        }
+        return getAttributes.executeQuery();
+    }
+    public ResultSet getBestRowIdentifier(String c, String s, String t, int scope, boolean n)
+            throws SQLException {
+        if (getBestRowIdentifier == null) {
+            getBestRowIdentifier =
+                    conn.prepareStatement(
+                            "select null as SCOPE, null as COLUMN_NAME, "
+                                    + "null as DATA_TYPE, null as TYPE_NAME, null as COLUMN_SIZE, "
+                                    + "null as BUFFER_LENGTH, null as DECIMAL_DIGITS, null as PSEUDO_COLUMN limit 0;");
+        }
+        return getBestRowIdentifier.executeQuery();
+    }
+    public ResultSet getColumnPrivileges(String c, String s, String t, String colPat)
+            throws SQLException {
+        if (getColumnPrivileges == null) {
+            getColumnPrivileges =
+                    conn.prepareStatement(
+                            "select null as TABLE_CAT, null as TABLE_SCHEM, "
+                                    + "null as TABLE_NAME, null as COLUMN_NAME, null as GRANTOR, null as GRANTEE, "
+                                    + "null as PRIVILEGE, null as IS_GRANTABLE limit 0;");
+        }
+        return getColumnPrivileges.executeQuery();
+    }
+    protected static final Pattern TYPE_INTEGER = Pattern.compile(".*(INT|BOOL).*");
+    protected static final Pattern TYPE_VARCHAR = Pattern.compile(".*(CHAR|CLOB|TEXT|BLOB).*");
+    protected static final Pattern TYPE_FLOAT = Pattern.compile(".*(REAL|FLOA|DOUB|DEC|NUM).*");
+    public ResultSet getColumns(String c, String s, String tblNamePattern, String colNamePattern)
+            throws SQLException {
+        checkOpen();
+        StringBuilder sql = new StringBuilder(700);
+        sql.append("select null as TABLE_CAT, null as TABLE_SCHEM, tblname as TABLE_NAME, ")
+                .append(
+                        "cn as COLUMN_NAME, ct as DATA_TYPE, tn as TYPE_NAME, colSize as COLUMN_SIZE, ")
+                .append(
+                        "2000000000 as BUFFER_LENGTH, colDecimalDigits as DECIMAL_DIGITS, 10   as NUM_PREC_RADIX, ")
+                .append("colnullable as NULLABLE, null as REMARKS, colDefault as COLUMN_DEF, ")
+                .append(
+                        "0    as SQL_DATA_TYPE, 0    as SQL_DATETIME_SUB, 2000000000 as CHAR_OCTET_LENGTH, ")
+                .append(
+                        "ordpos as ORDINAL_POSITION, (case colnullable when 0 then 'NO' when 1 then 'YES' else '' end)")
+                .append("    as IS_NULLABLE, null as SCOPE_CATALOG, null as SCOPE_SCHEMA, ")
+                .append("null as SCOPE_TABLE, null as SOURCE_DATA_TYPE, ")
+                .append(
+                        "(case colautoincrement when 0 then 'NO' when 1 then 'YES' else '' end) as IS_AUTOINCREMENT, ")
+                .append(
+                        "(case colgenerated when 0 then 'NO' when 1 then 'YES' else '' end) as IS_GENERATEDCOLUMN from (");
+        boolean colFound = false;
+        ResultSet rs = null;
+        try {
+            rs = getTables(c, s, tblNamePattern, null);
+            while (rs.next()) {
+                String tableName = rs.getString(3);
+                boolean isAutoIncrement;
+                Statement statColAutoinc = conn.createStatement();
+                ResultSet rsColAutoinc = null;
+                try {
+                    statColAutoinc = conn.createStatement();
+                    rsColAutoinc =
+                            statColAutoinc.executeQuery(
+                                    "SELECT LIKE('%autoincrement%', LOWER(sql)) FROM sqlite_schema "
+                                            + "WHERE LOWER(name) = LOWER('"
+                                            + escape(tableName)
+                                            + "') AND TYPE IN ('table', 'view')");
+                    rsColAutoinc.next();
+                    isAutoIncrement = rsColAutoinc.getInt(1) == 1;
+                } finally {
+                    if (rsColAutoinc != null) {
+                        try {
+                            rsColAutoinc.close();
+                        } catch (Exception e) {
+                            LogHolder.logger.error(() -> "Could not close ResultSet", e);
+                        }
+                    }
+                    if (statColAutoinc != null) {
+                        try {
+                            statColAutoinc.close();
+                        } catch (Exception e) {
+                            LogHolder.logger.error(() -> "Could not close statement", e);
+                        }
+                    }
+                }
+                String pragmaStatement = "PRAGMA table_xinfo('" + escape(tableName) + "')";
+                try (Statement colstat = conn.createStatement();
+                        ResultSet rscol = colstat.executeQuery(pragmaStatement)) {
+                    for (int i = 0; rscol.next(); i++) {
+                        String colName = rscol.getString(2);
+                        String colType = rscol.getString(3);
+                        String colNotNull = rscol.getString(4);
+                        String colDefault = rscol.getString(5);
+                        boolean isPk = "1".equals(rscol.getString(6));
+                        String colHidden = rscol.getString(7);
+                        int colNullable = 2;
+                        if (colNotNull != null) {
+                            colNullable = colNotNull.equals("0") ? 1 : 0;
+                        }
+                        if (colFound) {
+                            sql.append(" union all ");
+                        }
+                        colFound = true;
+                        int iColumnSize = 2000000000;
+                        int iDecimalDigits = 10;
+                        colType = colType == null ? "TEXT" : colType.toUpperCase();
+                        int colAutoIncrement = 0;
+                        if (isPk && isAutoIncrement) {
+                            colAutoIncrement = 1;
+                        }
+                        int colJavaType;
+                        if (TYPE_INTEGER.matcher(colType).find()) {
+                            colJavaType = Types.INTEGER;
+                            iDecimalDigits = 0;
+                        } else if (TYPE_VARCHAR.matcher(colType).find()) {
+                            colJavaType = Types.VARCHAR;
+                            iDecimalDigits = 0;
+                        } else if (TYPE_FLOAT.matcher(colType).find()) {
+                            colJavaType = Types.FLOAT;
+                        } else {
+                            colJavaType = Types.VARCHAR;
+                        }
+                        int iStartOfDimension = colType.indexOf('(');
+                        if (iStartOfDimension > 0) {
+                            int iEndOfDimension = colType.indexOf(')', iStartOfDimension);
+                            if (iEndOfDimension > 0) {
+                                String sInteger, sDecimal;
+                                int iDimensionSeparator = colType.indexOf(',', iStartOfDimension);
+                                if (iDimensionSeparator > 0) {
+                                    sInteger =
+                                            colType.substring(
+                                                    iStartOfDimension + 1, iDimensionSeparator);
+                                    sDecimal =
+                                            colType.substring(
+                                                    iDimensionSeparator + 1, iEndOfDimension);
+                                }
+                                else {
+                                    sInteger =
+                                            colType.substring(
+                                                    iStartOfDimension + 1, iEndOfDimension);
+                                    sDecimal = null;
+                                }
+                                try {
+                                    int iInteger = Integer.parseUnsignedInt(sInteger.trim());
+                                    if (sDecimal != null) {
+                                        iDecimalDigits = Integer.parseUnsignedInt(sDecimal.trim());
+                                        iColumnSize = iInteger + iDecimalDigits;
+                                    } else {
+                                        iDecimalDigits = 0;
+                                        iColumnSize = iInteger;
+                                    }
+                                } catch (NumberFormatException ex) {
+                                }
+                            }
+                            colType = colType.substring(0, iStartOfDimension).trim();
+                        }
+                        int colGenerated = 0;
+                        if ("2".equals(colHidden) || "3".equals(colHidden)) {
+                            colGenerated = 1;
+                        }
+                        sql.append("select ")
+                                .append(i + 1)
+                                .append(" as ordpos, ")
+                                .append(colNullable)
+                                .append(" as colnullable,")
+                                .append(colJavaType)
+                                .append(" as ct, ")
+                                .append(iColumnSize)
+                                .append(" as colSize, ")
+                                .append(iDecimalDigits)
+                                .append(" as colDecimalDigits, ")
+                                .append("'")
+                                .append(tableName)
+                                .append("' as tblname, ")
+                                .append("'")
+                                .append(escape(colName))
+                                .append("' as cn, ")
+                                .append("'")
+                                .append(escape(colType))
+                                .append("' as tn, ")
+                                .append(quote(colDefault == null ? null : escape(colDefault)))
+                                .append(" as colDefault,")
+                                .append(colAutoIncrement)
+                                .append(" as colautoincrement,")
+                                .append(colGenerated)
+                                .append(" as colgenerated");
+                        if (colNamePattern != null) {
+                            sql.append(" where upper(cn) like upper('")
+                                    .append(escape(colNamePattern))
+                                    .append("') ESCAPE '")
+                                    .append(getSearchStringEscape())
+                                    .append("'");
+                        }
+                    }
+                }
+            }
+        } finally {
+            if (rs != null) {
+                try {
+                    rs.close();
+                } catch (Exception e) {
+                    LogHolder.logger.error(() -> "Could not close ResultSet", e);
+                }
+            }
+        }
+        if (colFound) {
+            sql.append(") order by TABLE_SCHEM, TABLE_NAME, ORDINAL_POSITION;");
+        } else {
+            sql.append(
+                    "select null as ordpos, null as colnullable, null as ct, null as colsize, null as colDecimalDigits, null as tblname, null as cn, null as tn, null as colDefault, null as colautoincrement, null as colgenerated) limit 0;");
+        }
+        Statement stat = conn.createStatement();
+        return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+    }
+    public ResultSet getCrossReference(
+            String pc, String ps, String pt, String fc, String fs, String ft) throws SQLException {
+        if (pt == null) {
+            return getExportedKeys(fc, fs, ft);
+        }
+        if (ft == null) {
+            return getImportedKeys(pc, ps, pt);
+        }
+        String query =
+                "select "
+                        + quote(pc)
+                        + " as PKTABLE_CAT, "
+                        + quote(ps)
+                        + " as PKTABLE_SCHEM, "
+                        + quote(pt)
+                        + " as PKTABLE_NAME, "
+                        + "'' as PKCOLUMN_NAME, "
+                        + quote(fc)
+                        + " as FKTABLE_CAT, "
+                        + quote(fs)
+                        + " as FKTABLE_SCHEM, "
+                        + quote(ft)
+                        + " as FKTABLE_NAME, "
+                        + "'' as FKCOLUMN_NAME, -1 as KEY_SEQ, 3 as UPDATE_RULE, 3 as DELETE_RULE, '' as FK_NAME, '' as PK_NAME, "
+                        + DatabaseMetaData.importedKeyInitiallyDeferred
+                        + " as DEFERRABILITY limit 0 ";
+        return ((CoreStatement) conn.createStatement()).executeQuery(query, true);
+    }
+    public ResultSet getSchemas() throws SQLException {
+        if (getSchemas == null) {
+            getSchemas =
+                    conn.prepareStatement(
+                            "select null as TABLE_SCHEM, null as TABLE_CATALOG limit 0;");
+        }
+        return getSchemas.executeQuery();
+    }
+    public ResultSet getCatalogs() throws SQLException {
+        if (getCatalogs == null) {
+            getCatalogs = conn.prepareStatement("select null as TABLE_CAT limit 0;");
+        }
+        return getCatalogs.executeQuery();
+    }
+    public ResultSet getPrimaryKeys(String c, String s, String table) throws SQLException {
+        PrimaryKeyFinder pkFinder = new PrimaryKeyFinder(table);
+        String[] columns = pkFinder.getColumns();
+        Statement stat = conn.createStatement();
+        StringBuilder sql = new StringBuilder(512);
+        sql.append("select null as TABLE_CAT, null as TABLE_SCHEM, '")
+                .append(escape(table))
+                .append("' as TABLE_NAME, cn as COLUMN_NAME, ks as KEY_SEQ, pk as PK_NAME from (");
+        if (columns == null) {
+            sql.append("select null as cn, null as pk, 0 as ks) limit 0;");
+            return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+        }
+        String pkName = pkFinder.getName();
+        if (pkName != null) {
+            pkName = "'" + pkName + "'";
+        }
+        for (int i = 0; i < columns.length; i++) {
+            if (i > 0) sql.append(" union ");
+            sql.append("select ")
+                    .append(pkName)
+                    .append(" as pk, '")
+                    .append(escape(unquoteIdentifier(columns[i])))
+                    .append("' as cn, ")
+                    .append(i + 1)
+                    .append(" as ks");
+        }
+        return ((CoreStatement) stat).executeQuery(sql.append(") order by cn;").toString(), true);
+    }
+    private static final Map<String, Integer> RULE_MAP = new HashMap<>();
+    static {
+        RULE_MAP.put("NO ACTION", DatabaseMetaData.importedKeyNoAction);
+        RULE_MAP.put("CASCADE", DatabaseMetaData.importedKeyCascade);
+        RULE_MAP.put("RESTRICT", DatabaseMetaData.importedKeyRestrict);
+        RULE_MAP.put("SET NULL", DatabaseMetaData.importedKeySetNull);
+        RULE_MAP.put("SET DEFAULT", DatabaseMetaData.importedKeySetDefault);
+    }
+    public ResultSet getExportedKeys(String catalog, String schema, String table)
+            throws SQLException {
+        PrimaryKeyFinder pkFinder = new PrimaryKeyFinder(table);
+        String[] pkColumns = pkFinder.getColumns();
+        Statement stat = conn.createStatement();
+        catalog = (catalog != null) ? quote(catalog) : null;
+        schema = (schema != null) ? quote(schema) : null;
+        StringBuilder exportedKeysQuery = new StringBuilder(512);
+        String target = null;
+        int count = 0;
+        if (pkColumns != null) {
+            ArrayList<String> tableList;
+            try (ResultSet rs =
+                    stat.executeQuery("select name from sqlite_schema where type = 'table'")) {
+                tableList = new ArrayList<>();
+                while (rs.next()) {
+                    String tblname = rs.getString(1);
+                    tableList.add(tblname);
+                    if (tblname.equalsIgnoreCase(table)) {
+                        target = tblname;
+                    }
+                }
+            }
+            for (String tbl : tableList) {
+                final ImportedKeyFinder impFkFinder = new ImportedKeyFinder(tbl);
+                List<ForeignKey> fkNames = impFkFinder.getFkList();
+                for (ForeignKey foreignKey : fkNames) {
+                    String PKTabName = foreignKey.getPkTableName();
+                    if (PKTabName == null || !PKTabName.equalsIgnoreCase(target)) {
+                        continue;
+                    }
+                    for (int j = 0; j < foreignKey.getColumnMappingCount(); j++) {
+                        int keySeq = j + 1;
+                        String[] columnMapping = foreignKey.getColumnMapping(j);
+                        String PKColName = columnMapping[1];
+                        PKColName = (PKColName == null) ? "" : PKColName;
+                        String FKColName = columnMapping[0];
+                        FKColName = (FKColName == null) ? "" : FKColName;
+                        boolean usePkName = false;
+                        for (String pkColumn : pkColumns) {
+                            if (pkColumn != null && pkColumn.equalsIgnoreCase(PKColName)) {
+                                usePkName = true;
+                                break;
+                            }
+                        }
+                        String pkName =
+                                (usePkName && pkFinder.getName() != null) ? pkFinder.getName() : "";
+                        exportedKeysQuery
+                                .append(count > 0 ? " union all select " : "select ")
+                                .append(keySeq)
+                                .append(" as ks, '")
+                                .append(escape(tbl))
+                                .append("' as fkt, '")
+                                .append(escape(FKColName))
+                                .append("' as fcn, '")
+                                .append(escape(PKColName))
+                                .append("' as pcn, '")
+                                .append(escape(pkName))
+                                .append("' as pkn, ")
+                                .append(RULE_MAP.get(foreignKey.getOnUpdate()))
+                                .append(" as ur, ")
+                                .append(RULE_MAP.get(foreignKey.getOnDelete()))
+                                .append(" as dr, ");
+                        String fkName = foreignKey.getFkName();
+                        if (fkName != null) {
+                            exportedKeysQuery.append("'").append(escape(fkName)).append("' as fkn");
+                        } else {
+                            exportedKeysQuery.append("'' as fkn");
+                        }
+                        count++;
+                    }
+                }
+            }
+        }
+        boolean hasImportedKey = (count > 0);
+        StringBuilder sql = new StringBuilder(512);
+        sql.append("select ")
+                .append(catalog)
+                .append(" as PKTABLE_CAT, ")
+                .append(schema)
+                .append(" as PKTABLE_SCHEM, ")
+                .append(quote(target))
+                .append(" as PKTABLE_NAME, ")
+                .append(hasImportedKey ? "pcn" : "''")
+                .append(" as PKCOLUMN_NAME, ")
+                .append(catalog)
+                .append(" as FKTABLE_CAT, ")
+                .append(schema)
+                .append(" as FKTABLE_SCHEM, ")
+                .append(hasImportedKey ? "fkt" : "''")
+                .append(" as FKTABLE_NAME, ")
+                .append(hasImportedKey ? "fcn" : "''")
+                .append(" as FKCOLUMN_NAME, ")
+                .append(hasImportedKey ? "ks" : "-1")
+                .append(" as KEY_SEQ, ")
+                .append(hasImportedKey ? "ur" : "3")
+                .append(" as UPDATE_RULE, ")
+                .append(hasImportedKey ? "dr" : "3")
+                .append(" as DELETE_RULE, ")
+                .append(hasImportedKey ? "fkn" : "''")
+                .append(" as FK_NAME, ")
+                .append(hasImportedKey ? "pkn" : "''")
+                .append(" as PK_NAME, ")
+                .append(DatabaseMetaData.importedKeyInitiallyDeferred) 
+                .append(" as DEFERRABILITY ");
+        if (hasImportedKey) {
+            sql.append("from (")
+                    .append(exportedKeysQuery)
+                    .append(") ORDER BY FKTABLE_CAT, FKTABLE_SCHEM, FKTABLE_NAME, KEY_SEQ");
+        } else {
+            sql.append("limit 0");
+        }
+        return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+    }
+    private StringBuilder appendDummyForeignKeyList(StringBuilder sql) {
+        sql.append("select -1 as ks, '' as ptn, '' as fcn, '' as pcn, ")
+                .append(DatabaseMetaData.importedKeyNoAction)
+                .append(" as ur, ")
+                .append(DatabaseMetaData.importedKeyNoAction)
+                .append(" as dr, ")
+                .append(" '' as fkn, ")
+                .append(" '' as pkn ")
+                .append(") limit 0;");
+        return sql;
+    }
+    public ResultSet getImportedKeys(String catalog, String schema, String table)
+            throws SQLException {
+        ResultSet rs;
+        Statement stat = conn.createStatement();
+        StringBuilder sql = new StringBuilder(700);
+        sql.append("select ")
+                .append(quote(catalog))
+                .append(" as PKTABLE_CAT, ")
+                .append(quote(schema))
+                .append(" as PKTABLE_SCHEM, ")
+                .append("ptn as PKTABLE_NAME, pcn as PKCOLUMN_NAME, ")
+                .append(quote(catalog))
+                .append(" as FKTABLE_CAT, ")
+                .append(quote(schema))
+                .append(" as FKTABLE_SCHEM, ")
+                .append(quote(table))
+                .append(" as FKTABLE_NAME, ")
+                .append(
+                        "fcn as FKCOLUMN_NAME, ks as KEY_SEQ, ur as UPDATE_RULE, dr as DELETE_RULE, fkn as FK_NAME, pkn as PK_NAME, ")
+                .append(DatabaseMetaData.importedKeyInitiallyDeferred)
+                .append(" as DEFERRABILITY from (");
+        try {
+            rs = stat.executeQuery("pragma foreign_key_list('" + escape(table) + "');");
+        } catch (SQLException e) {
+            sql = appendDummyForeignKeyList(sql);
+            return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+        }
+        final ImportedKeyFinder impFkFinder = new ImportedKeyFinder(table);
+        List<ForeignKey> fkNames = impFkFinder.getFkList();
+        int i = 0;
+        for (; rs.next(); i++) {
+            int keySeq = rs.getInt(2) + 1;
+            int keyId = rs.getInt(1);
+            String PKTabName = rs.getString(3);
+            String FKColName = rs.getString(4);
+            String PKColName = rs.getString(5);
+            String pkName = null;
+            try {
+                PrimaryKeyFinder pkFinder = new PrimaryKeyFinder(PKTabName);
+                pkName = pkFinder.getName();
+                if (PKColName == null) {
+                    PKColName = pkFinder.getColumns()[0];
+                }
+            } catch (SQLException ignored) {
+            }
+            String updateRule = rs.getString(6);
+            String deleteRule = rs.getString(7);
+            if (i > 0) {
+                sql.append(" union all ");
+            }
+            String fkName = null;
+            if (fkNames.size() > keyId) fkName = fkNames.get(keyId).getFkName();
+            sql.append("select ")
+                    .append(keySeq)
+                    .append(" as ks,")
+                    .append("'")
+                    .append(escape(PKTabName))
+                    .append("' as ptn, '")
+                    .append(escape(FKColName))
+                    .append("' as fcn, '")
+                    .append(escape(PKColName))
+                    .append("' as pcn,")
+                    .append("case '")
+                    .append(escape(updateRule))
+                    .append("'")
+                    .append(" when 'NO ACTION' then ")
+                    .append(DatabaseMetaData.importedKeyNoAction)
+                    .append(" when 'CASCADE' then ")
+                    .append(DatabaseMetaData.importedKeyCascade)
+                    .append(" when 'RESTRICT' then ")
+                    .append(DatabaseMetaData.importedKeyRestrict)
+                    .append(" when 'SET NULL' then ")
+                    .append(DatabaseMetaData.importedKeySetNull)
+                    .append(" when 'SET DEFAULT' then ")
+                    .append(DatabaseMetaData.importedKeySetDefault)
+                    .append(" end as ur, ")
+                    .append("case '")
+                    .append(escape(deleteRule))
+                    .append("'")
+                    .append(" when 'NO ACTION' then ")
+                    .append(DatabaseMetaData.importedKeyNoAction)
+                    .append(" when 'CASCADE' then ")
+                    .append(DatabaseMetaData.importedKeyCascade)
+                    .append(" when 'RESTRICT' then ")
+                    .append(DatabaseMetaData.importedKeyRestrict)
+                    .append(" when 'SET NULL' then ")
+                    .append(DatabaseMetaData.importedKeySetNull)
+                    .append(" when 'SET DEFAULT' then ")
+                    .append(DatabaseMetaData.importedKeySetDefault)
+                    .append(" end as dr, ")
+                    .append(fkName == null ? "''" : quote(fkName))
+                    .append(" as fkn, ")
+                    .append(pkName == null ? "''" : quote(pkName))
+                    .append(" as pkn");
+        }
+        rs.close();
+        if (i == 0) {
+            sql = appendDummyForeignKeyList(sql);
+        } else {
+            sql.append(") ORDER BY PKTABLE_CAT, PKTABLE_SCHEM, PKTABLE_NAME, KEY_SEQ;");
+        }
+        return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+    }
+    public ResultSet getIndexInfo(String c, String s, String table, boolean u, boolean approximate)
+            throws SQLException {
+        ResultSet rs;
+        Statement stat = conn.createStatement();
+        StringBuilder sql = new StringBuilder(500);
+        sql.append("select null as TABLE_CAT, null as TABLE_SCHEM, '")
+                .append(escape(table))
+                .append(
+                        "' as TABLE_NAME, un as NON_UNIQUE, null as INDEX_QUALIFIER, n as INDEX_NAME, ")
+                .append(Integer.toString(DatabaseMetaData.tableIndexOther))
+                .append(" as TYPE, op as ORDINAL_POSITION, ")
+                .append(
+                        "cn as COLUMN_NAME, null as ASC_OR_DESC, 0 as CARDINALITY, 0 as PAGES, null as FILTER_CONDITION from (");
+        rs = stat.executeQuery("pragma index_list('" + escape(table) + "');");
+        ArrayList<ArrayList<Object>> indexList = new ArrayList<>();
+        while (rs.next()) {
+            indexList.add(new ArrayList<>());
+            indexList.get(indexList.size() - 1).add(rs.getString(2));
+            indexList.get(indexList.size() - 1).add(rs.getInt(3));
+        }
+        rs.close();
+        if (indexList.size() == 0) {
+            sql.append("select null as un, null as n, null as op, null as cn) limit 0;");
+            return ((CoreStatement) stat).executeQuery(sql.toString(), true);
+        } else {
+            Iterator<ArrayList<Object>> indexIterator = indexList.iterator();
+            ArrayList<Object> currentIndex;
+            ArrayList<String> unionAll = new ArrayList<>();
+            while (indexIterator.hasNext()) {
+                currentIndex = indexIterator.next();
+                String indexName = currentIndex.get(0).toString();
+                rs = stat.executeQuery("pragma index_info('" + escape(indexName) + "');");
+                while (rs.next()) {
+                    StringBuilder sqlRow = new StringBuilder();
+                    String colName = rs.getString(3);
+                    sqlRow.append("select ")
+                            .append(1 - (Integer) currentIndex.get(1))
+                            .append(" as un,'")
+                            .append(escape(indexName))
+                            .append("' as n,")
+                            .append(rs.getInt(1) + 1)
+                            .append(" as op,");
+                    if (colName == null) { 
+                        sqlRow.append("null");
+                    } else {
+                        sqlRow.append("'").append(escape(colName)).append("'");
+                    }
+                    sqlRow.append(" as cn");
+                    unionAll.add(sqlRow.toString());
+                }
+                rs.close();
+            }
+            String sqlBlock = StringUtils.join(unionAll, " union all ");
+            return ((CoreStatement) stat)
+                    .executeQuery(sql.append(sqlBlock).append(");").toString(), true);
+        }
+    }
+    public ResultSet getProcedureColumns(String c, String s, String p, String colPat)
+            throws SQLException {
+        if (getProcedureColumns == null) {
+            getProcedureColumns =
+                    conn.prepareStatement(
+                            "select null as PROCEDURE_CAT, "
+                                    + "null as PROCEDURE_SCHEM, null as PROCEDURE_NAME, null as COLUMN_NAME, "
+                                    + "null as COLUMN_TYPE, null as DATA_TYPE, null as TYPE_NAME, null as PRECISION, "
+                                    + "null as LENGTH, null as SCALE, null as RADIX, null as NULLABLE, "
+                                    + "null as REMARKS limit 0;");
+        }
+        return getProcedureColumns.executeQuery();
+    }
+    public ResultSet getProcedures(String c, String s, String p) throws SQLException {
+        if (getProcedures == null) {
+            getProcedures =
+                    conn.prepareStatement(
+                            "select null as PROCEDURE_CAT, null as PROCEDURE_SCHEM, "
+                                    + "null as PROCEDURE_NAME, null as UNDEF1, null as UNDEF2, null as UNDEF3, "
+                                    + "null as REMARKS, null as PROCEDURE_TYPE limit 0;");
+        }
+        return getProcedures.executeQuery();
+    }
+    public ResultSet getSuperTables(String c, String s, String t) throws SQLException {
+        if (getSuperTables == null) {
+            getSuperTables =
+                    conn.prepareStatement(
+                            "select null as TABLE_CAT, null as TABLE_SCHEM, "
+                                    + "null as TABLE_NAME, null as SUPERTABLE_NAME limit 0;");
+        }
+        return getSuperTables.executeQuery();
+    }
+    public ResultSet getSuperTypes(String c, String s, String t) throws SQLException {
+        if (getSuperTypes == null) {
+            getSuperTypes =
+                    conn.prepareStatement(
+                            "select null as TYPE_CAT, null as TYPE_SCHEM, "
+                                    + "null as TYPE_NAME, null as SUPERTYPE_CAT, null as SUPERTYPE_SCHEM, "
+                                    + "null as SUPERTYPE_NAME limit 0;");
+        }
+        return getSuperTypes.executeQuery();
+    }
+    public ResultSet getTablePrivileges(String c, String s, String t) throws SQLException {
+        if (getTablePrivileges == null) {
+            getTablePrivileges =
+                    conn.prepareStatement(
+                            "select  null as TABLE_CAT, "
+                                    + "null as TABLE_SCHEM, null as TABLE_NAME, null as GRANTOR, null "
+                                    + "GRANTEE,  null as PRIVILEGE, null as IS_GRANTABLE limit 0;");
+        }
+        return getTablePrivileges.executeQuery();
+    }
+    public synchronized ResultSet getTables(
+            String c, String s, String tblNamePattern, String[] types) throws SQLException {
+        checkOpen();
+        tblNamePattern =
+                (tblNamePattern == null || "".equals(tblNamePattern))
+                        ? "%"
+                        : escape(tblNamePattern);
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT").append("\n");
+        sql.append("  NULL AS TABLE_CAT,").append("\n");
+        sql.append("  NULL AS TABLE_SCHEM,").append("\n");
+        sql.append("  NAME AS TABLE_NAME,").append("\n");
+        sql.append("  TYPE AS TABLE_TYPE,").append("\n");
+        sql.append("  NULL AS REMARKS,").append("\n");
+        sql.append("  NULL AS TYPE_CAT,").append("\n");
+        sql.append("  NULL AS TYPE_SCHEM,").append("\n");
+        sql.append("  NULL AS TYPE_NAME,").append("\n");
+        sql.append("  NULL AS SELF_REFERENCING_COL_NAME,").append("\n");
+        sql.append("  NULL AS REF_GENERATION").append("\n");
+        sql.append("FROM").append("\n");
+        sql.append("  (").append("\n");
+        sql.append("    SELECT\n");
+        sql.append("      'sqlite_schema' AS NAME,\n");
+        sql.append("      'SYSTEM TABLE' AS TYPE");
+        sql.append("    UNION ALL").append("\n");
+        sql.append("    SELECT").append("\n");
+        sql.append("      NAME,").append("\n");
+        sql.append("      UPPER(TYPE) AS TYPE").append("\n");
+        sql.append("    FROM").append("\n");
+        sql.append("      sqlite_schema").append("\n");
+        sql.append("    WHERE").append("\n");
+        sql.append("      NAME NOT LIKE 'sqlite\\_%' ESCAPE '\\'").append("\n");
+        sql.append("      AND UPPER(TYPE) IN ('TABLE', 'VIEW')").append("\n");
+        sql.append("    UNION ALL").append("\n");
+        sql.append("    SELECT").append("\n");
+        sql.append("      NAME,").append("\n");
+        sql.append("      'GLOBAL TEMPORARY' AS TYPE").append("\n");
+        sql.append("    FROM").append("\n");
+        sql.append("      sqlite_temp_master").append("\n");
+        sql.append("    UNION ALL").append("\n");
+        sql.append("    SELECT").append("\n");
+        sql.append("      NAME,").append("\n");
+        sql.append("      'SYSTEM TABLE' AS TYPE").append("\n");
+        sql.append("    FROM").append("\n");
+        sql.append("      sqlite_schema").append("\n");
+        sql.append("    WHERE").append("\n");
+        sql.append("      NAME LIKE 'sqlite\\_%' ESCAPE '\\'").append("\n");
+        sql.append("  )").append("\n");
+        sql.append(" WHERE TABLE_NAME LIKE '");
+        sql.append(tblNamePattern);
+        sql.append("' ESCAPE '");
+        sql.append(getSearchStringEscape());
+        sql.append("'");
+        if (types != null && types.length != 0) {
+            sql.append(" AND TABLE_TYPE IN (");
+            sql.append(
+                    Arrays.stream(types)
+                            .map((t) -> "'" + t.toUpperCase() + "'")
+                            .collect(Collectors.joining(",")));
+            sql.append(")");
+        }
+        sql.append(" ORDER BY TABLE_TYPE, TABLE_NAME;");
+        return ((CoreStatement) conn.createStatement()).executeQuery(sql.toString(), true);
+    }
+    public ResultSet getTableTypes() throws SQLException {
+        checkOpen();
+        String sql =
+                "SELECT 'TABLE' AS TABLE_TYPE "
+                        + "UNION "
+                        + "SELECT 'VIEW' AS TABLE_TYPE "
+                        + "UNION "
+                        + "SELECT 'SYSTEM TABLE' AS TABLE_TYPE "
+                        + "UNION "
+                        + "SELECT 'GLOBAL TEMPORARY' AS TABLE_TYPE;";
+        if (getTableTypes == null) {
+            getTableTypes = conn.prepareStatement(sql);
+        }
+        getTableTypes.clearParameters();
+        return getTableTypes.executeQuery();
+    }
+    public ResultSet getTypeInfo() throws SQLException {
+        if (getTypeInfo == null) {
+            String sql =
+                    QueryUtils.valuesQuery(
+                                    Arrays.asList(
+                                            "TYPE_NAME",
+                                            "DATA_TYPE",
+                                            "PRECISION",
+                                            "LITERAL_PREFIX",
+                                            "LITERAL_SUFFIX",
+                                            "CREATE_PARAMS",
+                                            "NULLABLE",
+                                            "CASE_SENSITIVE",
+                                            "SEARCHABLE",
+                                            "UNSIGNED_ATTRIBUTE",
+                                            "FIXED_PREC_SCALE",
+                                            "AUTO_INCREMENT",
+                                            "LOCAL_TYPE_NAME",
+                                            "MINIMUM_SCALE",
+                                            "MAXIMUM_SCALE",
+                                            "SQL_DATA_TYPE",
+                                            "SQL_DATETIME_SUB",
+                                            "NUM_PREC_RADIX"),
+                                    Arrays.asList(
+                                            Arrays.asList(
+                                                    "BLOB",
+                                                    Types.BLOB,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    DatabaseMetaData.typeNullable,
+                                                    0,
+                                                    DatabaseMetaData.typeSearchable,
+                                                    1,
+                                                    0,
+                                                    0,
+                                                    null,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    10),
+                                            Arrays.asList(
+                                                    "INTEGER",
+                                                    Types.INTEGER,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    DatabaseMetaData.typeNullable,
+                                                    0,
+                                                    DatabaseMetaData.typeSearchable,
+                                                    0,
+                                                    0,
+                                                    1,
+                                                    null,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    10),
+                                            Arrays.asList(
+                                                    "NULL",
+                                                    Types.NULL,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    DatabaseMetaData.typeNullable,
+                                                    0,
+                                                    DatabaseMetaData.typeSearchable,
+                                                    1,
+                                                    0,
+                                                    0,
+                                                    null,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    10),
+                                            Arrays.asList(
+                                                    "REAL",
+                                                    Types.REAL,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    DatabaseMetaData.typeNullable,
+                                                    0,
+                                                    DatabaseMetaData.typeSearchable,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    null,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    10),
+                                            Arrays.asList(
+                                                    "TEXT",
+                                                    Types.VARCHAR,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    DatabaseMetaData.typeNullable,
+                                                    1,
+                                                    DatabaseMetaData.typeSearchable,
+                                                    1,
+                                                    0,
+                                                    0,
+                                                    null,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    10)))
+                            + " order by DATA_TYPE";
+            getTypeInfo = conn.prepareStatement(sql);
+        }
+        getTypeInfo.clearParameters();
+        return getTypeInfo.executeQuery();
+    }
+    public ResultSet getUDTs(String c, String s, String t, int[] types) throws SQLException {
+        if (getUDTs == null) {
+            getUDTs =
+                    conn.prepareStatement(
+                            "select  null as TYPE_CAT, null as TYPE_SCHEM, "
+                                    + "null as TYPE_NAME,  null as CLASS_NAME,  null as DATA_TYPE, null as REMARKS, "
+                                    + "null as BASE_TYPE "
+                                    + "limit 0;");
+        }
+        getUDTs.clearParameters();
+        return getUDTs.executeQuery();
+    }
+    public ResultSet getVersionColumns(String c, String s, String t) throws SQLException {
+        if (getVersionColumns == null) {
+            getVersionColumns =
+                    conn.prepareStatement(
+                            "select null as SCOPE, null as COLUMN_NAME, "
+                                    + "null as DATA_TYPE, null as TYPE_NAME, null as COLUMN_SIZE, "
+                                    + "null as BUFFER_LENGTH, null as DECIMAL_DIGITS, null as PSEUDO_COLUMN limit 0;");
+        }
+        return getVersionColumns.executeQuery();
+    }
+    @Deprecated
+    public ResultSet getGeneratedKeys() throws SQLException {
+        throw new SQLFeatureNotSupportedException("not implemented by SQLite JDBC driver");
+    }
+    public Struct createStruct(String t, Object[] attr) throws SQLException {
+        throw new SQLFeatureNotSupportedException("Not yet implemented by SQLite JDBC driver");
+    }
+    public ResultSet getFunctionColumns(String a, String b, String c, String d)
+            throws SQLException {
+        throw new SQLFeatureNotSupportedException("Not yet implemented by SQLite JDBC driver");
+    }
+    protected static final Pattern PK_UNNAMED_PATTERN =
+            Pattern.compile(
+                    ".*PRIMARY\\s+KEY\\s*\\((.*?)\\).*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    protected static final Pattern PK_NAMED_PATTERN =
+            Pattern.compile(
+                    ".*CONSTRAINT\\s*(.*?)\\s*PRIMARY\\s+KEY\\s*\\((.*?)\\).*",
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    class PrimaryKeyFinder {
+        String table;
+        String pkName = null;
+        String[] pkColumns = null;
+        public PrimaryKeyFinder(String table) throws SQLException {
+            this.table = table;
+            if ("sqlite_schema".equals(table) || "sqlite_master".equals(table)) return;
+            if (table == null || table.trim().length() == 0) {
+                throw new SQLException("Invalid table name: '" + this.table + "'");
+            }
+            try (Statement stat = conn.createStatement();
+                    ResultSet rs =
+                            stat.executeQuery(
+                                    "select sql from sqlite_schema where"
+                                            + " lower(name) = lower('"
+                                            + escape(table)
+                                            + "') and type in ('table', 'view')")) {
+                if (!rs.next()) throw new SQLException("Table not found: '" + table + "'");
+                Matcher matcher = PK_NAMED_PATTERN.matcher(rs.getString(1));
+                if (matcher.find()) {
+                    pkName = unquoteIdentifier(escape(matcher.group(1)));
+                    pkColumns = matcher.group(2).split(",");
+                } else {
+                    matcher = PK_UNNAMED_PATTERN.matcher(rs.getString(1));
+                    if (matcher.find()) {
+                        pkColumns = matcher.group(1).split(",");
+                    }
+                }
+                if (pkColumns == null) {
+                    try (ResultSet rs2 =
+                            stat.executeQuery("pragma table_info('" + escape(table) + "');")) {
+                        while (rs2.next()) {
+                            if (rs2.getBoolean(6)) pkColumns = new String[] {rs2.getString(2)};
+                        }
+                    }
+                }
+                if (pkColumns != null) {
+                    for (int i = 0; i < pkColumns.length; i++) {
+                        pkColumns[i] = unquoteIdentifier(pkColumns[i]);
+                    }
+                }
+            }
+        }
+        public String getName() {
+            return pkName;
+        }
+        public String[] getColumns() {
+            return pkColumns;
+        }
+    }
+    class ImportedKeyFinder {
+        private final Pattern FK_NAMED_PATTERN =
+                Pattern.compile(
+                        "CONSTRAINT\\s*\"?([A-Za-z_][A-Za-z\\d_]*)?\"?\\s*FOREIGN\\s+KEY\\s*\\((.*?)\\)",
+                        Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        private final String fkTableName;
+        private final List<ForeignKey> fkList = new ArrayList<>();
+        public ImportedKeyFinder(String table) throws SQLException {
+            if (table == null || table.trim().length() == 0) {
+                throw new SQLException("Invalid table name: '" + table + "'");
+            }
+            this.fkTableName = table;
+            List<String> fkNames = getForeignKeyNames(this.fkTableName);
+            try (Statement stat = conn.createStatement();
+                    ResultSet rs =
+                            stat.executeQuery(
+                                    "pragma foreign_key_list('"
+                                            + escape(this.fkTableName.toLowerCase())
+                                            + "')")) {
+                int prevFkId = -1;
+                int count = 0;
+                ForeignKey fk = null;
+                while (rs.next()) {
+                    int fkId = rs.getInt(1);
+                    String pkTableName = rs.getString(3);
+                    String fkColName = rs.getString(4);
+                    String pkColName = rs.getString(5);
+                    String onUpdate = rs.getString(6);
+                    String onDelete = rs.getString(7);
+                    String match = rs.getString(8);
+                    String fkName = null;
+                    if (fkNames.size() > count) fkName = fkNames.get(count);
+                    if (fkId != prevFkId) {
+                        fk =
+                                new ForeignKey(
+                                        fkName,
+                                        pkTableName,
+                                        fkTableName,
+                                        onUpdate,
+                                        onDelete,
+                                        match);
+                        fkList.add(fk);
+                        prevFkId = fkId;
+                        count++;
+                    }
+                    if (fk != null) {
+                        fk.addColumnMapping(fkColName, pkColName);
+                    }
+                }
+            }
+        }
+        private List<String> getForeignKeyNames(String tbl) throws SQLException {
+            List<String> fkNames = new ArrayList<>();
+            if (tbl == null) {
+                return fkNames;
+            }
+            try (Statement stat2 = conn.createStatement();
+                    ResultSet rs =
+                            stat2.executeQuery(
+                                    "select sql from sqlite_schema where"
+                                            + " lower(name) = lower('"
+                                            + escape(tbl)
+                                            + "')")) {
+                if (rs.next()) {
+                    Matcher matcher = FK_NAMED_PATTERN.matcher(rs.getString(1));
+                    while (matcher.find()) {
+                        fkNames.add(matcher.group(1));
+                    }
+                }
+            }
+            Collections.reverse(fkNames);
+            return fkNames;
+        }
+        public String getFkTableName() {
+            return fkTableName;
+        }
+        public List<ForeignKey> getFkList() {
+            return fkList;
+        }
+        class ForeignKey {
+            private final String fkName;
+            private final String pkTableName;
+            private final String fkTableName;
+            private final List<String> fkColNames = new ArrayList<>();
+            private final List<String> pkColNames = new ArrayList<>();
+            private final String onUpdate;
+            private final String onDelete;
+            private final String match;
+            ForeignKey(
+                    String fkName,
+                    String pkTableName,
+                    String fkTableName,
+                    String onUpdate,
+                    String onDelete,
+                    String match) {
+                this.fkName = fkName;
+                this.pkTableName = pkTableName;
+                this.fkTableName = fkTableName;
+                this.onUpdate = onUpdate;
+                this.onDelete = onDelete;
+                this.match = match;
+            }
+            public String getFkName() {
+                return fkName;
+            }
+            void addColumnMapping(String fkColName, String pkColName) {
+                fkColNames.add(fkColName);
+                pkColNames.add(pkColName);
+            }
+            public String[] getColumnMapping(int colSeq) {
+                return new String[] {fkColNames.get(colSeq), pkColNames.get(colSeq)};
+            }
+            public int getColumnMappingCount() {
+                return fkColNames.size();
+            }
+            public String getPkTableName() {
+                return pkTableName;
+            }
+            public String getFkTableName() {
+                return fkTableName;
+            }
+            public String getOnUpdate() {
+                return onUpdate;
+            }
+            public String getOnDelete() {
+                return onDelete;
+            }
+            public String getMatch() {
+                return match;
+            }
+            @Override
+            public String toString() {
+                return "ForeignKey [fkName="
+                        + fkName
+                        + ", pkTableName="
+                        + pkTableName
+                        + ", fkTableName="
+                        + fkTableName
+                        + ", pkColNames="
+                        + pkColNames
+                        + ", fkColNames="
+                        + fkColNames
+                        + "]";
+            }
+        }
+    }
+    protected void finalize() throws Throwable {
+        close();
+    }
+    private String unquoteIdentifier(String name) {
+        if (name == null) return name;
+        name = name.trim();
+        if (name.length() > 2
+                && ((name.startsWith("`") && name.endsWith("`"))
+                        || (name.startsWith("\"") && name.endsWith("\""))
+                        || (name.startsWith("[") && name.endsWith("]")))) {
+            name = name.substring(1, name.length() - 1);
+        }
+        return name;
+    }
+    private static class LogHolder {
+        private static final Logger logger = LoggerFactory.getLogger(JDBC3DatabaseMetaData.class);
+    }
+}

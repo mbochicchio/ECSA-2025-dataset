@@ -1,0 +1,1805 @@
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 18 gen 2016
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.ui.components.tool;
+import javafx.geometry.Pos;
+import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ProgressIndicator;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.TaskExecutionRequest;
+import org.pdfsam.model.tool.ToolBound;
+import org.sejda.model.notification.event.PercentageOfWorkDoneChangedEvent;
+import org.sejda.model.notification.event.TaskExecutionCompletedEvent;
+import org.sejda.model.notification.event.TaskExecutionFailedEvent;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * Horizontal buttons panel shown in the footer
+ *
+ * @author Andrea Vacondio
+ */
+public class Footer extends HBox implements ToolBound {
+    private final ProgressBar bar = new ProgressBar(0);
+    private final Label statusLabel = new Label();
+    private final TaskFailedButton failed = new TaskFailedButton();
+    private final OpenButton openButton;
+    private final RunButton runButton;
+    private String ownerModule;
+    public Footer(RunButton runButton, OpenButton openButton, String ownerModule) {
+        this.ownerModule = defaultString(ownerModule);
+        this.openButton = openButton;
+        this.runButton = runButton;
+        this.getStyleClass().addAll("footer-pane");
+        this.statusLabel.getStyleClass().add("status-label");
+        this.statusLabel.setVisible(false);
+        this.bar.setMaxWidth(Double.MAX_VALUE);
+        this.bar.getStyleClass().add("pdfsam-footer-bar");
+        this.statusLabel.setMaxHeight(Double.MAX_VALUE);
+        VBox progressPane = new VBox(statusLabel, bar);
+        progressPane.getStyleClass().add("progress-pane");
+        VBox.setVgrow(statusLabel, Priority.ALWAYS);
+        HBox.setHgrow(bar, Priority.ALWAYS);
+        HBox.setHgrow(progressPane, Priority.ALWAYS);
+        this.failed.setVisible(false);
+        StackPane buttons = new StackPane(failed, openButton);
+        buttons.setAlignment(Pos.CENTER_LEFT);
+        this.getChildren().addAll(runButton, buttons, progressPane);
+        eventStudio().add(TaskExecutionRequest.class, e -> {
+            if (e.toolId().equals(ownerModule)) {
+                failed.setVisible(false);
+                openButton.setVisible(false);
+                statusLabel.setVisible(true);
+                statusLabel.setText(i18n().tr("Requested"));
+                bar.setProgress(0);
+            }
+        });
+        eventStudio().addAnnotatedListeners(this);
+    }
+    public OpenButton openButton() {
+        return openButton;
+    }
+    public RunButton runButton() {
+        return runButton;
+    }
+    @Override
+    @EventStation
+    public String toolBinding() {
+        return ownerModule;
+    }
+    @EventListener
+    public void onTaskCompleted(TaskExecutionCompletedEvent event) {
+        failed.setVisible(false);
+        openButton.setVisible(true);
+        statusLabel.setText(i18n().tr("Completed"));
+        bar.setProgress(1);
+    }
+    @EventListener
+    public void onTaskFailed(TaskExecutionFailedEvent event) {
+        openButton.setVisible(false);
+        failed.setVisible(true);
+        statusLabel.setText(i18n().tr("Failed"));
+    }
+    @EventListener
+    public void onProgress(PercentageOfWorkDoneChangedEvent event) {
+        statusLabel.setText(i18n().tr("Running"));
+        if (event.isUndetermined()) {
+            bar.setProgress(ProgressIndicator.INDETERMINATE_PROGRESS);
+        } else {
+            bar.setProgress(event.getPercentage().divide(new BigDecimal(100), RoundingMode.HALF_UP).doubleValue());
+            statusLabel.setText(i18n().tr("Running {0}%", Integer.toString(event.getPercentage().intValue())));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 21/mar/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.ui.components.tool;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.SplitMenuButton;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.eventstudio.ReferenceStrength;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.io.NativeOpenFileRequest;
+import org.pdfsam.model.pdf.PdfDocumentDescriptor;
+import org.pdfsam.model.pdf.PdfLoadRequest;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.model.tool.TaskExecutionRequest;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.ui.SetActiveContentItemRequest;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.exception.TaskOutputVisitException;
+import org.sejda.model.notification.event.TaskExecutionCompletedEvent;
+import org.sejda.model.output.DirectoryTaskOutput;
+import org.sejda.model.output.FileOrDirectoryTaskOutput;
+import org.sejda.model.output.FileTaskOutput;
+import org.sejda.model.output.TaskOutputDispatcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import static java.util.Objects.isNull;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+/**
+ * Button to open the latest manipulation result
+ *
+ * @author Andrea Vacondio
+ */
+public class OpenButton extends SplitMenuButton implements TaskOutputDispatcher {
+    private static final Logger LOG = LoggerFactory.getLogger(OpenButton.class);
+    private final String ownerModule;
+    private File destination;
+    private final List<File> latestOutput = new ArrayList<>();
+    public OpenButton(String ownerTool, ToolInputOutputType outputType) {
+        this(ownerTool, outputType, app().runtimeState().tools().values());
+    }
+    OpenButton(String ownerModule, ToolInputOutputType outputType, Collection<Tool> tools) {
+        this.ownerModule = defaultString(ownerModule);
+        setId(ownerModule + ".openButton");
+        getStyleClass().addAll(Style.BUTTON.css());
+        getStyleClass().addAll("pdfsam-split-button", "footer-open-button");
+        setText(i18n().tr("Open"));
+        setMaxHeight(Double.MAX_VALUE);
+        setPrefHeight(Double.MAX_VALUE);
+        setVisible(false);
+        setOnAction(e -> {
+            if (latestOutput.size() != 1 || !openFile(latestOutput.get(0))) {
+                openFile(destination);
+            }
+        });
+        eventStudio().add(TaskExecutionRequest.class, e -> {
+            if (e.toolId().equals(ownerModule)) {
+                latestOutput.clear();
+                try {
+                    if (!isNull(e.parameters().getOutput())) {
+                        e.parameters().getOutput().accept(this);
+                    }
+                } catch (TaskOutputVisitException ex) {
+                    LOG.warn("This should never happen", ex);
+                }
+            }
+        }, -10, ReferenceStrength.STRONG);
+        tools.forEach(m -> {
+            if (m.descriptor().hasInputType(outputType)) {
+                getItems().add(new OpenWithMenuItem(m));
+            }
+        });
+        eventStudio().addAnnotatedListeners(this);
+    }
+    private boolean openFile(File file) {
+        if (file != null && file.exists()) {
+            eventStudio().broadcast(new NativeOpenFileRequest(file));
+            return true;
+        }
+        return false;
+    }
+    @EventStation
+    public String getOwnerModule() {
+        return ownerModule;
+    }
+    @EventListener(priority = -10)
+    public void onTaskCompleted(TaskExecutionCompletedEvent event) {
+        latestOutput.addAll(event.getNotifiableTaskMetadata().taskOutput());
+    }
+    @Override
+    public void dispatch(FileTaskOutput output) {
+        destination = output.getDestination();
+        //TODO set -fx-icon-size to 1.6em
+        setGraphic(FontIcon.of(UniconsLine.FILE_ALT));
+    }
+    @Override
+    public void dispatch(DirectoryTaskOutput output) {
+        destination = output.getDestination();
+        //TODO set -fx-icon-size to 1.6em
+        setGraphic(FontIcon.of(UniconsLine.FOLDER_OPEN));
+    }
+    @Override
+    public void dispatch(FileOrDirectoryTaskOutput output) {
+        destination = output.getDestination();
+        //TODO set -fx-icon-size to 1.6em
+        setGraphic(FontIcon.of(UniconsLine.FOLDER_OPEN));
+    }
+    private class OpenWithMenuItem extends MenuItem {
+        private OpenWithMenuItem(Tool tool) {
+            setText(tool.descriptor().name());
+            setOnAction((e) -> {
+                eventStudio().broadcast(new ClearToolRequest(tool.id(), false, false), tool.id());
+                eventStudio().broadcast(new SetActiveContentItemRequest(tool.id()));
+                PdfLoadRequest loadEvent = new PdfLoadRequest(tool.id());
+                latestOutput.stream().map(PdfDocumentDescriptor::newDescriptorNoPassword).forEach(loadEvent::add);
+                eventStudio().broadcast(loadEvent, tool.id());
+            });
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 13/dic/2011
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.i18n;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ObservableValue;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.text.MessageFormat;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.ResourceBundle;
+import java.util.Set;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.empty;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+/**
+ * Context to deal with translations. It contains information about the mutable current locale and allow to translate strings to the current locale through static methods.
+ *
+ * @author Andrea Vacondio
+ */
+public final class I18nContext {
+    private static final Logger LOG = LoggerFactory.getLogger(I18nContext.class);
+    private final Set<Locale> supported = Set.of(Locale.of("af"), Locale.of("bs"), Locale.of("bg"), Locale.of("el"),
+            Locale.of("eu"), Locale.of("pt", "BR"), Locale.SIMPLIFIED_CHINESE, Locale.TRADITIONAL_CHINESE,
+            Locale.of("co"), Locale.of("ca"), Locale.of("hr"), Locale.of("cs"), Locale.of("da"), Locale.of("nl"),
+            Locale.UK, Locale.FRENCH, Locale.GERMAN, Locale.of("he"), Locale.of("hi"), Locale.of("hu"), Locale.JAPANESE,
+            Locale.ITALIAN, Locale.of("pl"), Locale.of("pt"), Locale.of("ro"), Locale.of("ru"), Locale.of("sk"),
+            Locale.of("sl"), Locale.of("sr"), Locale.of("sv"), Locale.of("es"), Locale.of("tr"), Locale.of("uk"),
+            Locale.of("fi"), Locale.of("ko"), Locale.of("oc"));
+    private final SimpleObjectProperty<Locale> locale = new SimpleObjectProperty<>();
+    private Optional<ResourceBundle> bundle = empty();
+    I18nContext() {
+        eventStudio().addAnnotatedListeners(this);
+        locale.subscribe(this::loadBundles);
+    }
+    @EventListener
+    public void setLocale(SetLocaleRequest e) {
+        if (nonNull(e.languageTag()) && !e.languageTag().isBlank()) {
+            LOG.trace("Setting locale to {}", e.languageTag());
+            ofNullable(Locale.forLanguageTag(e.languageTag())).filter(supported::contains).ifPresent(locale::set);
+        }
+    }
+    private void loadBundles(Locale l) {
+        if (nonNull(l)) {
+            Locale.setDefault(l);
+            LOG.trace("Loading i18n bundle for {}", Locale.getDefault());
+            try {
+                this.bundle = ofNullable(ResourceBundle.getBundle("org.pdfsam.i18n.Messages", Locale.getDefault(),
+                        I18nContext.class.getModule()));
+                LOG.debug("Locale set to {}", Locale.getDefault());
+            } catch (Exception e) {
+                LOG.error("Unable to load translations bundle", e);
+            }
+        }
+    }
+    Locale getBestLocale() {
+        if (supported.contains(Locale.getDefault())) {
+            LOG.trace("Using best matching locale: {}", Locale.getDefault());
+            return Locale.getDefault();
+        }
+        var onlyLanguage = Locale.of(Locale.getDefault().getLanguage());
+        if (supported.contains(onlyLanguage)) {
+            LOG.trace("Using supported locale closest to default {}", onlyLanguage);
+            return onlyLanguage;
+        }
+        LOG.trace("Using fallback locale");
+        return Locale.ENGLISH;
+    }
+    /**
+     * @return the default {@link I18nContext} instance
+     */
+    public static I18nContext i18n() {
+        return I18nContextHolder.CONTEXT;
+    }
+    /**
+     * @return an {@link ObservableValue} {@link Locale} representing the current locale
+     */
+    public ObservableValue<Locale> locale() {
+        return this.locale;
+    }
+    public String tr(String text) {
+        initBundleIfRequired();
+        return bundle.filter(r -> r.containsKey(text)).map(r -> r.getString(text)).orElse(text);
+    }
+    /**
+     * @param text    text to be translated
+     * @param replace replacements for the placeholders
+     * @return the translated string where {0} and {1} (etc) placeholders are replaced by the replace[0], replace[1] etc
+     */
+    public String tr(String text, String... replace) {
+        initBundleIfRequired();
+        return MessageFormat.format(tr(text), (Object[]) replace);
+    }
+    private void initBundleIfRequired() {
+        if (bundle.isEmpty()) {
+            locale.set(getBestLocale());
+        }
+    }
+    public Set<Locale> getSupported() {
+        return supported;
+    }
+    /**
+     * Lazy initialization holder class idiom (Joshua Bloch, Effective Java second edition, item 71).
+     *
+     * @author Andrea Vacondio
+     */
+    private static final class I18nContextHolder {
+        private I18nContextHolder() {
+            // hide constructor
+        }
+        static final I18nContext CONTEXT = new I18nContext();
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.merge;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+/**
+ * Merge module to let the user merge together multiple pdf documents
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class MergeTool implements Tool {
+    static final String TOOL_ID = "merge";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF).name(i18n().tr("Merge"))
+            .description(i18n().tr("Merge multiple PDF documents or subsections of them."))
+            .priority(ToolPriority.HIGH.getPriority()).supportURL("https://pdfsam.org/pdf-merge/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(MergeToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILES_LANDSCAPES_ALT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.rotate;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+/**
+ * Rotate module to let the user rotate multiple PDF documents
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class RotateTool implements Tool {
+    static final String TOOL_ID = "rotate";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.OTHER)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF, ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Rotate"))
+            .description(i18n().tr("Rotate the pages of multiple PDF documents."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https://pdfsam.org/rotate-pdf/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(RotateToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ROTATE_360);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 19/09/22
+ * Copyright 2022 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.context;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ObservableValue;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.theme.Theme;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.ServiceLoader;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import static java.util.Optional.empty;
+import static java.util.Optional.ofNullable;
+import static java.util.function.Function.identity;
+import static java.util.stream.Collectors.toMap;
+/**
+ * Application Runtime state
+ *
+ * @author Andrea Vacondio
+ */
+public class ApplicationRuntimeState {
+    private static final Logger LOG = LoggerFactory.getLogger(ApplicationRuntimeState.class);
+    private Path defaultWorkingPath;
+    private final SimpleObjectProperty<Optional<Path>> workingPath = new SimpleObjectProperty<>(empty());
+    private final SimpleObjectProperty<Optional<Tool>> activeTool = new SimpleObjectProperty<>(empty());
+    private final SimpleObjectProperty<Theme> theme = new SimpleObjectProperty<>();
+    private final Future<Map<String, Tool>> tools;
+    ApplicationRuntimeState() {
+        try (var executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("tools-loader-", 0).factory())) {
+            this.tools = executor.submit(() -> ServiceLoader.load(Tool.class).stream().map(ServiceLoader.Provider::get)
+                    .collect(toMap(Tool::id, identity())));
+        }
+    }
+    /**
+     * Sets the current working path for the application
+     *
+     * @param path the current working directory or the parent in case of regular file. A null value clears the current working path
+     */
+    void workingPath(Path path) {
+        workingPath.set(ofNullable(path).map(p -> {
+            if (Files.isRegularFile(p)) {
+                return p.getParent();
+            }
+            return p;
+        }).filter(Files::isDirectory));
+    }
+    /**
+     * Sets the current working path for the application unless there is a default one already set.
+     * This method does nothing in case there is a user defined default working path.
+     *
+     * @param path a valid path string. A blank or null or non directory value clears the current working path
+     */
+    public void maybeWorkingPath(String path) {
+        this.maybeWorkingPath(ofNullable(path).filter(StringUtils::isNotBlank).map(Paths::get).orElse(null));
+    }
+    /**
+     * Sets the current working path for the application unless there is a default one already set.
+     * This method does nothing in case there is a user defined default working path.
+     *
+     * @param path the current working directory or the parent in case of regular file. A null value clears the current working path
+     * @see #workingPath(Path)
+     */
+    public void maybeWorkingPath(Path path) {
+        if (Objects.isNull(defaultWorkingPath)) {
+            workingPath(path);
+        }
+    }
+    /**
+     * @return the current workingPath value
+     */
+    public Optional<Path> workingPathValue() {
+        return workingPath.getValue();
+    }
+    public ObservableValue<Optional<Path>> workingPath() {
+        return workingPath;
+    }
+    /**
+     * @return the available tools
+     */
+    public Map<String, Tool> tools() {
+        try {
+            return this.tools.get();
+        } catch (ExecutionException | InterruptedException e) {
+            LOG.error("Unable to load tools list", e);
+        }
+        return Collections.emptyMap();
+    }
+    /**
+     * @param activeTool the tool currently active
+     */
+    public void activeTool(Tool activeTool) {
+        this.activeTool.set(ofNullable(activeTool));
+    }
+    /**
+     * @return the current active tool value
+     */
+    public Optional<Tool> activeToolValue() {
+        return activeTool.getValue();
+    }
+    public ObservableValue<Optional<Tool>> activeTool() {
+        return activeTool;
+    }
+    /**
+     * @return the current theme
+     */
+    public ObservableValue<Theme> theme() {
+        return this.theme;
+    }
+    /**
+     * Sets the application theme
+     */
+    public void theme(Theme theme) {
+        ofNullable(theme).ifPresent(this.theme::set);
+    }
+    void defaultWorkingPath(Path defaultWorkingPath) {
+        this.defaultWorkingPath = defaultWorkingPath;
+        workingPath(defaultWorkingPath);
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 03/apr/2012
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.model.tool;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+/**
+ * A PDFsam Basic tool.
+ *
+ * @author Andrea Vacondio
+ */
+public interface Tool {
+    /**
+     * @return the unique id for this tool
+     */
+    String id();
+    /**
+     * @return the descriptor for the tool
+     */
+    ToolDescriptor descriptor();
+    /**
+     * @return the module panel.
+     */
+    Pane panel();
+    /**
+     * @return the graphic node for this {@link Tool}.
+     */
+    Node graphic();
+    /**
+     * @return an array containing the required PDF data for this module. Each module can specify data it requires from the PDF document and the PDF load service can use this array
+     *         to load only the required data from the PDF, minimizing resources usage.
+     */
+    default RequiredPdfData[] requires() {
+        return new RequiredPdfData[] { RequiredPdfData.DEFAULT };
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.splitbysize;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+/**
+ * Split by size module to let the user split a pdf documents into documents of the given size.
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class SplitBySizeTool implements Tool {
+    static final String TOOL_ID = "split.bysize";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split by size"))
+            .description(i18n().tr("Split a PDF document in files of the given size (roughly)."))
+            .priority(ToolPriority.LOW.getPriority()).supportURL("https://pdfsam.org/pdf-split/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitBySizeToolPanel.class);
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ARROWS_RESIZE_H);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            BrowsableOutputDirectoryField field = new BrowsableOutputDirectoryField();
+            field.setId(TOOL_ID + "field");
+            return field;
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.extract;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+/**
+ * Extract module to let the user extract pages from a single PDF document
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class ExtractTool implements Tool {
+    static final String TOOL_ID = "extract";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF, ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Extract"))
+            .description(i18n().tr("Extract pages from PDF documents.")).priority(ToolPriority.DEFAULT.getPriority())
+            .supportURL("https://pdfsam.org/pdf-extract-pages/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(ExtractToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILE_EXPORT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 13/giu/2013
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.model.pdf;
+import javafx.beans.value.ObservableValue;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.i18n.I18nContext;
+import org.pdfsam.model.ObservableAtomicReference;
+import org.sejda.conversion.exception.ConversionException;
+import org.sejda.model.input.PdfFileSource;
+import org.sejda.model.pdf.PdfVersion;
+import java.io.File;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicInteger;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+/**
+ * Lightweight pdf document descriptor holding data necessary to fill the selection table and request a task execution.
+ * 
+ * @author Andrea Vacondio
+ * 
+ */
+public class PdfDocumentDescriptor {
+    private final ObservableAtomicReference<PdfDescriptorLoadingStatus> loadingStatus = new ObservableAtomicReference<>(
+            PdfDescriptorLoadingStatus.INITIAL);
+    private final AtomicInteger references = new AtomicInteger(1);
+    private final ObservableAtomicReference<Integer> pages = new ObservableAtomicReference<>(0);
+    private String password;
+    private final File file;
+    private PdfVersion version;
+    private final Map<String, String> metadata = new HashMap<>();
+    private SortedSet<Integer> validBookmarksLevels = Collections.emptySortedSet();
+    private PdfDocumentDescriptor(File file, String password) {
+        requireNotNullArg(file, "Input file is mandatory");
+        this.file = file;
+        this.password = password;
+    }
+    public String getFileName() {
+        return file.getName();
+    }
+    public PdfFileSource toPdfFileSource() {
+        try {
+            return PdfFileSource.newInstanceWithPassword(file, password);
+        } catch (IllegalArgumentException e) {
+            throw new ConversionException(
+                    I18nContext.i18n().tr("File \"{0}\" does not exist or is invalid", file.getName()), e);
+        }
+    }
+    /**
+     * @param key
+     * @return the information dictionary value for the key or an empty string
+     */
+    public String getInformation(String key) {
+        return StringUtils.defaultString(metadata.get(key));
+    }
+    public void setInformationDictionary(Map<String, String> info) {
+        metadata.clear();
+        metadata.putAll(info);
+    }
+    public void putInformation(String key, String value) {
+        metadata.put(key, value);
+    }
+    public void pages(int newValue) {
+        this.pages.set(newValue);
+    }
+    public ObservableValue<PdfDescriptorLoadingStatus> loadingStatus() {
+        return loadingStatus;
+    }
+    public ObservableValue<Integer> pages() {
+        return pages;
+    }
+    /**
+     * Sets the status to the given status destination
+     * 
+     * @param destination
+     */
+    public void moveStatusTo(PdfDescriptorLoadingStatus destination) {
+        loadingStatus.set(loadingStatus.getValue().moveTo(destination));
+    }
+    public String getPassword() {
+        return password;
+    }
+    public void setPassword(String password) {
+        this.password = password;
+    }
+    public boolean hasPassword() {
+        return isNotBlank(password);
+    }
+    public String getVersionString() {
+        return ofNullable(version).map(PdfVersion::getVersionString).orElse("");
+    }
+    public PdfVersion getVersion() {
+        return version;
+    }
+    public void setVersion(PdfVersion version) {
+        this.version = version;
+    }
+    public File getFile() {
+        return file;
+    }
+    public void setValidBookmarksLevels(Set<Integer> levels) {
+        this.validBookmarksLevels = new TreeSet<>();
+        if (nonNull(levels)) {
+            this.validBookmarksLevels.addAll(levels);
+        }
+    }
+    public SortedSet<Integer> getValidBookmarksLevels() {
+        return validBookmarksLevels;
+    }
+    /**
+     * @return true if this descriptor has references, this can be false if the user deletes it from the UI and it tells to any service performing or about to perform some action
+     *         on the descriptor that it should be ignored since not relevant anymore.
+     */
+    public boolean hasReferences() {
+        return references.get() > 0;
+    }
+    /**
+     * @return true if the descriptor has become invalid because of the release
+     */
+    public boolean release() {
+        return this.references.decrementAndGet() <= 0;
+    }
+    public void releaseAll() {
+        this.references.set(0);
+    }
+    /**
+     * Increment the number of reference
+     */
+    public PdfDocumentDescriptor retain() {
+        this.references.incrementAndGet();
+        return this;
+    }
+    public static PdfDocumentDescriptor newDescriptor(File file, String password) {
+        return new PdfDocumentDescriptor(file, password);
+    }
+    public static PdfDocumentDescriptor newDescriptorNoPassword(File file) {
+        return new PdfDocumentDescriptor(file, null);
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 28/nov/2012
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.model.tool;
+import java.util.Arrays;
+import java.util.List;
+import static java.util.Objects.requireNonNull;
+import static java.util.Optional.ofNullable;
+import static org.apache.commons.lang3.StringUtils.defaultIfBlank;
+import static org.sejda.commons.util.RequireUtils.requireNotBlank;
+/**
+ * Metadata to describe a {@link Tool}.
+ *
+ * @param name        a human-readable, internationalized name for the tool
+ * @param description a human-readable, internationalized description for the tool
+ * @param priority    a rough indicator of the popularity of the tool. It can be used to present tools to the users in an order that has more chances of being
+ *                    of interest for them.
+ * @param supportUrl  an optional URL pointing at the location where a support resource can be found. This is intended to be a webpage where support material for the tool can be found
+ * @author Andrea Vacondio
+ */
+public record ToolDescriptor(ToolCategory category, String name, String description, int priority, String supportUrl,
+                             List<ToolInputOutputType> inputTypes) {
+    public ToolDescriptor(ToolCategory category, String name, String description, int priority, String supportUrl,
+            List<ToolInputOutputType> inputTypes) {
+        requireNotBlank(name, "Tool name cannot be blank");
+        requireNotBlank(description, "Tool description cannot be blank");
+        this.category = requireNonNull(category);
+        this.name = name;
+        this.description = description;
+        this.priority = priority;
+        this.supportUrl = defaultIfBlank(supportUrl, null);
+        this.inputTypes = requireNonNull(inputTypes);
+    }
+    ToolDescriptor(ToolCategory category, String name, String description, int priority, String supportUrl,
+            ToolInputOutputType... inputTypes) {
+        this(category, name, description, priority, supportUrl,
+                ofNullable(inputTypes).filter(t -> t.length > 0).map(Arrays::asList)
+                        .orElseGet(() -> List.of(ToolInputOutputType.OTHER)));
+    }
+    /**
+     * @param type
+     * @return true if this module has the given input type
+     */
+    public boolean hasInputType(ToolInputOutputType type) {
+        return inputTypes.contains(type);
+    }
+}
+package org.pdfsam.model.tool;
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 28/09/22
+ * Copyright 2022 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+import static org.sejda.commons.util.RequireUtils.requireNotBlank;
+/**
+ * @author Andrea Vacondio
+ */
+public record ClearToolRequest(String toolBinding, boolean clearEverything, boolean askConfirmation)
+        implements ToolBound {
+    public ClearToolRequest {
+        requireNotBlank(toolBinding, "Bound tool id cannot be blank");
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 13/giu/2013
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.model.pdf;
+import org.pdfsam.model.tool.BaseToolBound;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+/**
+ * Request the app to load one or many pdf documents
+ *
+ * @author Andrea Vacondio
+ */
+public class PdfLoadRequest extends BaseToolBound {
+    private final List<PdfDocumentDescriptor> documents = new ArrayList<>();
+    public PdfLoadRequest(String toolId) {
+        super(toolId);
+    }
+    public boolean add(PdfDocumentDescriptor e) {
+        return documents.add(e);
+    }
+    public List<PdfDocumentDescriptor> getDocuments() {
+        return Collections.unmodifiableList(documents);
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 19/09/22
+ * Copyright 2022 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.core.context;
+import javafx.application.ConditionalFeature;
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.injector.Injector;
+import org.pdfsam.injector.Key;
+import org.pdfsam.persistence.PreferencesRepository;
+import java.io.Closeable;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Objects;
+import java.util.Optional;
+import static java.util.function.Predicate.not;
+import static org.pdfsam.core.context.StringPersistentProperty.FONT_SIZE;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+/**
+ * @author Andrea Vacondio
+ */
+public class ApplicationContext implements Closeable {
+    private static final ApplicationContext CONTEXT = new ApplicationContext();
+    private final ApplicationPersistentSettings persistentSettings;
+    private ApplicationRuntimeState runtimeState;
+    private Optional<Injector> injector = Optional.empty();
+    private ApplicationContext() {
+        this(new ApplicationPersistentSettings(new PreferencesRepository("/org/pdfsam/user/conf")), null);
+    }
+    /**
+     * @deprecated use in tests
+     */
+    @Deprecated
+    ApplicationContext(ApplicationPersistentSettings persistentSettings, ApplicationRuntimeState runtimeState) {
+        this.persistentSettings = persistentSettings;
+        this.runtimeState = runtimeState;
+    }
+    /**
+     * @return the application context
+     */
+    public static ApplicationContext app() {
+        return CONTEXT;
+    }
+    /**
+     * @return the application settings
+     */
+    public ApplicationPersistentSettings persistentSettings() {
+        return this.persistentSettings;
+    }
+    /**
+     * @return the application runtime state
+     */
+    public ApplicationRuntimeState runtimeState() {
+        synchronized (this) {
+            if (Objects.isNull(this.runtimeState)) {
+                this.runtimeState = new ApplicationRuntimeState();
+                //listen for changes in the working path
+                this.persistentSettings().settingsChanges(WORKING_PATH).subscribe(path -> {
+                    this.runtimeState.defaultWorkingPath(
+                            path.filter(StringUtils::isNotBlank).map(Paths::get).filter(Files::isDirectory)
+                                    .orElse(null));
+                });
+                var workingPath = persistentSettings().get(WORKING_PATH).filter(StringUtils::isNotBlank).map(Paths::get)
+                        .filter(Files::isDirectory).orElse(null);
+                this.runtimeState.defaultWorkingPath(workingPath);
+            }
+        }
+        return this.runtimeState;
+    }
+    /**
+     * Register the given scene to application context to listen to theme changes and other events
+     *
+     * @param scene
+     */
+    public void registerScene(Scene scene) {
+        this.runtimeState().theme().subscribe(t -> {
+            if (Objects.nonNull(t)) {
+                Platform.runLater(() -> {
+                    scene.getStylesheets().setAll(t.stylesheets());
+                    if (!Platform.isSupported(ConditionalFeature.TRANSPARENT_WINDOW)) {
+                        scene.getStylesheets().addAll(t.transparentIncapableStylesheets());
+                    }
+                });
+            }
+        });
+        this.persistentSettings().settingsChanges(FONT_SIZE).subscribe(size -> {
+            size.filter(StringUtils::isNotBlank).map(s -> String.format("-fx-font-size: %s;", s))
+                    .ifPresentOrElse(scene.getRoot()::setStyle, () -> scene.getRoot().setStyle(""));
+        });
+        this.persistentSettings().get(FONT_SIZE).filter(not(String::isBlank))
+                .ifPresent(size -> scene.getRoot().setStyle(String.format("-fx-font-size: %s;", size)));
+    }
+    /**
+     * Sets the injector
+     */
+    public void injector(Injector injector) {
+        this.injector = Optional.ofNullable(injector);
+    }
+    /**
+     * @return an instance of type
+     */
+    public <T> T instance(Class<T> type) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(type);
+    }
+    public <T> T instance(Key<T> key) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(key);
+    }
+    public void clean() {
+        persistentSettings.clean();
+    }
+    @Override
+    public void close() {
+        injector.ifPresent(Injector::close);
+    }
+}
+package org.pdfsam.tools.backpages;
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 23/11/22
+ * Copyright 2022 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+/**
+ * A tool that inserts a PDF document (or selected pages of it) into another document, repeating the process every "n" pages
+ *
+ * @author Andrea Vacondio
+ */
+public class AddBackpagesTool implements Tool {
+    static final String TOOL_ID = "addbackpages";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Insert pages multiple times")).description(
+                    i18n().tr(
+                            "Insert the pages of a PDF document A into another document B, repeating it after a certain number of pages, resulting in B1 A B2 A B3 A etc."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https://pdfsam.org/insert-pdf-multiple-times/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(AddBackpagesToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ALIGN_LETTER_RIGHT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.split;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+/**
+ * Simple split module to let the user set page numbers to split an input pdf document.
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class SplitTool implements Tool {
+    static final String TOOL_ID = "split.simple";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split"))
+            .description(i18n().tr("Split a PDF document at the given page numbers."))
+            .priority(ToolPriority.HIGH.getPriority()).supportURL("https://pdfsam.org/pdf-split/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.IMAGE_BROKEN);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.splitbybookmarks;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.RequiredPdfData;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+/**
+ * Module to split a given PDF document based on bookmarks levels
+ *
+ * @author Andrea Vacondio
+ */
+@Auto
+public class SplitByBookmarksTool implements Tool {
+    static final String TOOL_ID = "split.bybookmarks";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split by bookmarks"))
+            .description(i18n().tr("Split a PDF document at bookmarked pages by specifying a bookmark level."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https://pdfsam.org/pdf-split/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitByBookmarksToolPanel.class);
+    }
+    @Override
+    public RequiredPdfData[] requires() {
+        return new RequiredPdfData[] { RequiredPdfData.DEFAULT, RequiredPdfData.BOOMARKS };
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILE_BOOKMARK_ALT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+/*
+ * This file is part of the PDF Split And Merge source code
+ * Created on 07/apr/2014
+ * Copyright 2017 by Sober Lemur S.r.l. (info@soberlemur.com).
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.pdfsam.tools.alternatemix;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+/**
+ * Alternate mix module to let the user merge two pdf documents taking pages alternately in straight or reverse order.
+ *
+ * @author Andrea Vacondio
+ */
+public class AlternateMixTool implements Tool {
+    static final String TOOL_ID = "alternatemix";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF).name(i18n().tr("Alternate Mix")).description(
+                    i18n().tr("Merge two or more PDF documents taking pages alternately in natural or reverse order."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https://pdfsam.org/mix-pdf/")
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(AlternateMixToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.COPY_LANDSCAPE);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}

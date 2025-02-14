@@ -1,0 +1,1408 @@
+package world.bentobox.bentobox.database.sql;
+import java.lang.reflect.Method;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import javax.sql.DataSource;
+import org.bukkit.Bukkit;
+import org.eclipse.jdt.annotation.NonNull;
+import com.google.gson.Gson;
+import com.google.gson.JsonSyntaxException;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.DatabaseConnector;
+import world.bentobox.bentobox.database.json.AbstractJSONDatabaseHandler;
+import world.bentobox.bentobox.database.objects.DataObject;
+/**
+ *
+ * Abstract class that covers SQL style databases
+ * Class that inserts a <T> into the corresponding database-table.
+ *
+ * @author tastybento
+ *
+ * @param <T>
+ */
+public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T>
+{
+    protected static final String COULD_NOT_LOAD_OBJECTS = "Could not load objects ";
+    protected static final String COULD_NOT_LOAD_OBJECT = "Could not load object ";
+    /**
+     * DataSource of database
+     */
+    protected DataSource dataSource;
+    /**
+     * SQL configuration
+     */
+    private SQLConfiguration sqlConfig;
+    /**
+     * Handles the connection to the database and creation of the initial database schema (tables) for
+     * the class that will be stored.
+     * @param plugin - plugin object
+     * @param type - the type of class to be stored in the database. Must inherit DataObject
+     * @param databaseConnector - authentication details for the database
+     * @param sqlConfiguration - SQL configuration
+     */
+    protected SQLDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector, SQLConfiguration sqlConfiguration)
+    {
+        super(plugin, type, databaseConnector);
+        this.sqlConfig = sqlConfiguration;
+        if (this.setDataSource((DataSource) this.databaseConnector.createConnection(type)))
+        {
+            // Check if the table exists in the database and if not, create it
+            this.createSchema();
+        }
+    }
+    /**
+     * @return the sqlConfig
+     */
+    public SQLConfiguration getSqlConfig()
+    {
+        return sqlConfig;
+    }
+    /**
+     * @param sqlConfig the sqlConfig to set
+     */
+    public void setSqlConfig(SQLConfiguration sqlConfig)
+    {
+        this.sqlConfig = sqlConfig;
+    }
+    /**
+     * Creates the table in the database if it doesn't exist already
+     */
+    protected void createSchema()
+    {
+        if (this.sqlConfig.renameRequired())
+        {
+            // Transition from the old table name
+            String sql = this.sqlConfig.getRenameTableSQL().
+                    replace("[oldTableName]", this.sqlConfig.getOldTableName()).
+                    replace("[tableName]", this.sqlConfig.getTableName());
+            try (Connection connection = this.dataSource.getConnection();
+                    PreparedStatement preparedStatement = connection.prepareStatement(sql))
+            {
+                preparedStatement.execute();
+            }
+            catch (SQLException e)
+            {
+                this.plugin.logError("Could not rename " + this.sqlConfig.getOldTableName() + " for data object " +
+                        this.dataObject.getCanonicalName() + " " + e.getMessage());
+            }
+        }
+        // Prepare and execute the database statements
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getSchemaSQL()))
+        {
+            preparedStatement.execute();
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Problem trying to create schema for data object " +
+                    this.dataObject.getCanonicalName() + " " + e.getMessage());
+        }
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public List<T> loadObjects()
+    {
+        try (Connection connection = this.dataSource.getConnection();
+                Statement preparedStatement = connection.createStatement())
+        {
+            return this.loadIt(preparedStatement);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECTS + e.getMessage());
+        }
+        return Collections.emptyList();
+    }
+    /**
+     * This method loads objects based on results provided by prepared statement.
+     * @param preparedStatement Statement from database.
+     * @return List of object <T> from database.
+     */
+    private List<T> loadIt(Statement preparedStatement)
+    {
+        List<T> list = new ArrayList<>();
+        try (ResultSet resultSet = preparedStatement.executeQuery(this.sqlConfig.getLoadObjectsSQL()))
+        {
+            // Load all the results
+            Gson gson = this.getGson();
+            while (resultSet.next())
+            {
+                String json = resultSet.getString("json");
+                if (json != null)
+                {
+                    getGsonResultSet(gson, json, list);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECTS + e.getMessage());
+        }
+        return list;
+    }
+    private void getGsonResultSet(Gson gson, String json, List<T> list) {
+        try
+        {
+            T gsonResult = gson.fromJson(json, this.dataObject);
+            if (gsonResult != null)
+            {
+                list.add(gsonResult);
+            }
+        }
+        catch (JsonSyntaxException ex)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + ex.getMessage());
+            this.plugin.logError(json);
+        }
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public T loadObject(@NonNull String uniqueId)
+    {
+        T result = null;
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getLoadObjectSQL()))
+        {
+            // UniqueId needs to be placed in quotes?
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            result = getObject(uniqueId, preparedStatement);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
+        }
+        return result;
+    }
+    /**
+     * Return the object decoded from JSON or null if there is an error
+     * @param uniqueId - unique Id of object used in error reporting
+     * @param preparedStatement - database statement to execute
+     * @return T
+     */
+    private T getObject(@NonNull String uniqueId, PreparedStatement preparedStatement) {
+        try (ResultSet resultSet = preparedStatement.executeQuery())
+        {
+            if (resultSet.next())
+            {
+                // If there is a result, we only want/need the first one
+                Gson gson = this.getGson();
+                return gson.fromJson(resultSet.getString("json"), this.dataObject);
+            }
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
+        }
+        return null;
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public CompletableFuture<Boolean> saveObject(T instance)
+    {
+        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
+        // Null check
+        if (instance == null)
+        {
+            this.plugin.logError("SQL database request to store a null. ");
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        // This has to be on the main thread to avoid concurrent modification errors
+        String toStore = this.getGson().toJson(instance);
+        if (this.plugin.isEnabled())
+        {
+            // Async
+            this.processQueue.add(() -> store(completableFuture,
+                    instance.getClass().getName(),
+                    toStore,
+                    this.sqlConfig.getSaveObjectSQL(),
+                    true));
+        }
+        else
+        {
+            // Sync
+            this.store(completableFuture, instance.getClass().getName(), toStore, this.sqlConfig.getSaveObjectSQL(), false);
+        }
+        return completableFuture;
+    }
+    /**
+     * This method is called to save data into database based on given parameters.
+     * @param completableFuture Failsafe on saving data.
+     * @param name Name of the class that is saved.
+     * @param toStore data that is stored.
+     * @param storeSQL SQL command for saving.
+     * @param async boolean that indicates if saving is async or not.
+     */
+    private void store(CompletableFuture<Boolean> completableFuture, String name, String toStore, String storeSQL, boolean async)
+    {
+        // Do not save anything if plug is disabled and this was an async request
+        if (async && !this.plugin.isEnabled())
+        {
+            return;
+        }
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(storeSQL))
+        {
+            preparedStatement.setString(1, toStore);
+            preparedStatement.setString(2, toStore);
+            preparedStatement.execute();
+            completableFuture.complete(true);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Could not save object " + name + " " + e.getMessage());
+            completableFuture.complete(false);
+        }
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void deleteID(String uniqueId)
+    {
+        this.processQueue.add(() -> this.delete(uniqueId));
+    }
+    /**
+     * This method triggers object deletion from the database.
+     * @param uniqueId Object unique id.
+     */
+    private void delete(String uniqueId)
+    {
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getDeleteObjectSQL()))
+        {
+            // UniqueId needs to be placed in quotes?
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            preparedStatement.execute();
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError("Could not delete object " + this.plugin.getSettings().getDatabasePrefix() +
+                    this.dataObject.getCanonicalName() + " " + uniqueId + " " + e.getMessage());
+        }
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void deleteObject(T instance)
+    {
+        // Null check
+        if (instance == null)
+        {
+            this.plugin.logError("SQL database request to delete a null.");
+            return;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            return;
+        }
+        try
+        {
+            Method getUniqueId = this.dataObject.getMethod("getUniqueId");
+            this.deleteID((String) getUniqueId.invoke(instance));
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError("Could not delete object " + instance.getClass().getName() + " " + e.getMessage());
+        }
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public boolean objectExists(String uniqueId)
+    {
+        // Query to see if this key exists
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getObjectExistsSQL()))
+        {
+            // UniqueId needs to be placed in quotes?
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            try (ResultSet resultSet = preparedStatement.executeQuery())
+            {
+                if (resultSet.next())
+                {
+                    return resultSet.getBoolean(1);
+                }
+            }
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Could not check if key exists in database! " + uniqueId + " " + e.getMessage());
+        }
+        return false;
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void close()
+    {
+        this.shutdown = true;
+    }
+    /**
+     * Sets data source of database.
+     *
+     * @param dataSource the data source
+     * @return {@code true} if data source is set, {@code false} otherwise.
+     */
+    public boolean setDataSource(DataSource dataSource)
+    {
+        if (dataSource == null)
+        {
+            this.plugin.logError("Could not connect to the database. Are the credentials in the config.yml file correct?");
+            this.plugin.logWarning("Disabling the plugin...");
+            Bukkit.getPluginManager().disablePlugin(this.plugin);
+            return false;
+        }
+        this.dataSource = dataSource;
+        return true;
+    }
+}
+package world.bentobox.bentobox.database;
+import java.beans.IntrospectionException;
+import java.lang.reflect.InvocationTargetException;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.api.addons.Addon;
+/**
+ * An abstract class that handles insert/select-operations into/from a database
+ *
+ * @author tastybento
+ *
+ * @param <T>
+ */
+public abstract class AbstractDatabaseHandler<T> {
+    /**
+     * FIFO queue for saves or deletions. Note that the assumption here is that most database objects will be held
+     * in memory because loading is not handled with this queue. That means that it is theoretically
+     * possible to load something before it has been saved. So, in general, load your objects and then
+     * save them async only when you do not need the data again immediately.
+     */
+    protected Queue<Runnable> processQueue;
+    /**
+     * Async save task that runs repeatedly
+     */
+    private BukkitTask asyncSaveTask;
+    private boolean inSave;
+    protected boolean shutdown;
+    /**
+     * Name of the folder where databases using files will live
+     */
+    protected static final String DATABASE_FOLDER_NAME = "database";
+    /**
+     * The data object that should be created and filled with values
+     * from the database or inserted into the database
+     */
+    protected Class<T> dataObject;
+    /**
+     * Contains the settings to create a connection to the database like
+     * host/port/database/user/password
+     */
+    protected DatabaseConnector databaseConnector;
+    protected BentoBox plugin;
+    /**
+     * The addon that is accessing the database, if any.
+     */
+    @Nullable
+    private Addon addon;
+    /**
+     * Get the addon that is accessing the database, if any. May be null.
+     * @return the addon
+     */
+    @Nullable
+    public Addon getAddon() {
+        return addon;
+    }
+    /**
+     * Set the addon that is accessing the database, if any.
+     * @param addon the addon to set
+     */
+    public void setAddon(@Nullable Addon addon) {
+        this.addon = addon;
+    }
+    /**
+     * Constructor
+     *
+     * @param type
+     *            The type of the objects that should be created and filled with
+     *            values from the database or inserted into the database
+     * @param databaseConnector
+     *            Contains the settings to create a connection to the database
+     *            like host/port/database/user/password
+     */
+    protected AbstractDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector) {
+        this.plugin = plugin;
+        this.databaseConnector = databaseConnector;
+        this.dataObject = type;
+        // Return if plugin disabled
+        if (!plugin.isEnabled()) return;
+        // Run async queue
+        processQueue = new ConcurrentLinkedQueue<>();
+        asyncSaveTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            // Check shutdown
+            if(shutdown || plugin.isShutdown()) {
+                // Cancel - this will only get called if the plugin is shutdown separately to the server
+                databaseConnector.closeConnection(dataObject);
+                asyncSaveTask.cancel();
+            } else if (!inSave && !processQueue.isEmpty()) {
+                inSave = true;
+                while(!processQueue.isEmpty()) {
+                    processQueue.poll().run();
+                }
+                inSave = false;
+            }
+        }, 0L, 1L);
+    }
+    protected AbstractDatabaseHandler() {}
+    /**
+     * Loads all the records in this table and returns a list of them
+     * @return list of <T>
+     */
+    public abstract List<T> loadObjects() throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    /**
+     * Creates a <T> filled with values from the corresponding
+     * database file
+     * @param uniqueId - unique ID
+     * @return <T>
+     */
+    @Nullable
+    public abstract T loadObject(@NonNull String uniqueId) throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    /**
+     * Loads all the records in this table and returns a list of them async
+     * @return CompletableFuture List of <T>
+     * @since 2.7.0
+     */
+    public CompletableFuture<List<T>> loadObjectsASync() {
+        CompletableFuture<List<T>> completableFuture = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(BentoBox.getInstance(), () -> {
+            try {
+                completableFuture.complete(loadObjects()); // Complete the future with the result
+            } catch (Exception e) {
+                completableFuture.completeExceptionally(e); // Complete exceptionally if an error occurs
+                plugin.logError("Failed to load objects asynchronously: " + e.getMessage());
+            }
+        });
+        return completableFuture;
+    }
+    /**
+     * Save T into the corresponding database
+     *
+     * @param instance that should be inserted into the database
+     * @return completable future that is true if saved
+     */
+    public abstract CompletableFuture<Boolean> saveObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    /**
+     * Deletes the object with the unique id from the database. If the object does not exist, it will fail silently.
+     * Use {@link #objectExists(String)} if you need to know if the object is in the database beforehand.
+     * @param instance - object instance
+     */
+    public abstract void deleteObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    /**
+     * Checks if a unique id exists or not
+     * @param uniqueId - uniqueId to check
+     * @return true if this uniqueId exists
+     */
+    public abstract boolean objectExists(String uniqueId);
+    /**
+     * Closes the database
+     */
+    public abstract void close();
+    /**
+     * Attempts to delete the object with the uniqueId. If the object does not exist, it will fail silently.
+     * Use {@link #objectExists(String)} if you need to know if the object is in the database beforehand.
+     * @param uniqueId - uniqueId of object
+     * @since 1.1
+     */
+    public abstract void deleteID(String uniqueId);
+}
+package world.bentobox.bentobox.database;
+import java.util.Arrays;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+import world.bentobox.bentobox.database.sql.postgresql.PostgreSQLDatabase;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.Json2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2PostgreSQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.MariaDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MongoDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MySQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.PostgreSQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.SQLite2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2SQLiteDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+/**
+ * @author Poslovitch, tastybento
+ */
+public interface DatabaseSetup {
+    /**
+     * Gets the type of database being used.
+     * Currently supported options are YAML, JSON, MYSQL, MARIADB and MONGODB.
+     * Default is JSON.
+     * @return Database type
+     */
+    static DatabaseSetup getDatabase() {
+        BentoBox plugin = BentoBox.getInstance();
+        return Arrays.stream(DatabaseType.values())
+                .filter(plugin.getSettings().getDatabaseType()::equals)
+                .findFirst()
+                .map(t -> t.database)
+                .orElseGet(() -> DatabaseType.JSON.database);
+    }
+    /**
+     * Database types
+     *
+     */
+    enum DatabaseType {
+        YAML(new YamlDatabase()),
+        /**
+         * Transition database, from YAML to JSON
+         * @since 1.5.0
+         */
+        YAML2JSON(new Yaml2JsonDatabase()),
+        /**
+         * Transition database, from YAML to MySQL
+         * @since 1.5.0
+         */
+        YAML2MYSQL(new Yaml2MySQLDatabase()),
+        /**
+         * Transition database, from YAML to MySQL (MariaDB)
+         * @since 1.5.0
+         */
+        YAML2MARIADB(new Yaml2MariaDBDatabase()),
+        /**
+         * Transition database, from YAML to MongoDB
+         * @since 1.6.0
+         */
+        YAML2MONGODB(new Yaml2MongoDBDatabase()),
+        /**
+         * Transition database, from YAML to SQLite
+         * @since 1.6.0
+         */
+        YAML2SQLITE(new Yaml2SQLiteDatabase()),
+        JSON(new JSONDatabase()),
+        /**
+         * Transition database, from JSON to MySQL
+         * @since 1.5.0
+         */
+        JSON2MYSQL(new Json2MySQLDatabase()),
+        /**
+         * Transition database, from JSON to MySQL (MariaDB)
+         * @since 1.5.0
+         */
+        JSON2MARIADB(new Json2MariaDBDatabase()),
+        /**
+         * Transition database, from JSON to MongoDB
+         * @since 1.6.0
+         */
+        JSON2MONGODB(new Json2MongoDBDatabase()),
+        /**
+         * Transition database, from JSON to SQLite
+         * @since 1.6.0
+         */
+        JSON2SQLITE(new Json2SQLiteDatabase()),
+        /**
+         * Transition database, from JSON to PostgreSQL
+         * @since 1.6.0
+         */
+        JSON2POSTGRESQL(new Json2PostgreSQLDatabase()),
+        MYSQL(new MySQLDatabase()),
+        /**
+         * Transition database, from MySQL to JSON
+         * @since 1.5.0
+         */
+        MYSQL2JSON(new MySQL2JsonDatabase()),
+        /**
+         * @since 1.1
+         */
+        MARIADB(new MariaDBDatabase()),
+        /**
+         * Transition database, from MariaDB to JSON
+         * @since 1.6.0
+         */
+        MARIADB2JSON(new MariaDB2JsonDatabase()),
+        MONGODB(new MongoDBDatabase()),
+        /**
+         * Transition database, from MongoDB to JSON
+         * @since 1.6.0
+         */
+        MONGODB2JSON(new MongoDB2JsonDatabase()),
+        /**
+         * @since 1.6.0
+         */
+        SQLITE(new SQLiteDatabase()),
+        /**
+         * Transition database, from SQLite to JSON
+         * @since 1.6.0
+         */
+        SQLITE2JSON(new SQLite2JsonDatabase()),
+        /**
+         * @since 1.6.0
+         */
+        POSTGRESQL(new PostgreSQLDatabase()),
+        /**
+         * Transition database, from PostgreSQL to JSON
+         * @since 1.6.0
+         */
+        POSTGRESQL2JSON(new PostgreSQL2JsonDatabase());
+        DatabaseSetup database;
+        DatabaseType(DatabaseSetup database){
+            this.database = database;
+        }
+    }
+    /**
+     * Gets a database handler that will store and retrieve classes of type dataObjectClass
+     * @param <T> - Class type
+     * @param dataObjectClass - class of the object to be stored in the database
+     * @return handler for this database object
+     */
+    <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass);
+}
+package world.bentobox.bentobox.database.sql.postgresql;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+/**
+ * @since 1.6.0
+ * @author Poslovitch
+ */
+public class PostgreSQLDatabase implements DatabaseSetup
+{
+    /**
+     * PostgreSQL Database Connector.
+     */
+    PostgreSQLDatabaseConnector connector;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass)
+    {
+        BentoBox plugin = BentoBox.getInstance();
+        if (this.connector == null)
+        {
+            this.connector = new PostgreSQLDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL(),
+                    plugin.getSettings().getMaximumPoolSize()));
+        }
+        return new PostgreSQLDatabaseHandler<>(plugin, dataObjectClass, this.connector);
+    }
+}
+package world.bentobox.bentobox.database.sql.postgresql;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.concurrent.CompletableFuture;
+import com.google.gson.Gson;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.DatabaseConnector;
+import world.bentobox.bentobox.database.objects.DataObject;
+import world.bentobox.bentobox.database.sql.SQLConfiguration;
+import world.bentobox.bentobox.database.sql.SQLDatabaseHandler;
+/**
+ *
+ * @param <T>
+ *
+ * @since 1.11.0
+ * @author tastybento
+ */
+public class PostgreSQLDatabaseHandler<T> extends SQLDatabaseHandler<T>
+{
+    /**
+     * Constructor
+     *
+     * @param plugin BentoBox plugin
+     * @param type The type of the objects that should be created and filled with values from the database or inserted
+     * into the database
+     * @param databaseConnector Contains the settings to create a connection to the database
+     */
+    PostgreSQLDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector)
+    {
+        super(plugin,
+                type,
+                databaseConnector,
+                new SQLConfiguration(plugin, type).
+                // Set uniqueid as the primary key (index). Postgresql convention is to use lower case field names
+                // Postgresql also uses double quotes (") instead of (`) around tables names with dots.
+                schema("CREATE TABLE IF NOT EXISTS \"[tableName]\" (uniqueid VARCHAR PRIMARY KEY, json jsonb NOT NULL)").
+                loadObject("SELECT * FROM \"[tableName]\" WHERE uniqueid = ? LIMIT 1").
+                deleteObject("DELETE FROM \"[tableName]\" WHERE uniqueid = ?").
+                // uniqueId has to be added into the row explicitly so we need to override the saveObject method
+                // The json value is a string but has to be cast to json when done in Java
+                saveObject("INSERT INTO \"[tableName]\" (uniqueid, json) VALUES (?, cast(? as json)) "
+                        // This is the Postgresql version of UPSERT.
+                        + "ON CONFLICT (uniqueid) DO UPDATE SET json = cast(? as json)").
+                loadObjects("SELECT json FROM \"[tableName]\"").
+                // Postgres exists function returns true or false natively
+                objectExists("SELECT EXISTS(SELECT * FROM \"[tableName]\" WHERE uniqueid = ?)").
+                renameTable("ALTER TABLE IF EXISTS \"[oldTableName]\" RENAME TO \"[tableName]\"").
+                setUseQuotes(false)
+                );
+    }
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public CompletableFuture<Boolean> saveObject(T instance)
+    {
+        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
+        // Null check
+        if (instance == null)
+        {
+            this.plugin.logError("PostgreSQL database request to store a null. ");
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        Gson gson = this.getGson();
+        String toStore = gson.toJson(instance);
+        String uniqueId = ((DataObject) instance).getUniqueId();
+        this.processQueue.add(() ->
+        {
+            try (Connection connection = this.dataSource.getConnection();
+                    PreparedStatement preparedStatement = connection.prepareStatement(this.getSqlConfig().getSaveObjectSQL()))
+            {
+                preparedStatement.setString(1, uniqueId); // INSERT
+                preparedStatement.setString(2, toStore); // INSERT
+                preparedStatement.setString(3, toStore); // ON CONFLICT
+                preparedStatement.execute();
+                completableFuture.complete(true);
+            }
+            catch (SQLException e)
+            {
+                this.plugin.logError("Could not save object " + instance.getClass().getName() + " " + e.getMessage());
+                completableFuture.complete(false);
+            }
+        });
+        return completableFuture;
+    }
+}
+package world.bentobox.bentobox;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import org.apache.commons.lang.exception.ExceptionUtils;
+import org.bukkit.Bukkit;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.server.ServerCommandEvent;
+import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.api.configuration.Config;
+import world.bentobox.bentobox.api.events.BentoBoxReadyEvent;
+import world.bentobox.bentobox.api.localization.TextVariables;
+import world.bentobox.bentobox.api.user.Notifier;
+import world.bentobox.bentobox.api.user.User;
+import world.bentobox.bentobox.commands.BentoBoxCommand;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.hooks.FancyNpcsHook;
+import world.bentobox.bentobox.hooks.ItemsAdderHook;
+import world.bentobox.bentobox.hooks.MultipaperHook;
+import world.bentobox.bentobox.hooks.MultiverseCoreHook;
+import world.bentobox.bentobox.hooks.MyWorldsHook;
+import world.bentobox.bentobox.hooks.MythicMobsHook;
+import world.bentobox.bentobox.hooks.SlimefunHook;
+import world.bentobox.bentobox.hooks.VaultHook;
+import world.bentobox.bentobox.hooks.ZNPCsPlusHook;
+import world.bentobox.bentobox.hooks.placeholders.PlaceholderAPIHook;
+import world.bentobox.bentobox.listeners.BannedCommands;
+import world.bentobox.bentobox.listeners.BlockEndDragon;
+import world.bentobox.bentobox.listeners.DeathListener;
+import world.bentobox.bentobox.listeners.JoinLeaveListener;
+import world.bentobox.bentobox.listeners.PanelListenerManager;
+import world.bentobox.bentobox.listeners.PrimaryIslandListener;
+import world.bentobox.bentobox.listeners.SeedWorldMakerListener;
+import world.bentobox.bentobox.listeners.StandardSpawnProtectionListener;
+import world.bentobox.bentobox.listeners.teleports.EntityTeleportListener;
+import world.bentobox.bentobox.listeners.teleports.PlayerTeleportListener;
+import world.bentobox.bentobox.managers.AddonsManager;
+import world.bentobox.bentobox.managers.BlueprintsManager;
+import world.bentobox.bentobox.managers.CommandsManager;
+import world.bentobox.bentobox.managers.FlagsManager;
+import world.bentobox.bentobox.managers.HooksManager;
+import world.bentobox.bentobox.managers.IslandDeletionManager;
+import world.bentobox.bentobox.managers.IslandWorldManager;
+import world.bentobox.bentobox.managers.IslandsManager;
+import world.bentobox.bentobox.managers.LocalesManager;
+import world.bentobox.bentobox.managers.PlaceholdersManager;
+import world.bentobox.bentobox.managers.PlayersManager;
+import world.bentobox.bentobox.managers.RanksManager;
+import world.bentobox.bentobox.managers.WebManager;
+import world.bentobox.bentobox.util.heads.HeadGetter;
+import world.bentobox.bentobox.versions.ServerCompatibility;
+/**
+ * Main BentoBox class
+ * @author tastybento, Poslovitch
+ */
+public class BentoBox extends JavaPlugin implements Listener {
+    private static BentoBox instance;
+    // Databases
+    private PlayersManager playersManager;
+    private IslandsManager islandsManager;
+    // Managers
+    private CommandsManager commandsManager;
+    private LocalesManager localesManager;
+    private AddonsManager addonsManager;
+    private FlagsManager flagsManager;
+    private IslandWorldManager islandWorldManager;
+    private BlueprintsManager blueprintsManager;
+    private HooksManager hooksManager;
+    private PlaceholdersManager placeholdersManager;
+    private IslandDeletionManager islandDeletionManager;
+    private WebManager webManager;
+    // Settings
+    private Settings settings;
+    // Notifier
+    private Notifier notifier;
+    private HeadGetter headGetter;
+    private boolean isLoaded;
+    // Metrics
+    @Nullable
+    private BStats metrics;
+    private Config<Settings> configObject;
+    private BukkitTask blueprintLoadingTask;
+    private boolean shutdown;
+    @Override
+    public void onEnable(){
+        setInstance(this);
+        if (!ServerCompatibility.getInstance().checkCompatibility().isCanLaunch()) {
+            // The server's most likely incompatible.
+            // Show a warning
+            logWarning("************ Disclaimer **************");
+            logWarning("BentoBox may not be compatible with this server!");
+            logWarning("BentoBox is tested only on the following Spigot versions:");
+            List<String> versions = ServerCompatibility.ServerVersion.getVersions(ServerCompatibility.Compatibility.COMPATIBLE, ServerCompatibility.Compatibility.SUPPORTED)
+                    .stream().map(ServerCompatibility.ServerVersion::toString).toList();
+            logWarning(String.join(", ", versions));
+            logWarning("**************************************");
+        }
+        // Not loaded
+        isLoaded = false;
+        // Store the current millis time so we can tell how many ms it took for BSB to fully load.
+        final long loadStart = System.currentTimeMillis();
+        // Save the default config from config.yml
+        saveDefaultConfig();
+        // Load Flags
+        flagsManager = new FlagsManager(this);
+        if (!loadSettings()) {
+            // We're aborting the load.
+            return;
+        }
+        // Saving the config now.
+        saveConfig();
+        // Start Database managers
+        playersManager = new PlayersManager(this);
+        // Check if this plugin is now disabled (due to bad database handling)
+        if (!this.isEnabled()) {
+            return;
+        }
+        islandsManager = new IslandsManager(this);
+        // Start head getter
+        headGetter = new HeadGetter(this);
+        // Load Notifier
+        notifier = new Notifier();
+        // Set up command manager
+        commandsManager = new CommandsManager();
+        // Load BentoBox commands
+        new BentoBoxCommand();
+        // Start Island Worlds Manager
+        islandWorldManager = new IslandWorldManager(this);
+        // Load blueprints manager
+        blueprintsManager = new BlueprintsManager(this);
+        // Locales manager must be loaded before addons
+        localesManager = new LocalesManager(this);
+        // Load hooks
+        hooksManager = new HooksManager(this);
+        // Load addons. Addons may load worlds, so they must go before islands are loaded.
+        addonsManager = new AddonsManager(this);
+        addonsManager.loadAddons();
+        final long loadTime = System.currentTimeMillis() - loadStart;
+        Bukkit.getScheduler().runTask(instance, () -> {
+            try {
+                completeSetup(loadTime);
+            } catch (Exception e) {
+                fireCriticalError(e.getMessage(), "");
+                e.printStackTrace();
+            }
+        });
+    }
+    private void completeSetup(long loadTime) {
+        final long enableStart = System.currentTimeMillis();
+        hooksManager.registerHook(new MultipaperHook());
+        hooksManager.registerHook(new VaultHook());
+        // FancyNpcs
+        hooksManager.registerHook(new FancyNpcsHook());
+        // ZNPCsPlus
+        hooksManager.registerHook(new ZNPCsPlusHook());
+        // MythicMobs
+        hooksManager.registerHook(new MythicMobsHook());
+        hooksManager.registerHook(new PlaceholderAPIHook());
+        // Setup the Placeholders manager
+        placeholdersManager = new PlaceholdersManager(this);
+        // Enable addons
+        addonsManager.enableAddons();
+        // Register default gamemode placeholders
+        addonsManager.getGameModeAddons().forEach(placeholdersManager::registerDefaultPlaceholders);
+        // Register Listeners
+        registerListeners();
+        // Load islands from database - need to wait until all the worlds are loaded
+        log("Loading islands from database...");
+        try {
+            islandsManager.load();
+        } catch (Exception e) {
+            fireCriticalError(e.getMessage(), "Could not load islands!");
+            return;
+        }
+        // Make sure all flag listeners are registered.
+        flagsManager.registerListeners();
+        // Load metrics
+        metrics = new BStats(this);
+        metrics.registerMetrics();
+        // Register Multiverse hook - MV loads AFTER BentoBox
+        // Make sure all worlds are already registered to Multiverse.
+        hooksManager.registerHook(new MultiverseCoreHook());
+        hooksManager.registerHook(new MyWorldsHook());
+        islandWorldManager.registerWorldsToMultiverse(true);
+        // Register Slimefun
+        hooksManager.registerHook(new SlimefunHook());
+        // Register ItemsAdder
+        hooksManager.registerHook(new ItemsAdderHook(this));
+        // TODO: re-enable after implementation
+        //hooksManager.registerHook(new DynmapHook());
+        // TODO: re-enable after rework
+        //hooksManager.registerHook(new LangUtilsHook());
+        webManager = new WebManager(this);
+        final long enableTime = System.currentTimeMillis() - enableStart;
+        // Show banner
+        User.getInstance(Bukkit.getConsoleSender()).sendMessage("successfully-loaded",
+                TextVariables.VERSION, instance.getDescription().getVersion(),
+                "[time]", String.valueOf(loadTime + enableTime));
+        // Poll for blueprints loading to be finished - async so could be a completely variable time
+        blueprintLoadingTask = Bukkit.getScheduler().runTaskTimer(instance, () -> {
+            if (getBlueprintsManager().isBlueprintsLoaded()) {
+                blueprintLoadingTask.cancel();
+                // Tell all addons that everything is loaded
+                isLoaded = true;
+                this.addonsManager.allLoaded();
+                // Run ready commands
+                settings.getReadyCommands().forEach(cmd -> Bukkit.getServer().dispatchCommand(getServer().getConsoleSender(), cmd));
+                // Fire plugin ready event - this should go last after everything else
+                Bukkit.getPluginManager().callEvent(new BentoBoxReadyEvent());
+                instance.log("All blueprints loaded.");
+            }
+        }, 0L, 1L);
+        if (getSettings().getDatabaseType().equals(DatabaseSetup.DatabaseType.YAML)) {
+            logWarning("*** You're still using YAML database ! ***");
+            logWarning("This database type is being deprecated from BentoBox as some official addons encountered difficulties supporting it correctly.");
+            logWarning("You should switch ASAP to an alternative database type. Please refer to the comments in BentoBox's config.yml.");
+            logWarning("There is NO guarantee YAML database will remain properly supported in the following updates, and its usage should as such be considered a non-viable situation.");
+            logWarning("*** *** *** *** *** *** *** *** *** *** ***");
+        }
+    }
+    private void fireCriticalError(String message, String error) {
+        logError("*****************CRITICAL ERROR!******************");
+        logError(message);
+        logError(error + " Disabling BentoBox...");
+        logError("*************************************************");
+        // Stop all addons
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        // Do not save players or islands, just shutdown
+        shutdown = true;
+        instance.setEnabled(false);
+    }
+    /**
+     * Registers listeners.
+     */
+    private void registerListeners() {
+        PluginManager manager = getServer().getPluginManager();
+        // Player join events
+        manager.registerEvents(new JoinLeaveListener(this), this);
+        // Panel listener manager
+        manager.registerEvents(new PanelListenerManager(), this);
+        // Standard Nether/End spawns protection
+        manager.registerEvents(new StandardSpawnProtectionListener(this), this);
+        // Player portals
+        manager.registerEvents(new PlayerTeleportListener(this), this);
+        // Entity portals
+        manager.registerEvents(new EntityTeleportListener(this), this);
+        // End dragon blocking
+        manager.registerEvents(new BlockEndDragon(this), this);
+        // Banned visitor commands
+        manager.registerEvents(new BannedCommands(this), this);
+        // Death counter
+        manager.registerEvents(new DeathListener(this), this);
+        // MV unregister
+        manager.registerEvents(this, this);
+        // Island Delete Manager
+        islandDeletionManager = new IslandDeletionManager(this);
+        manager.registerEvents(islandDeletionManager, this);
+        // Primary Island Listener
+        manager.registerEvents(new PrimaryIslandListener(this), this);
+        // Seed world chunk generator
+        manager.registerEvents(new SeedWorldMakerListener(this), this);
+    }
+    @Override
+    public void onDisable() {
+        // Stop all async database tasks
+        shutdown = true;
+        HeadGetter.shutdown();
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        // Save data
+        if (playersManager != null) {
+            playersManager.shutdown();
+        }
+        if (islandsManager != null) {
+            islandsManager.shutdown();
+        }
+    }
+    @EventHandler
+    public void onServerStop(ServerCommandEvent e) {
+        /* This is no longer needed as with https://github.com/Multiverse/Multiverse-Core/releases/tag/4.3.12 (or maybe earlier) the issue
+         * is fixed where the generator was not remembered across reboots.
+         */
+        /*
+        if (islandWorldManager != null && (e.getCommand().equalsIgnoreCase("stop") || e.getCommand().equalsIgnoreCase("restart"))) {
+            // Unregister any MV worlds            if () {
+            //islandWorldManager.registerWorldsToMultiverse(false);
+        }*/
+    }
+    /**
+     * Returns the player manager
+     * @return the player manager
+     * @see #getPlayersManager()
+     */
+    public PlayersManager getPlayers() {
+        return playersManager;
+    }
+    /**
+     * Returns the player manager
+     * @return the player manager
+     * @see #getPlayers()
+     * @since 1.16.0
+     */
+    public PlayersManager getPlayersManager() {
+        return getPlayers();
+    }
+    /**
+     * Returns the island manager
+     * @return the island manager
+     * @see #getIslandsManager()
+     */
+    public IslandsManager getIslands() {
+        return islandsManager;
+    }
+    /**
+     * Returns the island manager
+     * @return the island manager
+     * @see #getIslands()
+     * @since 1.16.0
+     */
+    public IslandsManager getIslandsManager() {
+        return getIslands();
+    }
+    private static void setInstance(BentoBox plugin) {
+        BentoBox.instance = plugin;
+    }
+    public static BentoBox getInstance() {
+        return instance;
+    }
+    /**
+     * @return the Commands manager
+     */
+    public CommandsManager getCommandsManager() {
+        return commandsManager;
+    }
+    /**
+     * @return the Locales manager
+     */
+    public LocalesManager getLocalesManager() {
+        return localesManager;
+    }
+    /**
+     * @return the Addons manager
+     */
+    public AddonsManager getAddonsManager() {
+        return addonsManager;
+    }
+    /**
+     * @return the Flags manager
+     */
+    public FlagsManager getFlagsManager() {
+        return flagsManager;
+    }
+    /**
+     * @return the ranksManager
+     * @deprecated Just use {@code RanksManager.getInstance()}
+     */
+    @Deprecated(since = "2.0.0", forRemoval = true)
+    public RanksManager getRanksManager() {
+        return RanksManager.getInstance();
+    }
+    /**
+     * @return the Island World Manager
+     */
+    public IslandWorldManager getIWM() {
+        return islandWorldManager;
+    }
+    /**
+     * @return the settings
+     */
+    public Settings getSettings() {
+        return settings;
+    }
+    /**
+     * Loads the settings from the config file.
+     * If it fails, it can shut the plugin down.
+     * @return {@code true} if it loaded successfully.
+     * @since 1.3.0
+     */
+    public boolean loadSettings() {
+        log("Loading Settings from config.yml...");
+        // Load settings from config.yml. This will check if there are any issues with it too.
+        if (configObject == null) configObject = new Config<>(this, Settings.class);
+        settings = configObject.loadConfigObject();
+        if (settings == null) {
+            // Settings did not load correctly. Disable plugin.
+            logError("Settings did not load correctly - disabling plugin - please check config.yml");
+            getPluginLoader().disablePlugin(this);
+            return false;
+        }
+        log("Saving default panels...");
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_creation_panel.yml"))) {
+            log("Saving default island_creation_panel...");
+            this.saveResource("panels/island_creation_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "language_panel.yml"))) {
+            log("Saving default language_panel...");
+            this.saveResource("panels/language_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_homes_panel.yml"))) {
+            log("Saving default island_homes_panel...");
+            this.saveResource("panels/island_homes_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_invite_panel.yml"))) {
+            log("Saving default team_invite_panel...");
+            this.saveResource("panels/team_invite_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_panel.yml"))) {
+            log("Saving default team_panel...");
+            this.saveResource("panels/team_panel.yml", false);
+        }
+        return true;
+    }
+    @Override
+    public void saveConfig() {
+        if (settings != null) configObject.saveConfigObject(settings);
+    }
+    /**
+     * @return the notifier
+     */
+    public Notifier getNotifier() {
+        return notifier;
+    }
+    /**
+     * @return the headGetter
+     */
+    public HeadGetter getHeadGetter() {
+        return headGetter;
+    }
+    public void log(String string) {
+        getLogger().info(() -> string);
+    }
+    public void logDebug(Object object) {
+        getLogger().info(() -> "DEBUG: " + object);
+    }
+    public void logError(String error) {
+        getLogger().severe(() -> error);
+    }
+    /**
+     * Logs the stacktrace of a Throwable that was thrown by an error.
+     * It should be used preferably instead of {@link Throwable#printStackTrace()} as it does not risk exposing sensitive information.
+     * @param throwable the Throwable that was thrown by an error.
+     * @since 1.3.0
+     */
+    public void logStacktrace(@NonNull Throwable throwable) {
+        logError(ExceptionUtils.getStackTrace(throwable));
+    }
+    public void logWarning(String warning) {
+        getLogger().warning(() -> warning);
+    }
+    /**
+     * Returns the instance of the {@link BlueprintsManager}.
+     * @return the {@link BlueprintsManager}.
+     * @since 1.5.0
+     */
+    public BlueprintsManager getBlueprintsManager() {
+        return blueprintsManager;
+    }
+    /**
+     * Returns whether BentoBox is fully loaded or not.
+     * This basically means that all managers are instantiated and can therefore be safely accessed.
+     * @return whether BentoBox is fully loaded or not.
+     */
+    public boolean isLoaded() {
+        return isLoaded;
+    }
+    /**
+     * @return the HooksManager
+     */
+    public HooksManager getHooks() {
+        return hooksManager;
+    }
+    /**
+     * Convenience method to get the VaultHook.
+     * @return the Vault hook
+     */
+    public Optional<VaultHook> getVault() {
+        return Optional.ofNullable((VaultHook) hooksManager.getHook("Vault").orElse(null));
+    }
+    /**
+     * @return the PlaceholdersManager.
+     */
+    public PlaceholdersManager getPlaceholdersManager() {
+        return placeholdersManager;
+    }
+    /**
+     * @return the islandDeletionManager
+     * @since 1.1
+     */
+    public IslandDeletionManager getIslandDeletionManager() {
+        return islandDeletionManager;
+    }
+    /**
+     * @return an optional of the Bstats instance
+     * @since 1.1
+     */
+    @NonNull
+    public Optional<BStats> getMetrics() {
+        return Optional.ofNullable(metrics);
+    }
+    /**
+     * @return the {@link WebManager}.
+     * @since 1.5.0
+     */
+    public WebManager getWebManager() {
+        return webManager;
+    }
+    // Overriding default JavaPlugin methods
+    /* (non-Javadoc)
+     * @see org.bukkit.plugin.java.JavaPlugin#getDefaultWorldGenerator(java.lang.String, java.lang.String)
+     */
+    @Override
+    public ChunkGenerator getDefaultWorldGenerator(@NonNull String worldName, String id) {
+        return addonsManager.getDefaultWorldGenerator(worldName, id);
+    }
+    /* (non-Javadoc)
+     * @see org.bukkit.plugin.java.JavaPlugin#reloadConfig()
+     */
+    @Override
+    public void reloadConfig() {
+        loadSettings();
+    }
+    /**
+     * Check if plug has shutdown. Used to close databases that are running async.
+     * @return true if plugin has shutdown
+     * @since 1.13.0
+     */
+    public boolean isShutdown() {
+        return shutdown;
+    }
+}
+package world.bentobox.bentobox.database.json;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnector;
+/**
+ * Abstract class that handles insert/select-operations into/from a database.
+ * It also provides {@link #getGson()}.
+ *
+ * @author Poslovitch, tastybento
+ *
+ * @param <T>
+ */
+public abstract class AbstractJSONDatabaseHandler<T> extends AbstractDatabaseHandler<T> {
+    private final Gson gson;
+    /**
+     * Constructor
+     *
+     * @param plugin            BentoBox plugin
+     * @param type              The type of the objects that should be created and filled with
+     *                          values from the database or inserted into the database
+     * @param databaseConnector Contains the settings to create a connection to the database
+     */
+    protected AbstractJSONDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector) {
+        super(plugin, type, databaseConnector);
+        // Build the Gson
+        // excludeFieldsWithoutExposeAnnotation - this means that every field to be stored should use @Expose
+        // enableComplexMapKeySerialization - forces GSON to use TypeAdapters even for Map keys
+        GsonBuilder builder = new GsonBuilder().excludeFieldsWithoutExposeAnnotation().enableComplexMapKeySerialization().setPrettyPrinting();
+        // Register adapter factory
+        builder.registerTypeAdapterFactory(new BentoboxTypeAdapterFactory(plugin));
+        // Allow characters like < or > without escaping them
+        builder.disableHtmlEscaping();
+        gson = builder.create();
+    }
+    protected Gson getGson() {
+        return gson;
+    }
+}

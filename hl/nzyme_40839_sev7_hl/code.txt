@@ -1,0 +1,2109 @@
+/*
+ * This file is part of nzyme.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the Server Side Public License, version 1,
+ * as published by MongoDB, Inc.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * Server Side Public License for more details.
+ *
+ * You should have received a copy of the Server Side Public License
+ * along with this program. If not, see
+ * <http://www.mongodb.com/licensing/server-side-public-license>.
+ */
+package app.nzyme.core;
+import app.nzyme.core.bluetooth.Bluetooth;
+import app.nzyme.core.bluetooth.sig.BluetoothSigService;
+import app.nzyme.core.configuration.base.BaseConfiguration;
+import app.nzyme.core.connect.ConnectService;
+import app.nzyme.core.context.ContextService;
+import app.nzyme.core.detection.alerts.DetectionAlertService;
+import app.nzyme.core.distributed.ClusterManager;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.dot11.Dot11;
+import app.nzyme.core.events.EventEngine;
+import app.nzyme.core.integrations.geoip.GeoIpService;
+import app.nzyme.core.monitoring.health.HealthMonitor;
+import app.nzyme.core.ouis.OuiService;
+import app.nzyme.core.rest.server.NzymeHttpServer;
+import app.nzyme.core.security.authentication.AuthenticationService;
+import app.nzyme.core.subsystems.Subsystems;
+import app.nzyme.plugin.*;
+import app.nzyme.plugin.distributed.messaging.MessageBus;
+import app.nzyme.plugin.distributed.tasksqueue.TasksQueue;
+import app.nzyme.plugin.retro.RetroService;
+import com.codahale.metrics.MetricRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import app.nzyme.core.configuration.node.NodeConfiguration;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.ethernet.Ethernet;
+import app.nzyme.core.tables.TablesService;
+import app.nzyme.core.taps.TapManager;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+public interface NzymeNode extends PluginEntryPoint, DatabaseProvider, NodeIdentificationProvider, MetricsRegistryProvider {
+    void initialize();
+    void shutdown();
+    NodeManager getNodeManager();
+    ClusterManager getClusterManager();
+    MessageBus getMessageBus();
+    TasksQueue getTasksQueue();
+    AuthenticationService getAuthenticationService();
+    Subsystems getSubsystems();
+    HealthMonitor getHealthMonitor();
+    Ethernet getEthernet();
+    Dot11 getDot11();
+    Bluetooth getBluetooth();
+    ContextService getContextService();
+    NodeConfiguration getConfiguration();
+    BaseConfiguration getBaseConfiguration();
+    Path getDataDirectory();
+    MetricRegistry getMetrics();
+    Database getDatabase();
+    EventEngine getEventEngine();
+    TapManager getTapManager();
+    TablesService getTablesService();
+    GeoIpService getGeoIpService();
+    OuiService getOuiService();
+    BluetoothSigService getBluetoothSigService();
+    List<String> getInitializedPlugins();
+    Optional<RetroService> retroService();
+    Crypto getCrypto();
+    ObjectMapper getObjectMapper();
+    Registry getDatabaseCoreRegistry();
+    RegistryChangeMonitor getRegistryChangeMonitor();
+    DetectionAlertService getDetectionAlertService();
+    ConnectService getConnect();
+    Version getVersion();
+    NzymeHttpServer getHttpServer();
+}
+package app.nzyme.core.rest.resources.system;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.crypto.CryptoRegistryKeys;
+import app.nzyme.core.crypto.PGPKeyFingerprint;
+import app.nzyme.core.crypto.tls.*;
+import app.nzyme.core.distributed.MetricExternalName;
+import app.nzyme.core.distributed.Node;
+import app.nzyme.core.distributed.database.metrics.TimerSnapshot;
+import app.nzyme.core.rest.requests.PGPConfigurationUpdateRequest;
+import app.nzyme.core.rest.requests.UpdateTLSWildcardNodeMatcherRequest;
+import app.nzyme.core.rest.responses.crypto.*;
+import app.nzyme.plugin.distributed.messaging.ClusterMessage;
+import app.nzyme.plugin.distributed.messaging.Message;
+import app.nzyme.plugin.distributed.messaging.MessageType;
+import app.nzyme.plugin.rest.configuration.ConfigurationEntryConstraintValidator;
+import app.nzyme.plugin.rest.configuration.ConfigurationEntryResponse;
+import app.nzyme.plugin.rest.configuration.ConfigurationEntryValueType;
+import app.nzyme.plugin.rest.security.PermissionLevel;
+import app.nzyme.plugin.rest.security.RESTSecured;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import app.nzyme.core.NzymeNode;
+import app.nzyme.core.rest.responses.metrics.TimerResponse;
+import com.google.common.collect.Sets;
+import com.google.common.math.Stats;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.glassfish.jersey.media.multipart.FormDataParam;
+import org.joda.time.DateTime;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.*;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+import java.io.InputStream;
+import java.security.NoSuchAlgorithmException;
+import java.security.Principal;
+import java.security.PrivateKey;
+import java.security.cert.*;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+@Path("/api/system/crypto")
+@RESTSecured(PermissionLevel.SUPERADMINISTRATOR)
+@Produces(MediaType.APPLICATION_JSON)
+public class CryptoResource {
+    private static final Logger LOG = LogManager.getLogger(CryptoResource.class);
+    @Inject
+    private NzymeNode nzyme;
+    @GET
+    @Path("summary")
+    public Response summary() {
+        Map<String, PGPKeyResponse> fingerprints = Maps.newHashMap();
+        for (PGPKeyFingerprint fp : nzyme.getCrypto().getPGPKeysByNode()) {
+            fingerprints.put(fp.nodeName(), PGPKeyResponse.create(fp.nodeName(), fp.fingerprint(), fp.createdAt()));
+        }
+        Map<UUID, TimerSnapshot> encryption = nzyme.getClusterManager().findMetricTimer(
+                MetricExternalName.PGP_ENCRYPTION_TIMER.database_label
+        );
+        Map<UUID, TimerSnapshot> decryption = nzyme.getClusterManager().findMetricTimer(
+                MetricExternalName.PGP_DECRYPTION_TIMER.database_label
+        );
+        Map<String, CryptoMetricsResponse> nodeMetrics = Maps.newTreeMap();
+        List<UUID> nodeIds = Lists.newArrayList();
+        nodeIds.addAll(encryption.keySet());
+        nodeIds.addAll(decryption.keySet());
+        Set<Long> encryptionMeans = Sets.newHashSet();
+        Set<Long> encryptionMaxs = Sets.newHashSet();
+        Set<Long> encryptionMins = Sets.newHashSet();
+        Set<Long> encryptionStddevs = Sets.newHashSet();
+        Set<Long> encryptionP99s = Sets.newHashSet();
+        Set<Long> encryptionCounters = Sets.newHashSet();
+        Set<Long> decryptionMeans = Sets.newHashSet();
+        Set<Long> decryptionMaxs = Sets.newHashSet();
+        Set<Long> decryptionMins = Sets.newHashSet();
+        Set<Long> decryptionStddevs = Sets.newHashSet();
+        Set<Long> decryptionP99s = Sets.newHashSet();
+        Set<Long> decryptionCounters = Sets.newHashSet();
+        for (UUID nodeId : nodeIds) {
+            TimerSnapshot nodeEncryption = encryption.get(nodeId);
+            TimerSnapshot nodeDecryption = decryption.get(nodeId);
+            if (nodeEncryption != null) {
+                if (nodeEncryption.mean() > 0) encryptionMeans.add(nodeEncryption.mean());
+                if (nodeEncryption.max() > 0) encryptionMaxs.add(nodeEncryption.max());
+                if (nodeEncryption.min() > 0) encryptionMins.add(nodeEncryption.min());
+                if (nodeEncryption.stddev() > 0) encryptionStddevs.add(nodeEncryption.stddev());
+                if (nodeEncryption.p99() > 0) encryptionP99s.add(nodeEncryption.p99());
+                if (nodeEncryption.counter() > 0) encryptionCounters.add(nodeEncryption.counter());
+                if (nodeDecryption.mean() > 0) decryptionMeans.add(nodeDecryption.mean());
+                if (nodeDecryption.max() > 0) decryptionMaxs.add(nodeDecryption.max());
+                if (nodeDecryption.min() > 0) decryptionMins.add(nodeDecryption.min());
+                if (nodeDecryption.stddev() > 0) decryptionStddevs.add(nodeDecryption.stddev());
+                if (nodeDecryption.p99() > 0) decryptionP99s.add(nodeDecryption.p99());
+                if (nodeDecryption.counter() > 0) decryptionCounters.add(nodeDecryption.counter());
+                nodeMetrics.put(nzyme.getNodeManager().findNameOfNode(nodeId), CryptoMetricsResponse.create(
+                        TimerResponse.create(
+                                nodeEncryption.mean(),
+                                nodeEncryption.max(),
+                                nodeEncryption.min(),
+                                nodeEncryption.stddev(),
+                                nodeEncryption.p99(),
+                                nodeEncryption.counter()
+                        ),
+                        TimerResponse.create(
+                                nodeDecryption.mean(),
+                                nodeDecryption.max(),
+                                nodeDecryption.min(),
+                                nodeDecryption.stddev(),
+                                nodeDecryption.p99(),
+                                nodeDecryption.counter()
+                        )
+                ));
+            }
+        }
+        CryptoMetricsResponse clusterMetrics = CryptoMetricsResponse.create(
+                TimerResponse.create(
+                        encryptionMeans.isEmpty() ? 0 : Stats.meanOf(encryptionMeans),
+                        encryptionMaxs.isEmpty() ? 0 : Stats.of(encryptionMaxs).max(),
+                        encryptionMins.isEmpty() ? 0 :  Stats.of(encryptionMins).min(),
+                        encryptionStddevs.isEmpty() ? 0 : Stats.meanOf(encryptionStddevs),
+                        encryptionP99s.isEmpty() ? 0 : Stats.of(encryptionP99s).max(),
+                        encryptionCounters.isEmpty() ? 0 : ((Double) Stats.of(encryptionCounters).sum()).longValue()
+                ),
+                TimerResponse.create(
+                        decryptionMeans.isEmpty() ? 0 : Stats.meanOf(decryptionMeans),
+                        decryptionMaxs.isEmpty() ? 0 : Stats.of(decryptionMaxs).max(),
+                        decryptionMins.isEmpty() ? 0 : Stats.of(decryptionMins).min(),
+                        decryptionStddevs.isEmpty() ? 0 : Stats.meanOf(decryptionStddevs),
+                        decryptionP99s.isEmpty() ? 0 : Stats.of(decryptionP99s).max(),
+                        decryptionCounters.isEmpty() ? 0 : ((Double) Stats.of(decryptionCounters).sum()).longValue()
+                )
+        );
+        CryptoNodeMetricsResponse metrics = CryptoNodeMetricsResponse.create(nodeMetrics, clusterMetrics);
+        Map<String, TLSCertificateResponse> tlsCertificates = Maps.newTreeMap();
+        for (TLSKeyAndCertificate cert : nzyme.getCrypto().getTLSCertificateByNode()) {
+            Optional<Node> node = nzyme.getNodeManager().getNode(cert.nodeId());
+            if (node.isPresent() && node.get().lastSeen().isAfter(DateTime.now().minusMinutes(2))) {
+                String nodeName = nzyme.getNodeManager().findNameOfNode(cert.nodeId());
+                // Does the node use a wildcard certificate instead?
+                Map<UUID, TLSKeyAndCertificate> matchingNodes = nzyme.getCrypto().getTLSWildcardCertificatesForMatchingNodes();
+                TLSKeyAndCertificate wildcardTls = matchingNodes.get(node.get().uuid());
+                if (wildcardTls != null) {
+                    X509Certificate firstCert = cert.certificates().get(0);
+                    Collection<List<?>> issuerAlternativeNames;
+                    Collection<List<?>> subjectAlternativeNames;
+                    try {
+                        issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+                        subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+                    } catch (CertificateParsingException e) {
+                        LOG.error("Could not parse certificate.", e);
+                        return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                    }
+                    tlsCertificates.put(
+                            nodeName,
+                            TLSCertificateResponse.create(
+                                    wildcardTls.nodeId().toString(),
+                                    wildcardTls.sourceType().toString(),
+                                    nodeName,
+                                    wildcardTls.signature(),
+                                    firstCert.getSigAlgName(),
+                                    buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                                    buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                                    wildcardTls.validFrom(),
+                                    wildcardTls.expiresAt()
+                            )
+                    );
+                } else {
+                    X509Certificate firstCert = cert.certificates().get(0);
+                    Collection<List<?>> issuerAlternativeNames;
+                    Collection<List<?>> subjectAlternativeNames;
+                    try {
+                        issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+                        subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+                    } catch (CertificateParsingException e) {
+                        LOG.error("Could not parse certificate.", e);
+                        return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+                    }
+                    tlsCertificates.put(
+                            nodeName,
+                            TLSCertificateResponse.create(
+                                    cert.nodeId().toString(),
+                                    cert.sourceType().toString(),
+                                    nodeName,
+                                    cert.signature(),
+                                    firstCert.getSigAlgName(),
+                                    buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                                    buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                                    cert.validFrom(),
+                                    cert.expiresAt()
+                            )
+                    );
+                }
+            }
+        }
+        List<TLSWildcartCertificateResponse> tlsWildcartCertificates = Lists.newArrayList();
+        for (TLSWildcardKeyAndCertificate entry : nzyme.getCrypto().getTLSWildcardCertificates()) {
+            X509Certificate firstCert = entry.certificates().get(0);
+            Collection<List<?>> issuerAlternativeNames;
+            Collection<List<?>> subjectAlternativeNames;
+            try {
+                issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+                subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+            } catch (CertificateParsingException e) {
+                LOG.error("Could not parse certificate.", e);
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+            tlsWildcartCertificates.add(TLSWildcartCertificateResponse.create(
+                    entry.id(),
+                    entry.nodeMatcher(),
+                    buildMatchingNodes(entry.nodeMatcher()),
+                    entry.sourceType().toString(),
+                    entry.signature(),
+                    firstCert.getSigAlgName(),
+                    buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                    buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                    entry.validFrom(),
+                    entry.expiresAt()
+            ));
+        }
+        PGPConfigurationResponse pgpConfiguration = PGPConfigurationResponse.create(ConfigurationEntryResponse.create(
+                CryptoRegistryKeys.PGP_KEY_SYNC_ENABLED.key(),
+                "PGP Key Sync Enabled",
+                nzyme.getCrypto().isPGPKeySyncEnabled(),
+                ConfigurationEntryValueType.BOOLEAN,
+                CryptoRegistryKeys.PGP_KEY_SYNC_ENABLED.defaultValue().get(),
+                CryptoRegistryKeys.PGP_KEY_SYNC_ENABLED.requiresRestart(),
+                CryptoRegistryKeys.PGP_KEY_SYNC_ENABLED.constraints().get(),
+                "pgp-key-sync"
+        ));
+        return Response.ok(CryptoResponse.create(
+                metrics,
+                fingerprints,
+                tlsCertificates,
+                tlsWildcartCertificates,
+                nzyme.getCrypto().allPGPKeysEqualAcrossCluster(),
+                pgpConfiguration
+        )).build();
+    }
+    @GET
+    @Path("/tls/node/{node_id}")
+    public Response tlsCertificate(@PathParam("node_id") UUID nodeId) {
+        Optional<Node> node = nzyme.getNodeManager().getNode(nodeId);
+        if (node.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        Optional<TLSKeyAndCertificate> tls = nzyme.getCrypto().getTLSCertificateOfNode(nodeId);
+        if (tls.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        TLSKeyAndCertificate cert = tls.get();
+        X509Certificate firstCert = cert.certificates().get(0);
+        Collection<List<?>> issuerAlternativeNames;
+        Collection<List<?>> subjectAlternativeNames;
+        try {
+            issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+            subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+        } catch (CertificateParsingException e) {
+            LOG.error("Could not parse certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        return Response.ok(TLSCertificateResponse.create(
+                cert.nodeId().toString(),
+                cert.sourceType().toString(),
+                node.get().name(),
+                cert.signature(),
+                firstCert.getSigAlgName(),
+                buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                cert.validFrom(),
+                cert.expiresAt()
+        )).build();
+    }
+    @GET
+    @Path("/tls/wildcard/{cert_id}")
+    public Response tlsWildcardCertificate(@PathParam("cert_id") long certificateId) {
+        Optional<TLSWildcardKeyAndCertificate> certResult = nzyme.getCrypto().getTLSWildcardCertificate(certificateId);
+        if (certResult.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        TLSWildcardKeyAndCertificate cert = certResult.get();
+        X509Certificate firstCert = cert.certificates().get(0);
+        Collection<List<?>> issuerAlternativeNames;
+        Collection<List<?>> subjectAlternativeNames;
+        try {
+            issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+            subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+        } catch (CertificateParsingException e) {
+            LOG.error("Could not parse certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        return Response.ok(TLSWildcartCertificateResponse.create(
+                cert.id(),
+                cert.nodeMatcher(),
+                buildMatchingNodes(cert.nodeMatcher()),
+                cert.sourceType().toString(),
+                cert.signature(),
+                firstCert.getSigAlgName(),
+                buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                cert.validFrom(),
+                cert.expiresAt()
+        )).build();
+    }
+    @PUT
+    @Path("/tls/node/{node_id}/regenerate")
+    public Response regenerateTLSCertificate(@PathParam("node_id") UUID nodeId) {
+        if (nzyme.getNodeManager().getNode(nodeId).isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        final Crypto crypto = nzyme.getCrypto();
+        try {
+            crypto.updateTLSCertificateOfNode(
+                    nodeId,
+                    crypto.generateTLSCertificate(Crypto.DEFAULT_TLS_SUBJECT_DN, 12)
+            );
+        } catch (Crypto.CryptoOperationException e) {
+            LOG.error("Could not generate TLS certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        requestHttpServerRestart(nodeId);
+        return Response.ok().build();
+    }
+    @POST
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Path("/tls/test")
+    public Response testNodeTLSCertificate(@FormDataParam("certificate") InputStream certificate,
+                                           @FormDataParam("private_key") InputStream privateKey) {
+        String certificateInput, keyInput;
+        try {
+            certificateInput = new String(certificate.readAllBytes());
+            keyInput = new String(privateKey.readAllBytes());
+        } catch (Exception e) {
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        boolean certSuccess;
+        List<X509Certificate> certificates = Lists.newArrayList();
+        try {
+            certificates.addAll(TLSUtils.readCertificateChainFromPEM(certificateInput));
+            certSuccess = true;
+        } catch(Exception e) {
+            certSuccess = false;
+            LOG.error("Testing TLS private key failed.", e);
+        }
+        boolean privateKeySuccess;
+        PrivateKey key = null;
+        try {
+            key = TLSUtils.readKeyFromPEM(keyInput);
+            privateKeySuccess = true;
+        } catch(Exception e) {
+            privateKeySuccess = false;
+            LOG.error("Testing TLS private key failed.", e);
+        }
+        if (certSuccess && privateKeySuccess) {
+            // Return cert details.
+            X509Certificate firstCert = certificates.get(0);
+            String fingerprint;
+            Collection<List<?>> issuerAlternativeNames;
+            Collection<List<?>> subjectAlternativeNames;
+            try {
+                fingerprint = TLSUtils.calculateTLSCertificateFingerprint(firstCert);
+                issuerAlternativeNames = firstCert.getIssuerAlternativeNames();
+                subjectAlternativeNames = firstCert.getSubjectAlternativeNames();
+            } catch (NoSuchAlgorithmException | CertificateEncodingException | CertificateParsingException e) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+            }
+            TLSKeyAndCertificate tls = TLSKeyAndCertificate.create(
+                    UUID.randomUUID(), // OK for testing.
+                    TLSSourceType.TEST,
+                    certificates,
+                    key,
+                    fingerprint,
+                    new DateTime(firstCert.getNotBefore()),
+                    new DateTime(firstCert.getNotAfter())
+            );
+            // Individual certificate response.
+            return Response.ok(TLSCertificateTestResponse.create(
+                    true,
+                    true,
+                    TLSCertificateResponse.create(
+                            "[test]",
+                            tls.sourceType().toString(),
+                            "[test]",
+                            tls.signature(),
+                            firstCert.getSigAlgName(),
+                            buildPrincipalResponse(firstCert.getIssuerX500Principal(), issuerAlternativeNames),
+                            buildPrincipalResponse(firstCert.getSubjectX500Principal(), subjectAlternativeNames),
+                            tls.validFrom(),
+                            tls.expiresAt()
+                    )
+            )).build();
+        } else {
+            // Return error information.
+            return Response.status(Response.Status.UNAUTHORIZED)
+                    .entity(TLSCertificateTestResponse.create(
+                            certSuccess, privateKeySuccess, null
+                    )).build();
+        }
+    }
+    @POST
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Path("/tls/node/{node_id}")
+    public Response uploadNodeTLSCertificate(@PathParam("node_id") UUID nodeId,
+                                             @FormDataParam("certificate") InputStream certificate,
+                                             @FormDataParam("private_key") InputStream privateKey) {
+        if (nzyme.getNodeManager().getNode(nodeId).isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        TLSKeyAndCertificate tls;
+        try {
+            tls = TLSUtils.readTLSKeyAndCertificateFromInputStreams(nodeId, TLSSourceType.INDIVIDUAL, certificate, privateKey);
+        } catch (TLSUtils.TLSCertificateCreationException e) {
+            LOG.error("Could not create TLS certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        nzyme.getCrypto().updateTLSCertificateOfNode(nodeId, tls);
+        requestHttpServerRestart(nodeId);
+        return Response.ok(Response.Status.CREATED).build();
+    }
+    @POST
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Path("/tls/wildcard")
+    public Response uploadWildcardTLSCertificate(@FormDataParam("node_matcher") String nodeMatcher,
+                                                 @FormDataParam("certificate") InputStream certificate,
+                                                 @FormDataParam("private_key") InputStream privateKey) {
+        if (nodeMatcher == null || nodeMatcher.trim().isEmpty()) {
+            return Response.status(Response.Status.UNAUTHORIZED).build();
+        }
+        TLSWildcardKeyAndCertificate tls;
+        try {
+            tls = TLSUtils.readTLSWildcardKeyAndCertificateFromInputStreams(nodeMatcher, TLSSourceType.WILDCARD, certificate, privateKey);
+        } catch (TLSUtils.TLSCertificateCreationException e) {
+            LOG.error("Could not create TLS certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        nzyme.getCrypto().writeTLSWildcardCertificate(tls);
+        requestHttpServerRestartAcrossCluster();
+        return Response.ok(Response.Status.CREATED).build();
+    }
+    @POST
+    @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Path("/tls/wildcard/{cert_id}/replace")
+    public Response replaceWildcardTLSCertificate(@PathParam("cert_id") long certificateId,
+                                                  @FormDataParam("certificate") InputStream certificate,
+                                                  @FormDataParam("private_key") InputStream privateKey) {
+        Optional<TLSWildcardKeyAndCertificate> certResult = nzyme.getCrypto().getTLSWildcardCertificate(certificateId);
+        if (certResult.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        TLSWildcardKeyAndCertificate oldCert = certResult.get();
+        TLSWildcardKeyAndCertificate newCert;
+        try {
+            newCert = TLSUtils.readTLSWildcardKeyAndCertificateFromInputStreams(oldCert.nodeMatcher(), TLSSourceType.WILDCARD, certificate, privateKey);
+        } catch (TLSUtils.TLSCertificateCreationException e) {
+            LOG.error("Could not create TLS certificate.", e);
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+        }
+        nzyme.getCrypto().replaceTLSWildcardCertificate(certificateId, newCert);
+        requestHttpServerRestartAcrossCluster();
+        return Response.ok(Response.Status.CREATED).build();
+    }
+    @GET
+    @Path("/tls/wildcard/nodematchertest")
+    public Response testTLSWildcardNodeMatcher(@QueryParam("regex") String regex) {
+        return Response.ok(buildMatchingNodes(regex)).build();
+    }
+    @PUT
+    @Path("/tls/wildcard/{cert_id}/node_matcher")
+    public Response updateTLSWildcardCertificateNodeMatcher(@PathParam("cert_id") long certificateId,
+                                                            UpdateTLSWildcardNodeMatcherRequest request) {
+        Optional<TLSWildcardKeyAndCertificate> certResult = nzyme.getCrypto().getTLSWildcardCertificate(certificateId);
+        if (certResult.isEmpty()) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        }
+        if (request.nodeMatcher().trim().isEmpty()) {
+            return Response.status(Response.Status.UNAUTHORIZED).build();
+        }
+        nzyme.getCrypto().updateTLSWildcardCertificateNodeMatcher(certificateId, request.nodeMatcher());
+        requestHttpServerRestartAcrossCluster();
+        return Response.ok().build();
+    }
+    @DELETE
+    @Path("/tls/wildcard/{cert_id}")
+    public Response deleteTLSWildcardCertificate(@PathParam("cert_id") long certificateId) {
+        nzyme.getCrypto().deleteTLSWildcardCertificate(certificateId);
+        requestHttpServerRestartAcrossCluster();
+        return Response.ok().build();
+    }
+    @PUT
+    @Path("/pgp/configuration")
+    public Response update(PGPConfigurationUpdateRequest ur) {
+        if (ur.change().isEmpty()) {
+            LOG.info("Empty configuration parameters.");
+            return Response.status(422).build();
+        }
+        for (Map.Entry<String, Object> c : ur.change().entrySet()) {
+            switch (c.getKey()) {
+                case "pgp_key_sync_enabled":
+                    if (!ConfigurationEntryConstraintValidator.checkConstraints(CryptoRegistryKeys.PGP_KEY_SYNC_ENABLED, c)) {
+                        return Response.status(422).build();
+                    }
+                    nzyme.getDatabaseCoreRegistry().setValue(c.getKey(), c.getValue().toString());
+                    break;
+                default:
+                    LOG.info("Unknown configuration parameter [{}].", c.getKey());
+                    return Response.status(422).build();
+            }
+        }
+        return Response.ok().build();
+    }
+    private TLSCertificatePrincipalResponse buildPrincipalResponse(Principal principal, Collection<List<?>> alternativeNames) {
+        List<String> an = Lists.newArrayList();
+        if (alternativeNames != null) {
+            for (List<?> alternativeName : alternativeNames) {
+                an.add((String) alternativeName.get(1));
+            }
+        }
+        String cn;
+        Matcher cnMatcher = Pattern.compile("CN=(.+?)(,|$)").matcher(principal.toString());
+        if (cnMatcher.find()) {
+            cn = cnMatcher.group(1);
+        } else {
+            cn = null;
+        }
+        String o;
+        Matcher oMatcher = Pattern.compile("O=(.+?)(,|$)").matcher(principal.toString());
+        if (oMatcher.find()) {
+            o = oMatcher.group(1);
+        } else {
+            o = null;
+        }
+        String c;
+        Matcher cMatcher = Pattern.compile("C=(.+?)(,|$)").matcher(principal.toString());
+        if (cMatcher.find()) {
+            c = cMatcher.group(1);
+        } else {
+            c = null;
+        }
+        return TLSCertificatePrincipalResponse.create(an, cn, o, c);
+    }
+    private List<MatchingNodeResponse> buildMatchingNodes(String regex) {
+        TLSWildcardNodeMatcher matcher = new TLSWildcardNodeMatcher();
+        List<MatchingNodeResponse> matchingNodes = Lists.newArrayList();
+        for (Node node : matcher.match(regex, nzyme.getNodeManager().getNodes())) {
+            matchingNodes.add(MatchingNodeResponse.create(node.uuid(), node.name()));
+        }
+        return matchingNodes;
+    }
+    private void requestHttpServerRestart(UUID nodeId) {
+        nzyme.getMessageBus().send(Message.create(
+                nodeId,
+                MessageType.CHECK_RESTART_HTTP_SERVER,
+                Collections.emptyMap(),
+                true
+        ));
+    }
+    private void requestHttpServerRestartAcrossCluster() {
+        nzyme.getMessageBus().sendToAllOnlineNodes(ClusterMessage.create(
+                MessageType.CHECK_RESTART_HTTP_SERVER,
+                Collections.emptyMap(),
+                true
+        ));
+    }
+}
+package app.nzyme.core.monitoring.health.indicators;
+import app.nzyme.core.distributed.Node;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.monitoring.health.Indicator;
+import app.nzyme.core.monitoring.health.db.IndicatorStatus;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.joda.time.DateTime;
+public class NodeClockIndicator extends Indicator {
+    private static final Logger LOG = LogManager.getLogger(NodeClockIndicator.class);
+    private final NodeManager nodeManager;
+    public NodeClockIndicator(NodeManager nodeManager) {
+        this.nodeManager = nodeManager;
+    }
+    @Override
+    protected IndicatorStatus doRun() {
+        for (Node node : nodeManager.getNodes()) {
+            // We only want to check very recently active nodes.
+            if (node.lastSeen().isBefore(DateTime.now().minusMinutes(2))) {
+                LOG.debug("Skipping inactive node [{}/{}].", node.name(), node.uuid());
+                continue;
+            }
+            if (node.clockDriftMs() < -5000 || node.clockDriftMs() > 5000) {
+                return IndicatorStatus.red(this);
+            }
+        }
+        return IndicatorStatus.green(this);
+    }
+    @Override
+    public String getId() {
+        return "node_clock";
+    }
+    @Override
+    public String getName() {
+        return "Node Clock";
+    }
+}
+package app.nzyme.core.crypto.pgp;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.plugin.distributed.messaging.Message;
+import app.nzyme.plugin.distributed.messaging.MessageBus;
+import app.nzyme.plugin.distributed.messaging.MessageType;
+import app.nzyme.plugin.distributed.tasksqueue.ReceivedTask;
+import app.nzyme.plugin.distributed.tasksqueue.TaskHandler;
+import app.nzyme.plugin.distributed.tasksqueue.TaskProcessingResult;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.io.BaseEncoding;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.bouncycastle.openpgp.PGPPublicKey;
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Map;
+public class PGPKeyProviderTaskHandler implements TaskHandler {
+    private static final Logger LOG = LogManager.getLogger(PGPKeyMessageBusReceiver.class);
+    private final File cryptoDirectoryConfig;
+    private final MessageBus messageBus;
+    private final NodeManager nodeManager;
+    private final Crypto crypto;
+    private final ObjectMapper om;
+    public PGPKeyProviderTaskHandler(File cryptoDirectory, MessageBus messageBus, NodeManager nodeManager, Crypto crypto) {
+        this.cryptoDirectoryConfig = cryptoDirectory;
+        this.messageBus = messageBus;
+        this.nodeManager = nodeManager;
+        this.crypto = crypto;
+        this.om = new ObjectMapper();
+    }
+    @Override
+    public TaskProcessingResult handle(ReceivedTask task) {
+        try {
+            if (!crypto.isPGPKeySyncEnabled()) {
+                // Really, it should never even come this far, but why not check.
+                LOG.warn("PGP sync is disabled. Not sending keys.");
+                return TaskProcessingResult.FAILURE;
+            }
+            LOG.info("Responding to PGP key request by [{}].", task.senderNodeId());
+            LOG.info("Loading keys from disk.");
+            // Read keys from files.
+            File privateKeyLocation = Paths.get(cryptoDirectoryConfig.toString(),
+                    Crypto.PGP_PRIVATE_KEY_FILE_NAME).toFile();
+            File publicKeyLocation = Paths.get(cryptoDirectoryConfig.toString(),
+                    Crypto.PGP_PUBLIC_KEY_FILE_NAME).toFile();
+            byte[] privateKey, publicKey;
+            if (privateKeyLocation.canRead() && publicKeyLocation.canRead()) {
+                privateKey = Files.readAllBytes(privateKeyLocation.toPath());
+                publicKey = Files.readAllBytes(publicKeyLocation.toPath());
+            } else {
+                throw new RuntimeException("Could not read PGP keys from disk.");
+            }
+            // Encrypt keys using public key from requesting node.
+            LOG.info("Encrypting keys with public key of node [{}]", task.senderNodeId());
+            PGPPublicKey nodeKey = Crypto.readPublicKey(nodeManager.getPGPPublicKeyOfNode(task.senderNodeId()));
+            byte[] encryptedPrivateKey = crypto.encrypt(privateKey, nodeKey);
+            byte[] encryptedPublicKey = crypto.encrypt(publicKey, nodeKey);
+            String encryptedPrivateKeyEncoded = BaseEncoding.base64().encode(encryptedPrivateKey);
+            String encryptedPublicKeyEncoded = BaseEncoding.base64().encode(encryptedPublicKey);
+            PGPKeyMessagePayload payload = PGPKeyMessagePayload.create(encryptedPublicKeyEncoded, encryptedPrivateKeyEncoded);
+            Map<String, Object> parameters = this.om.convertValue(payload, new TypeReference<>() {});
+            LOG.info("Keys encrypted and encoded. Publishing message to requesting node.");
+            // Publish keys.
+            messageBus.send(Message.create(
+                    task.senderNodeId(),
+                    MessageType.CLUSTER_PGP_KEYS_PROVIDED,
+                    parameters,
+                    true
+            ));
+            LOG.info("Message published. Task complete.");
+            return TaskProcessingResult.SUCCESS;
+        } catch(Exception | Crypto.CryptoOperationException e) {
+            LOG.error("Could not respond to PGP key request.", e);
+            return TaskProcessingResult.FAILURE;
+        }
+    }
+    @Override
+    public String getName() {
+        return "PGP Key Provider";
+    }
+}
+package app.nzyme.core.distributed;
+import app.nzyme.core.NzymeNode;
+import app.nzyme.core.crypto.pgp.PGPKeys;
+import app.nzyme.core.distributed.database.NodeEntry;
+import app.nzyme.core.distributed.database.metrics.GaugeHistogramBucket;
+import app.nzyme.core.logging.CountingAppender;
+import app.nzyme.core.monitoring.TimerEntry;
+import app.nzyme.core.taps.db.metrics.BucketSize;
+import app.nzyme.core.util.MetricNames;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.Snapshot;
+import com.codahale.metrics.Timer;
+import com.google.common.base.Charsets;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.io.BaseEncoding;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import jakarta.annotation.Nullable;
+import jakarta.validation.constraints.NotNull;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.jdbi.v3.core.Handle;
+import org.joda.time.DateTime;
+import org.joda.time.Period;
+import org.joda.time.PeriodType;
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+public class NodeManager {
+    private static final Logger LOG = LogManager.getLogger(NodeManager.class);
+    private final NzymeNode nzyme;
+    private UUID localNodeId;
+    private long localCycle;
+    private final AtomicLong tapReportSize;
+    private final LoadingCache<UUID, String> nodeNameCache;
+    public NodeManager(NzymeNode nzyme) {
+        this.nzyme = nzyme;
+        this.tapReportSize = new AtomicLong(0);
+        this.nodeNameCache = CacheBuilder.newBuilder().
+                expireAfterAccess(10, TimeUnit.SECONDS)
+                .build(new CacheLoader<>() {
+                    @Override
+                    public String load(@NotNull UUID nodeId) {
+                        String nodeName = nzyme.getDatabase().withHandle(handle ->
+                            handle.createQuery("SELECT name FROM nodes WHERE uuid = :uuid")
+                                    .bind("uuid", nodeId)
+                                    .mapTo(String.class)
+                                    .one()
+                        );
+                        if (nodeName == null) {
+                            return "[invalid node]";
+                        }
+                        return nodeName;
+                    }
+                });
+    }
+    public void initialize() throws NodeInitializationException {
+        // Read local node id.
+        Path nodeIdFile = Path.of(nzyme.getDataDirectory().toString(), "node_id");
+        if (Files.exists(nodeIdFile)) {
+            try {
+                LOG.debug("Node ID file exists at [{}]", nodeIdFile.toAbsolutePath());
+                localNodeId = UUID.fromString(Files.readString(nodeIdFile));
+            } catch (IOException e) {
+                throw new NodeInitializationException("Could not read node ID file at [" + nodeIdFile.toAbsolutePath() + "]", e);
+            }
+        } else {
+            LOG.debug("Node ID file does not exist at [{}]. Creating.", nodeIdFile.toAbsolutePath());
+            UUID newNodeId = UUID.randomUUID();
+            try {
+                Files.writeString(nodeIdFile, newNodeId.toString(), Charsets.UTF_8, StandardOpenOption.CREATE);
+            } catch (IOException e) {
+                throw new NodeInitializationException("Could not write node ID file at [" + nodeIdFile.toAbsolutePath() + "]", e);
+            }
+            localNodeId = newNodeId;
+            LOG.info("Created node ID: [{}]", localNodeId);
+        }
+        // Check if a node with same name but different ID already exists. Not allowed.
+        for (Node node : getNodes()) {
+            if (node.uuid().equals(localNodeId)) {
+                // Don't look at our own node if it's already registered.
+                continue;
+            }
+            if (node.name().trim().equals(nzyme.getBaseConfiguration().name().trim())) {
+                throw new NodeInitializationException("Node with same name already exists. Please choose another name.");
+            }
+        }
+        // Increment cycle counter.
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("UPDATE nodes SET cycle = cycle+1 WHERE uuid = :node_id")
+                        .bind("node_id", localNodeId)
+                        .execute()
+        );
+        // Get current cycle.
+        localCycle = getCycleOfNode(localNodeId);
+        Executors.newSingleThreadScheduledExecutor(
+                new ThreadFactoryBuilder()
+                        .setNameFormat("node-metrics-updater-%d")
+                        .setDaemon(true)
+                        .build()
+        ).scheduleAtFixedRate(this::runMetrics, 0, 1, TimeUnit.MINUTES);
+        LOG.info("Node ID: [{}]", localNodeId);
+    }
+    public void registerSelf() {
+        if (localNodeId == null) {
+            throw new RuntimeException("Not initialized. Cannot register myself.");
+        }
+        registerSelf(localNodeId);
+    }
+    // The custom UUID is for testing.
+    public void registerSelf(UUID uuid) {
+        NodeInformation.Info ni = new NodeInformation().collect();
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("INSERT INTO nodes(uuid, name, http_listen_uri, http_external_uri, version, " +
+                                " last_seen, memory_bytes_total, memory_bytes_available, memory_bytes_used, " +
+                                "heap_bytes_total, heap_bytes_available, heap_bytes_used, cpu_system_load, " +
+                                "cpu_thread_count, process_start_time, process_virtual_size, process_arguments, " +
+                                "os_information, clock, deleted) VALUES(:uuid, :name, :http_listen_uri, " +
+                                ":http_external_uri, :version, NOW(), :memory_bytes_total, :memory_bytes_available, " +
+                                ":memory_bytes_used, :heap_bytes_total, :heap_bytes_available, " +
+                                ":heap_bytes_used, :cpu_system_load, :cpu_thread_count, :process_start_time, " +
+                                ":process_virtual_size, :process_arguments, :os_information, :clock, false) " +
+                                "ON CONFLICT(uuid) DO UPDATE SET name = :name, http_external_uri = :http_external_uri, " +
+                                "http_listen_uri = :http_listen_uri, version = :version, last_seen = NOW()," +
+                                "memory_bytes_total = :memory_bytes_total, " +
+                                "memory_bytes_available = :memory_bytes_available, memory_bytes_used = :memory_bytes_used, " +
+                                "heap_bytes_total = :heap_bytes_total, heap_bytes_available = :heap_bytes_available, " +
+                                "heap_bytes_used = :heap_bytes_used, cpu_system_load = :cpu_system_load, " +
+                                "cpu_thread_count = :cpu_thread_count, process_start_time = :process_start_time, " +
+                                "process_virtual_size = :process_virtual_size, process_arguments = :process_arguments, " +
+                                "os_information = :os_information, clock = :clock, deleted = false")
+                        .bind("uuid", uuid)
+                        .bind("name", nzyme.getNodeInformation().name())
+                        .bind("http_listen_uri", nzyme.getConfiguration().restListenUri().toString())
+                        .bind("http_external_uri", nzyme.getConfiguration().httpExternalUri().toString())
+                        .bind("version", nzyme.getVersion().getVersion().toString())
+                        .bind("memory_bytes_total", ni.memoryTotal())
+                        .bind("memory_bytes_available", ni.memoryAvailable())
+                        .bind("memory_bytes_used", ni.memoryUsed())
+                        .bind("heap_bytes_total", ni.heapTotal())
+                        .bind("heap_bytes_available", ni.heapAvailable())
+                        .bind("heap_bytes_used", ni.heapUsed())
+                        .bind("cpu_system_load", ni.cpuSystemLoad())
+                        .bind("cpu_thread_count", ni.cpuThreadCount())
+                        .bind("process_start_time", ni.processStartTime())
+                        .bind("process_virtual_size", ni.processVirtualSize())
+                        .bind("process_arguments", ni.processArguments())
+                        .bind("os_information", ni.osInformation())
+                        .bind("clock", DateTime.now())
+                        .execute()
+        );
+    }
+    public List<Node> getNodes() {
+        List<NodeEntry> dbEntries = nzyme.getDatabase().withHandle(handle ->
+                handle.createQuery("SELECT * FROM nodes WHERE last_seen > :timeout ORDER BY name DESC")
+                        .bind("timeout", DateTime.now().minusHours(24))
+                        .mapTo(NodeEntry.class)
+                        .list()
+        );
+        List<Node> nodes = Lists.newArrayList();
+        for (NodeEntry dbEntry : dbEntries) {
+            try {
+                URI listenUri = URI.create(dbEntry.httpListenUri());
+                URI httpExternalUri = URI.create(dbEntry.httpExternalUri());
+                nodes.add(Node.create(
+                        dbEntry.uuid(),
+                        dbEntry.name(),
+                        listenUri,
+                        httpExternalUri,
+                        dbEntry.memoryBytesTotal(),
+                        dbEntry.memoryBytesAvailable(),
+                        dbEntry.memoryBytesUsed(),
+                        dbEntry.heapBytesTotal(),
+                        dbEntry.heapBytesAvailable(),
+                        dbEntry.heapBytesUsed(),
+                        dbEntry.cpuSystemLoad(),
+                        dbEntry.cpuThreadCount(),
+                        dbEntry.processStartTime(),
+                        dbEntry.processVirtualSize(),
+                        dbEntry.processArguments(),
+                        dbEntry.osInformation(),
+                        dbEntry.version(),
+                        dbEntry.lastSeen(),
+                        dbEntry.clock(),
+                        (long) new Period(dbEntry.lastSeen(), dbEntry.clock(), PeriodType.millis()).getMillis(),
+                        isNodeEphemeral(dbEntry),
+                        dbEntry.deleted(),
+                        dbEntry.cycle()
+                ));
+            } catch (Exception e) {
+                LOG.error("Could not create node from database entry. Skipping.", e);
+            }
+        }
+        return nodes;
+    }
+    public Optional<Node> getNode(UUID nodeId) {
+        Optional<NodeEntry> result = nzyme.getDatabase().withHandle(handle ->
+                handle.createQuery("SELECT * FROM nodes WHERE uuid = :uuid")
+                        .bind("uuid", nodeId)
+                        .mapTo(NodeEntry.class)
+                        .findFirst()
+        );
+        if (result.isPresent()) {
+            NodeEntry ne = result.get();
+            try {
+                URI httpListenUri = URI.create(ne.httpListenUri());
+                URI httpExternalUri = URI.create(ne.httpExternalUri());
+                return Optional.of(Node.create(
+                        ne.uuid(),
+                        ne.name(),
+                        httpListenUri,
+                        httpExternalUri,
+                        ne.memoryBytesTotal(),
+                        ne.memoryBytesAvailable(),
+                        ne.memoryBytesUsed(),
+                        ne.heapBytesTotal(),
+                        ne.heapBytesAvailable(),
+                        ne.heapBytesUsed(),
+                        ne.cpuSystemLoad(),
+                        ne.cpuThreadCount(),
+                        ne.processStartTime(),
+                        ne.processVirtualSize(),
+                        ne.processArguments(),
+                        ne.osInformation(),
+                        ne.version(),
+                        ne.lastSeen(),
+                        ne.clock(),
+                        (long) new Period(ne.lastSeen(), ne.clock(), PeriodType.millis()).getMillis(),
+                        isNodeEphemeral(ne),
+                        ne.deleted(),
+                        ne.cycle()
+                ));
+            } catch (Exception e) {
+                throw new RuntimeException("Could not create node from database entry.", e);
+            }
+        } else {
+            return Optional.empty();
+        }
+    }
+    public void deleteNode(UUID nodeId) {
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("UPDATE nodes SET deleted = true WHERE uuid = :node_id")
+                        .bind("node_id", nodeId)
+                        .execute()
+        );
+    }
+    private void runMetrics() {
+        try {
+            MetricRegistry metrics = nzyme.getMetrics();
+            long tapReportSize = this.tapReportSize.getAndSet(0);
+            NodeInformation.Info ni = new NodeInformation().collect();
+            Map<String, Long> logCounts = CountingAppender.getCounts();
+            writeGauge(MetricExternalName.MEMORY_BYTES_TOTAL.database_label, ni.memoryTotal());
+            writeGauge(MetricExternalName.MEMORY_BYTES_AVAILABLE.database_label, ni.memoryAvailable());
+            writeGauge(MetricExternalName.MEMORY_BYTES_USED.database_label, ni.memoryUsed());
+            writeGauge(MetricExternalName.HEAP_BYTES_TOTAL.database_label, ni.heapTotal());
+            writeGauge(MetricExternalName.HEAP_BYTES_AVAILABLE.database_label, ni.heapAvailable());
+            writeGauge(MetricExternalName.HEAP_BYTES_USED.database_label, ni.heapUsed());
+            writeGauge(MetricExternalName.CPU_SYSTEM_LOAD.database_label, ni.cpuSystemLoad());
+            writeGauge(MetricExternalName.PROCESS_VIRTUAL_SIZE.database_label, ni.processVirtualSize());
+            writeGauge(MetricExternalName.TAP_REPORT_SIZE.database_label, tapReportSize);
+            writeGauge(MetricExternalName.LOG_COUNTS_TRACE.database_label, logCounts.getOrDefault("TRACE", 0L));
+            writeGauge(MetricExternalName.LOG_COUNTS_DEBUG.database_label, logCounts.getOrDefault("DEBUG", 0L));
+            writeGauge(MetricExternalName.LOG_COUNTS_INFO.database_label, logCounts.getOrDefault("INFO", 0L));
+            writeGauge(MetricExternalName.LOG_COUNTS_WARN.database_label, logCounts.getOrDefault("WARN", 0L));
+            writeGauge(MetricExternalName.LOG_COUNTS_ERROR.database_label, logCounts.getOrDefault("ERROR", 0L));
+            writeGauge(MetricExternalName.LOG_COUNTS_FATAL.database_label, logCounts.getOrDefault("FATAL", 0L));
+            writeGauge(MetricExternalName.GEOIP_CACHE_SIZE.database_label, getLocalMetricsGaugeValue(metrics, MetricNames.GEOIP_CACHE_SIZE));
+            writeGauge(MetricExternalName.CONTEXT_MAC_CACHE_SIZE.database_label, getLocalMetricsGaugeValue(metrics, MetricNames.CONTEXT_MAC_CACHE_SIZE));
+            writeTimer(MetricExternalName.PGP_ENCRYPTION_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.PGP_ENCRYPTION_TIMING));
+            writeTimer(MetricExternalName.PGP_DECRYPTION_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.PGP_DECRYPTION_TIMING));
+            writeTimer(MetricExternalName.PASSWORD_HASHING_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.PASSWORD_HASHING_TIMER));
+            writeTimer(MetricExternalName.CONTEXT_MAC_LOOKUP_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.CONTEXT_MAC_LOOKUP_TIMING));
+            writeTimer(MetricExternalName.REPORT_PROCESSING_DOT11_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.DOT11_TOTAL_REPORT_PROCESSING_TIMER));
+            writeTimer(MetricExternalName.REPORT_PROCESSING_TCP_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.TCP_TOTAL_REPORT_PROCESSING_TIMER));
+            writeTimer(MetricExternalName.REPORT_PROCESSING_DNS_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.DNS_TOTAL_REPORT_PROCESSING_TIMER));
+            writeTimer(MetricExternalName.REPORT_PROCESSING_SSH_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.SSH_TOTAL_REPORT_PROCESSING_TIMER));
+            writeTimer(MetricExternalName.REPORT_PROCESSING_SOCKS_TIMER.database_label,
+                    metrics.getTimers().get(MetricNames.SOCKS_TOTAL_REPORT_PROCESSING_TIMER));
+        } catch(Exception e) {
+            LOG.error("Could not write node metrics.", e);
+        } finally {
+            CountingAppender.resetCounts();
+        }
+        // Retention clean old metrics.
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("DELETE FROM node_metrics_gauges WHERE created_at < :created_at")
+                        .bind("created_at", DateTime.now().minusHours(24))
+                        .execute());
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("DELETE FROM node_metrics_timers WHERE created_at < :created_at")
+                        .bind("created_at", DateTime.now().minusHours(24))
+                        .execute());
+    }
+    private double getLocalMetricsGaugeValue(MetricRegistry metrics, String metricName) {
+        Gauge gauge = metrics.getGauges().get(metricName);
+        /*
+         * The gauge *should* always exist because it's tied to a metric name that we defined, but this may
+         * be called before the gauge is initialized.
+         */
+        if (gauge == null) {
+            return 0;
+        }
+        Object value = gauge.getValue();
+        if (value == null) {
+            return 0;
+        }
+        if (value instanceof Long) {
+            return ((Long) value).doubleValue();
+        } else if (value instanceof Double) {
+            return (double) value;
+        } else {
+            LOG.error("Unknown value type [{}] in gauge [{}]",
+                    value.getClass().getCanonicalName(), metricName);
+            return 0;
+        }
+    }
+    private void writeGauge(String metricName, double metricValue) {
+        nzyme.getDatabase().withHandle(handle -> handle.createUpdate("INSERT INTO node_metrics_gauges(node_id, " +
+                        "metric_name, metric_value, created_at) VALUES(:node_id, :metric_name, :metric_value, " +
+                        ":created_at)")
+                .bind("node_id", nzyme.getNodeInformation().id())
+                .bind("metric_name", metricName)
+                .bind("metric_value", metricValue)
+                .bind("created_at", DateTime.now())
+                .execute()
+        );
+    }
+    private void writeTimer(String metricName, @Nullable Timer timer) {
+        if (timer == null) {
+            return;
+        }
+        Snapshot s = timer.getSnapshot();
+        writeTimer(
+                metricName,
+                TimeUnit.MICROSECONDS.convert(s.getMax(), TimeUnit.NANOSECONDS),
+                TimeUnit.MICROSECONDS.convert(s.getMin(), TimeUnit.NANOSECONDS),
+                TimeUnit.MICROSECONDS.convert((long) s.getMean(), TimeUnit.NANOSECONDS),
+                TimeUnit.MICROSECONDS.convert((long) s.get99thPercentile(), TimeUnit.NANOSECONDS),
+                TimeUnit.MICROSECONDS.convert((long) s.getStdDev(), TimeUnit.NANOSECONDS),
+                timer.getCount()
+        );
+    }
+    private void writeTimer(String metricName, long max, long min, long mean, long p99, long stddev, long counter) {
+        nzyme.getDatabase().withHandle(handle -> handle.createUpdate("INSERT INTO node_metrics_timers(node_id, " +
+                        "metric_name, metric_max, metric_min, metric_mean, metric_p99, metric_stddev, metric_counter, " +
+                        "created_at) VALUES(:node_id, :metric_name, :metric_max, :metric_min, :metric_mean, " +
+                        ":metric_p99, :metric_stddev, :metric_counter, :created_at)")
+                .bind("node_id", nzyme.getNodeInformation().id())
+                .bind("metric_name", metricName)
+                .bind("metric_max", max)
+                .bind("metric_min", min)
+                .bind("metric_mean", mean)
+                .bind("metric_p99", p99)
+                .bind("metric_stddev", stddev)
+                .bind("metric_counter", counter)
+                .bind("created_at", DateTime.now())
+                .execute()
+        );
+    }
+    public Optional<Map<DateTime, GaugeHistogramBucket>> findMetricsHistogram(UUID nodeId, String metricName, int hours, BucketSize bucketSize) {
+        Map<DateTime, GaugeHistogramBucket> result = Maps.newHashMap();
+        List<GaugeHistogramBucket> agg = nzyme.getDatabase().withHandle(handle ->
+                handle.createQuery("SELECT AVG(metric_value) AS average, MAX(metric_value) AS maximum, " +
+                                "MIN(metric_value) AS minimum, SUM(metric_value) AS sum, " +
+                                "date_trunc(:bucket_size, created_at) AS bucket " +
+                                "FROM node_metrics_gauges WHERE node_id = :node_id AND metric_name = :metric_name " +
+                                "AND created_at > :created_at GROUP BY bucket ORDER BY bucket DESC")
+                        .bind("bucket_size", bucketSize.toString().toLowerCase())
+                        .bind("node_id", nodeId)
+                        .bind("metric_name", metricName)
+                        .bind("created_at", DateTime.now().minusHours(hours))
+                        .mapTo(GaugeHistogramBucket.class)
+                        .list()
+        );
+        if (agg == null || agg.isEmpty()) {
+            return Optional.empty();
+        }
+        for (GaugeHistogramBucket x : agg) {
+            result.put(x.bucket(), x);
+        }
+        return Optional.of(result);
+    }
+    public Optional<TimerEntry> findLatestActiveMetricsTimerValue(UUID nodeId,
+                                                                  String metricName,
+                                                                  Handle handle) {
+        return handle.createQuery("SELECT * FROM node_metrics_timers " +
+                        "WHERE node_id = :node_id AND metric_name = :metric_name AND created_at > :created_at " +
+                        "ORDER BY created_at DESC " +
+                        "LIMIT 1")
+                .bind("node_id", nodeId)
+                .bind("metric_name", metricName)
+                .bind("created_at", DateTime.now().minusMinutes(2))
+                .mapTo(TimerEntry.class)
+                .findOne();
+    }
+    public Optional<Double> findLatestActiveMetricsGaugeValue(UUID nodeId,
+                                                            String metricName,
+                                                            Handle handle) {
+        return handle.createQuery("SELECT metric_value FROM node_metrics_gauges " +
+                        "WHERE node_id = :node_id AND metric_name = :metric_name " +
+                        "AND created_at > :created_at " +
+                        "ORDER BY created_at DESC " +
+                        "LIMIT 1")
+                .bind("node_id", nodeId)
+                .bind("metric_name", metricName)
+                .bind("created_at", DateTime.now().minusMinutes(2))
+                .mapTo(Double.class)
+                .findOne();
+    }
+    private boolean isNodeEphemeral(NodeEntry node) {
+        return nzyme.getDatabaseCoreRegistry()
+                .getValue(NodeRegistryKeys.EPHEMERAL_NODES_REGEX.key())
+                .filter(r -> node.name().matches(r))
+                .isPresent();
+    }
+    public UUID getLocalNodeId() {
+        return localNodeId;
+    }
+    public void recordTapReportSize(long size) {
+        this.tapReportSize.addAndGet(size);
+    }
+    public String findNameOfNode(UUID nodeId) {
+        try {
+            return nodeNameCache.get(nodeId);
+        } catch (ExecutionException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    public long getCycleOfNode(UUID nodeId) {
+        return nzyme.getDatabase().withHandle(handle ->
+                handle.createQuery("SELECT cycle FROM nodes WHERE uuid = :node_id")
+                        .bind("node_id", nodeId)
+                        .mapTo(Long.class)
+                        .findOne()
+        ).orElse(1L); // 1 if this is a brand-new node that hasn't registered yet. (happens in init once)
+    }
+    public long getLocalCycle() {
+        return localCycle;
+    }
+    public void setLocalPGPPublicKey(PGPKeys keys) {
+        String key = BaseEncoding.base64().encode(keys.publicKey());
+        nzyme.getDatabase().useHandle(handle ->
+                handle.createUpdate("UPDATE nodes SET public_key = :key WHERE uuid = :node_id")
+                        .bind("key", key)
+                        .bind("node_id", localNodeId)
+                        .execute()
+        );
+    }
+    public byte[] getPGPPublicKeyOfNode(UUID nodeId) {
+        String b64 = nzyme.getDatabase().withHandle(handle ->
+                handle.createQuery("SELECT public_key FROM nodes WHERE uuid = :node_id")
+                        .bind("node_id", nodeId)
+                        .mapTo(String.class)
+                        .one()
+        );
+        return BaseEncoding.base64().decode(b64);
+    }
+    public static final class NodeInitializationException extends Throwable {
+        public NodeInitializationException(String msg) {
+            super(msg);
+        }
+        public NodeInitializationException(String msg, Throwable e) {
+            super(msg, e);
+        }
+    }
+}
+/*
+ * This file is part of nzyme.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the Server Side Public License, version 1,
+ * as published by MongoDB, Inc.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * Server Side Public License for more details.
+ *
+ * You should have received a copy of the Server Side Public License
+ * along with this program. If not, see
+ * <http://www.mongodb.com/licensing/server-side-public-license>.
+ */
+package app.nzyme.core;
+import app.nzyme.core.bluetooth.Bluetooth;
+import app.nzyme.core.bluetooth.sig.BluetoothSigService;
+import app.nzyme.core.cache.CacheManager;
+import app.nzyme.core.connect.ConnectService;
+import app.nzyme.core.context.ContextService;
+import app.nzyme.core.database.DataCategory;
+import app.nzyme.core.database.DataTableInformation;
+import app.nzyme.core.database.tasks.handlers.GlobalPurgeCategoryTaskHandler;
+import app.nzyme.core.database.tasks.handlers.OrganizationPurgeCategoryTaskHandler;
+import app.nzyme.core.database.tasks.handlers.TenantPurgeCategoryTaskHandler;
+import app.nzyme.core.detection.alerts.DetectionAlertService;
+import app.nzyme.core.distributed.ClusterManager;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.distributed.messaging.postgres.PostgresMessageBusImpl;
+import app.nzyme.core.distributed.tasksqueue.postgres.PostgresTasksQueueImpl;
+import app.nzyme.core.dot11.Dot11;
+import app.nzyme.core.dot11.monitoring.Dot11SignalTrackMonitor;
+import app.nzyme.core.dot11.monitoring.clients.KnownClientMonitor;
+import app.nzyme.core.dot11.monitoring.disco.Dot11DiscoMonitor;
+import app.nzyme.core.dot11.monitoring.ssids.KnownSSIDMonitor;
+import app.nzyme.core.ethernet.EthernetConnectionCleaner;
+import app.nzyme.core.events.EventEngine;
+import app.nzyme.core.events.EventEngineImpl;
+import app.nzyme.core.integrations.geoip.GeoIpService;
+import app.nzyme.core.monitoring.health.HealthMonitor;
+import app.nzyme.core.ouis.OuiService;
+import app.nzyme.core.periodicals.connect.ConnectStatusReporter;
+import app.nzyme.core.context.ContextCleaner;
+import app.nzyme.core.periodicals.distributed.NodeUpdater;
+import app.nzyme.core.registry.RegistryChangeMonitorImpl;
+import app.nzyme.core.rest.server.NzymeHttpServer;
+import app.nzyme.core.security.authentication.AuthenticationService;
+import app.nzyme.core.subsystems.Subsystems;
+import app.nzyme.plugin.*;
+import app.nzyme.plugin.distributed.messaging.MessageBus;
+import app.nzyme.plugin.distributed.tasksqueue.*;
+import app.nzyme.plugin.retro.RetroService;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.jmx.JmxReporter;
+import com.codahale.metrics.jvm.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.Lists;
+import app.nzyme.core.configuration.base.BaseConfiguration;
+import app.nzyme.core.configuration.node.NodeConfiguration;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.database.DatabaseImpl;
+import app.nzyme.core.ethernet.Ethernet;
+import app.nzyme.core.periodicals.PeriodicalManager;
+import app.nzyme.core.periodicals.versioncheck.VersioncheckThread;
+import app.nzyme.core.plugin.loading.PluginLoader;
+import app.nzyme.core.registry.RegistryImpl;
+import app.nzyme.core.tables.TablesService;
+import app.nzyme.core.taps.TapManager;
+import app.nzyme.core.util.MetricNames;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.jetbrains.annotations.Nullable;
+import java.io.File;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+public class NzymeNodeImpl implements NzymeNode {
+    private static final Logger LOG = LogManager.getLogger(NzymeNodeImpl.class);
+    private final Version version;
+    private final NodeIdentification nodeIdentification;
+    private final NodeConfiguration configuration;
+    private final BaseConfiguration baseConfiguration;
+    private final Path dataDirectory;
+    private final DatabaseImpl database;
+    private final AuthenticationService authenticationService;
+    private final RegistryImpl registry;
+    private final RegistryChangeMonitor registryChangeMonitor;
+    private final Subsystems subsystems;
+    private final NodeManager nodeManager;
+    private final ClusterManager clusterManager;
+    private final NzymeHttpServer httpServer;
+    private final MetricRegistry metrics;
+    private final TapManager tapManager;
+    private final MessageBus messageBus;
+    private final TasksQueue tasksQueue;
+    private final GeoIpService geoIpService;
+    private final OuiService ouiService;
+    private final BluetoothSigService bluetoothSigService;
+    private final ContextService contextService;
+    private final Ethernet ethernet;
+    private final Dot11 dot11;
+    private final Bluetooth bluetooth;
+    private final TablesService tablesService;
+    private final ObjectMapper objectMapper;
+    private final DetectionAlertService detectionAlertService;
+    private final EventEngine eventEngine;
+    private final ConnectService connect;
+    private final HealthMonitor healthMonitor;
+    private List<String> plugins;
+    private Optional<RetroService> retroService = Optional.empty();
+    private final Crypto crypto;
+    private final List<Object> pluginRestResources;
+    public NzymeNodeImpl(BaseConfiguration baseConfiguration, NodeConfiguration configuration, DatabaseImpl database) {
+        this.baseConfiguration = baseConfiguration;
+        this.version = new Version();
+        this.dataDirectory = Path.of(baseConfiguration.dataDirectory());
+        this.metrics = new MetricRegistry();
+        this.database = database;
+        this.configuration = configuration;
+        this.registry = new RegistryImpl(this, "core");
+        this.registryChangeMonitor = new RegistryChangeMonitorImpl(this);
+        this.authenticationService = new AuthenticationService(this);
+        this.subsystems = new Subsystems(this);
+        this.nodeManager = new NodeManager(this);
+        try {
+            this.nodeManager.initialize();
+            this.nodeIdentification = NodeIdentification.create(nodeManager.getLocalNodeId(), baseConfiguration.name());
+            this.nodeManager.registerSelf();
+        } catch (NodeManager.NodeInitializationException e) {
+            throw new RuntimeException("Could not initialize distributed subsystem.", e);
+        }
+        this.clusterManager = new ClusterManager(this);
+        this.messageBus = new PostgresMessageBusImpl(this);
+        this.tasksQueue = new PostgresTasksQueueImpl(this);
+        this.geoIpService = new GeoIpService(this);
+        this.ouiService = new OuiService(this);
+        this.bluetoothSigService = new BluetoothSigService(this);
+        this.contextService = new ContextService(this);
+        this.pluginRestResources = Lists.newArrayList();
+        this.plugins = Lists.newArrayList();
+        this.httpServer = new NzymeHttpServer(this, this.pluginRestResources);
+        this.ethernet = new Ethernet(this);
+        this.dot11 = new Dot11(this);
+        this.bluetooth = new Bluetooth(this);
+        this.tapManager = new TapManager(this);
+        this.crypto = new Crypto(this);
+        this.objectMapper = new ObjectMapper();
+        this.connect = new ConnectService(this);
+        this.healthMonitor = new HealthMonitor(this);
+        // Register JVM metrics.
+        this.metrics.register("gc", new GarbageCollectorMetricSet());
+        this.metrics.register("classes", new ClassLoadingGaugeSet());
+        this.metrics.register("fds", new FileDescriptorRatioGauge());
+        this.metrics.register("jvm", new JvmAttributeGaugeSet());
+        this.metrics.register("mem", new MemoryUsageGaugeSet());
+        this.metrics.register("threadstates", new ThreadStatesGaugeSet());
+        this.detectionAlertService = new DetectionAlertService(this);
+        this.eventEngine = new EventEngineImpl(this);
+        this.tablesService = new TablesService(this);
+    }
+    @Override
+    public void initialize() {
+        LOG.info("Initializing nzyme version: {}.", version.getVersionString());
+        LOG.info("Initializing cluster manager...");
+        this.clusterManager.initialize();
+        LOG.info("Done.");
+        LOG.info("Initializing message bus [{}] ...", this.messageBus.getClass().getCanonicalName());
+        this.messageBus.initialize();
+        LOG.info("Done.");
+        LOG.info("Initializing tasks queue [{}] ...", this.tasksQueue.getClass().getCanonicalName());
+        this.tasksQueue.initialize();
+        LOG.info("Done.");
+        // Register task handlers. (There are others registered in other parts of the system.)
+        this.tasksQueue.onMessageReceived(
+                TaskType.PURGE_DATA_CATEGORY_GLOBAL,
+                new GlobalPurgeCategoryTaskHandler(this)
+        );
+        this.tasksQueue.onMessageReceived(
+                TaskType.PURGE_DATA_CATEGORY_ORGANIZATION,
+                new OrganizationPurgeCategoryTaskHandler(this)
+        );
+        this.tasksQueue.onMessageReceived(
+                TaskType.PURGE_DATA_CATEGORY_TENANT,
+                new TenantPurgeCategoryTaskHandler(this)
+        );
+        try {
+            this.crypto.initialize();
+        } catch (Crypto.CryptoInitializationException e) {
+            throw new RuntimeException("Could not load cryptographic subsystem.", e);
+        }
+        if (configuration.connectSkip()) {
+            // Connect is disabled in config file. None of the Connect tasks will run. (checked in ConnectService)
+            LOG.warn("Connect has been disabled in configuration file. Not connecting.");
+        }
+        LOG.info("Initializing Geo IP service...");
+        this.geoIpService.initialize();
+        LOG.info("Done.");
+        LOG.info("Initializing OUI service...");
+        this.ouiService.initialize();
+        LOG.info("Done.");
+        LOG.info("Initializing Bluetooth SIG service...");
+        this.bluetoothSigService.initialize();
+        LOG.info("Done.");
+        LOG.info("Initializing authentication service...");
+        this.authenticationService.initialize();
+        LOG.info("Done.");
+        // Metrics JMX reporter.
+        final JmxReporter reporter = JmxReporter.forRegistry(metrics).build();
+        reporter.start();
+        // Database metrics.
+        metrics.register(MetricNames.DATABASE_SIZE, (Gauge<Long>) database::getTotalSize);
+        // Periodicals. (TODO: Replace with scheduler service)
+        PeriodicalManager periodicalManager = new PeriodicalManager();
+        periodicalManager.scheduleAtFixedRate(new NodeUpdater(this), 0, 5, TimeUnit.SECONDS);
+        periodicalManager.scheduleAtFixedRate(new ConnectStatusReporter(this), 0, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new EthernetConnectionCleaner(this), 0, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new Dot11SignalTrackMonitor(this), 1, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new Dot11DiscoMonitor(this), 1, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new ContextCleaner(getContextService()), 0, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new KnownSSIDMonitor(this), 1, 1, TimeUnit.MINUTES);
+        periodicalManager.scheduleAtFixedRate(new KnownClientMonitor(this), 1, 1, TimeUnit.MINUTES);
+        if (configuration.versionchecksEnabled()) {
+            periodicalManager.scheduleAtFixedRate(new VersioncheckThread(version, this), 0, 60, TimeUnit.MINUTES);
+        } else {
+            LOG.info("Versionchecks are disabled.");
+        }
+        healthMonitor.initialize();
+        // Load plugins.
+        PluginLoader pl = new PluginLoader(new File(configuration.pluginDirectory())); // TODO make path configurable
+        for (Plugin plugin : pl.loadPlugins()) {
+            // Initialize plugin
+            LOG.info("Initializing plugin of type [{}]: [{}] ...", plugin.getClass().getCanonicalName(), plugin.getName());
+            try {
+                plugin.initialize(this, getDatabaseRegistry(plugin.getId()), this, this);
+            } catch(Exception e) {
+                LOG.error("Could not load plugin. Skipping.", e);
+                continue;
+            }
+            this.plugins.add(plugin.getId());
+            LOG.info("Done.");
+        }
+        CacheManager cacheManager = new CacheManager(this);
+        cacheManager.initialize();
+        // Spin up REST API and web interface.
+        java.util.logging.Logger.getLogger("org.glassfish.grizzly").setLevel(Level.SEVERE);
+        java.util.logging.Logger.getLogger("org.glassfish.jersey.internal.inject.Providers").setLevel(Level.SEVERE);
+        this.httpServer.initialize();
+    }
+    public void shutdown() {
+        LOG.info("Shutting down.");
+        // Shutdown REST API.
+        if (httpServer != null) {
+            LOG.info("Stopping REST API.");
+            httpServer.shutdownNow();
+        }
+        LOG.info("Shutdown complete.");
+    }
+    @Override
+    public NodeManager getNodeManager() {
+        return nodeManager;
+    }
+    @Override
+    public ClusterManager getClusterManager() {
+        return clusterManager;
+    }
+    @Override
+    public MessageBus getMessageBus() {
+        return messageBus;
+    }
+    @Override
+    public TasksQueue getTasksQueue() {
+        return tasksQueue;
+    }
+    @Override
+    public AuthenticationService getAuthenticationService() {
+        return authenticationService;
+    }
+    @Override
+    public Subsystems getSubsystems() {
+        return subsystems;
+    }
+    @Override
+    public HealthMonitor getHealthMonitor() {
+        return healthMonitor;
+    }
+    @Override
+    public Ethernet getEthernet() {
+        return ethernet;
+    }
+    @Override
+    public Dot11 getDot11() {
+        return dot11;
+    }
+    @Override
+    public Bluetooth getBluetooth() {
+        return bluetooth;
+    }
+    @Override
+    public GeoIpService getGeoIpService() {
+        return geoIpService;
+    }
+    @Override
+    public OuiService getOuiService() {
+        return ouiService;
+    }
+    @Override
+    public BluetoothSigService getBluetoothSigService() {
+        return bluetoothSigService;
+    }
+    @Override
+    public ContextService getContextService() {
+        return contextService;
+    }
+    @Override
+    public EventEngine getEventEngine() {
+        return eventEngine;
+    }
+    @Override
+    public TapManager getTapManager() {
+        return tapManager;
+    }
+    @Override
+    public TablesService getTablesService() {
+        return tablesService;
+    }
+    @Override
+    public List<String> getInitializedPlugins() {
+        return plugins;
+    }
+    @Nullable
+    @Override
+    public Optional<RetroService> retroService() {
+        return retroService;
+    }
+    @Override
+    public Crypto getCrypto() {
+        return crypto;
+    }
+    @Override
+    public ObjectMapper getObjectMapper() {
+        return objectMapper;
+    }
+    @Override
+    public NodeConfiguration getConfiguration() {
+        return configuration;
+    }
+    @Override
+    public BaseConfiguration getBaseConfiguration() {
+        return baseConfiguration;
+    }
+    @Override
+    public Path getDataDirectory() {
+        return dataDirectory;
+    }
+    @Override
+    public MetricRegistry getMetrics() {
+        return metrics;
+    }
+    @Override
+    public Database getDatabase() {
+        return database;
+    }
+    @Override
+    public Version getVersion() {
+        return version;
+    }
+    @Override
+    public NzymeHttpServer getHttpServer() {
+        return httpServer;
+    }
+    @Override
+    public void registerRetroService(RetroService service) {
+        if (this.retroService.isPresent()) {
+            LOG.error("Attempt to register a new RetroService but one already exists. Aborting.");
+            return;
+        }
+        this.retroService = Optional.of(service);
+    }
+    @Override
+    public void registerRestResource(Object resource) {
+        this.pluginRestResources.add(resource);
+    }
+    public Registry getDatabaseRegistry(String namespace) {
+        return new RegistryImpl(this, namespace);
+    }
+    @Override
+    public Registry getDatabaseCoreRegistry() {
+        return registry;
+    }
+    @Override
+    public RegistryChangeMonitor getRegistryChangeMonitor() {
+        return registryChangeMonitor;
+    }
+    @Override
+    public DetectionAlertService getDetectionAlertService() {
+        return detectionAlertService;
+    }
+    @Override
+    public ConnectService getConnect() {
+        return connect;
+    }
+    @Override
+    public NodeIdentification getNodeInformation() {
+        return nodeIdentification;
+    }
+}
+package app.nzyme.core.monitoring.health.indicators;
+import app.nzyme.core.distributed.Node;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.monitoring.health.Indicator;
+import app.nzyme.core.monitoring.health.db.IndicatorStatus;
+import org.joda.time.DateTime;
+public class NodeOfflineIndicator extends Indicator {
+    private final NodeManager nodeManager;
+    public NodeOfflineIndicator(NodeManager nodeManager) {
+        this.nodeManager = nodeManager;
+    }
+    @Override
+    protected IndicatorStatus doRun() {
+        for (Node node : nodeManager.getNodes()) {
+            if (!node.deleted() && !node.isEphemeral() && node.lastSeen().isBefore(DateTime.now().minusMinutes(2))) {
+                return IndicatorStatus.orange(this);
+            }
+        }
+        return IndicatorStatus.green(this);
+    }
+    @Override
+    public String getId() {
+        return "node_offline";
+    }
+    @Override
+    public String getName() {
+        return "Node Offline";
+    }
+}
+/*
+ * This file is part of nzyme.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the Server Side Public License, version 1,
+ * as published by MongoDB, Inc.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * Server Side Public License for more details.
+ *
+ * You should have received a copy of the Server Side Public License
+ * along with this program. If not, see
+ * <http://www.mongodb.com/licensing/server-side-public-license>.
+ */
+package app.nzyme.core.util;
+import app.nzyme.core.bluetooth.sig.BluetoothSigService;
+import app.nzyme.core.context.ContextService;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.database.DatabaseImpl;
+import app.nzyme.core.integrations.geoip.GeoIpService;
+import app.nzyme.core.ouis.OuiService;
+import app.nzyme.core.rest.interceptors.TapTableSizeInterceptor;
+import app.nzyme.core.security.authentication.PasswordHasher;
+import app.nzyme.core.tables.bluetooth.BluetoothTable;
+import app.nzyme.core.tables.dns.DNSTable;
+import app.nzyme.core.tables.dot11.Dot11Table;
+import app.nzyme.core.tables.socks.SOCKSTable;
+import app.nzyme.core.tables.ssh.SSHTable;
+import app.nzyme.core.tables.tcp.TCPTable;
+import static com.codahale.metrics.MetricRegistry.name;
+public class MetricNames {
+    public static final String OUI_LOOKUP_TIMING = name(OuiService.class, "lookup-timing");
+    public static final String BTSIG_CID_LOOKUP_TIMING = name(BluetoothSigService.class, "company-id-lookup-timing");
+    public static final String BTSIG_SUUID_LOOKUP_TIMING = name(BluetoothSigService.class, "service-uuid-lookup-timing");
+    public static final String DATABASE_SIZE = name(DatabaseImpl.class, "size");
+    public static final String GEOIP_CACHE_SIZE = name(GeoIpService.class, "cache-size");
+    public static final String GEOIP_LOOKUP_TIMING_UNCACHED = name(GeoIpService.class, "lookup-timing-uncached");
+    public static final String PGP_ENCRYPTION_TIMING = name(Crypto.class, "encryption-timing");
+    public static final String PGP_DECRYPTION_TIMING = name(Crypto.class, "decryption-timing");
+    public static final String PASSWORD_HASHING_TIMER = name(PasswordHasher.class, "hashing-timer");
+    public static final String TAP_TABLE_REQUEST_SIZES = name(TapTableSizeInterceptor.class, "request_size");
+    public static final String CONTEXT_MAC_CACHE_SIZE = name(ContextService.class, "mac-cache-size");
+    public static final String CONTEXT_MAC_LOOKUP_TIMING = name(ContextService.class, "mac-lookup-timing");
+    public static final String DOT11_TOTAL_REPORT_PROCESSING_TIMER = name(Dot11Table.class, "total-report-processing-timing");
+    public static final String DOT11_BSSID_REPORT_PROCESSING_TIMER = name(Dot11Table.class, "bssid-report-processing-timing");
+    public static final String DOT11_CLIENTS_REPORT_PROCESSING_TIMER = name(Dot11Table.class, "clients-report-processing-timing");
+    public static final String DOT11_DISCO_REPORT_PROCESSING_TIMER = name(Dot11Table.class, "disco-report-processing-timing");
+    public static final String DOT11_ALERT_PROCESSING_TIMER = name(Dot11Table.class, "alert-processing-timing");
+    public static final String BLUETOOTH_TOTAL_REPORT_PROCESSING_TIMER = name(BluetoothTable.class, "total-report-processing-timing");
+    public static final String DNS_TOTAL_REPORT_PROCESSING_TIMER = name(DNSTable.class, "total-report-processing-timing");
+    public static final String DNS_STATISTICS_REPORT_PROCESSING_TIMER = name(DNSTable.class, "statistics-report-processing-timing");
+    public static final String DNS_PAIRS_REPORT_PROCESSING_TIMER = name(DNSTable.class, "pairs-report-processing-timing");
+    public static final String DNS_LOG_REPORT_PROCESSING_TIMER = name(DNSTable.class, "log-report-processing-timing");
+    public static final String DNS_ENTROPY_REPORT_PROCESSING_TIMER = name(DNSTable.class, "entropy-report-processing-timing");
+    public static final String TCP_TOTAL_REPORT_PROCESSING_TIMER = name(TCPTable.class, "total-report-processing-timing");
+    public static final String TCP_SESSIONS_REPORT_PROCESSING_TIMER = name(TCPTable.class, "sessions-report-processing-timing");
+    public static final String TCP_SESSION_DISCOVERY_QUERY_TIMER = name(TCPTable.class, "session-discovery-query-timing");
+    public static final String SOCKS_TOTAL_REPORT_PROCESSING_TIMER = name(SOCKSTable.class, "total-report-processing-timing");
+    public static final String SSH_TOTAL_REPORT_PROCESSING_TIMER = name(SSHTable.class, "total-report-processing-timing");
+}
+package app.nzyme.core.monitoring.health.indicators;
+import app.nzyme.core.NzymeNode;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.crypto.tls.TLSKeyAndCertificate;
+import app.nzyme.core.crypto.tls.TLSWildcardKeyAndCertificate;
+import app.nzyme.core.distributed.Node;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.monitoring.health.Indicator;
+import app.nzyme.core.monitoring.health.db.IndicatorStatus;
+import org.joda.time.DateTime;
+import java.util.Optional;
+public class TLSExpirationIndicator extends Indicator  {
+    private final Crypto crypto;
+    private final NodeManager nodes;
+    public TLSExpirationIndicator(Crypto crypto, NodeManager nodes) {
+        this.crypto = crypto;
+        this.nodes = nodes;
+    }
+    @Override
+    protected IndicatorStatus doRun() {
+        // Individual certificates.
+        for (Node node : nodes.getNodes()) {
+            Optional<TLSKeyAndCertificate> tls = crypto.getTLSCertificateOfNode(node.uuid());
+            if (tls.isPresent()) {
+                if (tls.get().expiresAt().isBefore(DateTime.now().plusDays(7))) {
+                    return IndicatorStatus.red(this);
+                }
+            }
+        }
+        // Wildcard certificates.
+        for (TLSWildcardKeyAndCertificate tls : crypto.getTLSWildcardCertificates()) {
+            if (tls.expiresAt().isBefore(DateTime.now().plusDays(7))) {
+                return IndicatorStatus.red(this);
+            }
+        }
+        return IndicatorStatus.green(this);
+    }
+    @Override
+    public String getId() {
+        return "tls_exp";
+    }
+    @Override
+    public String getName() {
+        return "TLS Expiration";
+    }
+}
+/*
+ * This file is part of nzyme.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the Server Side Public License, version 1,
+ * as published by MongoDB, Inc.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * Server Side Public License for more details.
+ *
+ * You should have received a copy of the Server Side Public License
+ * along with this program. If not, see
+ * <http://www.mongodb.com/licensing/server-side-public-license>.
+ */
+package app.nzyme.core;
+import app.nzyme.core.bluetooth.Bluetooth;
+import app.nzyme.core.bluetooth.sig.BluetoothSigService;
+import app.nzyme.core.configuration.base.BaseConfiguration;
+import app.nzyme.core.connect.ConnectService;
+import app.nzyme.core.context.ContextService;
+import app.nzyme.core.detection.alerts.DetectionAlertService;
+import app.nzyme.core.distributed.ClusterManager;
+import app.nzyme.core.distributed.NodeManager;
+import app.nzyme.core.distributed.messaging.postgres.PostgresMessageBusImpl;
+import app.nzyme.core.distributed.tasksqueue.postgres.PostgresTasksQueueImpl;
+import app.nzyme.core.dot11.Dot11;
+import app.nzyme.core.events.EventEngine;
+import app.nzyme.core.events.EventEngineImpl;
+import app.nzyme.core.integrations.geoip.GeoIpService;
+import app.nzyme.core.monitoring.health.HealthMonitor;
+import app.nzyme.core.ouis.OuiService;
+import app.nzyme.core.registry.RegistryChangeMonitorImpl;
+import app.nzyme.core.registry.RegistryImpl;
+import app.nzyme.core.rest.server.NzymeHttpServer;
+import app.nzyme.core.security.authentication.AuthenticationService;
+import app.nzyme.core.subsystems.Subsystems;
+import app.nzyme.plugin.Database;
+import app.nzyme.plugin.NodeIdentification;
+import app.nzyme.plugin.Registry;
+import app.nzyme.plugin.RegistryChangeMonitor;
+import app.nzyme.plugin.distributed.messaging.MessageBus;
+import app.nzyme.plugin.distributed.tasksqueue.TasksQueue;
+import app.nzyme.plugin.retro.RetroService;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.jvm.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import app.nzyme.core.configuration.IncompleteConfigurationException;
+import app.nzyme.core.configuration.InvalidConfigurationException;
+import app.nzyme.core.configuration.node.NodeConfiguration;
+import app.nzyme.core.configuration.node.NodeConfigurationLoader;
+import app.nzyme.core.crypto.Crypto;
+import app.nzyme.core.database.DatabaseImpl;
+import app.nzyme.core.ethernet.Ethernet;
+import app.nzyme.core.tables.TablesService;
+import app.nzyme.core.taps.TapManager;
+import liquibase.exception.LiquibaseException;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.net.URL;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import java.util.Random;
+import java.util.concurrent.TimeUnit;
+public class MockNzyme implements NzymeNode {
+    private File loadFromResourceFile(String name) {
+        URL resource = getClass().getClassLoader().getResource(name);
+        if (resource == null) {
+            throw new RuntimeException("test config file does not exist in resources");
+        }
+        return new File(resource.getFile());
+    }
+    private final NodeManager nodeManager;
+    private final NodeIdentification nodeIdentification;
+    private final NodeConfiguration configuration;
+    private final OuiService ouiService;
+    private final MetricRegistry metricRegistry;
+    private final ObjectMapper objectMapper;
+    private final Version version;
+    private final Database database;
+    private final Path dataDirectory;
+    private final MessageBus messageBus;
+    private final TasksQueue tasksQueue;
+    private final BaseConfiguration baseConfiguration;
+    private final Crypto crypto;
+    private final ClusterManager clusterManager;
+    private final AuthenticationService authenticationService;
+    private final GeoIpService geoIp;
+    private final Registry registry;
+    private final RegistryChangeMonitor registryChangeMonitor;
+    private final EventEngine eventEngine;
+    public MockNzyme() {
+        this(Integer.MAX_VALUE, TimeUnit.DAYS);
+    }
+    public MockNzyme(int taskAndMessagePollInterval, TimeUnit taskAndMessagePollIntervalUnit) {
+        this.version = new Version();
+        this.baseConfiguration = BaseConfiguration.create(
+                "mocky-mock-" + new Random().nextInt(Integer.MAX_VALUE),
+                "foo"
+        );
+        try {
+            String configFile = "nzyme-test-complete-valid.conf.test";
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                configFile = "nzyme-test-complete-valid-windows.conf.test";
+                System.out.println("loading Windows nzyme configuration file");
+            }
+            this.configuration = new NodeConfigurationLoader(loadFromResourceFile(configFile), false).get();
+            this.dataDirectory = Path.of("test_data_dir");
+        } catch (InvalidConfigurationException | IncompleteConfigurationException | FileNotFoundException e) {
+            throw new RuntimeException("Could not load test config file from resources.", e);
+        }
+        this.database = new DatabaseImpl(configuration);
+        try {
+            this.database.migrate();
+            this.database.initialize();
+        } catch (LiquibaseException e) {
+            throw new RuntimeException(e);
+        }
+        this.registry = new RegistryImpl(this, "core");
+        this.registryChangeMonitor = new RegistryChangeMonitorImpl(this);
+        // Metrics.
+        this.metricRegistry = new MetricRegistry();
+        this.metricRegistry.register("gc", new GarbageCollectorMetricSet());
+        this.metricRegistry.register("classes", new ClassLoadingGaugeSet());
+        this.metricRegistry.register("fds", new FileDescriptorRatioGauge());
+        this.metricRegistry.register("jvm", new JvmAttributeGaugeSet());
+        this.metricRegistry.register("mem", new MemoryUsageGaugeSet());
+        this.metricRegistry.register("threadstates", new ThreadStatesGaugeSet());
+        this.geoIp = new GeoIpService(this);
+        this.geoIp.initialize();
+        this.eventEngine = new EventEngineImpl(this);
+        this.nodeManager = new NodeManager(this);
+        try {
+            this.nodeManager.initialize();
+        } catch (NodeManager.NodeInitializationException e) {
+            throw new RuntimeException(e);
+        }
+        this.nodeIdentification = NodeIdentification.create(nodeManager.getLocalNodeId(), baseConfiguration.name());
+        this.clusterManager = new ClusterManager(this);
+        this.messageBus = new PostgresMessageBusImpl(this);
+        ((PostgresMessageBusImpl) this.messageBus).initialize(taskAndMessagePollInterval, taskAndMessagePollIntervalUnit);
+        this.tasksQueue = new PostgresTasksQueueImpl(this);
+        ((PostgresTasksQueueImpl) this.tasksQueue).initialize(taskAndMessagePollInterval, taskAndMessagePollIntervalUnit);
+        this.authenticationService = new AuthenticationService(this);
+        this.database.useHandle(handle -> handle.execute("TRUNCATE sentry_ssids"));
+        this.crypto = new Crypto(this);
+        this.ouiService = new OuiService(this);
+        this.objectMapper = new ObjectMapper();
+    }
+    @Override
+    public void initialize() {
+        this.clusterManager.initialize();
+        try {
+            this.crypto.initialize(false);
+        } catch (Crypto.CryptoInitializationException e) {
+            throw new RuntimeException(e);
+        }
+        this.authenticationService.initialize();
+    }
+    @Override
+    public void shutdown() {
+    }
+    @Override
+    public NodeManager getNodeManager() {
+        return nodeManager;
+    }
+    @Override
+    public ClusterManager getClusterManager() {
+        return clusterManager;
+    }
+    @Override
+    public MessageBus getMessageBus() {
+        return messageBus;
+    }
+    @Override
+    public TasksQueue getTasksQueue() {
+        return tasksQueue;
+    }
+    @Override
+    public AuthenticationService getAuthenticationService() {
+        return authenticationService;
+    }
+    @Override
+    public Subsystems getSubsystems() {
+        return null;
+    }
+    @Override
+    public HealthMonitor getHealthMonitor() {
+        return null;
+    }
+    @Override
+    public Ethernet getEthernet() {
+        return null;
+    }
+    @Override
+    public Dot11 getDot11() {
+        return null;
+    }
+    @Override
+    public Bluetooth getBluetooth() {
+        return null;
+    }
+    @Override
+    public GeoIpService getGeoIpService() {
+        return geoIp;
+    }
+    @Override
+    public ContextService getContextService() {
+        return null;
+    }
+    @Override
+    public NodeConfiguration getConfiguration() {
+        return configuration;
+    }
+    @Override
+    public BaseConfiguration getBaseConfiguration() {
+        return baseConfiguration;
+    }
+    @Override
+    public Path getDataDirectory() {
+        return dataDirectory;
+    }
+    @Override
+    public MetricRegistry getMetrics() {
+        return metricRegistry;
+    }
+    @Override
+    public Database getDatabase() {
+        return database;
+    }
+    @Override
+    public TapManager getTapManager() {
+        return null;
+    }
+    @Override
+    public TablesService getTablesService() {
+        return null;
+    }
+    @Override
+    public OuiService getOuiService() {
+        return ouiService;
+    }
+    @Override
+    public BluetoothSigService getBluetoothSigService() {
+        return null;
+    }
+    @Override
+    public List<String> getInitializedPlugins() {
+        return null;
+    }
+    @Override
+    public Optional<RetroService> retroService() {
+        return Optional.empty();
+    }
+    @Override
+    public Crypto getCrypto() {
+        return crypto;
+    }
+    @Override
+    public ObjectMapper getObjectMapper() {
+        return objectMapper;
+    }
+    @Override
+    public Registry getDatabaseCoreRegistry() {
+        return new RegistryImpl(this, "core");
+    }
+    @Override
+    public RegistryChangeMonitor getRegistryChangeMonitor() {
+        return registryChangeMonitor;
+    }
+    @Override
+    public DetectionAlertService getDetectionAlertService() {
+        return null;
+    }
+    @Override
+    public ConnectService getConnect() {
+        return null;
+    }
+    @Override
+    public Version getVersion() {
+        return version;
+    }
+    @Override
+    public NzymeHttpServer getHttpServer() {
+        return null;
+    }
+    @Override
+    public void registerRetroService(RetroService retroService) {
+    }
+    @Override
+    public void registerRestResource(Object o) {
+    }
+    public Registry getRegistry(String s) {
+        return registry;
+    }
+    @Override
+    public EventEngine getEventEngine() {
+        return eventEngine;
+    }
+    @Override
+    public NodeIdentification getNodeInformation() {
+        return nodeIdentification;
+    }
+}

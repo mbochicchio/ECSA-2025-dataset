@@ -1,0 +1,2267 @@
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name="dev",
+		description = "Calculates the standard deviation of the time series."
+)
+public class StdAggregator extends RangeAggregator
+{
+	public enum Dev
+	{
+		POS_SD, NEG_SD, VALUE
+	};
+	private DoubleDataPointFactory m_dataPointFactory;
+	private Dev m_dev;
+	private int m_devCount = 1;
+	@Inject
+	public StdAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	public void setReturnType(Dev dev)
+	{
+		m_dev = dev;
+	}
+	public void setDevCount(int count)
+	{
+		m_devCount = count;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new StdDataPointAggregator());
+	}
+	private class StdDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			int count = 0;
+			double average = 0;
+			double pwrSumAvg = 0;
+			double stdDev = 0;
+			while (dataPointRange.hasNext())
+			{
+				count++;
+				DataPoint dp = dataPointRange.next();
+				average += (dp.getDoubleValue() - average) / count;
+				pwrSumAvg += (dp.getDoubleValue() * dp.getDoubleValue() - pwrSumAvg) / count;
+				stdDev = Math.sqrt((pwrSumAvg * count - count * average * average) / (count - 1));
+			}
+			if (Double.isNaN(stdDev))
+				stdDev = 0;
+			double ret = 0;
+			if (m_dev == Dev.POS_SD)
+				ret = average + (stdDev * m_devCount);
+			else if (m_dev == Dev.NEG_SD)
+				ret = average - (stdDev * m_devCount);
+			else
+				ret = stdDev;
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, ret));
+		}
+	}
+}
+package org.kairosdb.core;
+import org.json.JSONException;
+import org.json.JSONWriter;
+import org.kairosdb.core.datastore.DataPointGroup;
+import java.io.DataOutput;
+import java.io.IOException;
+public interface DataPoint
+{
+	public static final String API_LONG = "long";
+	public static final String API_DOUBLE = "double";
+	public static final String GROUP_NUMBER = "number";
+	public long getTimestamp();
+	public void setTimestamp(long timestamp);
+	public void writeValueToBuffer(DataOutput buffer) throws IOException;
+	public void writeValueToJson(JSONWriter writer) throws JSONException;
+	public String getApiDataType();
+	public String getDataStoreDataType();
+	public boolean isLong();
+	public long getLongValue();
+	public boolean isDouble();
+	public double getDoubleValue();
+	public DataPointGroup getDataPointGroup();
+	public void setDataPointGroup(DataPointGroup dataPointGroup);
+}
+package org.kairosdb.core.aggregator;
+import org.joda.time.Chronology;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeField;
+import org.joda.time.DateTimeZone;
+import org.joda.time.chrono.GregorianChronology;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureCompoundProperty;
+import org.kairosdb.core.annotation.FeatureProperty;
+import org.kairosdb.core.datastore.DataPointGroup;
+import org.kairosdb.core.datastore.TimeUnit;
+import org.kairosdb.plugin.Aggregator;
+import javax.validation.Valid;
+import javax.validation.constraints.NotNull;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Iterator;
+import java.util.TimeZone;
+import static java.util.Objects.requireNonNull;
+public abstract class RangeAggregator implements Aggregator, TimezoneAware
+{
+	private long m_startTime = 0L;
+	private long m_queryStartTime = 0L;
+	private long m_queryEndTime = 0L;
+	private boolean m_started = false;
+	private boolean m_exhaustive;
+	private DateTimeZone m_timeZone = DateTimeZone.UTC;
+	private boolean m_alignSampling = true;
+	private DateTimeField m_unitField;
+	@NotNull
+	@Valid
+	@FeatureCompoundProperty(
+			name = "sampling",
+			label = "Sampling",
+			order = {"Value", "Unit"}
+	)
+	protected Sampling m_sampling = new Sampling(1, TimeUnit.MILLISECONDS);
+	@FeatureProperty(
+			name = "align_start_time",
+			label = "Align start time",
+			description = "Setting this to true will cause the aggregation range to be aligned based on the sampling"
+					+ " size. For example if your sample size is either milliseconds, seconds, minutes or hours then the"
+					+ " start of the range will always be at the top of the hour. The effect of setting this to true is"
+					+ " that your data will take the same shape when graphed as you refresh the data. Note that"
+					+ " align_sampling, align_start_time, and align_end_time are mutually exclusive. If more than one"
+					+ " are set, unexpected results will occur.",
+			default_value = "false"
+	)
+	protected boolean m_alignStartTime;
+	@FeatureProperty(
+			name = "align_end_time",
+			label = "Align end time",
+			description = "Setting this to true will cause the aggregation range to be aligned based on the sampling"
+					+ " size. For example if your sample size is either milliseconds, seconds, minutes or hours then the"
+					+ " start of the range will always be at the top of the hour. The difference between align_start_time"
+					+ " and align_end_time is that align_end_time sets the timestamp for the datapoint to the beginning of"
+					+ " the following period versus the beginning of the current period. As with align_start_time, setting"
+					+ " this to true will cause your data to take the same shape when graphed as you refresh the data. Note"
+					+ " that align_sampling, align_start_time, and align_end_time are mutually exclusive. If more than one"
+					+ " are set, unexpected results will occur.",
+			default_value = "false"
+	)
+	protected boolean m_alignEndTime;
+	@FeatureProperty(
+			name = "trim",
+			label = "Trim",
+			description = " Trim off empty ranges before and after the actual data",
+			default_value = "false"
+	)
+	protected boolean m_trim;
+	public RangeAggregator()
+	{
+		this(false);
+	}
+	public RangeAggregator(boolean exhaustive)
+	{
+		m_exhaustive = exhaustive;
+	}
+	public void init()
+	{
+		Chronology chronology = GregorianChronology.getInstance(m_timeZone);
+		TimeUnit tu = m_sampling.getUnit();
+		switch (tu)
+		{
+			case YEARS:
+				m_unitField = chronology.year();
+				break;
+			case MONTHS:
+				m_unitField = chronology.monthOfYear();
+				break;
+			case WEEKS:
+				m_unitField = chronology.weekOfWeekyear();
+				break;
+			case DAYS:
+				m_unitField = chronology.dayOfMonth();
+				break;
+			case HOURS:
+				m_unitField = chronology.hourOfDay();
+				break;
+			case MINUTES:
+				m_unitField = chronology.minuteOfHour();
+				break;
+			case SECONDS:
+				m_unitField = chronology.secondOfDay();
+				break;
+			default:
+				m_unitField = chronology.millisOfSecond();
+				break;
+		}
+		if (m_alignSampling)
+			m_startTime = alignRangeBoundary(m_startTime);
+	}
+	public DataPointGroup aggregate(DataPointGroup dataPointGroup)
+	{
+		requireNonNull(dataPointGroup);
+		if (m_exhaustive)
+			return (new ExhaustiveRangeDataPointAggregator(dataPointGroup, getSubAggregator()));
+		else
+			return (new RangeDataPointAggregator(dataPointGroup, getSubAggregator()));
+	}
+	@SuppressWarnings("fallthrough")
+	private long alignRangeBoundary(long timestamp)
+	{
+		DateTime dt = new DateTime(timestamp, m_timeZone);
+		TimeUnit tu = m_sampling.getUnit();
+		switch (tu)
+		{
+			case YEARS:
+				dt = dt.withDayOfYear(1).withMillisOfDay(0);
+				break;
+			case MONTHS:
+				dt = dt.withDayOfMonth(1).withMillisOfDay(0);
+				break;
+			case WEEKS:
+				dt = dt.withDayOfWeek(1).withMillisOfDay(0);
+				break;
+			case DAYS:
+			case HOURS:
+			case MINUTES:
+			case SECONDS:
+				dt = dt.withHourOfDay(0);
+				dt = dt.withMinuteOfHour(0);
+				dt = dt.withSecondOfMinute(0);
+			default:
+				dt = dt.withMillisOfSecond(0);
+				break;
+		}
+		return dt.getMillis();
+	}
+	public void setSampling(Sampling sampling)
+	{
+		m_sampling = sampling;
+	}
+	public void setAlignStartTime(boolean align)
+	{
+		m_alignStartTime = align;
+	}
+	public void setAlignEndTime(boolean align)
+	{
+		m_alignEndTime = align;
+	}
+	public void setAlignSampling(boolean align)
+	{
+		m_alignSampling = align;
+	}
+	public boolean is_alignSampling()
+	{
+		return m_alignSampling;
+	}
+	public void setStartTime(long startTime)
+	{
+		m_startTime = startTime;
+		m_queryStartTime = startTime;
+	}
+	public void setEndTime(long endTime)
+	{
+		long now = System.currentTimeMillis();
+		if (endTime > now)
+			m_queryEndTime = now;
+		else
+			m_queryEndTime = endTime;
+	}
+	public void setTrim(boolean trim)
+	{
+		m_trim = trim;
+	}
+	protected abstract RangeSubAggregator getSubAggregator();
+	public void setTimeZone(DateTimeZone timeZone)
+	{
+		m_timeZone = timeZone;
+	}
+	public Sampling getSampling()
+	{
+		return m_sampling;
+	}
+	public long getStartRange(long timestamp)
+	{
+		long samplingValue = m_sampling.getValue();
+		long numberOfPastPeriods = m_unitField.getDifferenceAsLong(timestamp, m_startTime) / samplingValue;
+		return m_unitField.add(m_startTime, numberOfPastPeriods * samplingValue);
+	}
+	public long getEndRange(long timestamp)
+	{
+		long samplingValue = m_sampling.getValue();
+		long numberOfPastPeriods = m_unitField.getDifferenceAsLong(timestamp, m_startTime) / samplingValue;
+		return m_unitField.add(m_startTime, (numberOfPastPeriods + 1) * samplingValue);
+	}
+	private class RangeDataPointAggregator extends AggregatedDataPointGroupWrapper
+	{
+		protected RangeSubAggregator m_subAggregator;
+		protected Calendar m_calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+		protected Iterator<DataPoint> m_dpIterator;
+		public RangeDataPointAggregator(DataPointGroup innerDataPointGroup,
+				RangeSubAggregator subAggregator)
+		{
+			super(innerDataPointGroup);
+			m_subAggregator = subAggregator;
+			m_dpIterator = new ArrayList<DataPoint>().iterator();
+		}
+		@Override
+		public DataPoint next()
+		{
+			if (!m_dpIterator.hasNext())
+			{
+				long endRange = getEndRange(currentDataPoint.getTimestamp());
+				SubRangeIterator subIterator = new SubRangeIterator(
+						endRange);
+				m_dpIterator = m_subAggregator.getNextDataPoints(getDataPointTime(),
+						subIterator).iterator();
+			}
+			return (m_dpIterator.next());
+		}
+		private long getDataPointTime()
+		{
+			long datapointTime = currentDataPoint.getTimestamp();
+			if (m_alignStartTime)
+			{
+				datapointTime = getStartRange(datapointTime);
+			}
+			else if (m_alignEndTime)
+			{
+				datapointTime = getEndRange(datapointTime);
+			}
+			return datapointTime;
+		}
+		@Override
+		public boolean hasNext()
+		{
+			return (m_dpIterator.hasNext() || super.hasNext());
+		}
+		protected class SubRangeIterator implements Iterator<DataPoint>
+		{
+			private long m_endRange;
+			public SubRangeIterator(long endRange)
+			{
+				m_endRange = endRange;
+			}
+			@Override
+			public boolean hasNext()
+			{
+				return ((currentDataPoint != null) && (currentDataPoint.getTimestamp() < m_endRange));
+			}
+			@Override
+			public DataPoint next()
+			{
+				DataPoint ret = currentDataPoint;
+				if (hasNextInternal())
+					currentDataPoint = nextInternal();
+				return (ret);
+			}
+			@Override
+			public void remove()
+			{
+				throw new UnsupportedOperationException();
+			}
+		}
+	}
+	private class ExhaustiveRangeDataPointAggregator extends RangeDataPointAggregator
+	{
+		private long m_nextExpectedRangeStartTime;
+		public ExhaustiveRangeDataPointAggregator(DataPointGroup innerDataPointGroup, RangeSubAggregator subAggregator)
+		{
+			super(innerDataPointGroup, subAggregator);
+			if (m_trim)
+				m_nextExpectedRangeStartTime = m_startTime;
+			else
+				m_nextExpectedRangeStartTime = m_queryStartTime;
+		}
+		private void setNextStartTime(long timeStamp)
+		{
+			m_nextExpectedRangeStartTime = timeStamp;
+		}
+		@Override
+		public boolean hasNext()
+		{
+			if (m_trim)
+				return super.hasNext();
+			else
+				return (super.hasNext() || m_nextExpectedRangeStartTime <= m_queryEndTime);
+		}
+		@Override
+		public DataPoint next()
+		{
+			if (!m_dpIterator.hasNext())
+			{
+				long startTime = m_nextExpectedRangeStartTime;
+				if (m_trim && !m_started)
+				{
+					m_started = true;
+					startTime = currentDataPoint.getTimestamp();
+				}
+				long startRange = getStartRange(startTime);
+				long endRange = getEndRange(startTime);
+				setNextStartTime(endRange);
+				SubRangeIterator subIterator = new SubRangeIterator(
+						endRange);
+				long dataPointTime = Long.MAX_VALUE;
+				if (currentDataPoint != null)
+					dataPointTime = currentDataPoint.getTimestamp();
+				if (m_alignStartTime || endRange <= dataPointTime)
+					dataPointTime = startRange;
+				m_dpIterator = m_subAggregator.getNextDataPoints(dataPointTime,
+						subIterator).iterator();
+			}
+			return (m_dpIterator.next());
+		}
+	}
+	public interface RangeSubAggregator
+	{
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange);
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.apache.commons.math3.stat.regression.SimpleRegression;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+@FeatureComponent(
+        name = "least_squares",
+		description = "Returns a best fit line through the datapoints using the least squares algorithm."
+)
+public class LeastSquaresAggregator extends RangeAggregator
+{
+	private DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public LeastSquaresAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return new LeastSquaresDataPointAggregator();
+	}
+	private class LeastSquaresDataPointAggregator implements RangeSubAggregator
+	{
+		LeastSquaresDataPointAggregator()
+		{
+		}
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			long start = -1L;
+			long stop = -1L;
+			DataPoint first = null;
+			DataPoint second = null;
+			int count = 0;
+			SimpleRegression simpleRegression = new SimpleRegression(true);
+			while (dataPointRange.hasNext())
+			{
+				count ++;
+				DataPoint dp = dataPointRange.next();
+				if (second == null)
+				{
+					if (first == null)
+						first = dp;
+					else
+						second = dp;
+				}
+				stop = dp.getTimestamp();
+				if (start == -1L)
+					start = dp.getTimestamp();
+				simpleRegression.addData(dp.getTimestamp(), dp.getDoubleValue());
+			}
+			List<DataPoint> ret = new ArrayList<DataPoint>();
+			if (count == 1)
+			{
+				ret.add(first);
+			}
+			else if (count == 2)
+			{
+				ret.add(first);
+				ret.add(second);
+			}
+			else if (count != 0)
+			{
+				ret.add(m_dataPointFactory.createDataPoint(start, simpleRegression.predict(start)));
+				ret.add(m_dataPointFactory.createDataPoint(stop, simpleRegression.predict(stop)));
+			}
+			return (ret);
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.annotation.FeatureProperty;
+import org.kairosdb.core.annotation.ValidationProperty;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import org.kairosdb.core.http.rest.validation.NonZero;
+import org.kairosdb.util.Reservoir;
+import org.kairosdb.util.UniformReservoir;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import static java.lang.Math.floor;
+@FeatureComponent(
+		name = "percentile",
+		description = "Finds the percentile of the data range."
+)
+public class PercentileAggregator extends RangeAggregator
+{
+	public static final Logger logger = LoggerFactory.getLogger(PercentileAggregator.class);
+	private DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public PercentileAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@NonZero
+	@FeatureProperty(
+			label = "Percentile",
+			description = "Data points returned will be in this percentile.",
+			default_value = "0.1",
+            validations =  {
+					@ValidationProperty(
+							expression = "value > 0",
+							message = "Percentile must be greater than 0."
+					),
+					@ValidationProperty(
+							expression = "value < 1",
+							message = "Percentile must be smaller than 1."
+					)
+			}
+	)
+	private double percentile;
+	public void setPercentile(double percentile)
+	{
+		this.percentile = percentile;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new PercentileDataPointAggregator());
+	}
+	private class PercentileDataPointAggregator implements RangeSubAggregator
+	{
+		private double[] values;
+		private Reservoir reservoir;
+		private double percentileValue;
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			reservoir = new UniformReservoir();
+			while (dataPointRange.hasNext())
+			{
+				reservoir.update(dataPointRange.next().getDoubleValue());
+			}
+			getAndSortValues(reservoir.getValues());
+			percentileValue = getValue(percentile);
+			if (logger.isDebugEnabled())
+			{
+				logger.debug("Aggregating the " + percentile + " percentile");
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, percentileValue));
+		}
+		private void getAndSortValues(double[] values){
+			this.values = values;
+			Arrays.sort(this.values);
+		}
+		private double getValue(double quantile) {
+			if (quantile < 0.0 || quantile > 1.0) {
+				throw new IllegalArgumentException(quantile + " is not in [0..1]");
+			}
+			if (values.length == 0) {
+				return 0.0;
+			}
+			final double pos = quantile * (values.length + 1);
+			if (pos < 1) {
+				return values[0];
+			}
+			if (pos >= values.length) {
+				return values[values.length - 1];
+			}
+			final double lower = values[(int) pos - 1];
+			final double upper = values[(int) pos];
+			return lower + (pos - floor(pos)) * (upper - lower);
+		}
+	}
+}
+package org.kairosdb.core.annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface FeatureProperty
+{
+    String name() default "";
+    String label() default "";
+    String description();
+    boolean optional() default false;
+    String type() default "";
+    String[] options() default {};
+    String default_value() default "";
+    String autocomplete() default "";
+    boolean multiline() default false;
+    ValidationProperty[] validations() default { };
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "sum",
+		description = "Adds data points together."
+)
+public class SumAggregator extends RangeAggregator
+{
+	public static final Logger logger = LoggerFactory.getLogger(SumAggregator.class);
+	private DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public SumAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new SumDataPointAggregator());
+	}
+	private class SumDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			double sum = 0;
+			int counter = 0;
+			while (dataPointRange.hasNext())
+			{
+				sum += dataPointRange.next().getDoubleValue();
+				counter ++;
+			}
+			if (logger.isDebugEnabled())
+			{
+				logger.debug("Aggregating "+counter+" values");
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, sum));
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.datastore.DataPointGroup;
+import org.kairosdb.core.groupby.GroupByResult;
+import java.util.List;
+import java.util.Set;
+public abstract class AggregatedDataPointGroupWrapper implements DataPointGroup
+{
+	protected DataPoint currentDataPoint = null;
+	private DataPointGroup innerDataPointGroup;
+	public AggregatedDataPointGroupWrapper(DataPointGroup innerDataPointGroup)
+	{
+		this.innerDataPointGroup = innerDataPointGroup;
+		if (innerDataPointGroup.hasNext())
+			currentDataPoint = innerDataPointGroup.next();
+	}
+	@Override
+	public String getName()
+	{
+		return (innerDataPointGroup.getName());
+	}
+	@Override
+	public String getAlias()
+	{
+		return innerDataPointGroup.getAlias();
+	}
+	@Override
+	public Set<String> getTagNames()
+	{
+		return (innerDataPointGroup.getTagNames());
+	}
+	@Override
+	public Set<String> getTagValues(String tag)
+	{
+		return (innerDataPointGroup.getTagValues(tag));
+	}
+	@Override
+	public boolean hasNext()
+	{
+		return currentDataPoint != null;
+	}
+	@Override
+	public abstract DataPoint next();
+	protected boolean hasNextInternal()
+	{
+		boolean hasNext = innerDataPointGroup.hasNext();
+		if (!hasNext)
+			currentDataPoint = null;
+		return hasNext;
+	}
+	protected DataPoint nextInternal()
+	{
+		return innerDataPointGroup.next();
+	}
+	@Override
+	public void remove()
+	{
+		throw new UnsupportedOperationException();
+	}
+	@Override
+	public void close()
+	{
+		innerDataPointGroup.close();
+	}
+	@Override
+	public List<GroupByResult> getGroupByResult()
+	{
+		return innerDataPointGroup.getGroupByResult();
+	}
+}
+package org.kairosdb.core.datastore;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.groupby.GroupByResult;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+public interface DataPointGroup extends Iterator<DataPoint>, TagSet
+{
+	public String getName();
+	String getAlias();
+	public List<GroupByResult> getGroupByResult();
+	public void close();
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "last",
+		description = "Returns the last value data point for the time range."
+)
+public class LastAggregator extends RangeAggregator
+{
+	@Inject
+	public LastAggregator()
+	{
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return true;
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return groupType;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new LastDataPointAggregator());
+	}
+	private class LastDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			DataPoint last = null;
+			Long lastTime = 0L;
+			while (dataPointRange.hasNext())
+			{
+				last = dataPointRange.next();
+			}
+			if (last != null)
+			{
+				if (m_alignStartTime || m_alignEndTime)
+					last.setTimestamp(returnTime);
+				return Collections.singletonList(last);
+			}
+			return Collections.emptyList();
+		}
+	}
+}
+package org.kairosdb.core.http.rest.json;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.SetMultimap;
+import com.google.common.collect.TreeMultimap;
+import com.google.gson.*;
+import com.google.gson.annotations.SerializedName;
+import com.google.gson.reflect.TypeToken;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
+import com.google.gson.stream.JsonWriter;
+import com.google.inject.Inject;
+import org.apache.bval.constraints.NotEmpty;
+import org.apache.bval.jsr303.ApacheValidationProvider;
+import org.joda.time.DateTimeZone;
+import org.kairosdb.core.aggregator.*;
+import org.kairosdb.core.annotation.Feature;
+import org.kairosdb.core.datastore.*;
+import org.kairosdb.core.http.rest.BeanValidationException;
+import org.kairosdb.core.http.rest.QueryException;
+import org.kairosdb.core.processingstage.FeatureProcessingFactory;
+import org.kairosdb.core.processingstage.FeatureProcessor;
+import org.kairosdb.plugin.Aggregator;
+import org.kairosdb.plugin.GroupBy;
+import org.kairosdb.rollup.Rollup;
+import org.kairosdb.rollup.RollupTask;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import javax.validation.ConstraintViolation;
+import javax.validation.Path;
+import javax.validation.Validation;
+import javax.validation.Validator;
+import javax.validation.constraints.NotNull;
+import javax.validation.metadata.ConstraintDescriptor;
+import java.beans.BeanInfo;
+import java.beans.IntrospectionException;
+import java.beans.Introspector;
+import java.beans.PropertyDescriptor;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Type;
+import java.util.*;
+public class QueryParser
+{
+	protected static final Logger logger = LoggerFactory.getLogger(QueryParser.class);
+	private static final Validator VALIDATOR = Validation.byProvider(ApacheValidationProvider.class).configure().buildValidatorFactory().getValidator();
+	private FeatureProcessor m_processingChain;
+	private QueryPluginFactory m_pluginFactory;
+	private Gson m_gson;
+	private Map<Class, Map<String, PropertyDescriptor>> m_descriptorMap;
+	private final Object m_descriptorMapLock = new Object();
+	@Inject
+	public QueryParser(FeatureProcessor processingChain, QueryPluginFactory pluginFactory)
+	{
+		m_processingChain = processingChain;
+		m_pluginFactory = pluginFactory;
+		m_descriptorMap = new HashMap<>();
+		GsonBuilder gsonBuilder = new GsonBuilder();
+		gsonBuilder.registerTypeAdapterFactory(new LowercaseEnumTypeAdapterFactory());
+		gsonBuilder.registerTypeAdapter(TimeUnit.class, new TimeUnitDeserializer());
+		gsonBuilder.registerTypeAdapter(TrimAggregator.Trim.class, new TrimDeserializer());
+		gsonBuilder.registerTypeAdapter(FilterAggregator.FilterOperation.class, new FilterOperationDeserializer());
+		gsonBuilder.registerTypeAdapter(DateTimeZone.class, new DateTimeZoneDeserializer());
+		gsonBuilder.registerTypeAdapter(Metric.class, new MetricDeserializer());
+		gsonBuilder.registerTypeAdapter(SetMultimap.class, new SetMultimapDeserializer());
+		gsonBuilder.registerTypeAdapter(RelativeTime.class, new RelativeTimeSerializer());
+		gsonBuilder.registerTypeAdapter(SetMultimap.class, new SetMultimapSerializer());
+		gsonBuilder.setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES);
+		m_gson = gsonBuilder.create();
+	}
+	public Gson getGson()
+	{
+		return m_gson;
+	}
+	public static String getUnderscorePropertyName(String camelCaseName)
+	{
+		StringBuilder sb = new StringBuilder();
+		for (char c : camelCaseName.toCharArray())
+		{
+			if (Character.isUpperCase(c))
+				sb.append('_').append(Character.toLowerCase(c));
+			else
+				sb.append(c);
+		}
+		return (sb.toString());
+	}
+	private PropertyDescriptor getPropertyDescriptor(Class objClass, String property) throws IntrospectionException
+	{
+		synchronized (m_descriptorMapLock)
+		{
+			Map<String, PropertyDescriptor> propMap = m_descriptorMap.get(objClass);
+			if (propMap == null)
+			{
+				propMap = new HashMap<>();
+				m_descriptorMap.put(objClass, propMap);
+				BeanInfo beanInfo = Introspector.getBeanInfo(objClass);
+				PropertyDescriptor[] descriptors = beanInfo.getPropertyDescriptors();
+				for (PropertyDescriptor descriptor : descriptors)
+				{
+					propMap.put(getUnderscorePropertyName(descriptor.getName()), descriptor);
+				}
+			}
+			return (propMap.get(property));
+		}
+	}
+	private long getStartTime(Query request, String context) throws BeanValidationException
+	{
+		if (request.getStartAbsolute() != null)
+		{
+			return request.getStartAbsolute();
+		}
+		else if (request.getStartRelative() != null)
+		{
+			return request.getStartRelative().getTimeRelativeTo(System.currentTimeMillis());
+		}
+		else
+		{
+			throw new BeanValidationException(new SimpleConstraintViolation("start_time", "relative or absolute time must be set"), context);
+		}
+	}
+	private Optional<Long> getEndTime(Query request)
+	{
+		if (request.getEndAbsolute() != null)
+			return Optional.of(request.getEndAbsolute());
+		else if (request.getEndRelative() != null)
+			return Optional.of(request.getEndRelative().getTimeRelativeTo(System.currentTimeMillis()));
+		return Optional.empty();
+	}
+	private void validateObject(Object object) throws BeanValidationException
+	{
+		validateObject(object, null);
+	}
+	private void validateObject(Object object, String context) throws BeanValidationException
+	{
+		Set<ConstraintViolation<Object>> violations = VALIDATOR.validate(object);
+		if (!violations.isEmpty())
+		{
+			throw new BeanValidationException(violations, context);
+		}
+	}
+	public Query parseQueryMetric(String json) throws QueryException, BeanValidationException
+	{
+		JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
+		return parseQueryMetric(obj);
+	}
+	private Query parseQueryMetric(JsonObject obj) throws QueryException, BeanValidationException
+	{
+		return parseQueryMetric(obj, "");
+	}
+	private Query parseQueryMetric(JsonObject obj, String contextPrefix) throws QueryException, BeanValidationException
+	{
+		Query query;
+		try
+		{
+			query = m_gson.fromJson(obj, Query.class);
+			validateObject(query);
+		}
+		catch (ContextualJsonSyntaxException e)
+		{
+			throw new BeanValidationException(new SimpleConstraintViolation(e.getContext(), e.getMessage()), "query");
+		}
+		JsonElement queryPlugins = obj.get("plugins");
+		if (queryPlugins != null)
+		{
+			JsonArray pluginArray = queryPlugins.getAsJsonArray();
+			if (pluginArray.size() > 0)
+				parsePlugins("", query, pluginArray);
+		}
+		JsonArray metricsArray = obj.getAsJsonArray("metrics");
+		if (metricsArray == null)
+		{
+			throw new BeanValidationException(new SimpleConstraintViolation("metric[]", "must have a size of at least 1"), contextPrefix + "query");
+		}
+		for (int I = 0; I < metricsArray.size(); I++)
+		{
+			String context = (!contextPrefix.isEmpty() ? contextPrefix + "." : contextPrefix) + "query.metric[" + I + "]";
+			try
+			{
+				Metric metric = m_gson.fromJson(metricsArray.get(I), Metric.class);
+				validateObject(metric, context);
+				long startTime = getStartTime(query, context);
+				QueryMetric queryMetric = new QueryMetric(startTime, query.getCacheTime(), metric.getName());
+				queryMetric.setExcludeTags(metric.isExcludeTags());
+				queryMetric.setLimit(metric.getLimit());
+				queryMetric.setJsonObj(obj);
+				queryMetric.setAlias(metric.getAlias());
+				getEndTime(query).ifPresent(queryMetric::setEndTime);
+				if (queryMetric.getEndTime() < startTime)
+					throw new BeanValidationException(new SimpleConstraintViolation("end_time", "must be greater than the start time"), context);
+				queryMetric.setCacheString(query.getCacheString() + metric.getCacheString());
+				JsonObject jsMetric = metricsArray.get(I).getAsJsonObject();
+				for (FeatureProcessingFactory<?> factory : m_processingChain.getFeatureProcessingFactories())
+				{
+					String factoryName = factory.getClass().getAnnotation(Feature.class).name();
+					JsonElement queryProcessor = jsMetric.get(factoryName);
+					if (queryProcessor != null)
+					{
+						JsonArray queryProcessorArray = queryProcessor.getAsJsonArray();
+						parseQueryProcessor(context, factoryName,
+								queryProcessorArray, factory.getFeature(),
+								queryMetric, query.getTimeZone());
+					}
+				}
+				JsonElement plugins = jsMetric.get("plugins");
+				if (plugins != null)
+				{
+					JsonArray pluginArray = plugins.getAsJsonArray();
+					if (pluginArray.size() > 0)
+						parsePlugins(context, queryMetric, pluginArray);
+				}
+				JsonElement order = jsMetric.get("order");
+				if (order != null)
+					queryMetric.setOrder(Order.fromString(order.getAsString(), context));
+				queryMetric.setTags(metric.getTags());
+				query.addQueryMetric(queryMetric);
+			}
+			catch (ContextualJsonSyntaxException e)
+			{
+				throw new BeanValidationException(new SimpleConstraintViolation(e.getContext(), e.getMessage()), context);
+			}
+		}
+		return (query);
+	}
+	private void parseSpecificQueryProcessor(Object queryProcessor, QueryMetric queryMetric, DateTimeZone timeZone)
+	{
+		if (queryProcessor instanceof RangeAggregator)
+		{
+			RangeAggregator ra = (RangeAggregator) queryProcessor;
+			ra.setStartTime(queryMetric.getStartTime());
+			ra.setEndTime(queryMetric.getEndTime());
+		}
+		if (queryProcessor instanceof TimezoneAware)
+		{
+			TimezoneAware ta = (TimezoneAware) queryProcessor;
+			ta.setTimeZone(timeZone);
+		}
+		if (queryProcessor instanceof GroupByAware)
+		{
+			GroupByAware groupByAware = (GroupByAware) queryProcessor;
+			groupByAware.setGroupBys(queryMetric.getGroupBys());
+		}
+		if (queryProcessor instanceof GroupBy)
+		{
+			GroupBy groupBy = (GroupBy) queryProcessor;
+			groupBy.setStartDate(queryMetric.getStartTime());
+		}
+	}
+	private void addQueryProcessorToMetric(Object queryProcessor, QueryMetric queryMetric)
+	{
+		if (queryProcessor instanceof Aggregator)
+			queryMetric.addAggregator((Aggregator) queryProcessor);
+		if (queryProcessor instanceof GroupBy)
+			queryMetric.addGroupBy((GroupBy) queryProcessor);
+	}
+	private void parseQueryProcessor(String context, String queryProcessorFamilyName,
+			JsonArray queryProcessors, Class<?> queryProcessorFamilyType,
+			QueryMetric queryMetric, DateTimeZone dateTimeZone)
+			throws BeanValidationException, QueryException
+	{
+		for (int J = 0; J < queryProcessors.size(); J++)
+		{
+			JsonObject jsQueryProcessor = queryProcessors.get(J).getAsJsonObject();
+			JsonElement name = jsQueryProcessor.get("name");
+			if (name == null || name.getAsString().isEmpty())
+				throw new BeanValidationException(new SimpleConstraintViolation(queryProcessorFamilyName + "[" + J + "]", "must have a name"), context);
+			String qpContext = context + "." + queryProcessorFamilyName + "[" + J + "]";
+			String qpName = name.getAsString();
+			Object queryProcessor = m_processingChain.getFeatureProcessingFactory(queryProcessorFamilyType).createFeatureProcessor(qpName);
+			if (queryProcessor == null)
+				throw new BeanValidationException(new SimpleConstraintViolation(qpName, "invalid " + queryProcessorFamilyName + " name"), qpContext);
+			parseSpecificQueryProcessor(queryProcessor, queryMetric, dateTimeZone);
+			deserializeProperties(qpContext, jsQueryProcessor, qpName, queryProcessor);
+			validateObject(queryProcessor, qpContext);
+			addQueryProcessorToMetric(queryProcessor, queryMetric);
+			if (queryProcessor instanceof Aggregator)
+			{
+				((Aggregator)queryProcessor).init();
+			}
+		}
+	}
+	public List<RollupTask> parseRollupTasks(String json) throws BeanValidationException, QueryException
+	{
+		List<RollupTask> tasks = new ArrayList<>();
+		JsonArray rollupTasks = JsonParser.parseString(json).getAsJsonArray();
+		for (int i = 0; i < rollupTasks.size(); i++)
+		{
+			JsonObject taskObject = rollupTasks.get(i).getAsJsonObject();
+			RollupTask task = parseRollupTask(taskObject, "tasks[" + i + "]");
+			task.addJson(taskObject.toString().replaceAll("\\n", ""));
+			tasks.add(task);
+		}
+		return tasks;
+	}
+	public RollupTask parseRollupTask(String json) throws BeanValidationException, QueryException
+	{
+		return parseRollupTask(json, null);
+	}
+	public RollupTask parseRollupTask(String json, String id) throws BeanValidationException, QueryException
+	{
+		JsonObject taskObject = JsonParser.parseString(json).getAsJsonObject();
+		RollupTask task = parseRollupTask(taskObject, "");
+		String newJson = taskObject.toString();
+		if (id != null)
+		{
+			newJson = newJson.replace(task.getId(), id);
+		}
+		task.addJson(newJson.replaceAll("\\n", ""));
+		return task;
+	}
+	private RollupTask parseRollupTask(JsonObject rollupTask, String context) throws BeanValidationException, QueryException
+	{
+		RollupTask task = m_gson.fromJson(rollupTask.getAsJsonObject(), RollupTask.class);
+		validateObject(task);
+		JsonArray rollups = rollupTask.getAsJsonObject().getAsJsonArray("rollups");
+		if (rollups != null)
+		{
+			for (int j = 0; j < rollups.size(); j++)
+			{
+				JsonObject rollupObject = rollups.get(j).getAsJsonObject();
+				Rollup rollup = m_gson.fromJson(rollupObject, Rollup.class);
+				context = context + "rollup[" + j + "]";
+				validateObject(rollup, context);
+				JsonObject queryObject = rollupObject.getAsJsonObject("query");
+				List<QueryMetric> queries = parseQueryMetric(queryObject, context).getQueryMetrics();
+				for (int k = 0; k < queries.size(); k++)
+				{
+					QueryMetric query = queries.get(k);
+					context += ".query[" + k + "]";
+					validateHasRangeAggregator(query, context);
+					SaveAsAggregator saveAsAggregator = (SaveAsAggregator) m_processingChain.getFeatureProcessingFactory(Aggregator.class).createFeatureProcessor("save_as");
+					saveAsAggregator.setMetricName(rollup.getSaveAs());
+					saveAsAggregator.setGroupBys(query.getGroupBys());
+					query.addAggregator(saveAsAggregator);
+				}
+				rollup.addQueries(queries);
+				task.addRollup(rollup);
+			}
+		}
+		return task;
+	}
+	private void validateHasRangeAggregator(QueryMetric query, String context) throws BeanValidationException
+	{
+		boolean hasRangeAggregator = false;
+		for (Aggregator aggregator : query.getAggregators())
+		{
+			if (aggregator instanceof RangeAggregator)
+			{
+				hasRangeAggregator = true;
+				break;
+			}
+		}
+		if (!hasRangeAggregator)
+		{
+			throw new BeanValidationException(new SimpleConstraintViolation("aggregator", "At least one aggregator must be a range aggregator"), context);
+		}
+	}
+	private void parsePlugins(String context, PluggableQuery queryMetric, JsonArray plugins) throws BeanValidationException, QueryException
+	{
+		for (int I = 0; I < plugins.size(); I++)
+		{
+			JsonObject pluginJson = plugins.get(I).getAsJsonObject();
+			JsonElement name = pluginJson.get("name");
+			if (name == null || name.getAsString().isEmpty())
+				throw new BeanValidationException(new SimpleConstraintViolation("plugins[" + I + "]", "must have a name"), context);
+			String pluginContext = context + ".plugins[" + I + "]";
+			String pluginName = name.getAsString();
+			QueryPlugin plugin = m_pluginFactory.createQueryPlugin(pluginName);
+			if (plugin == null)
+				throw new BeanValidationException(new SimpleConstraintViolation(pluginName, "invalid query plugin name"), pluginContext);
+			deserializeProperties(pluginContext, pluginJson, pluginName, plugin);
+			validateObject(plugin, pluginContext);
+			queryMetric.addPlugin(plugin);
+		}
+	}
+	private void deserializeProperties(String context, JsonObject jsonObject, String name, Object object) throws QueryException, BeanValidationException
+	{
+		Set<Map.Entry<String, JsonElement>> props = jsonObject.entrySet();
+		for (Map.Entry<String, JsonElement> prop : props)
+		{
+			String property = prop.getKey();
+			if (property.equals("name"))
+				continue;
+			PropertyDescriptor pd = null;
+			try
+			{
+				pd = getPropertyDescriptor(object.getClass(), property);
+			}
+			catch (IntrospectionException e)
+			{
+				logger.error("Introspection error on " + object.getClass(), e);
+			}
+			if (pd == null)
+			{
+				String msg = "Property '" + property + "' was specified for object '" + name +
+						"' but no matching setter was found on '" + object.getClass() + "'";
+				throw new QueryException(msg);
+			}
+			Class<?> propClass = pd.getPropertyType();
+			Object propValue;
+			try
+			{
+				propValue = m_gson.fromJson(prop.getValue(), propClass);
+				validateObject(propValue, context + "." + property);
+			}
+			catch (ContextualJsonSyntaxException e)
+			{
+				throw new BeanValidationException(new SimpleConstraintViolation(e.getContext(), e.getMessage()), context);
+			}
+			catch (NumberFormatException e)
+			{
+				throw new BeanValidationException(new SimpleConstraintViolation(property, e.getMessage()), context);
+			}
+			Method method = pd.getWriteMethod();
+			if (method == null)
+			{
+				String msg = "Property '" + property + "' was specified for object '" + name +
+						"' but no matching setter was found on '" + object.getClass().getName() + "'";
+				throw new QueryException(msg);
+			}
+			try
+			{
+				method.invoke(object, propValue);
+			}
+			catch (Exception e)
+			{
+				logger.error("Invocation error: ", e);
+				String msg = "Call to " + object.getClass().getName() + ":" + method.getName() +
+						" failed with message: " + e.getMessage();
+				throw new QueryException(msg);
+			}
+		}
+	}
+	private static class Metric
+	{
+		@NotNull
+		@NotEmpty()
+		@SerializedName("name")
+		private final String name;
+		@SerializedName("alias")
+		private String alias;
+		@SerializedName("tags")
+		private final SetMultimap<String, String> tags;
+		@SerializedName("exclude_tags")
+		private final boolean exclude_tags;
+		@SerializedName("limit")
+		private int limit;
+		public Metric(String name, boolean exclude_tags, TreeMultimap<String, String> tags)
+		{
+			this.name = name;
+			this.tags = tags;
+			this.exclude_tags = exclude_tags;
+			this.limit = 0;
+		}
+		public String getName()
+		{
+			return name;
+		}
+		public String getAlias()
+		{
+			return alias;
+		}
+		public void setAlias(String alias)
+		{
+			this.alias = alias;
+		}
+		public int getLimit()
+		{
+			return limit;
+		}
+		public void setLimit(int limit)
+		{
+			this.limit = limit;
+		}
+		private boolean isExcludeTags()
+		{
+			return exclude_tags;
+		}
+		String getCacheString()
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.append(name).append(":");
+			for (Map.Entry<String, String> tagEntry : tags.entries())
+			{
+				sb.append(tagEntry.getKey()).append("=");
+				sb.append(tagEntry.getValue()).append(":");
+			}
+			return (sb.toString());
+		}
+		public SetMultimap<String, String> getTags()
+		{
+			if (tags != null)
+			{
+				return tags;
+			}
+			else
+			{
+				return HashMultimap.create();
+			}
+		}
+	}
+	private static class LowercaseEnumTypeAdapterFactory implements TypeAdapterFactory
+	{
+		public <T> TypeAdapter<T> create(Gson gson, TypeToken<T> type)
+		{
+			@SuppressWarnings("unchecked")
+			Class<T> rawType = (Class<T>) type.getRawType();
+			if (!rawType.isEnum())
+			{
+				return null;
+			}
+			final Map<String, T> lowercaseToConstant = new HashMap<>();
+			for (T constant : rawType.getEnumConstants())
+			{
+				lowercaseToConstant.put(toLowercase(constant), constant);
+			}
+			return new TypeAdapter<T>()
+			{
+				public void write(JsonWriter out, T value) throws IOException
+				{
+					if (value == null)
+					{
+						out.nullValue();
+					}
+					else
+					{
+						out.value(toLowercase(value));
+					}
+				}
+				public T read(JsonReader reader) throws IOException
+				{
+					if (reader.peek() == JsonToken.NULL)
+					{
+						reader.nextNull();
+						return null;
+					}
+					else
+					{
+						return lowercaseToConstant.get(reader.nextString());
+					}
+				}
+			};
+		}
+		private String toLowercase(Object o)
+		{
+			return o.toString().toLowerCase(Locale.US);
+		}
+	}
+	private static class TimeUnitDeserializer implements JsonDeserializer<TimeUnit>
+	{
+		public TimeUnit deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context)
+				throws JsonParseException
+		{
+			String unit = json.getAsString();
+			TimeUnit tu;
+			try
+			{
+				tu = TimeUnit.from(unit);
+			}
+			catch (IllegalArgumentException e)
+			{
+				throw new ContextualJsonSyntaxException(unit,
+						"is not a valid time unit, must be one of " + TimeUnit.toValueNames());
+			}
+			return tu;
+		}
+	}
+	private static abstract class EnumDeserializer<TEnum extends Enum<TEnum>> implements JsonDeserializer<TEnum>
+	{
+		TEnum genericDeserializer(JsonElement json, Class<TEnum> type)
+				throws JsonParseException
+		{
+			String jsValue = json.getAsString();
+			TEnum[] enumDefinition = type.getEnumConstants();
+			for (TEnum value : enumDefinition)
+				if (value.toString().equalsIgnoreCase(jsValue))
+					return value;
+			StringBuilder values = new StringBuilder("is not a valid trim type, must be ");
+			for (int i = 0; i < enumDefinition.length; i++)
+			{
+				values.append("'").append(enumDefinition[i].toString().toLowerCase()).append("'");
+				if (i < enumDefinition.length - 2)
+					values.append(", ");
+				else if (i < enumDefinition.length - 1)
+					values.append(" or ");
+				else
+					values.append(".");
+			}
+			throw new ContextualJsonSyntaxException(jsValue, values.toString());
+		}
+	}
+	private static class TrimDeserializer extends EnumDeserializer<TrimAggregator.Trim>
+	{
+		public TrimAggregator.Trim deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context)
+				throws JsonParseException
+		{
+			return genericDeserializer(json, TrimAggregator.Trim.class);
+		}
+	}
+	private static class FilterOperationDeserializer extends EnumDeserializer<FilterAggregator.FilterOperation>
+	{
+		public FilterAggregator.FilterOperation deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context)
+				throws JsonParseException
+		{
+			return genericDeserializer(json, FilterAggregator.FilterOperation.class);
+		}
+	}
+	private static class DateTimeZoneDeserializer implements JsonDeserializer<DateTimeZone>
+	{
+		public DateTimeZone deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context)
+				throws JsonParseException
+		{
+			if (json.isJsonNull())
+				return null;
+			String tz = json.getAsString();
+			if (tz.isEmpty()) 
+				return DateTimeZone.UTC;
+			DateTimeZone timeZone;
+			try
+			{
+				timeZone = DateTimeZone.forID(tz);
+			}
+			catch (IllegalArgumentException e)
+			{
+				throw new ContextualJsonSyntaxException(tz,
+						"is not a valid time zone, must be one of " + DateTimeZone.getAvailableIDs());
+			}
+			return timeZone;
+		}
+	}
+	private static class MetricDeserializer implements JsonDeserializer<Metric>
+	{
+		@Override
+		public Metric deserialize(JsonElement jsonElement, Type type, JsonDeserializationContext jsonDeserializationContext)
+				throws JsonParseException
+		{
+			JsonObject jsonObject = jsonElement.getAsJsonObject();
+			String name = null;
+			if (jsonObject.get("name") != null)
+				name = jsonObject.get("name").getAsString();
+			boolean exclude_tags = false;
+			if (jsonObject.get("exclude_tags") != null)
+				exclude_tags = jsonObject.get("exclude_tags").getAsBoolean();
+			TreeMultimap<String, String> tags = TreeMultimap.create();
+			JsonElement jeTags = jsonObject.get("tags");
+			if (jeTags != null)
+			{
+				JsonObject joTags = jeTags.getAsJsonObject();
+				int count = 0;
+				for (Map.Entry<String, JsonElement> tagEntry : joTags.entrySet())
+				{
+					String context = "tags[" + count + "]";
+					if (tagEntry.getKey().isEmpty())
+						throw new ContextualJsonSyntaxException(context, "name must not be empty");
+					if (tagEntry.getValue().isJsonArray())
+					{
+						for (JsonElement element : tagEntry.getValue().getAsJsonArray())
+						{
+							if (element.isJsonNull() || element.getAsString().isEmpty())
+								throw new ContextualJsonSyntaxException(context + "." + tagEntry.getKey(), "value must not be null or empty");
+							tags.put(tagEntry.getKey(), element.getAsString());
+						}
+					}
+					else
+					{
+						if (tagEntry.getValue().isJsonNull() || tagEntry.getValue().getAsString().isEmpty())
+							throw new ContextualJsonSyntaxException(context + "." + tagEntry.getKey(), "value must not be null or empty");
+						tags.put(tagEntry.getKey(), tagEntry.getValue().getAsString());
+					}
+					count++;
+				}
+			}
+			Metric ret = new Metric(name, exclude_tags, tags);
+			JsonElement limit = jsonObject.get("limit");
+			if (limit != null)
+				ret.setLimit(limit.getAsInt());
+			JsonElement alias = jsonObject.get("alias");
+			if (alias != null)
+				ret.setAlias(alias.getAsString());
+			return (ret);
+		}
+	}
+	private static class ContextualJsonSyntaxException extends RuntimeException
+	{
+		private final String context;
+		private ContextualJsonSyntaxException(String context, String msg)
+		{
+			super(msg);
+			this.context = context;
+		}
+		private String getContext()
+		{
+			return context;
+		}
+	}
+	public static class SimpleConstraintViolation implements ConstraintViolation<Object>
+	{
+		private final String message;
+		private final String context;
+		public SimpleConstraintViolation(String context, String message)
+		{
+			this.message = message;
+			this.context = context;
+		}
+		@Override
+		public String getMessage()
+		{
+			return message;
+		}
+		@Override
+		public String getMessageTemplate()
+		{
+			return null;
+		}
+		@Override
+		public Object getRootBean()
+		{
+			return null;
+		}
+		@Override
+		public Class<Object> getRootBeanClass()
+		{
+			return null;
+		}
+		@Override
+		public Object getLeafBean()
+		{
+			return null;
+		}
+		@Override
+		public Path getPropertyPath()
+		{
+			return new SimplePath(context);
+		}
+		@Override
+		public Object getInvalidValue()
+		{
+			return null;
+		}
+		@Override
+		public ConstraintDescriptor<?> getConstraintDescriptor()
+		{
+			return null;
+		}
+	}
+	private static class SimplePath implements Path
+	{
+		private final String context;
+		private SimplePath(String context)
+		{
+			this.context = context;
+		}
+		@Override
+		public Iterator<Node> iterator()
+		{
+			return null;
+		}
+		@Override
+		public String toString()
+		{
+			return context;
+		}
+	}
+}
+package org.kairosdb.plugin;
+import org.kairosdb.core.datastore.DataPointGroup;
+public interface Aggregator
+{
+	DataPointGroup aggregate(DataPointGroup dataPointGroup);
+	boolean canAggregate(String groupType);
+	String getAggregatedGroupType(String groupType);
+	void init();
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import org.kairosdb.core.exception.KairosDBException;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+		name = "avg",
+		label = "AVG",
+		description = "Averages the data points together."
+)
+public class AvgAggregator extends RangeAggregator
+{
+	DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public AvgAggregator(DoubleDataPointFactory dataPointFactory) throws KairosDBException
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new AvgDataPointAggregator());
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	private class AvgDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			int count = 0;
+			double sum = 0;
+			while (dataPointRange.hasNext())
+			{
+				DataPoint dp = dataPointRange.next();
+				if (dp.isDouble())
+				{
+					sum += dp.getDoubleValue();
+					count++;
+				}
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, sum / count));
+		}
+	}
+}
+package org.kairosdb.rollup;
+import org.joda.time.DateTimeZone;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.aggregator.RangeAggregator;
+import org.kairosdb.core.aggregator.Sampling;
+import org.kairosdb.core.datastore.*;
+import org.kairosdb.core.exception.DatastoreException;
+import org.kairosdb.plugin.Aggregator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Date;
+import java.util.List;
+import static java.util.Objects.requireNonNull;
+public class RollupProcessorImpl implements RollupProcessor
+{
+	private static final Logger log = LoggerFactory.getLogger(RollupProcessorImpl.class);
+	private final KairosDatastore datastore;
+	private boolean interrupted;
+	public RollupProcessorImpl(KairosDatastore datastore)
+	{
+		this.datastore = requireNonNull(datastore, "datastore must not be null");
+	}
+	@Override
+	public long process(RollupTaskStatusStore statusStore, RollupTask task, QueryMetric rollupQueryMetric, DateTimeZone timeZone)
+			throws RollUpException, DatastoreException, InterruptedException
+	{
+		long now = now();
+		Sampling samplingSize = getSamplingSize(getLastAggregator(rollupQueryMetric.getAggregators()));
+		long lastExecutionTime = getLastExecutionTime(statusStore, task, now);
+		if (log.isDebugEnabled())
+			log.debug("LastExecutionTime = " + new Date(lastExecutionTime));
+		long startTime = calculateStartTime(task.getExecutionInterval(), samplingSize, lastExecutionTime, now);
+		if (log.isDebugEnabled())
+			log.debug("startTime = " + new Date(startTime));
+		return process(task, rollupQueryMetric, startTime, now, timeZone);
+	}
+	@Override
+	public long process(RollupTask task, QueryMetric rollupQueryMetric, long startTime, long endTime, DateTimeZone timeZone)
+			throws DatastoreException, InterruptedException, RollUpException {
+		RangeAggregator lastAggregator = getLastAggregator(rollupQueryMetric.getAggregators());
+		List<SamplingPeriod> samplingPeriods;
+		samplingPeriods = RollupUtil.getSamplingPeriodsAlignedToUnit(lastAggregator, startTime, endTime, timeZone);
+		if (log.isDebugEnabled())
+		{
+			for (SamplingPeriod samplingPeriod : samplingPeriods)
+			{
+				log.debug("Sampling period " + samplingPeriod);
+			}
+		}
+		long dpCount = 0;
+		for (SamplingPeriod samplingPeriod : samplingPeriods)
+		{
+			if (interrupted)
+			{
+				break;
+			}
+			rollupQueryMetric.setStartTime(samplingPeriod.getStartTime());
+			rollupQueryMetric.setEndTime(samplingPeriod.getEndTime());
+			dpCount += executeRollup(rollupQueryMetric);
+			log.debug("Rollup Task: " + task.getName() + " for Rollup " + task.getName() + " data point count of " + dpCount);
+			Thread.sleep(50);
+		}
+		return dpCount;
+	}
+	private static RangeAggregator getLastAggregator(List<Aggregator> aggregators) throws RollUpException {
+		for (int i = aggregators.size() - 1; i >= 0; i--)
+		{
+			Aggregator aggregator = aggregators.get(i);
+			if (aggregator instanceof RangeAggregator)
+			{
+				return ((RangeAggregator) aggregator);
+			}
+		}
+		throw new RollUpException("Roll-up must have at least one Range aggregator");
+	}
+	private static Sampling getSamplingSize(RangeAggregator aggregator)
+	{
+		return aggregator.getSampling();
+	}
+	private long executeRollup(QueryMetric query) throws DatastoreException
+	{
+		log.debug("Execute Rollup: " + query.getName() + " Start time: " + new Date(query.getStartTime()) + " End time: " + new Date(query.getEndTime()));
+		int dpCount = 0;
+		try (DatastoreQuery dq = datastore.createQuery(query))
+		{
+			List<DataPointGroup> result = dq.execute();
+			for (DataPointGroup dataPointGroup : result)
+			{
+				while (dataPointGroup.hasNext())
+				{
+					dataPointGroup.next();
+					dpCount++;
+				}
+			}
+		}
+		return dpCount;
+	}
+	private static long now()
+	{
+		return System.currentTimeMillis();
+	}
+	private static DataPoint performQuery(KairosDatastore datastore, QueryMetric rollupQuery) throws DatastoreException
+	{
+		try (DatastoreQuery query = datastore.createQuery(rollupQuery))
+		{
+			List<DataPointGroup> rollupResult = query.execute();
+			DataPoint dataPoint = null;
+			for (DataPointGroup dataPointGroup : rollupResult)
+			{
+				while (dataPointGroup.hasNext())
+				{
+					DataPoint next = dataPointGroup.next();
+					if (next.getApiDataType().equals(DataPoint.API_DOUBLE) ||
+							next.getApiDataType().equals(DataPoint.API_LONG))
+					{
+						dataPoint = next;
+					}
+				}
+			}
+			return dataPoint;
+		}
+	}
+	private long getLastExecutionTime(RollupTaskStatusStore statusStore, RollupTask task, long now)
+			throws RollUpException, DatastoreException
+	{
+		long lastExecutionTime = 0L;
+		RollupTaskStatus status = statusStore.read(task.getId());
+		if (status != null)
+			return geStatusExecutionTime(status);
+		else
+		{
+			DataPoint lastRollup = getLastRollup(datastore, task.getName(), now);
+			if (lastRollup != null)
+				lastExecutionTime = lastRollup.getTimestamp();
+		}
+		return lastExecutionTime;
+	}
+	private static long geStatusExecutionTime(RollupTaskStatus status)
+	{
+		if (status == null)
+		{
+			return 0L;
+		}
+		long lastExecutionTime = 0L;
+		for (RollupQueryMetricStatus metricStatus : status.getStatuses())
+		{
+			lastExecutionTime = Math.max(lastExecutionTime, metricStatus.getLastExecutionTime());
+		}
+		return lastExecutionTime;
+	}
+	private static DataPoint getLastRollup(KairosDatastore datastore, String rollupName, long now)
+			throws DatastoreException
+	{
+		QueryMetric rollupQuery = new QueryMetric(0, now, 0, rollupName);
+		rollupQuery.setLimit(1);
+		rollupQuery.setOrder(Order.DESC);
+		return performQuery(datastore, rollupQuery);
+	}
+	private static long calculateStartTime(Duration executionInterval, Sampling samplingSize, long lastExecutionTime, long now)
+	{
+		return lastExecutionTime == 0L ? RollupUtil.subtract(RollupUtil.subtract(now, executionInterval), samplingSize)
+				: lastExecutionTime;
+	}
+	@Override
+	public void interrupt()
+	{
+		interrupted = true;
+	}
+}
+package org.kairosdb.rollup;
+import org.joda.time.DateTimeZone;
+import org.kairosdb.core.aggregator.RangeAggregator;
+import org.kairosdb.core.aggregator.Sampling;
+import org.kairosdb.core.datastore.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+public class RollupUtil
+{
+	private RollupUtil(){}
+	public static List<SamplingPeriod> getSamplingPeriodsAlignedToUnit(RangeAggregator aggregator,
+			long startTime, long endTime, DateTimeZone timeZone)
+	{
+		aggregator.setTimeZone(timeZone);
+		aggregator.setAlignSampling(true);
+		aggregator.init();
+		List<SamplingPeriod> samplingPeriods = new ArrayList<>();
+		long startTimeAligned = aggregator.getStartRange(startTime);
+		long endTimeAligned = aggregator.getEndRange(endTime);
+		if (startTimeAligned == endTimeAligned)
+		{
+			return Collections.emptyList();
+		}
+		long nextStartTime = startTimeAligned;
+		while( nextStartTime < endTimeAligned)
+		{
+			long periodStart = nextStartTime;
+			nextStartTime = getNextStartTime(aggregator.getSampling(), nextStartTime);
+			samplingPeriods.add(new SamplingPeriod(periodStart, nextStartTime));
+		}
+		return samplingPeriods;
+	}
+	private static ChronoUnit convertSamplingToChronoUnit(Duration duration)
+	{
+		switch(duration.getUnit())
+		{
+			case YEARS:
+				return ChronoUnit.YEARS;
+			case MONTHS:
+				return ChronoUnit.MONTHS;
+			case DAYS:
+				return ChronoUnit.DAYS;
+			case HOURS:
+				return ChronoUnit.HOURS;
+			case MINUTES:
+				return ChronoUnit.MINUTES;
+			case SECONDS:
+				return ChronoUnit.SECONDS;
+			case MILLISECONDS:
+				return ChronoUnit.MILLIS;
+			default:
+				throw new IllegalArgumentException("Cannot convert sampling time to ChronoUnit for " + duration.getUnit().toString());
+		}
+	}
+	private static LocalDateTime trucateTo(LocalDateTime time, Sampling sampling)
+	{
+		ChronoUnit chronoUnit = convertSamplingToChronoUnit(sampling);
+		if (chronoUnit == ChronoUnit.MONTHS)
+		{
+			return time.truncatedTo(ChronoUnit.DAYS).withDayOfMonth(1);
+		}
+		else if (chronoUnit == ChronoUnit.YEARS)
+		{
+			return time.truncatedTo(ChronoUnit.DAYS).withDayOfMonth(1).withMonth(1);
+		}
+		else
+		{
+			return time.truncatedTo(chronoUnit);
+		}
+	}
+	private static long getNextStartTime(Sampling sampling, long currentStartTime)
+	{
+		ChronoUnit chronoUnit = convertSamplingToChronoUnit(sampling);
+		LocalDateTime localDateTime =	LocalDateTime.ofInstant(Instant.ofEpochMilli(currentStartTime), ZoneOffset.UTC);
+		return localDateTime.plus(sampling.getValue(), chronoUnit).toInstant(ZoneOffset.UTC).toEpochMilli();
+	}
+	public static long subtract(long time, Duration duration)
+	{
+		ChronoUnit chronoUnit = convertSamplingToChronoUnit(duration);
+		LocalDateTime localDateTime =	LocalDateTime.ofInstant(Instant.ofEpochMilli(time), ZoneOffset.UTC);
+		return localDateTime.minus(duration.getValue(), chronoUnit).toInstant(ZoneOffset.UTC).toEpochMilli();
+	}
+}
+package org.kairosdb.core.aggregator;
+import org.kairosdb.core.datastore.Duration;
+import org.kairosdb.core.datastore.TimeUnit;
+public class Sampling extends Duration
+{
+	public Sampling()
+	{
+		super();
+	}
+	public Sampling(int value, TimeUnit unit)
+	{
+		super(value, unit);
+	}
+	@Override
+	public String toString()
+	{
+		return "Sampling{" +
+				"} " + super.toString();
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "min",
+		description = "Returns the minimum value data point for the time range."
+)
+public class MinAggregator extends RangeAggregator
+{
+	private DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public MinAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new MinDataPointAggregator());
+	}
+	private class MinDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			double min = Double.MAX_VALUE;
+			while (dataPointRange.hasNext())
+			{
+				DataPoint dp = dataPointRange.next();
+				min = Math.min(min, dp.getDoubleValue());
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, min));
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.annotation.FeatureProperty;
+import org.kairosdb.core.datapoints.LongDataPoint;
+import org.kairosdb.core.datapoints.NullDataPoint;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+		name = "pad",
+		description = "Pads each range that is missing data with a value (default is zero)."
+)
+public class PadAggregator extends RangeAggregator
+{
+	@FeatureProperty(
+			name = "pad_value",
+			label = "Pad value",
+			description = "Value to pad each range with.",
+			default_value = "0"
+	)
+	private long m_padValue = 0L;
+	@Inject
+	public PadAggregator()
+	{
+		super(true);
+	}
+	public void setPadValue(long value)
+	{
+		m_padValue = value;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return new AddPadAggregator();
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return true;
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return groupType;
+	}
+	private class AddPadAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			if (dataPointRange.hasNext())
+			{
+				return ImmutableList.copyOf(dataPointRange);
+			}
+			return Collections.singletonList(new LongDataPoint(returnTime, m_padValue));
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.NullDataPoint;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "gaps",
+		description = "Marks gaps in data according to sampling rate with a null data point."
+)
+public class DataGapsMarkingAggregator extends RangeAggregator
+{
+	@Inject
+	public DataGapsMarkingAggregator()
+	{
+		super(true);
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new MarkDataGapsAggregator());
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return true;
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return groupType;
+	}
+	private static class MarkDataGapsAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			if (dataPointRange.hasNext())
+			{
+				return ImmutableList.copyOf(dataPointRange);
+			}
+			return Collections.singletonList(new NullDataPoint(returnTime));
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "max",
+		description = "Returns the maximum value data point for the time range."
+)
+public class MaxAggregator extends RangeAggregator
+{
+	private DoubleDataPointFactory m_dataPointFactory;
+	@Inject
+	public MaxAggregator(DoubleDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return DataPoint.GROUP_NUMBER.equals(groupType);
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new MaxDataPointAggregator());
+	}
+	private class MaxDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			double max = -Double.MAX_VALUE;
+			while (dataPointRange.hasNext())
+			{
+				max = Math.max(max, dataPointRange.next().getDoubleValue());
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, max));
+		}
+	}
+}
+package org.kairosdb.core.annotation;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface FeatureCompoundProperty
+{
+    String name() default "";
+	String label();
+	FeatureProperty[] properties() default {};
+	String[] order() default {};
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.DoubleDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "first",
+		description = "Returns the first value data point for the time range."
+)
+public class FirstAggregator extends RangeAggregator
+{
+	@Inject
+	public FirstAggregator()
+	{
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return true;
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return groupType;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new FirstDataPointAggregator());
+	}
+	private class FirstDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			Iterable<DataPoint> ret;
+			if (dataPointRange.hasNext())
+			{
+				DataPoint next = dataPointRange.next();
+				next.setTimestamp(returnTime);
+				ret = Collections.singletonList(next);
+			}
+			else
+				ret = Collections.emptyList();
+			while (dataPointRange.hasNext())
+			{
+				dataPointRange.next();
+			}
+			return ret;
+		}
+	}
+}
+package org.kairosdb.core.aggregator;
+import com.google.inject.Inject;
+import org.kairosdb.core.DataPoint;
+import org.kairosdb.core.annotation.FeatureComponent;
+import org.kairosdb.core.datapoints.LongDataPointFactory;
+import java.util.Collections;
+import java.util.Iterator;
+@FeatureComponent(
+        name = "count",
+		description = "Counts the number of data points."
+)
+public class CountAggregator extends RangeAggregator
+{
+	LongDataPointFactory m_dataPointFactory;
+	@Inject
+	public CountAggregator(LongDataPointFactory dataPointFactory)
+	{
+		m_dataPointFactory = dataPointFactory;
+	}
+	@Override
+	protected RangeSubAggregator getSubAggregator()
+	{
+		return (new CountDataPointAggregator());
+	}
+	@Override
+	public boolean canAggregate(String groupType)
+	{
+		return true;
+	}
+	@Override
+	public String getAggregatedGroupType(String groupType)
+	{
+		return m_dataPointFactory.getGroupType();
+	}
+	private class CountDataPointAggregator implements RangeSubAggregator
+	{
+		@Override
+		public Iterable<DataPoint> getNextDataPoints(long returnTime, Iterator<DataPoint> dataPointRange)
+		{
+			long count = 0;
+			while (dataPointRange.hasNext())
+			{
+				count++;
+				dataPointRange.next();
+			}
+			return Collections.singletonList(m_dataPointFactory.createDataPoint(returnTime, count));
+		}
+	}
+}

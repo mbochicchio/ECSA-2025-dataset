@@ -1,0 +1,3185 @@
+package com.microsoft.identity.client.testapp;
+import android.app.Activity;
+import android.content.Context;
+import android.util.Log;
+import androidx.annotation.NonNull;
+import com.microsoft.identity.client.AcquireTokenParameters;
+import com.microsoft.identity.client.AcquireTokenSilentParameters;
+import com.microsoft.identity.client.AuthenticationCallback;
+import com.microsoft.identity.client.AuthenticationResult;
+import com.microsoft.identity.client.HttpMethod;
+import com.microsoft.identity.client.IAccount;
+import com.microsoft.identity.client.IAuthenticationResult;
+import com.microsoft.identity.client.IMultipleAccountPublicClientApplication;
+import com.microsoft.identity.client.IPublicClientApplication;
+import com.microsoft.identity.client.ISingleAccountPublicClientApplication;
+import com.microsoft.identity.client.PoPAuthenticationScheme;
+import com.microsoft.identity.client.PublicClientApplication;
+import com.microsoft.identity.client.claims.ClaimsRequest;
+import com.microsoft.identity.client.exception.MsalArgumentException;
+import com.microsoft.identity.client.exception.MsalClientException;
+import com.microsoft.identity.client.exception.MsalDeclinedScopeException;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.exception.MsalServiceException;
+import com.microsoft.identity.client.exception.MsalUiRequiredException;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+interface INotifyOperationResultCallback<T> {
+    void onSuccess(T result);
+    void showMessage(String message);
+}
+abstract class MsalWrapper {
+    public static void create(@NonNull final Context context,
+                              @NonNull final int configFileResourceId,
+                              @NonNull final INotifyOperationResultCallback<MsalWrapper> callback) {
+        PublicClientApplication.create(context,
+                configFileResourceId,
+                new PublicClientApplication.ApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(IPublicClientApplication application) {
+                        if (application instanceof ISingleAccountPublicClientApplication) {
+                            callback.onSuccess(new SingleAccountModeWrapper((ISingleAccountPublicClientApplication) application));
+                        } else {
+                            callback.onSuccess(new MultipleAccountModeWrapper((IMultipleAccountPublicClientApplication) application));
+                        }
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        callback.showMessage("Failed to load MSAL Application: " + exception.getMessage());
+                    }
+                });
+    }
+    public abstract String getDefaultBrowser();
+    public abstract String getMode();
+    public abstract void loadAccounts(@NonNull final INotifyOperationResultCallback<List<IAccount>> callback);
+    public abstract void removeAccount(@NonNull IAccount account,
+                                       @NonNull final INotifyOperationResultCallback<Void> callback);
+    public void acquireToken(@NonNull final Activity activity,
+                             @NonNull final RequestOptions requestOptions,
+                             @NonNull final INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        final AcquireTokenParameters.Builder builder = getAcquireTokenParametersBuilder(activity, requestOptions, callback);
+        builder.withScopes(Arrays.asList(requestOptions.getScopes().toLowerCase().split(" ")));
+        builder.withOtherScopesToAuthorize(
+                Arrays.asList(
+                        requestOptions
+                                .getExtraScope()
+                                .toLowerCase()
+                                .split(" ")
+                )
+        );
+        final AcquireTokenParameters parameters = builder.build();
+        acquireTokenAsyncInternal(parameters);
+    }
+    public void acquireTokenWithResource(@NonNull final Activity activity,
+                                         @NonNull final RequestOptions requestOptions,
+                                         @NonNull final INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        final AcquireTokenParameters.Builder builder = getAcquireTokenParametersBuilder(activity, requestOptions, callback);
+        builder.withAuthorizationQueryStringParameters(null);
+        builder.withResource(requestOptions.getScopes().trim());
+        final AcquireTokenParameters parameters = builder.build();
+        acquireTokenAsyncInternal(parameters);
+    }
+    private AcquireTokenParameters.Builder getAcquireTokenParametersBuilder(@NonNull Activity activity,
+                                                                            @NonNull RequestOptions requestOptions,
+                                                                            @NonNull INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        final AcquireTokenParameters.Builder builder = new AcquireTokenParameters.Builder();
+        builder.startAuthorizationFromActivity(activity)
+                .withLoginHint(requestOptions.getLoginHint())
+                .forAccount(requestOptions.getAccount())
+                .withPrompt(requestOptions.getPrompt())
+                .withCallback(getAuthenticationCallback(callback));
+        if (requestOptions.getAuthority() != null && !requestOptions.getAuthority().isEmpty()) {
+            builder.fromAuthority(requestOptions.getAuthority());
+        }
+        if (requestOptions.getClaims() != null && !requestOptions.getClaims().isEmpty()) {
+            builder.withClaims(ClaimsRequest.getClaimsRequestFromJsonString(requestOptions.getClaims()));
+        }
+        if (requestOptions.getAuthScheme() == Constants.AuthScheme.POP) {
+            try {
+                builder.withAuthenticationScheme(
+                        PoPAuthenticationScheme.builder()
+                                .withHttpMethod(requestOptions.getPopHttpMethod())
+                                .withClientClaims(requestOptions.getPoPClientClaims())
+                                .withUrl(new URL(requestOptions.getPopResourceUrl()))
+                                .build()
+                );
+            } catch (MalformedURLException e) {
+                callback.showMessage("Unexpected error." + e.getMessage());
+            }
+        }
+        return builder;
+    }
+    abstract void acquireTokenAsyncInternal(@NonNull final AcquireTokenParameters parameters);
+    public void acquireTokenSilent(@NonNull RequestOptions requestOptions,
+                                   @NonNull INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        if (requestOptions.getAccount() == null) {
+            callback.showMessage("Account is null.");
+            return;
+        }
+        final AcquireTokenSilentParameters.Builder builder = getAcquireTokenSilentParametersBuilder(requestOptions, callback);
+        builder.withScopes(Arrays.asList(requestOptions.getScopes().toLowerCase().split(" ")));
+        final AcquireTokenSilentParameters parameters = builder.build();
+        acquireTokenSilentAsyncInternal(parameters);
+    }
+    public void acquireTokenSilentWithResource(@NonNull RequestOptions requestOptions,
+                                               @NonNull INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        if (requestOptions.getAccount() == null) {
+            callback.showMessage("Account is null.");
+            return;
+        }
+        final AcquireTokenSilentParameters.Builder builder = getAcquireTokenSilentParametersBuilder(requestOptions, callback);
+        builder.withResource(requestOptions.getScopes().toLowerCase().trim());
+        final AcquireTokenSilentParameters parameters = builder.build();
+        acquireTokenSilentAsyncInternal(parameters);
+    }
+    private AcquireTokenSilentParameters.Builder getAcquireTokenSilentParametersBuilder(@NonNull RequestOptions requestOptions,
+                                                                                        @NonNull INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        final AcquireTokenSilentParameters.Builder builder = new AcquireTokenSilentParameters.Builder();
+        builder.forAccount(requestOptions.getAccount())
+                .forceRefresh(requestOptions.isForceRefresh())
+                .withCallback(getAuthenticationCallback(callback));
+        if (requestOptions.getAuthority() != null && !requestOptions.getAuthority().isEmpty()) {
+            builder.fromAuthority(requestOptions.getAuthority());
+        } else {
+            builder.fromAuthority(requestOptions.getAccount().getAuthority());
+        }
+        if (requestOptions.getAuthScheme() == Constants.AuthScheme.POP) {
+            try {
+                builder.withAuthenticationScheme(
+                        PoPAuthenticationScheme.builder()
+                                .withHttpMethod(requestOptions.getPopHttpMethod())
+                                .withClientClaims(requestOptions.getPoPClientClaims())
+                                .withUrl(new URL(requestOptions.getPopResourceUrl())).build()
+                );
+            } catch (MalformedURLException e) {
+                callback.showMessage("Unexpected error." + e.getMessage());
+                return null;
+            }
+        }
+        return builder;
+    }
+    abstract void acquireTokenSilentAsyncInternal(@NonNull final AcquireTokenSilentParameters parameters);
+    public void acquireTokenWithDeviceCodeFlow(@NonNull RequestOptions requestOptions,
+                                               @NonNull final INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        acquireTokenWithDeviceCodeFlowInternal(
+                requestOptions.getScopes().toLowerCase().split(" "),
+                new IPublicClientApplication.DeviceCodeFlowCallback() {
+                    @Override
+                    public void onUserCodeReceived(@NonNull String vUri,
+                                                   @NonNull String userCode,
+                                                   @NonNull String message,
+                                                   @NonNull Date sessionExpirationDate) {
+                        callback.showMessage(
+                                "Uri: " + vUri + "\n" +
+                                        "UserCode: " + userCode + "\n" +
+                                        "Message: " + message + "\n" +
+                                        "sessionExpirationDate: " + sessionExpirationDate);
+                    }
+                    @Override
+                    public void onTokenReceived(@NonNull AuthenticationResult authResult) {
+                        callback.onSuccess(authResult);
+                    }
+                    @Override
+                    public void onError(@NonNull MsalException e) {
+                        callback.showMessage("Unexpected error." + e.getMessage());
+                    }
+                });
+    }
+    abstract void acquireTokenWithDeviceCodeFlowInternal(@NonNull String[] scopes, @NonNull final IPublicClientApplication.DeviceCodeFlowCallback callback);
+    AuthenticationCallback getAuthenticationCallback(@NonNull final INotifyOperationResultCallback<IAuthenticationResult> callback) {
+        return new AuthenticationCallback() {
+            @Override
+            public void onSuccess(IAuthenticationResult authenticationResult) {
+                callback.onSuccess(authenticationResult);
+            }
+            @Override
+            public void onError(MsalException exception) {
+                String message = "CorrelationID: " + exception.getCorrelationId() + "\n";
+                if (exception instanceof MsalClientException) {
+                    message += "MsalClientException.\n" + exception.getMessage();
+                } else if (exception instanceof MsalServiceException) {
+                    message += "MsalServiceException.\n" + exception.getMessage();
+                } else if (exception instanceof MsalArgumentException) {
+                    message += "MsalArgumentException.\n" + exception.getMessage();
+                } else if (exception instanceof MsalUiRequiredException) {
+                    message += "MsalUiRequiredException.\n" + exception.getMessage();
+                } else if (exception instanceof MsalDeclinedScopeException) {
+                    message += "MsalDeclinedScopeException.\n" +
+                            "Granted Scope:" + ((MsalDeclinedScopeException) exception).getGrantedScopes() + "\n" +
+                            "Declined Scope:" + ((MsalDeclinedScopeException) exception).getDeclinedScopes();
+                }
+                callback.showMessage(message);
+            }
+            @Override
+            public void onCancel() {
+                callback.showMessage("User cancelled the flow.");
+            }
+        };
+    }
+    public void generateSignedHttpRequest(@NonNull final RequestOptions currentRequestOptions,
+                                          @NonNull final INotifyOperationResultCallback<String> generateShrCallback) {
+        final IAccount currentAccount = currentRequestOptions.getAccount();
+        final HttpMethod popHttpMethod = currentRequestOptions.getPopHttpMethod();
+        final String resourceUrl = currentRequestOptions.getPopResourceUrl();
+        final String clientClaims = currentRequestOptions.getPoPClientClaims();
+        if (null == currentAccount) {
+            generateShrCallback.showMessage("No user signed-in or selected.");
+            return;
+        }
+        try {
+            final PoPAuthenticationScheme popParams =
+                    PoPAuthenticationScheme.builder()
+                            .withHttpMethod(popHttpMethod)
+                            .withUrl(new URL(resourceUrl))
+                            .withClientClaims(clientClaims)
+                            .build();
+            Log.d(
+                    MsalWrapper.class.getSimpleName() + ":generateSHR",
+                    "Account: " + currentAccount.getUsername()
+                            + "\n"
+                            + "HttpMethod: " + popHttpMethod
+                            + "\n"
+                            + "Resource URL: " + resourceUrl
+                            + "\n"
+                            + "Client Claims: " + clientClaims
+            );
+            generateSignedHttpRequestInternal(
+                    currentAccount,
+                    popParams,
+                    generateShrCallback
+            );
+        } catch (MalformedURLException e) {
+            generateShrCallback.showMessage("Invalid URL.");
+        }
+    }
+    public abstract void generateSignedHttpRequestInternal(@NonNull final IAccount account,
+                                                           @NonNull final PoPAuthenticationScheme params,
+                                                           @NonNull final INotifyOperationResultCallback<String> generateShrCallback
+    );
+}
+package com.microsoft.identity.client.testapp;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import com.microsoft.identity.client.AcquireTokenParameters;
+import com.microsoft.identity.client.AcquireTokenSilentParameters;
+import com.microsoft.identity.client.IAccount;
+import com.microsoft.identity.client.IPublicClientApplication;
+import com.microsoft.identity.client.ISingleAccountPublicClientApplication;
+import com.microsoft.identity.client.PoPAuthenticationScheme;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.common.exception.ClientException;
+import com.microsoft.identity.common.internal.ui.browser.BrowserSelector;
+import java.util.ArrayList;
+import java.util.List;
+public class SingleAccountModeWrapper extends MsalWrapper {
+    private ISingleAccountPublicClientApplication mApp;
+    public SingleAccountModeWrapper(ISingleAccountPublicClientApplication app) {
+        mApp = app;
+    }
+    @Override
+    public String getMode() {
+        if (mApp.isSharedDevice()) {
+            return "Single Account - Shared device";
+        }
+        return "Single Account - Non-shared device";
+    }
+    @Override
+    public String getDefaultBrowser() {
+        try {
+            return BrowserSelector.select(mApp.getConfiguration().getAppContext(), mApp.getConfiguration().getBrowserSafeList()).getPackageName();
+        } catch (ClientException e) {
+            return "Unknown";
+        }
+    }
+    @Override
+    public void loadAccounts(final @NonNull INotifyOperationResultCallback<List<IAccount>> callback) {
+        mApp.getCurrentAccountAsync(new ISingleAccountPublicClientApplication.CurrentAccountCallback() {
+            @Override
+            public void onAccountLoaded(@Nullable IAccount activeAccount) {
+                List<IAccount> accountList = new ArrayList<>();
+                if (activeAccount != null) {
+                    accountList.add(activeAccount);
+                }
+                callback.onSuccess(accountList);
+            }
+            @Override
+            public void onAccountChanged(@Nullable IAccount priorAccount, @Nullable IAccount currentAccount) {
+                callback.showMessage(
+                        "signed-in account is changed from "
+                                + (null == priorAccount ? "null" : priorAccount.getUsername())
+                                + " to "
+                                + (null == currentAccount ? "null" : currentAccount.getUsername()));
+            }
+            @Override
+            public void onError(MsalException exception) {
+                callback.showMessage(
+                        "Failed to load account from broker. "
+                                + "Error code: " + exception.getErrorCode()
+                                + " Error Message: " + exception.getMessage()
+                );
+            }
+        });
+    }
+    @Override
+    public void removeAccount(@NonNull IAccount account,
+                              @NonNull final INotifyOperationResultCallback<Void> callback) {
+        mApp.signOut(new ISingleAccountPublicClientApplication.SignOutCallback() {
+            @Override
+            public void onSignOut() {
+                callback.showMessage("The account is successfully signed out.");
+                callback.onSuccess(null);
+            }
+            @Override
+            public void onError(@NonNull MsalException exception) {
+                callback.showMessage("Failed to sign out: " + exception.getMessage());
+            }
+        });
+    }
+    @Override
+    void acquireTokenAsyncInternal(@NonNull AcquireTokenParameters parameters) {
+        mApp.acquireToken(parameters);
+    }
+    @Override
+    void acquireTokenSilentAsyncInternal(@NonNull AcquireTokenSilentParameters parameters) {
+        mApp.acquireTokenSilentAsync(parameters);
+    }
+    @Override
+    void acquireTokenWithDeviceCodeFlowInternal(@NonNull String[] scopes,
+                                                @NonNull final IPublicClientApplication.DeviceCodeFlowCallback callback) {
+        mApp.acquireTokenWithDeviceCode(scopes, callback);
+    }
+    @Override
+    public void generateSignedHttpRequestInternal(@NonNull final IAccount account,
+                                                  @NonNull final PoPAuthenticationScheme params,
+                                                  @NonNull final INotifyOperationResultCallback<String> generateShrCallback) {
+        mApp.generateSignedHttpRequest(
+                account,
+                params,
+                new IPublicClientApplication.SignedHttpRequestRequestCallback() {
+                    @Override
+                    public void onTaskCompleted(String result) {
+                        generateShrCallback.onSuccess(result);
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        generateShrCallback.showMessage(exception.getMessage());
+                    }
+                }
+        );
+    }
+}
+package com.microsoft.identity.client;
+import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.TextUtils;
+import android.util.Pair;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.WorkerThread;
+import androidx.fragment.app.Fragment;
+import com.microsoft.identity.client.claims.ClaimsRequest;
+import com.microsoft.identity.client.configuration.AccountMode;
+import com.microsoft.identity.client.configuration.HttpConfiguration;
+import com.microsoft.identity.client.configuration.LoggerConfiguration;
+import com.microsoft.identity.client.exception.MsalArgumentException;
+import com.microsoft.identity.client.exception.MsalClientException;
+import com.microsoft.identity.client.exception.MsalDeclinedScopeException;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.exception.MsalServiceException;
+import com.microsoft.identity.client.exception.MsalUiRequiredException;
+import com.microsoft.identity.client.helper.BrokerHelperActivity;
+import com.microsoft.identity.client.internal.AsyncResult;
+import com.microsoft.identity.client.internal.CommandParametersAdapter;
+import com.microsoft.identity.client.internal.controllers.MSALControllerFactory;
+import com.microsoft.identity.client.internal.controllers.MsalExceptionAdapter;
+import com.microsoft.identity.common.adal.internal.cache.IStorageHelper;
+import com.microsoft.identity.common.adal.internal.cache.StorageHelper;
+import com.microsoft.identity.common.adal.internal.tokensharing.ITokenShareResultInternal;
+import com.microsoft.identity.common.adal.internal.tokensharing.TokenShareUtility;
+import com.microsoft.identity.common.exception.BaseException;
+import com.microsoft.identity.common.exception.ClientException;
+import com.microsoft.identity.common.exception.ErrorStrings;
+import com.microsoft.identity.common.exception.ServiceException;
+import com.microsoft.identity.common.internal.authorities.Authority;
+import com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryAuthority;
+import com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryB2CAuthority;
+import com.microsoft.identity.common.internal.cache.ICacheRecord;
+import com.microsoft.identity.common.internal.cache.IShareSingleSignOnState;
+import com.microsoft.identity.common.internal.cache.ISharedPreferencesFileManager;
+import com.microsoft.identity.common.internal.cache.MsalOAuth2TokenCache;
+import com.microsoft.identity.common.internal.cache.SchemaUtil;
+import com.microsoft.identity.common.internal.cache.SharedPreferencesFileManager;
+import com.microsoft.identity.common.internal.commands.CommandCallback;
+import com.microsoft.identity.common.internal.commands.DeviceCodeFlowCommand;
+import com.microsoft.identity.common.internal.commands.DeviceCodeFlowCommandCallback;
+import com.microsoft.identity.common.internal.commands.GenerateShrCommand;
+import com.microsoft.identity.common.internal.commands.GetDeviceModeCommand;
+import com.microsoft.identity.common.internal.commands.InteractiveTokenCommand;
+import com.microsoft.identity.common.internal.commands.SilentTokenCommand;
+import com.microsoft.identity.common.internal.commands.parameters.CommandParameters;
+import com.microsoft.identity.common.internal.commands.parameters.DeviceCodeFlowCommandParameters;
+import com.microsoft.identity.common.internal.commands.parameters.GenerateShrCommandParameters;
+import com.microsoft.identity.common.internal.commands.parameters.InteractiveTokenCommandParameters;
+import com.microsoft.identity.common.internal.commands.parameters.SilentTokenCommandParameters;
+import com.microsoft.identity.common.internal.controllers.BaseController;
+import com.microsoft.identity.common.internal.controllers.CommandDispatcher;
+import com.microsoft.identity.common.internal.controllers.ExceptionAdapter;
+import com.microsoft.identity.common.internal.controllers.LocalMSALController;
+import com.microsoft.identity.common.internal.dto.AccountRecord;
+import com.microsoft.identity.common.internal.eststelemetry.PublicApiId;
+import com.microsoft.identity.common.internal.logging.Logger;
+import com.microsoft.identity.common.internal.migration.AdalMigrationAdapter;
+import com.microsoft.identity.common.internal.migration.TokenMigrationCallback;
+import com.microsoft.identity.common.internal.migration.TokenMigrationUtility;
+import com.microsoft.identity.common.internal.net.HttpRequest;
+import com.microsoft.identity.common.internal.net.cache.HttpCache;
+import com.microsoft.identity.common.internal.providers.microsoft.MicrosoftAccount;
+import com.microsoft.identity.common.internal.providers.microsoft.MicrosoftRefreshToken;
+import com.microsoft.identity.common.internal.providers.microsoft.azureactivedirectory.AzureActiveDirectory;
+import com.microsoft.identity.common.internal.providers.oauth2.OAuth2TokenCache;
+import com.microsoft.identity.common.internal.result.GenerateShrResult;
+import com.microsoft.identity.common.internal.result.ILocalAuthenticationResult;
+import com.microsoft.identity.common.internal.result.LocalAuthenticationResult;
+import com.microsoft.identity.common.internal.result.ResultFuture;
+import com.microsoft.identity.msal.BuildConfig;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import static com.microsoft.identity.client.PublicClientApplicationConfigurationFactory.initializeConfiguration;
+import static com.microsoft.identity.client.exception.MsalClientException.SAPCA_USE_WITH_MULTI_POLICY_B2C;
+import static com.microsoft.identity.client.exception.MsalClientException.UNKNOWN_ERROR;
+import static com.microsoft.identity.client.internal.CommandParametersAdapter.createGenerateShrCommandParameters;
+import static com.microsoft.identity.client.internal.MsalUtils.throwOnMainThread;
+import static com.microsoft.identity.client.internal.MsalUtils.validateNonNullArg;
+import static com.microsoft.identity.client.internal.MsalUtils.validateNonNullArgument;
+import static com.microsoft.identity.client.internal.controllers.MsalExceptionAdapter.msalExceptionFromBaseException;
+import static com.microsoft.identity.common.exception.ClientException.TOKEN_CACHE_ITEM_NOT_FOUND;
+import static com.microsoft.identity.common.exception.ClientException.TOKEN_SHARING_DESERIALIZATION_ERROR;
+import static com.microsoft.identity.common.exception.ClientException.TOKEN_SHARING_MSA_PERSISTENCE_ERROR;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_CODE;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_MESSAGE;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_CODE;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_MESSAGE;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE;
+import static com.microsoft.identity.common.exception.ErrorStrings.MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE;
+import static com.microsoft.identity.common.exception.ErrorStrings.SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_CODE;
+import static com.microsoft.identity.common.exception.ErrorStrings.SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_MESSAGE;
+import static com.microsoft.identity.common.exception.ErrorStrings.SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE;
+import static com.microsoft.identity.common.exception.ErrorStrings.SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE;
+import static com.microsoft.identity.common.internal.authorities.AzureActiveDirectoryAudience.isHomeTenantAlias;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.PCA_GENERATE_SIGNED_HTTP_REQUEST;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.PCA_GENERATE_SIGNED_HTTP_REQUEST_ASYNC;
+import static com.microsoft.identity.common.internal.providers.microsoft.MicrosoftIdToken.TENANT_ID;
+import static com.microsoft.identity.common.internal.util.StringUtil.isUuid;
+public class PublicClientApplication implements IPublicClientApplication, ITokenShare {
+    private static final String TAG = PublicClientApplication.class.getSimpleName();
+    private static final String INTERNET_PERMISSION = "android.permission.INTERNET";
+    private static final String ACCESS_NETWORK_STATE_PERMISSION = "android.permission.ACCESS_NETWORK_STATE";
+    private static final ExecutorService sBackgroundExecutor = Executors.newCachedThreadPool();
+    static class NONNULL_CONSTANTS {
+        static final String CONTEXT = "context";
+        static final String LISTENER = "listener";
+        static final String CALLBACK = "callback";
+        static final String CLIENT_ID = "client_id";
+        static final String AUTHORITY = "authority";
+        static final String REDIRECT_URI = "redirect_uri";
+        static final String CONFIG_FILE = "config_file";
+        static final String ACTIVITY = "activity";
+        static final String SCOPES = "scopes";
+        static final String ACCOUNT = "account";
+        static final String NULL_ERROR_SUFFIX = " cannot be null or empty";
+    }
+    private static final String TSL_MSG_FAILED_TO_SAVE
+            = "Failed to save FRT - see getCause() for additional Exception info";
+    private static final String TSM_MSG_FAILED_TO_RETRIEVE
+            = "Failed to retrieve FRT - see getCause() for additional Exception info";
+    protected PublicClientApplicationConfiguration mPublicClientConfiguration;
+    protected TokenShareUtility mTokenShareUtility;
+    public static void create(@NonNull final Context context,
+                              final int configFileResourceId,
+                              @NonNull final ApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                create(
+                        initializeConfiguration(context, configFileResourceId),
+                        null, 
+                        null, 
+                        null, 
+                        listener
+                );
+            }
+        });
+    }
+    public static void create(@NonNull final Context context,
+                              @NonNull final File configFile,
+                              @NonNull final ApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                create(
+                        initializeConfiguration(context, configFile),
+                        null, 
+                        null, 
+                        null, 
+                        listener
+                );
+            }
+        });
+    }
+    public static void create(@NonNull final Context context,
+                              @NonNull final String clientId,
+                              @Nullable final String authority,
+                              @NonNull final String redirectUri,
+                              @NonNull final ApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(clientId, NONNULL_CONSTANTS.CLIENT_ID);
+        validateNonNullArgument(redirectUri, NONNULL_CONSTANTS.REDIRECT_URI);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                create(
+                        initializeConfiguration(context),
+                        clientId,
+                        authority,
+                        redirectUri,
+                        listener
+                );
+            }
+        });
+    }
+    @WorkerThread
+    @NonNull
+    public static IPublicClientApplication create(@NonNull final Context context,
+                                                  final int configFileResourceId) throws InterruptedException, MsalException {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        return create(initializeConfiguration(context, configFileResourceId));
+    }
+    public static void createMultipleAccountPublicClientApplication(@NonNull final Context context,
+                                                                    final int configFileResourceId,
+                                                                    @NonNull final IMultipleAccountApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                createMultipleAccountPublicClientApplication(
+                        initializeConfiguration(context, configFileResourceId),
+                        listener
+                );
+            }
+        });
+    }
+    public static void createMultipleAccountPublicClientApplication(@NonNull final Context context,
+                                                                    @NonNull final File configFile,
+                                                                    @NonNull final IMultipleAccountApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                createMultipleAccountPublicClientApplication(
+                        initializeConfiguration(context, configFile),
+                        listener
+                );
+            }
+        });
+    }
+    @WorkerThread
+    @NonNull
+    public static IMultipleAccountPublicClientApplication createMultipleAccountPublicClientApplication(@NonNull final Context context,
+                                                                                                       @NonNull final int configFileResourceId) throws MsalException, InterruptedException {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        return createMultipleAccountPublicClientApplication(
+                initializeConfiguration(context, configFileResourceId)
+        );
+    }
+    @WorkerThread
+    @NonNull
+    public static IMultipleAccountPublicClientApplication createMultipleAccountPublicClientApplication(@NonNull final Context context,
+                                                                                                       @NonNull final File configFile) throws InterruptedException, MsalException {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(configFile, "configFile");
+        return createMultipleAccountPublicClientApplication(
+                initializeConfiguration(context, configFile)
+        );
+    }
+    public static void createSingleAccountPublicClientApplication(@NonNull final Context context,
+                                                                  final int configFileResourceId,
+                                                                  @NonNull final ISingleAccountApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                createSingleAccountPublicClientApplication(
+                        initializeConfiguration(context, configFileResourceId),
+                        listener
+                );
+            }
+        });
+    }
+    public static void createSingleAccountPublicClientApplication(@NonNull final Context context,
+                                                                  @NonNull final File configFile,
+                                                                  @NonNull final ISingleAccountApplicationCreatedListener listener) {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        validateNonNullArgument(configFile, NONNULL_CONSTANTS.CONFIG_FILE);
+        validateNonNullArgument(listener, NONNULL_CONSTANTS.LISTENER);
+        runOnBackground(new Runnable() {
+            @Override
+            public void run() {
+                createSingleAccountPublicClientApplication(
+                        initializeConfiguration(context, configFile),
+                        listener
+                );
+            }
+        });
+    }
+    @WorkerThread
+    @NonNull
+    public static ISingleAccountPublicClientApplication createSingleAccountPublicClientApplication(
+            @NonNull final Context context,
+            final int configFileResourceId) throws InterruptedException, MsalException {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        return createSingleAccountPublicClientApplication(
+                initializeConfiguration(context, configFileResourceId)
+        );
+    }
+    @WorkerThread
+    @NonNull
+    public static ISingleAccountPublicClientApplication createSingleAccountPublicClientApplication(
+            @NonNull final Context context,
+            @Nullable final File configFile) throws InterruptedException, MsalException {
+        validateNonNullArgument(context, NONNULL_CONSTANTS.CONTEXT);
+        return createSingleAccountPublicClientApplication(
+                initializeConfiguration(context, configFile)
+        );
+    }
+    @WorkerThread
+    private static IPublicClientApplication create(
+            @NonNull final PublicClientApplicationConfiguration configuration)
+            throws MsalException, InterruptedException {
+        validateNonNullArgument(configuration, "configuration");
+        throwOnMainThread("createPublicClientApplication");
+        final ResultFuture<AsyncResult<IPublicClientApplication>> future = new ResultFuture<>();
+        create(configuration,
+                null, 
+                null, 
+                null, 
+                new ApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(final IPublicClientApplication application) {
+                        future.setResult(new AsyncResult<>(application, null));
+                    }
+                    @Override
+                    public void onError(final MsalException exception) {
+                        future.setResult(new AsyncResult<IPublicClientApplication>(null, exception));
+                    }
+                }
+        );
+        try {
+            AsyncResult<IPublicClientApplication> result = future.get();
+            if (!result.getSuccess()) {
+                MsalException ex = result.getException();
+                throw ex;
+            }
+            return result.getResult();
+        } catch (final ExecutionException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error while initializing PCA.",
+                    e
+            );
+        }
+    }
+    @WorkerThread
+    private static IMultipleAccountPublicClientApplication createMultipleAccountPublicClientApplication(
+            @NonNull final PublicClientApplicationConfiguration configuration)
+            throws InterruptedException, MsalException {
+        if (configuration.getAccountMode() != AccountMode.MULTIPLE) {
+            throw new MsalClientException(
+                    MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_CODE,
+                    MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_MESSAGE
+            );
+        }
+        final IPublicClientApplication application = create(configuration);
+        if (application instanceof IMultipleAccountPublicClientApplication) {
+            return (IMultipleAccountPublicClientApplication) application;
+        } else {
+            if (configuration.getAccountMode() == AccountMode.MULTIPLE && application.isSharedDevice()) {
+                throw new MsalClientException(
+                        MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_CODE,
+                        MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_MESSAGE
+                );
+            }
+            throw new MsalClientException(
+                    MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE,
+                    MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE
+            );
+        }
+    }
+    @WorkerThread
+    private static ISingleAccountPublicClientApplication createSingleAccountPublicClientApplication(
+            @Nullable final PublicClientApplicationConfiguration configuration)
+            throws InterruptedException, MsalException {
+        final IPublicClientApplication application = create(configuration);
+        if (application instanceof ISingleAccountPublicClientApplication) {
+            return (ISingleAccountPublicClientApplication) application;
+        } else {
+            if (configuration.getAccountMode() != AccountMode.SINGLE) {
+                throw new MsalClientException(
+                        SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_CODE,
+                        SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_MESSAGE
+                );
+            }
+            throw new MsalClientException(
+                    SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE,
+                    SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE
+            );
+        }
+    }
+    private static void create(@NonNull final PublicClientApplicationConfiguration config,
+                               @Nullable final String clientId,
+                               @Nullable final String authority,
+                               @Nullable final String redirectUri,
+                               @NonNull final ApplicationCreatedListener listener) {
+        if (clientId != null) {
+            config.setClientId(clientId);
+        }
+        if (authority != null) {
+            config.getAuthorities().clear();
+            final Authority authorityObject = Authority.getAuthorityFromAuthorityUrl(authority);
+            authorityObject.setDefault(true);
+            config.getAuthorities().add(authorityObject);
+        }
+        if (redirectUri != null) {
+            config.setRedirectUri(redirectUri);
+        }
+        try {
+            validateAccountModeConfiguration(config);
+        } catch (final MsalClientException e) {
+            listener.onError(e);
+            return;
+        }
+        final CommandParameters params = CommandParametersAdapter.createCommandParameters(config, config.getOAuth2TokenCache());
+        final BaseController controller;
+        try {
+            controller = MSALControllerFactory.getDefaultController(
+                    config.getAppContext(),
+                    config.getDefaultAuthority(),
+                    config);
+        } catch (MsalClientException e) {
+            listener.onError(e);
+            return;
+        }
+        final GetDeviceModeCommand command = new GetDeviceModeCommand(
+                params,
+                controller,
+                new CommandCallback<Boolean, BaseException>() {
+                    @Override
+                    public void onError(BaseException error) {
+                        listener.onError(MsalExceptionAdapter.msalExceptionFromBaseException(error));
+                    }
+                    @Override
+                    public void onTaskCompleted(Boolean isSharedDevice) {
+                        config.setIsSharedDevice(isSharedDevice);
+                        try {
+                            if (config.getAccountMode() == AccountMode.SINGLE || isSharedDevice) {
+                                listener.onCreated(new SingleAccountPublicClientApplication(config));
+                            } else {
+                                listener.onCreated(new MultipleAccountPublicClientApplication(config));
+                            }
+                        } catch (final MsalClientException e) {
+                            listener.onError(e);
+                        }
+                    }
+                    @Override
+                    public void onCancel() {
+                    }
+                },
+                null
+        );
+        CommandDispatcher.submitSilent(command);
+    }
+    private static void validateAccountModeConfiguration(@NonNull final PublicClientApplicationConfiguration config) throws MsalClientException {
+        if (config.getAccountMode() == AccountMode.SINGLE
+                && null != config.getDefaultAuthority()
+                && config.getDefaultAuthority() instanceof AzureActiveDirectoryB2CAuthority) {
+            Logger.warn(
+                    TAG,
+                    "Warning! B2C applications should use MultipleAccountPublicClientApplication. "
+                            + "Use of SingleAccount mode with multiple IEF policies is unsupported."
+            );
+            if (config.getAuthorities().size() > 1) {
+                throw new MsalClientException(SAPCA_USE_WITH_MULTI_POLICY_B2C);
+            }
+        }
+    }
+    private static void createMultipleAccountPublicClientApplication(
+            @NonNull final PublicClientApplicationConfiguration configuration,
+            @NonNull final IMultipleAccountApplicationCreatedListener listener) {
+        create(configuration,
+                null, 
+                null, 
+                null, 
+                new ApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(@NonNull final IPublicClientApplication application) {
+                        if (application instanceof IMultipleAccountPublicClientApplication) {
+                            listener.onCreated((IMultipleAccountPublicClientApplication) application);
+                        } else {
+                            if (application.getConfiguration().getAccountMode() == AccountMode.MULTIPLE
+                                    && application.isSharedDevice()) {
+                                listener.onError(
+                                        new MsalClientException(
+                                                MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_CODE,
+                                                MULTIPLE_ACCOUNT_PCA_INIT_FAIL_ON_SHARED_DEVICE_ERROR_MESSAGE
+                                        )
+                                );
+                                return;
+                            }
+                            listener.onError(
+                                    new MsalClientException(
+                                            MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE,
+                                            MULTIPLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE
+                                    )
+                            );
+                        }
+                    }
+                    @Override
+                    public void onError(final MsalException exception) {
+                        listener.onError(exception);
+                    }
+                }
+        );
+    }
+    private static void createSingleAccountPublicClientApplication(
+            @NonNull final PublicClientApplicationConfiguration configuration,
+            @NonNull final ISingleAccountApplicationCreatedListener listener) {
+        create(
+                configuration,
+                null, 
+                null, 
+                null, 
+                new ApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(final IPublicClientApplication application) {
+                        if (application instanceof ISingleAccountPublicClientApplication) {
+                            listener.onCreated((ISingleAccountPublicClientApplication) application);
+                        } else {
+                            if (application.getConfiguration().getAccountMode() != AccountMode.SINGLE) {
+                                listener.onError(
+                                        new MsalClientException(
+                                                SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_CODE,
+                                                SINGLE_ACCOUNT_PCA_INIT_FAIL_ACCOUNT_MODE_ERROR_MESSAGE
+                                        )
+                                );
+                                return;
+                            }
+                            listener.onError(
+                                    new MsalClientException(
+                                            SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_CODE,
+                                            SINGLE_ACCOUNT_PCA_INIT_FAIL_UNKNOWN_REASON_ERROR_MESSAGE
+                                    )
+                            );
+                        }
+                    }
+                    @Override
+                    public void onError(final MsalException exception) {
+                        listener.onError(exception);
+                    }
+                }
+        );
+    }
+    protected PublicClientApplication(@NonNull final PublicClientApplicationConfiguration configFile) throws MsalClientException {
+        mPublicClientConfiguration = configFile;
+        initializeApplication();
+    }
+    private void initializeApplication() throws MsalClientException {
+        final String methodName = ":initializeApplication";
+        final Context context = mPublicClientConfiguration.getAppContext();
+        setupTelemetry(context, mPublicClientConfiguration);
+        AzureActiveDirectory.setEnvironment(mPublicClientConfiguration.getEnvironment());
+        Authority.addKnownAuthorities(mPublicClientConfiguration.getAuthorities());
+        initializeHttpSettings(mPublicClientConfiguration.getHttpConfiguration());
+        initializeLoggerSettings(mPublicClientConfiguration.getLoggerConfiguration());
+        initializeTokenSharingLibrary();
+        mPublicClientConfiguration.checkIntentFilterAddedToAppManifestForBrokerFlow();
+        checkInternetPermission();
+        HttpCache.initialize(context.getCacheDir());
+        com.microsoft.identity.common.internal.logging.Logger.info(
+                TAG + methodName,
+                "Create new public client application."
+        );
+    }
+    private void initializeLoggerSettings(@Nullable final LoggerConfiguration loggerConfig) {
+        if (null != loggerConfig) {
+            final com.microsoft.identity.client.Logger.LogLevel configLogLevel = loggerConfig.getLogLevel();
+            final boolean configPiiState = loggerConfig.isPiiEnabled();
+            final boolean configLogcatState = loggerConfig.isLogcatEnabled();
+            final com.microsoft.identity.client.Logger logger = com.microsoft.identity.client.Logger.getInstance();
+            if (null != configLogLevel) {
+                logger.setLogLevel(configLogLevel);
+            }
+            logger.setEnablePII(configPiiState);
+            logger.setEnableLogcatLog(configLogcatState);
+        }
+    }
+    private void initializeHttpSettings(@Nullable final HttpConfiguration httpConfiguration) {
+        final String methodName = ":initializeHttpSettings";
+        if (null == httpConfiguration) {
+            Logger.info(
+                    TAG + methodName,
+                    "HttpConfiguration not provided - using defaults."
+            );
+            return;
+        }
+        final int readTimeout = httpConfiguration.getReadTimeout();
+        final int connectTimeout = httpConfiguration.getConnectTimeout();
+        if (readTimeout >= 0) {
+            HttpRequest.READ_TIMEOUT = readTimeout;
+        }
+        if (connectTimeout >= 0) {
+            HttpRequest.CONNECT_TIMEOUT = connectTimeout;
+        }
+    }
+    private void initializeTokenSharingLibrary() {
+        if (mPublicClientConfiguration.getOAuth2TokenCache() instanceof MsalOAuth2TokenCache) {
+            mTokenShareUtility = new TokenShareUtility(
+                    mPublicClientConfiguration.getClientId(),
+                    mPublicClientConfiguration.getRedirectUri(),
+                    (MsalOAuth2TokenCache) mPublicClientConfiguration.getOAuth2TokenCache()
+            );
+        } else {
+            throw new IllegalStateException("TSL support mandates use of the MsalOAuth2TokenCache");
+        }
+    }
+    private void setupTelemetry(@NonNull final Context context,
+                                @NonNull final PublicClientApplicationConfiguration developerConfig) {
+        if (null != developerConfig.getTelemetryConfiguration()) {
+            com.microsoft.identity.common.internal.logging.Logger.verbose(
+                    TAG,
+                    "Telemetry configuration is set. Telemetry is enabled."
+            );
+        } else {
+            com.microsoft.identity.common.internal.logging.Logger.verbose(
+                    TAG,
+                    "Telemetry configuration is null. Telemetry is disabled."
+            );
+        }
+        new com.microsoft.identity.common.internal.telemetry.Telemetry.Builder()
+                .withContext(context)
+                .defaultConfiguration(developerConfig.getTelemetryConfiguration())
+                .build();
+    }
+    @Override
+    public TokenShareResult getOrgIdFamilyRefreshTokenWithMetadata(@NonNull final String identifier) throws MsalClientException {
+        validateNonNullArgument(identifier, "identifier");
+        validateBrokerNotInUse();
+        try {
+            final ITokenShareResultInternal resultInternal = mTokenShareUtility.getOrgIdFamilyRefreshTokenWithMetadata(identifier);
+            return new TokenShareResult(resultInternal);
+        } catch (final Exception e) {
+            throw new MsalClientException(
+                    TOKEN_CACHE_ITEM_NOT_FOUND,
+                    TSM_MSG_FAILED_TO_RETRIEVE,
+                    e
+            );
+        }
+    }
+    @Override
+    public String getOrgIdFamilyRefreshToken(@NonNull final String identifier) throws MsalClientException {
+        return getOrgIdFamilyRefreshTokenWithMetadata(identifier).getRefreshToken();
+    }
+    @Override
+    public void saveOrgIdFamilyRefreshToken(@NonNull final String ssoStateSerializerBlob) throws MsalClientException {
+        validateNonNullArgument(ssoStateSerializerBlob, "SsoStateSerializerBlob");
+        validateBrokerNotInUse();
+        try {
+            mTokenShareUtility.saveOrgIdFamilyRefreshToken(ssoStateSerializerBlob);
+        } catch (final Exception e) {
+            throw new MsalClientException(
+                    TOKEN_SHARING_DESERIALIZATION_ERROR,
+                    TSL_MSG_FAILED_TO_SAVE,
+                    e
+            );
+        }
+    }
+    @Override
+    public TokenShareResult getMsaFamilyRefreshTokenWithMetadata(@NonNull final String identifier) throws MsalClientException {
+        validateNonNullArgument(identifier, "identifier");
+        validateBrokerNotInUse();
+        try {
+            final ITokenShareResultInternal resultInternal = mTokenShareUtility.getMsaFamilyRefreshTokenWithMetadata(identifier);
+            return new TokenShareResult(resultInternal);
+        } catch (final Exception e) {
+            throw new MsalClientException(
+                    TOKEN_CACHE_ITEM_NOT_FOUND,
+                    TSM_MSG_FAILED_TO_RETRIEVE,
+                    e
+            );
+        }
+    }
+    @Override
+    public String getMsaFamilyRefreshToken(@NonNull final String identifier) throws MsalClientException {
+        return getMsaFamilyRefreshTokenWithMetadata(identifier).getRefreshToken();
+    }
+    @Override
+    public void saveMsaFamilyRefreshToken(@NonNull final String refreshToken) throws MsalClientException {
+        validateNonNullArgument(refreshToken, "refreshToken");
+        try {
+            mTokenShareUtility.saveMsaFamilyRefreshToken(refreshToken);
+        } catch (final Exception e) {
+            throw new MsalClientException(
+                    TOKEN_SHARING_MSA_PERSISTENCE_ERROR,
+                    TSL_MSG_FAILED_TO_SAVE,
+                    e
+            );
+        }
+    }
+    private void validateBrokerNotInUse() throws MsalClientException {
+        if (MSALControllerFactory.brokerEligible(
+                mPublicClientConfiguration.getAppContext(),
+                mPublicClientConfiguration.getDefaultAuthority(),
+                mPublicClientConfiguration
+        )) {
+            throw new MsalClientException(
+                    "Cannot perform this action - broker is enabled."
+            );
+        }
+    }
+    public interface BrokerDeviceModeCallback {
+        void onGetMode(final boolean isSharedDevice);
+        void onError(final MsalException exception);
+    }
+    public static String getSdkVersion() {
+        return BuildConfig.VERSION_NAME;
+    }
+    public static void showExpectedMsalRedirectUriInfo(Activity activity) {
+        activity.startActivity(BrokerHelperActivity.createStartIntent(activity.getApplicationContext()));
+    }
+    @Override
+    public PublicClientApplicationConfiguration getConfiguration() {
+        return mPublicClientConfiguration;
+    }
+    @Override
+    public boolean isSharedDevice() {
+        return mPublicClientConfiguration.getIsSharedDevice();
+    }
+    @Override
+    public String generateSignedHttpRequest(@NonNull final IAccount account,
+                                            @NonNull final PoPAuthenticationScheme popParameters) throws MsalException {
+        final ResultFuture<AsyncResult<GenerateShrResult>> future = new ResultFuture<>();
+        final GenerateShrCommand generateShrCommand = createGenerateShrCommand(
+                account,
+                popParameters,
+                new CommandCallback<GenerateShrResult, BaseException>() {
+                    @Override
+                    public void onCancel() {
+                    }
+                    @Override
+                    public void onError(@NonNull final BaseException error) {
+                        future.setResult(
+                                new AsyncResult<GenerateShrResult>(
+                                        null,
+                                        baseExceptionToMsalException(error)
+                                )
+                        );
+                    }
+                    @Override
+                    public void onTaskCompleted(@NonNull final GenerateShrResult generateShrResult) {
+                        future.setResult(new AsyncResult<>(generateShrResult, null));
+                    }
+                },
+                PCA_GENERATE_SIGNED_HTTP_REQUEST
+        );
+        CommandDispatcher.submitSilent(generateShrCommand);
+        try {
+            final AsyncResult<GenerateShrResult> asyncResult = future.get();
+            if (asyncResult.getSuccess()) {
+                return asyncResult.getResult().getShr();
+            } else {
+                throw asyncResult.getException();
+            }
+        } catch (ExecutionException | InterruptedException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error while generating SHR.",
+                    e
+            );
+        }
+    }
+    @Override
+    public void generateSignedHttpRequest(@NonNull final IAccount account,
+                                          @NonNull final PoPAuthenticationScheme popParameters,
+                                          @NonNull final SignedHttpRequestRequestCallback callback) {
+        try {
+            final GenerateShrCommand generateShrCommand = createGenerateShrCommand(
+                    account,
+                    popParameters,
+                    new CommandCallback<GenerateShrResult, BaseException>() {
+                        @Override
+                        public void onCancel() {
+                        }
+                        @Override
+                        public void onError(@NonNull final BaseException error) {
+                            callback.onError(baseExceptionToMsalException(error));
+                        }
+                        @Override
+                        public void onTaskCompleted(@NonNull final GenerateShrResult generateShrResult) {
+                            callback.onTaskCompleted(generateShrResult.getShr());
+                        }
+                    },
+                    PCA_GENERATE_SIGNED_HTTP_REQUEST_ASYNC
+            );
+            CommandDispatcher.submitSilent(generateShrCommand);
+        } catch (final MsalClientException e) {
+            final MsalClientException clientException = new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error while generating SHR.",
+                    e
+            );
+            callback.onError(clientException);
+        }
+    }
+    private GenerateShrCommand createGenerateShrCommand(@NonNull final IAccount account,
+                                                        @NonNull final PoPAuthenticationScheme popParams,
+                                                        @NonNull final CommandCallback<GenerateShrResult, BaseException> cmdCallback,
+                                                        @NonNull final String publicApiId) throws MsalClientException {
+        final GenerateShrCommandParameters cmdParams = createGenerateShrCommandParameters(
+                mPublicClientConfiguration,
+                mPublicClientConfiguration.getOAuth2TokenCache(),
+                ((Account) account).getHomeAccountId(),
+                popParams
+        );
+        return new GenerateShrCommand(
+                cmdParams,
+                MSALControllerFactory.getAllControllers(
+                        mPublicClientConfiguration.getAppContext(),
+                        mPublicClientConfiguration.getDefaultAuthority(),
+                        mPublicClientConfiguration
+                ),
+                cmdCallback,
+                publicApiId
+        );
+    }
+    private MsalException baseExceptionToMsalException(@NonNull final BaseException exception) {
+        if (GenerateShrResult.Errors.NO_ACCOUNT_FOUND.equalsIgnoreCase(exception.getErrorCode())) {
+            return new MsalUiRequiredException(
+                    GenerateShrResult.Errors.NO_ACCOUNT_FOUND,
+                    "The supplied account could not be located."
+            );
+        }
+        return new MsalClientException(exception.getErrorCode(), exception.getMessage());
+    }
+    @Override
+    public void acquireToken(@NonNull final Activity activity,
+                             @NonNull final String[] scopes,
+                             @NonNull final AuthenticationCallback callback) {
+        AcquireTokenParameters acquireTokenParameters = buildAcquireTokenParameters(
+                activity,
+                null,
+                scopes,
+                null, 
+                null, 
+                null, 
+                null, 
+                null, 
+                callback,
+                null, 
+                null 
+        );
+        acquireTokenInternal(acquireTokenParameters, PublicApiId.PCA_ACQUIRE_TOKEN_WITH_ACTIVITY_SCOPES_CALLBACK);
+    }
+    AcquireTokenParameters buildAcquireTokenParameters(
+            @NonNull final Activity activity,
+            @Nullable final Fragment fragment,
+            @NonNull final String[] scopes,
+            @Nullable final IAccount account,
+            @Nullable final Prompt uiBehavior,
+            @Nullable final List<Pair<String, String>> extraQueryParameters,
+            @Nullable final String[] extraScopesToConsent,
+            @Nullable final String authority,
+            @NonNull final AuthenticationCallback callback,
+            @Nullable final String loginHint,
+            @Nullable final ClaimsRequest claimsRequest) {
+        validateNonNullArgument(activity, NONNULL_CONSTANTS.ACTIVITY);
+        validateNonNullArgument(scopes, NONNULL_CONSTANTS.SCOPES);
+        validateNonNullArgument(callback, NONNULL_CONSTANTS.CALLBACK);
+        AcquireTokenParameters.Builder builder = new AcquireTokenParameters.Builder();
+        AcquireTokenParameters acquireTokenParameters = builder.startAuthorizationFromActivity(activity)
+                .withFragment(fragment)
+                .forAccount(account)
+                .withScopes(Arrays.asList(scopes))
+                .withPrompt(uiBehavior)
+                .withAuthorizationQueryStringParameters(extraQueryParameters)
+                .withOtherScopesToAuthorize(
+                        Arrays.asList(
+                                null == extraScopesToConsent
+                                        ? new String[]{}
+                                        : extraScopesToConsent
+                        )
+                )
+                .fromAuthority(authority)
+                .withCallback(callback)
+                .withLoginHint(loginHint)
+                .withClaims(claimsRequest)
+                .build();
+        return acquireTokenParameters;
+    }
+    protected void validateAcquireTokenParameters(AcquireTokenParameters parameters) throws MsalArgumentException {
+        final Activity activity = parameters.getActivity();
+        final List scopes = parameters.getScopes();
+        final AuthenticationCallback callback = parameters.getCallback();
+        validateNonNullArg(activity, NONNULL_CONSTANTS.ACTIVITY);
+        validateNonNullArg(scopes, NONNULL_CONSTANTS.SCOPES);
+        validateNonNullArg(callback, NONNULL_CONSTANTS.CALLBACK);
+    }
+    protected void validateAcquireTokenSilentParameters(AcquireTokenSilentParameters parameters) throws MsalArgumentException {
+        final String authority = parameters.getAuthority();
+        final IAccount account = parameters.getAccount();
+        final List scopes = parameters.getScopes();
+        final SilentAuthenticationCallback callback = parameters.getCallback();
+        validateNonNullArg(authority, NONNULL_CONSTANTS.AUTHORITY);
+        validateNonNullArg(account, NONNULL_CONSTANTS.ACCOUNT);
+        validateNonNullArg(callback, NONNULL_CONSTANTS.CALLBACK);
+        validateNonNullArg(scopes, NONNULL_CONSTANTS.SCOPES);
+    }
+    public void acquireToken(@NonNull final AcquireTokenParameters acquireTokenParameters) {
+        acquireTokenInternal(acquireTokenParameters, PublicApiId.PCA_ACQUIRE_TOKEN_WITH_PARAMETERS);
+    }
+    void acquireTokenInternal(@NonNull final AcquireTokenParameters acquireTokenParameters, @NonNull final String publicApiId) {
+        sBackgroundExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                final CommandCallback localAuthenticationCallback =
+                        getCommandCallback(
+                                acquireTokenParameters.getCallback(),
+                                acquireTokenParameters
+                        );
+                try {
+                    validateAcquireTokenParameters(acquireTokenParameters);
+                    acquireTokenParameters.setAccountRecord(
+                            selectAccountRecordForTokenRequest(
+                                    mPublicClientConfiguration,
+                                    acquireTokenParameters
+                            )
+                    );
+                    final InteractiveTokenCommandParameters params = CommandParametersAdapter.
+                            createInteractiveTokenCommandParameters(
+                                    mPublicClientConfiguration,
+                                    mPublicClientConfiguration.getOAuth2TokenCache(),
+                                    acquireTokenParameters
+                            );
+                    final InteractiveTokenCommand command = new InteractiveTokenCommand(
+                            params,
+                            MSALControllerFactory.getDefaultController(
+                                    mPublicClientConfiguration.getAppContext(),
+                                    params.getAuthority(),
+                                    mPublicClientConfiguration
+                            ),
+                            localAuthenticationCallback,
+                            publicApiId
+                    );
+                    CommandDispatcher.beginInteractive(command);
+                } catch (final Exception exception) {
+                    final BaseException baseException = ExceptionAdapter.baseExceptionFromException(exception);
+                    final Handler handler = new Handler(Looper.getMainLooper());
+                    handler.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            localAuthenticationCallback.onError(baseException);
+                        }
+                    });
+                }
+            }
+        });
+    }
+    protected AcquireTokenSilentParameters buildAcquireTokenSilentParameters(@NonNull final String[] scopes,
+                                                                             @NonNull final IAccount account,
+                                                                             @NonNull final String authority,
+                                                                             final boolean forceRefresh,
+                                                                             @Nullable final ClaimsRequest claimsRequest,
+                                                                             @NonNull final SilentAuthenticationCallback callback) {
+        validateNonNullArgument(account, NONNULL_CONSTANTS.ACCOUNT);
+        validateNonNullArgument(callback, NONNULL_CONSTANTS.CALLBACK);
+        AcquireTokenSilentParameters.Builder builder = new AcquireTokenSilentParameters.Builder();
+        AcquireTokenSilentParameters acquireTokenSilentParameters =
+                builder.withScopes(Arrays.asList(scopes))
+                        .forAccount(account)
+                        .fromAuthority(authority)
+                        .forceRefresh(forceRefresh)
+                        .withClaims(claimsRequest)
+                        .withCallback(callback)
+                        .build();
+        return acquireTokenSilentParameters;
+    }
+    @Override
+    public void acquireTokenSilentAsync(
+            @NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters) {
+        acquireTokenSilentAsyncInternal(acquireTokenSilentParameters, PublicApiId.PCA_ACQUIRE_TOKEN_SILENT_ASYNC_WITH_PARAMETERS);
+    }
+    void acquireTokenSilentAsyncInternal(
+            @NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters,
+            @NonNull final String publicApiId) {
+        sBackgroundExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                final CommandCallback callback = getCommandCallback(
+                        acquireTokenSilentParameters.getCallback(),
+                        acquireTokenSilentParameters
+                );
+                try {
+                    validateAcquireTokenSilentParameters(acquireTokenSilentParameters);
+                    acquireTokenSilentParameters.setAccountRecord(
+                            selectAccountRecordForTokenRequest(
+                                    mPublicClientConfiguration,
+                                    acquireTokenSilentParameters
+                            )
+                    );
+                    final SilentTokenCommandParameters params =
+                            CommandParametersAdapter.createSilentTokenCommandParameters(
+                                    mPublicClientConfiguration,
+                                    mPublicClientConfiguration.getOAuth2TokenCache(),
+                                    acquireTokenSilentParameters
+                            );
+                    final SilentTokenCommand silentTokenCommand = new SilentTokenCommand(
+                            params,
+                            MSALControllerFactory.getAllControllers(
+                                    mPublicClientConfiguration.getAppContext(),
+                                    params.getAuthority(),
+                                    mPublicClientConfiguration
+                            ),
+                            callback,
+                            publicApiId
+                    );
+                    CommandDispatcher.submitSilent(silentTokenCommand);
+                } catch (final Exception exception) {
+                    final BaseException baseException = ExceptionAdapter.baseExceptionFromException(exception);
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            callback.onError(baseException);
+                        }
+                    });
+                }
+            }
+        });
+    }
+    private AccountRecord selectAccountRecordForTokenRequest(
+            @NonNull final PublicClientApplicationConfiguration pcaConfig,
+            @NonNull final TokenParameters tokenParameters)
+            throws ServiceException, ClientException {
+        if (TextUtils.isEmpty(tokenParameters.getAuthority())) {
+            tokenParameters.setAuthority(
+                    pcaConfig
+                            .getDefaultAuthority()
+                            .getAuthorityUri()
+                            .toString()
+            );
+        }
+        if (null == tokenParameters.getAccount()) {
+            return null; 
+        }
+        final IAccount rootAccount = tokenParameters.getAccount();
+        final MultiTenantAccount multiTenantAccount = (MultiTenantAccount) rootAccount;
+        final String requestAuthority = tokenParameters.getAuthority();
+        final Authority authority = Authority.getAuthorityFromAuthorityUrl(requestAuthority);
+        if (authority instanceof AzureActiveDirectoryB2CAuthority) {
+            return AccountAdapter.getAccountInternal(
+                    mPublicClientConfiguration.getClientId(),
+                    mPublicClientConfiguration.getOAuth2TokenCache(),
+                    multiTenantAccount.getHomeAccountId(),
+                    multiTenantAccount.getTenantId()
+            );
+        } else if (authority instanceof AzureActiveDirectoryAuthority) {
+            final AzureActiveDirectoryAuthority aadAuthority = (AzureActiveDirectoryAuthority) authority;
+            String tenantId = aadAuthority.getAudience().getTenantId();
+            final AccountRecord accountRecord = new AccountRecord();
+            accountRecord.setEnvironment(multiTenantAccount.getEnvironment());
+            accountRecord.setHomeAccountId(multiTenantAccount.getHomeAccountId());
+            final boolean isUuid = isUuid(tenantId);
+            if (!isUuid && !isHomeTenantAlias(tenantId)) {
+                tenantId = ((AzureActiveDirectoryAuthority) authority)
+                        .getAudience()
+                        .getTenantUuidForAlias(
+                                authority.getAuthorityURL().toString()
+                        );
+            }
+            accountRecord.setRealm(tenantId);
+            IAccount accountForRequest;
+            if (isHomeTenantAlias(tenantId)
+                    || isAccountHomeTenant(multiTenantAccount.getClaims(), tenantId)) {
+                accountForRequest = (multiTenantAccount.getClaims() != null) ? multiTenantAccount : null;
+            } else {
+                accountForRequest = multiTenantAccount.getTenantProfiles().get(tenantId);
+            }
+            if (null == accountForRequest) { 
+                final boolean isSilent = tokenParameters instanceof AcquireTokenSilentParameters;
+                if (isSilent) {
+                    if (rootAccount.getClaims() != null) {
+                        accountForRequest = rootAccount;
+                    } else {
+                        for (ITenantProfile tenantProfile : multiTenantAccount.getTenantProfiles().values()) {
+                            if (tenantProfile.getClaims() != null) {
+                                accountForRequest = tenantProfile;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (accountForRequest == null) {
+                Logger.warnPII(TAG,
+                        "No account record found for IAccount with request tenantId: " + tenantId
+                );
+                throw new ClientException(
+                        ErrorStrings.NO_ACCOUNT_FOUND,
+                        "No account record found for IAccount"
+                );
+            }
+            accountRecord.setLocalAccountId(accountForRequest.getId());
+            accountRecord.setUsername(accountForRequest.getUsername());
+            return accountRecord;
+        } else {
+            throw new UnsupportedOperationException(
+                    "Unsupported Authority type: "
+                            + authority
+                            .getClass()
+                            .getSimpleName()
+            );
+        }
+    }
+    @Override
+    public IAuthenticationResult acquireTokenSilent(
+            @NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters)
+            throws InterruptedException, MsalException {
+        return acquireTokenSilentInternal(acquireTokenSilentParameters, PublicApiId.PCA_ACQUIRE_TOKEN_SILENT_WITH_PARAMETERS);
+    }
+    IAuthenticationResult acquireTokenSilentInternal(
+            @NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters,
+            @NonNull final String publicApiId)
+            throws InterruptedException, MsalException {
+        if (acquireTokenSilentParameters.getCallback() != null) {
+            throw new IllegalArgumentException("Do not provide callback for synchronous methods");
+        }
+        final ResultFuture<AsyncResult<IAuthenticationResult>> future = new ResultFuture<>();
+        acquireTokenSilentParameters.setCallback(new SilentAuthenticationCallback() {
+            @Override
+            public void onSuccess(IAuthenticationResult authenticationResult) {
+                future.setResult(new AsyncResult<>(authenticationResult, null));
+            }
+            @Override
+            public void onError(MsalException exception) {
+                future.setResult(new AsyncResult<IAuthenticationResult>(null, exception));
+            }
+        });
+        acquireTokenSilentAsyncInternal(acquireTokenSilentParameters, publicApiId);
+        try {
+            AsyncResult<IAuthenticationResult> result = future.get();
+            if (result.getSuccess()) {
+                return result.getResult();
+            } else {
+                throw result.getException();
+            }
+        } catch (final ExecutionException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error while acquiring token.",
+                    e
+            );
+        }
+    }
+    public void acquireTokenWithDeviceCode(@Nullable String[] scopes, @NonNull final DeviceCodeFlowCallback callback) {
+        final DeviceCodeFlowCommandParameters commandParameters = CommandParametersAdapter
+                .createDeviceCodeFlowCommandParameters(
+                        mPublicClientConfiguration,
+                        mPublicClientConfiguration.getOAuth2TokenCache(),
+                        scopes);
+        final DeviceCodeFlowCommandCallback deviceCodeFlowCommandCallback = getDeviceCodeFlowCommandCallback(callback);
+        final DeviceCodeFlowCommand deviceCodeFlowCommand = new DeviceCodeFlowCommand(
+                commandParameters,
+                new LocalMSALController(),
+                deviceCodeFlowCommandCallback,
+                PublicApiId.DEVICE_CODE_FLOW_WITH_CALLBACK
+        );
+        CommandDispatcher.submitSilent(deviceCodeFlowCommand);
+    }
+    private void checkInternetPermission() {
+        final PackageManager packageManager = mPublicClientConfiguration.getAppContext().getPackageManager();
+        if (packageManager.checkPermission(INTERNET_PERMISSION, mPublicClientConfiguration.getAppContext().getPackageName())
+                != PackageManager.PERMISSION_GRANTED
+                || packageManager.checkPermission(ACCESS_NETWORK_STATE_PERMISSION, mPublicClientConfiguration.getAppContext().getPackageName())
+                != PackageManager.PERMISSION_GRANTED) {
+            throw new IllegalStateException("android.permission.Internet or android.permission.ACCESS_NETWORK_STATE is missing");
+        }
+    }
+    static CommandCallback<List<ICacheRecord>, BaseException> getLoadAccountsCallback(
+            final LoadAccountsCallback loadAccountsCallback) {
+        return new CommandCallback<List<ICacheRecord>, BaseException>() {
+            @Override
+            public void onTaskCompleted(final List<ICacheRecord> result) {
+                if (null == result) {
+                    loadAccountsCallback.onTaskCompleted(null);
+                } else {
+                    loadAccountsCallback.onTaskCompleted(
+                            AccountAdapter.adapt(result)
+                    );
+                }
+            }
+            @Override
+            public void onError(final BaseException exception) {
+                loadAccountsCallback.onError(msalExceptionFromBaseException(exception));
+            }
+            @Override
+            public void onCancel() {
+            }
+        };
+    }
+    protected CommandCallback getCommandCallback(
+            @NonNull final SilentAuthenticationCallback authenticationCallback,
+            @NonNull final TokenParameters tokenParameters) {
+        return new CommandCallback<ILocalAuthenticationResult, BaseException>() {
+            @Override
+            public void onTaskCompleted(ILocalAuthenticationResult localAuthenticationResult) {
+                postAuthResult(localAuthenticationResult, tokenParameters, authenticationCallback);
+            }
+            @Override
+            public void onError(BaseException exception) {
+                MsalException msalException = msalExceptionFromBaseException(exception);
+                if (authenticationCallback == null) {
+                    throw new IllegalStateException(NONNULL_CONSTANTS.CALLBACK + NONNULL_CONSTANTS.NULL_ERROR_SUFFIX);
+                } else {
+                    authenticationCallback.onError(msalException);
+                }
+            }
+            @Override
+            public void onCancel() {
+                if (authenticationCallback instanceof AuthenticationCallback) {
+                    ((AuthenticationCallback) authenticationCallback).onCancel();
+                } else {
+                    throw new IllegalStateException("Silent requests cannot be cancelled.");
+                }
+            }
+        };
+    }
+    private DeviceCodeFlowCommandCallback getDeviceCodeFlowCommandCallback(@NonNull final DeviceCodeFlowCallback callback) {
+        return new DeviceCodeFlowCommandCallback<LocalAuthenticationResult, BaseException>() {
+            @Override
+            public void onUserCodeReceived(@NonNull final String vUri,
+                                           @NonNull final String userCode,
+                                           @NonNull final String message,
+                                           @NonNull final Date sessionExpirationDate) {
+                callback.onUserCodeReceived(vUri, userCode, message, sessionExpirationDate);
+            }
+            @Override
+            public void onTaskCompleted(LocalAuthenticationResult tokenResult) {
+                final IAuthenticationResult convertedResult = AuthenticationResultAdapter.adapt(
+                        tokenResult);
+                final AuthenticationResult authResult = (AuthenticationResult) convertedResult;
+                callback.onTokenReceived(authResult);
+            }
+            @Override
+            public void onError(BaseException error) {
+                final MsalException msalException;
+                if (error instanceof ServiceException) {
+                    msalException = new MsalServiceException(
+                            error.getErrorCode(),
+                            error.getMessage(),
+                            ((ServiceException) error).getHttpStatusCode(),
+                            error
+                    );
+                } else {
+                    msalException = new MsalClientException(
+                            error.getErrorCode(),
+                            error.getMessage(),
+                            error
+                    );
+                }
+                callback.onError(msalException);
+            }
+            @Override
+            public void onCancel() {
+            }
+        };
+    }
+    protected void postAuthResult(@NonNull final ILocalAuthenticationResult localAuthenticationResult,
+                                  @NonNull final TokenParameters requestParameters,
+                                  @NonNull final SilentAuthenticationCallback authenticationCallback) {
+        if (authenticationCallback == null) {
+            throw new IllegalStateException(NONNULL_CONSTANTS.CALLBACK + NONNULL_CONSTANTS.NULL_ERROR_SUFFIX);
+        }
+        final List<String> declinedScopes = AuthenticationResultAdapter.getDeclinedScopes(
+                Arrays.asList(localAuthenticationResult.getScope()),
+                requestParameters.getScopes()
+        );
+        if (!declinedScopes.isEmpty()) {
+            final MsalDeclinedScopeException declinedScopeException =
+                    AuthenticationResultAdapter.declinedScopeExceptionFromResult(
+                            localAuthenticationResult,
+                            declinedScopes,
+                            requestParameters
+                    );
+            authenticationCallback.onError(declinedScopeException);
+        } else {
+            IAuthenticationResult authenticationResult = AuthenticationResultAdapter.adapt(localAuthenticationResult);
+            authenticationCallback.onSuccess(authenticationResult);
+        }
+    }
+    private OAuth2TokenCache<?, ?, ?> getOAuth2TokenCache() {
+        return MsalOAuth2TokenCache.create(mPublicClientConfiguration.getAppContext());
+    }
+    protected class AccountMatcher {
+        private final AccountMatcher[] mDelegateMatchers;
+        AccountMatcher() {
+            mDelegateMatchers = new AccountMatcher[]{};
+        }
+        AccountMatcher(@NonNull final AccountMatcher... delegateMatchers) {
+            mDelegateMatchers = delegateMatchers;
+        }
+        boolean matches(@NonNull final String identifier,
+                        @NonNull final IAccount account) {
+            boolean matches = false;
+            for (final AccountMatcher matcher : mDelegateMatchers) {
+                matches = matcher.matches(identifier, account);
+                if (matches) {
+                    break;
+                }
+            }
+            return matches;
+        }
+    }
+    protected AccountMatcher homeAccountMatcher = new AccountMatcher() {
+        @Override
+        boolean matches(@NonNull final String homeAccountId,
+                        @NonNull final IAccount account) {
+            return homeAccountId.contains(account.getId());
+        }
+    };
+    protected AccountMatcher localAccountMatcher = new AccountMatcher() {
+        @Override
+        boolean matches(@NonNull final String localAccountId,
+                        @NonNull final IAccount account) {
+            if (localAccountId.contains(account.getId())) {
+                return true;
+            } else if (account instanceof MultiTenantAccount) {
+                final MultiTenantAccount multiTenantAccount = (MultiTenantAccount) account;
+                final Map<String, ITenantProfile> tenantProfiles = multiTenantAccount.getTenantProfiles();
+                if (null != tenantProfiles && !tenantProfiles.isEmpty()) {
+                    for (final Map.Entry<String, ITenantProfile> profileEntry : tenantProfiles.entrySet()) {
+                        if (!TextUtils.isEmpty(profileEntry.getValue().getId()) &&
+                                localAccountId.contains(profileEntry.getValue().getId())) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+    };
+    protected AccountMatcher usernameMatcher = new AccountMatcher() {
+        @Override
+        boolean matches(@NonNull final String username,
+                        @NonNull final IAccount account) {
+            final List<IClaimable> thingsWithClaims
+                    = new ArrayList<>();
+            if (null != account.getClaims()) {
+                thingsWithClaims.add(account);
+            }
+            if (account instanceof MultiTenantAccount) {
+                final MultiTenantAccount multiTenantAccount = (MultiTenantAccount) account;
+                final Map<String, ITenantProfile> profiles = multiTenantAccount.getTenantProfiles();
+                for (final Map.Entry<String, ITenantProfile> profileEntry : profiles.entrySet()) {
+                    if (null != profileEntry.getValue().getClaims()) {
+                        thingsWithClaims.add(profileEntry.getValue());
+                    }
+                }
+            }
+            for (final IClaimable thingWithClaims : thingsWithClaims) {
+                if (null != thingWithClaims.getClaims()
+                        && username.equalsIgnoreCase(
+                        SchemaUtil.getDisplayableId(
+                                thingWithClaims.getClaims()
+                        )
+                )) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    };
+    IAuthenticationResult acquireTokenSilentSyncInternal(@NonNull final String[] scopes,
+                                                         @NonNull final String authority,
+                                                         @NonNull final IAccount account,
+                                                         final boolean forceRefresh,
+                                                         @NonNull final String publicApiId) throws MsalException, InterruptedException {
+        throwOnMainThread("acquireTokenSilent");
+        final ResultFuture<AsyncResult<IAuthenticationResult>> future = new ResultFuture<>();
+        final AcquireTokenSilentParameters acquireTokenSilentParameters = buildAcquireTokenSilentParameters(
+                scopes,
+                account,
+                authority, 
+                forceRefresh, 
+                null, 
+                new SilentAuthenticationCallback() {
+                    @Override
+                    public void onSuccess(IAuthenticationResult authenticationResult) {
+                        future.setResult(new AsyncResult<>(authenticationResult, null));
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        future.setResult(new AsyncResult<IAuthenticationResult>(null, exception));
+                    }
+                }
+        );
+        acquireTokenSilentAsyncInternal(acquireTokenSilentParameters, publicApiId);
+        try {
+            final AsyncResult<IAuthenticationResult> result = future.get();
+            if (result.getSuccess()) {
+                return result.getResult();
+            } else {
+                throw result.getException();
+            }
+        } catch (final ExecutionException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error while acquiring token.",
+                    e
+            );
+        }
+    }
+    void performMigration(@NonNull final TokenMigrationCallback callback) {
+        final Map<String, String> redirects = new HashMap<>();
+        redirects.put(
+                mPublicClientConfiguration.getClientId(), 
+                mPublicClientConfiguration.getRedirectUri() 
+        );
+        final AdalMigrationAdapter adalMigrationAdapter = new AdalMigrationAdapter(
+                mPublicClientConfiguration.getAppContext(),
+                redirects,
+                false
+        );
+        if (adalMigrationAdapter.getMigrationStatus()) {
+            callback.onMigrationFinished(0);
+        } else {
+            final IStorageHelper storageHelper = new StorageHelper(mPublicClientConfiguration.getAppContext());
+            final ISharedPreferencesFileManager sharedPreferencesFileManager =
+                    new SharedPreferencesFileManager(
+                            mPublicClientConfiguration.getAppContext(),
+                            "com.microsoft.aad.adal.cache",
+                            storageHelper
+                    );
+            final Map<String, String> credentials = sharedPreferencesFileManager.getAll();
+            new TokenMigrationUtility<MicrosoftAccount, MicrosoftRefreshToken>()._import(
+                    adalMigrationAdapter,
+                    credentials,
+                    (IShareSingleSignOnState<MicrosoftAccount, MicrosoftRefreshToken>) mPublicClientConfiguration.getOAuth2TokenCache(),
+                    callback
+            );
+        }
+    }
+    private static void runOnBackground(@NonNull final Runnable runnable) {
+        new Thread(runnable).start();
+    }
+    private static boolean isAccountHomeTenant(@Nullable final Map<String, ?> claims,
+                                               @NonNull final String tenantId) {
+        boolean isAccountHomeTenant = false;
+        if (null != claims && !claims.isEmpty()) {
+            isAccountHomeTenant = claims.get(TENANT_ID).equals(tenantId);
+        }
+        return isAccountHomeTenant;
+    }
+}
+package com.microsoft.identity.client;
+import com.microsoft.identity.client.exception.MsalClientException;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.exception.MsalServiceException;
+import com.microsoft.identity.client.exception.MsalUiRequiredException;
+public interface SilentAuthenticationCallback {
+    void onSuccess(final IAuthenticationResult authenticationResult);
+    void onError(final MsalException exception);
+}
+package com.microsoft.identity.client.exception;
+import com.microsoft.identity.client.internal.MsalUtils;
+import com.microsoft.identity.common.exception.BaseException;
+public class MsalException extends BaseException {
+    MsalException() {
+        super();
+    }
+    MsalException(final String errorCode) {
+        super(errorCode);
+    }
+    MsalException(final String errorCode, final String errorMessage) {
+        super(errorCode, errorMessage);
+    }
+    MsalException(final String errorCode, final String errorMessage,
+                         final Throwable throwable) {
+        super(errorCode, errorMessage, throwable);
+    }
+    @Override
+    public String getErrorCode() {
+        return super.getErrorCode();
+    }
+    @Override
+    public String getMessage() {
+        if (!MsalUtils.isEmpty(super.getMessage())) {
+            return super.getMessage();
+        }
+        return "";
+    }
+}
+package com.microsoft.identity.client.msal.automationapp.sdk;
+import android.app.Activity;
+import android.content.Context;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import com.microsoft.identity.client.AcquireTokenParameters;
+import com.microsoft.identity.client.AcquireTokenSilentParameters;
+import com.microsoft.identity.client.AuthenticationCallback;
+import com.microsoft.identity.client.IAccount;
+import com.microsoft.identity.client.IAuthenticationResult;
+import com.microsoft.identity.client.IMultipleAccountPublicClientApplication;
+import com.microsoft.identity.client.IPublicClientApplication;
+import com.microsoft.identity.client.ISingleAccountPublicClientApplication;
+import com.microsoft.identity.client.MultipleAccountPublicClientApplication;
+import com.microsoft.identity.client.PublicClientApplication;
+import com.microsoft.identity.client.SingleAccountPublicClientApplication;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.exception.MsalUserCancelException;
+import com.microsoft.identity.client.ui.automation.TokenRequestTimeout;
+import com.microsoft.identity.client.ui.automation.interaction.OnInteractionRequired;
+import com.microsoft.identity.client.ui.automation.sdk.ResultFuture;
+import com.microsoft.identity.client.ui.automation.sdk.IAuthSdk;
+import java.util.ArrayList;
+public class MsalSdk implements IAuthSdk<MsalAuthTestParams> {
+    @Override
+    public MsalAuthResult acquireTokenInteractive(@NonNull MsalAuthTestParams authTestParams, final OnInteractionRequired interactionRequiredCallback, @NonNull final TokenRequestTimeout tokenRequestTimeout) throws Throwable {
+        final IPublicClientApplication pca = setupPCA(
+                authTestParams.getActivity(),
+                authTestParams.getMsalConfigResourceId()
+        );
+        final ResultFuture<IAuthenticationResult, Exception> future = new ResultFuture<>();
+        final AcquireTokenParameters.Builder acquireTokenParametersBuilder = new AcquireTokenParameters.Builder()
+                .startAuthorizationFromActivity(authTestParams.getActivity())
+                .withLoginHint(authTestParams.getLoginHint())
+                .withPrompt(authTestParams.getPromptParameter())
+                .fromAuthority(authTestParams.getAuthority())
+                .withCallback(getAuthCallback(future));
+        if (authTestParams.getScopes() == null || authTestParams.getScopes().isEmpty()) {
+            acquireTokenParametersBuilder.withResource(authTestParams.getResource());
+        } else {
+            acquireTokenParametersBuilder.withScopes(new ArrayList<>(authTestParams.getScopes()));
+        }
+        if (authTestParams.getClaims() != null) {
+            acquireTokenParametersBuilder.withClaims(authTestParams.getClaims());
+        }
+        final AcquireTokenParameters acquireTokenParameters = acquireTokenParametersBuilder.build();
+        pca.acquireToken(acquireTokenParameters);
+        interactionRequiredCallback.handleUserInteraction();
+        try {
+            final IAuthenticationResult result = future.get(tokenRequestTimeout.getTime(), tokenRequestTimeout.getTimeUnit());
+            return new MsalAuthResult(result);
+        } catch (Exception exception) {
+            return new MsalAuthResult(exception);
+        }
+    }
+    @Override
+    public MsalAuthResult acquireTokenSilent(@NonNull MsalAuthTestParams authTestParams, @NonNull final TokenRequestTimeout tokenRequestTimeout) throws Throwable {
+        final IPublicClientApplication pca = setupPCA(
+            authTestParams.getActivity(),
+            authTestParams.getMsalConfigResourceId()
+        );
+        final ResultFuture<IAuthenticationResult, Exception> future = new ResultFuture<>();
+        final IAccount account = getAccount(
+                authTestParams.getActivity(),
+                authTestParams.getMsalConfigResourceId(),
+                authTestParams.getLoginHint()
+        );
+        final AcquireTokenSilentParameters.Builder acquireTokenParametersBuilder = new AcquireTokenSilentParameters.Builder()
+                .forAccount(account)
+                .forceRefresh(authTestParams.isForceRefresh())
+                .fromAuthority(authTestParams.getAuthority())
+                .withCallback(getAuthCallback(future));
+        if (authTestParams.getScopes() == null || authTestParams.getScopes().isEmpty()) {
+            acquireTokenParametersBuilder.withResource(authTestParams.getResource());
+        } else {
+            acquireTokenParametersBuilder.withScopes(new ArrayList<>(authTestParams.getScopes()));
+        }
+        if (authTestParams.getClaims() != null) {
+            acquireTokenParametersBuilder.withClaims(authTestParams.getClaims());
+        }
+        final AcquireTokenSilentParameters acquireTokenParameters = acquireTokenParametersBuilder.build();
+        pca.acquireTokenSilentAsync(acquireTokenParameters);
+        try {
+            final IAuthenticationResult result = future.get(tokenRequestTimeout.getTime(), tokenRequestTimeout.getTimeUnit());
+            return new MsalAuthResult(result);
+        } catch (final Exception exception) {
+            return new MsalAuthResult(exception);
+        }
+    }
+    private IPublicClientApplication setupPCA(@NonNull final Context context,
+                                              final int msalConfigResourceId) {
+        try {
+            return PublicClientApplication.create(context, msalConfigResourceId);
+        } catch (InterruptedException | MsalException e) {
+            throw new AssertionError(e);
+        }
+    }
+    private AuthenticationCallback getAuthCallback(final ResultFuture<IAuthenticationResult, Exception> future) {
+        return new AuthenticationCallback() {
+            @Override
+            public void onSuccess(IAuthenticationResult authenticationResult) {
+                future.setResult(authenticationResult);
+            }
+            @Override
+            public void onError(MsalException exception) {
+                future.setException(exception);
+            }
+            @Override
+            public void onCancel() {
+                future.setException(new MsalUserCancelException());
+            }
+        };
+    }
+    public IAccount getAccount(@NonNull final Activity activity,
+                                final int msalConfigResourceId,
+                                @NonNull final String username) {
+        final IPublicClientApplication pca = setupPCA(
+                activity,
+                msalConfigResourceId
+        );
+        if (pca instanceof SingleAccountPublicClientApplication) {
+            return getAccountForSingleAccountPca((SingleAccountPublicClientApplication) pca);
+        } else if (pca instanceof MultipleAccountPublicClientApplication) {
+            return getAccountForMultipleAccountPca((MultipleAccountPublicClientApplication) pca, username);
+        } else {
+            throw new AssertionError("Weird");
+        }
+    }
+    private IAccount getAccountForSingleAccountPca(@NonNull final SingleAccountPublicClientApplication pca) {
+        final ResultFuture<IAccount, Exception> future = new ResultFuture<>();
+        pca.getCurrentAccountAsync(new ISingleAccountPublicClientApplication.CurrentAccountCallback() {
+            @Override
+            public void onAccountLoaded(@Nullable IAccount activeAccount) {
+                future.setResult(activeAccount);
+            }
+            @Override
+            public void onAccountChanged(@Nullable IAccount priorAccount, @Nullable IAccount currentAccount) {
+                future.setResult(currentAccount);
+            }
+            @Override
+            public void onError(@NonNull MsalException exception) {
+                future.setException(exception);
+            }
+        });
+        try {
+            return future.get();
+        } catch (final Exception exception) {
+            throw new AssertionError(exception);
+        }
+    }
+    private IAccount getAccountForMultipleAccountPca(@NonNull final MultipleAccountPublicClientApplication pca,
+                                                     final String username) {
+        final ResultFuture<IAccount, Exception> future = new ResultFuture<>();
+        pca.getAccount(username, new IMultipleAccountPublicClientApplication.GetAccountCallback() {
+            @Override
+            public void onTaskCompleted(IAccount result) {
+                future.setResult(result);
+            }
+            @Override
+            public void onError(MsalException exception) {
+                future.setException(exception);
+            }
+        });
+        try {
+            return future.get();
+        } catch (final Exception exception) {
+            throw new AssertionError(exception);
+        }
+    }
+}
+package com.microsoft.identity.client;
+import android.app.Activity;
+import android.content.Context;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.WorkerThread;
+import com.microsoft.identity.client.exception.MsalClientException;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.internal.AsyncResult;
+import com.microsoft.identity.client.internal.CommandParametersAdapter;
+import com.microsoft.identity.client.internal.controllers.MSALControllerFactory;
+import com.microsoft.identity.client.internal.controllers.MsalExceptionAdapter;
+import com.microsoft.identity.common.adal.internal.cache.StorageHelper;
+import com.microsoft.identity.common.adal.internal.util.JsonExtensions;
+import com.microsoft.identity.common.adal.internal.util.StringExtensions;
+import com.microsoft.identity.common.exception.BaseException;
+import com.microsoft.identity.common.internal.cache.ICacheRecord;
+import com.microsoft.identity.common.internal.cache.SharedPreferencesFileManager;
+import com.microsoft.identity.common.internal.commands.CommandCallback;
+import com.microsoft.identity.common.internal.commands.GetCurrentAccountCommand;
+import com.microsoft.identity.common.internal.commands.RemoveCurrentAccountCommand;
+import com.microsoft.identity.common.internal.commands.parameters.CommandParameters;
+import com.microsoft.identity.common.internal.commands.parameters.RemoveAccountCommandParameters;
+import com.microsoft.identity.common.internal.controllers.BaseController;
+import com.microsoft.identity.common.internal.controllers.CommandDispatcher;
+import com.microsoft.identity.common.internal.dto.AccountRecord;
+import com.microsoft.identity.common.internal.migration.TokenMigrationCallback;
+import com.microsoft.identity.common.internal.result.ILocalAuthenticationResult;
+import com.microsoft.identity.common.internal.result.ResultFuture;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import static com.microsoft.identity.client.exception.MsalClientException.UNKNOWN_ERROR;
+import static com.microsoft.identity.client.internal.MsalUtils.throwOnMainThread;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_ASYNC_WITH_PARAMETERS;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_ASYNC_WITH_SCOPES_AUTHORITY_CALLBACK;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_WITH_PARAMETERS;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_WITH_SCOPES_AUTHORITY;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_WITH_ACTIVITY_SCOPES_CALLBACK;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_WITH_PARAMETERS;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_EXISTING_SIGN_IN_WITH_PROMPT;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_GET_CURRENT_ACCOUNT;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_GET_CURRENT_ACCOUNT_ASYNC;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_SIGN_IN;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_SIGN_IN_WITH_PROMPT;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_SIGN_OUT;
+import static com.microsoft.identity.common.internal.eststelemetry.PublicApiId.SINGLE_ACCOUNT_PCA_SIGN_OUT_WITH_CALLBACK;
+public class SingleAccountPublicClientApplication
+        extends PublicClientApplication
+        implements ISingleAccountPublicClientApplication {
+    private static final String TAG = SingleAccountPublicClientApplication.class.getSimpleName();
+    public static final String SINGLE_ACCOUNT_CREDENTIAL_SHARED_PREFERENCES =
+            "com.microsoft.identity.client.single_account_credential_cache";
+    public static final String CURRENT_ACCOUNT_SHARED_PREFERENCE_KEY =
+            "com.microsoft.identity.client.single_account_credential_cache.current_account";
+    private SharedPreferencesFileManager sharedPreferencesFileManager;
+    protected SingleAccountPublicClientApplication(@NonNull final PublicClientApplicationConfiguration config) throws MsalClientException {
+        super(config);
+        initializeSharedPreferenceFileManager(config.getAppContext());
+    }
+    private void initializeSharedPreferenceFileManager(@NonNull final Context context) {
+        sharedPreferencesFileManager = new SharedPreferencesFileManager(
+                context,
+                SINGLE_ACCOUNT_CREDENTIAL_SHARED_PREFERENCES,
+                new StorageHelper(context)
+        );
+    }
+    @Override
+    public void getCurrentAccountAsync(@NonNull final CurrentAccountCallback callback) {
+        getCurrentAccountAsyncInternal(callback, SINGLE_ACCOUNT_PCA_GET_CURRENT_ACCOUNT_ASYNC);
+    }
+    private void getCurrentAccountAsyncInternal(@NonNull final CurrentAccountCallback callback,
+                                                @NonNull final String publicApiId) {
+        TokenMigrationCallback migrationCallback = new TokenMigrationCallback() {
+            @Override
+            public void onMigrationFinished(int numberOfAccountsMigrated) {
+                final CommandParameters params = CommandParametersAdapter.createCommandParameters(mPublicClientConfiguration, mPublicClientConfiguration.getOAuth2TokenCache());
+                final List<BaseController> controllers;
+                try {
+                    controllers = MSALControllerFactory.getAllControllers(
+                            mPublicClientConfiguration.getAppContext(),
+                            mPublicClientConfiguration.getDefaultAuthority(),
+                            mPublicClientConfiguration);
+                } catch (MsalClientException e) {
+                    callback.onError(e);
+                    return;
+                }
+                final GetCurrentAccountCommand command = new GetCurrentAccountCommand(
+                        params,
+                        controllers,
+                        new CommandCallback<List<ICacheRecord>, BaseException>() {
+                            @Override
+                            public void onTaskCompleted(final List<ICacheRecord> result) {
+                                checkCurrentAccountNotifyCallback(callback, result);
+                                persistCurrentAccount(result);
+                            }
+                            @Override
+                            public void onError(final BaseException exception) {
+                                callback.onError(MsalExceptionAdapter.msalExceptionFromBaseException(exception));
+                            }
+                            @Override
+                            public void onCancel() {
+                            }
+                        },
+                        publicApiId
+                );
+                CommandDispatcher.submitSilent(command);
+            }
+        };
+        performMigration(migrationCallback);
+    }
+    @Override
+    public ICurrentAccountResult getCurrentAccount() throws InterruptedException, MsalException {
+        throwOnMainThread("getCurrentAccount");
+        final ResultFuture<AsyncResult<CurrentAccountResult>> future = new ResultFuture<>();
+        getCurrentAccountAsyncInternal(
+                new CurrentAccountCallback() {
+                    @Override
+                    public void onAccountLoaded(@Nullable final IAccount activeAccount) {
+                        final CurrentAccountResult currentAccountResult = new CurrentAccountResult(
+                                activeAccount,
+                                null,
+                                false
+                        );
+                        future.setResult(new AsyncResult<>(currentAccountResult, null));
+                    }
+                    @Override
+                    public void onAccountChanged(@Nullable final IAccount priorAccount,
+                                                 @Nullable final IAccount currentAccount) {
+                        final CurrentAccountResult currentAccountResult = new CurrentAccountResult(
+                                currentAccount,
+                                priorAccount,
+                                false
+                        );
+                        future.setResult(new AsyncResult<>(currentAccountResult, null));
+                    }
+                    @Override
+                    public void onError(@NonNull final MsalException exception) {
+                        future.setResult(new AsyncResult<CurrentAccountResult>(null, exception));
+                    }
+                },
+                SINGLE_ACCOUNT_PCA_GET_CURRENT_ACCOUNT
+        );
+        try {
+            final AsyncResult<CurrentAccountResult> result = future.get();
+            if (result.getSuccess()) {
+                return result.getResult();
+            } else {
+                throw result.getException();
+            }
+        } catch (final ExecutionException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unknown exception while fetching current account.",
+                    e
+            );
+        }
+    }
+    private void checkCurrentAccountNotifyCallback(@NonNull final CurrentAccountCallback callback,
+                                                   @Nullable final List<ICacheRecord> newAccountRecords) {
+        final MultiTenantAccount localAccount = getPersistedCurrentAccount();
+        final MultiTenantAccount newAccount = newAccountRecords == null
+                ? null
+                : getAccountFromICacheRecordList(newAccountRecords);
+        if (!isHomeAccountIdMatching(localAccount, newAccount)) {
+            callback.onAccountChanged(localAccount, newAccount);
+        }
+        callback.onAccountLoaded(newAccount);
+    }
+    @Override
+    public void signIn(@NonNull final Activity activity,
+                       @Nullable final String loginHint,
+                       @NonNull final String[] scopes,
+                       @NonNull final AuthenticationCallback callback) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount != null) {
+            callback.onError(
+                    new MsalClientException(
+                            MsalClientException.INVALID_PARAMETER,
+                            "An account is already signed in."
+                    )
+            );
+            return;
+        }
+        final AcquireTokenParameters acquireTokenParameters = buildAcquireTokenParameters(
+                activity,
+                null,
+                scopes,
+                null, 
+                null, 
+                null, 
+                null,
+                null, 
+                callback,
+                loginHint, 
+                null 
+        );
+        acquireTokenInternal(acquireTokenParameters, SINGLE_ACCOUNT_PCA_SIGN_IN);
+    }
+    @Override
+    public void signIn(@NonNull final Activity activity,
+                       @Nullable final String loginHint,
+                       @NonNull final String[] scopes,
+                       @Nullable final Prompt prompt,
+                       @NonNull final AuthenticationCallback callback) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount != null) {
+            callback.onError(
+                    new MsalClientException(
+                            MsalClientException.INVALID_PARAMETER,
+                            "An account is already signed in."
+                    )
+            );
+            return;
+        }
+        final AcquireTokenParameters acquireTokenParameters = buildAcquireTokenParameters(
+                activity,
+                null,
+                scopes,
+                null, 
+                prompt, 
+                null, 
+                null,
+                null, 
+                callback,
+                loginHint, 
+                null 
+        );
+        acquireTokenInternal(acquireTokenParameters, SINGLE_ACCOUNT_PCA_SIGN_IN_WITH_PROMPT);
+    }
+    @Override
+    public void signInAgain(@NonNull final Activity activity,
+                            @NonNull final String[] scopes,
+                            @Nullable final Prompt prompt,
+                            @NonNull final AuthenticationCallback callback) {
+        final MultiTenantAccount persistedCurrentAccount = getPersistedCurrentAccount();
+        if (persistedCurrentAccount == null) {
+            callback.onError(new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE));
+            return;
+        }
+        final AcquireTokenParameters acquireTokenParameters = buildAcquireTokenParameters(
+                activity,
+                null,
+                scopes,
+                persistedCurrentAccount, 
+                prompt, 
+                null, 
+                null,
+                null, 
+                callback,
+                null, 
+                null 
+        );
+        acquireTokenInternal(acquireTokenParameters, SINGLE_ACCOUNT_PCA_EXISTING_SIGN_IN_WITH_PROMPT);
+    }
+    @Override
+    protected CommandCallback<ILocalAuthenticationResult, BaseException> getCommandCallback(
+            @NonNull final SilentAuthenticationCallback authenticationCallback,
+            @NonNull final TokenParameters tokenParameters) {
+        return new CommandCallback<ILocalAuthenticationResult, BaseException>() {
+            @Override
+            public void onTaskCompleted(@NonNull final ILocalAuthenticationResult localAuthenticationResult) {
+                if (authenticationCallback == null) {
+                    throw new IllegalStateException(NONNULL_CONSTANTS.CALLBACK + NONNULL_CONSTANTS.NULL_ERROR_SUFFIX);
+                }
+                persistCurrentAccount(localAuthenticationResult.getCacheRecordWithTenantProfileData());
+                postAuthResult(localAuthenticationResult, tokenParameters, authenticationCallback);
+            }
+            @Override
+            public void onError(final BaseException exception) {
+                final MsalException msalException = MsalExceptionAdapter.msalExceptionFromBaseException(exception);
+                if (authenticationCallback == null) {
+                    throw new IllegalStateException(NONNULL_CONSTANTS.CALLBACK + NONNULL_CONSTANTS.NULL_ERROR_SUFFIX);
+                } else {
+                    authenticationCallback.onError(msalException);
+                }
+            }
+            @Override
+            public void onCancel() {
+                if (authenticationCallback instanceof AuthenticationCallback) {
+                    ((AuthenticationCallback) authenticationCallback).onCancel();
+                } else {
+                    throw new IllegalStateException("Silent requests cannot be cancelled.");
+                }
+            }
+        };
+    }
+    private boolean isHomeAccountIdMatching(@Nullable final IAccount firstAccount, @Nullable final IAccount secondAccount) {
+        final MultiTenantAccount firstMultiTenantAccount = firstAccount instanceof MultiTenantAccount ? (MultiTenantAccount) firstAccount : null;
+        final MultiTenantAccount secondMultiTenantAccount = secondAccount instanceof MultiTenantAccount ? (MultiTenantAccount) secondAccount : null;
+        final String firstMultiTenantAccountId = firstMultiTenantAccount == null ? "" : firstMultiTenantAccount.getHomeAccountId();
+        final String secondMultiTenantAccountId = secondMultiTenantAccount == null ? "" : secondMultiTenantAccount.getHomeAccountId();
+        return firstMultiTenantAccountId.equalsIgnoreCase(secondMultiTenantAccountId);
+    }
+    @Override
+    public void signOut(@NonNull final SignOutCallback callback) {
+        signOutInternal(callback, SINGLE_ACCOUNT_PCA_SIGN_OUT_WITH_CALLBACK);
+    }
+    void signOutInternal(@NonNull final SignOutCallback callback,
+                         @NonNull final String publicApiId) {
+        final MultiTenantAccount persistedCurrentAccount = getPersistedCurrentAccount();
+        if (persistedCurrentAccount == null) {
+            callback.onError(new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE));
+            return;
+        }
+        final AccountRecord requestAccountRecord = new AccountRecord();
+        requestAccountRecord.setEnvironment(persistedCurrentAccount.getEnvironment());
+        requestAccountRecord.setHomeAccountId(persistedCurrentAccount.getHomeAccountId());
+        final RemoveAccountCommandParameters params =
+                CommandParametersAdapter.createRemoveAccountCommandParameters(
+                        mPublicClientConfiguration,
+                        mPublicClientConfiguration.getOAuth2TokenCache(),
+                        requestAccountRecord
+                );
+        final List<BaseController> controllers;
+        try {
+            controllers = MSALControllerFactory.getAllControllers(
+                    mPublicClientConfiguration.getAppContext(),
+                    mPublicClientConfiguration.getDefaultAuthority(),
+                    mPublicClientConfiguration);
+        } catch (MsalClientException e) {
+            callback.onError(e);
+            return;
+        }
+        final RemoveCurrentAccountCommand command = new RemoveCurrentAccountCommand(
+                params,
+                controllers,
+                new CommandCallback<Boolean, BaseException>() {
+                    @Override
+                    public void onError(BaseException error) {
+                        callback.onError(MsalExceptionAdapter.msalExceptionFromBaseException(error));
+                    }
+                    @Override
+                    public void onTaskCompleted(Boolean result) {
+                        persistCurrentAccount(null);
+                        callback.onSignOut();
+                    }
+                    @Override
+                    public void onCancel() {
+                    }
+                },
+                publicApiId
+        );
+        CommandDispatcher.submitSilent(command);
+    }
+    @Override
+    public boolean signOut() throws MsalException, InterruptedException {
+        throwOnMainThread("signOut");
+        final ResultFuture<AsyncResult<Boolean>> future = new ResultFuture<>();
+        signOutInternal(
+                new SignOutCallback() {
+                    @Override
+                    public void onSignOut() {
+                        future.setResult(new AsyncResult<>(true, null));
+                    }
+                    @Override
+                    public void onError(@NonNull final MsalException exception) {
+                        future.setResult(new AsyncResult<>(false, exception));
+                    }
+                },
+                SINGLE_ACCOUNT_PCA_SIGN_OUT
+        );
+        try {
+            final AsyncResult<Boolean> result = future.get();
+            if (result.getSuccess()) {
+                return result.getResult();
+            } else {
+                throw result.getException();
+            }
+        } catch (final ExecutionException e) {
+            throw new MsalClientException(
+                    UNKNOWN_ERROR,
+                    "Unexpected error during signOut.",
+                    e
+            );
+        }
+    }
+    private MultiTenantAccount getPersistedCurrentAccount() {
+        synchronized(SingleAccountPublicClientApplication.class) {
+            final String currentAccountJsonString = sharedPreferencesFileManager.getString(CURRENT_ACCOUNT_SHARED_PREFERENCE_KEY);
+            if (StringExtensions.isNullOrBlank(currentAccountJsonString)) {
+                return null;
+            }
+            final List<ICacheRecord> cacheRecordList = JsonExtensions.getICacheRecordListFromJsonString(currentAccountJsonString);
+            return getAccountFromICacheRecordList(cacheRecordList);
+        }
+    }
+    private void persistCurrentAccount(@Nullable final List<ICacheRecord> cacheRecords) {
+        synchronized(SingleAccountPublicClientApplication.class) {
+            if (cacheRecords == null || cacheRecords.size() == 0) {
+                sharedPreferencesFileManager.clear();
+                return;
+            }
+            final String currentAccountJsonString = JsonExtensions.getJsonStringFromICacheRecordList(cacheRecords);
+            sharedPreferencesFileManager.putString(CURRENT_ACCOUNT_SHARED_PREFERENCE_KEY, currentAccountJsonString);
+        }
+    }
+    @Nullable
+    private MultiTenantAccount getAccountFromICacheRecordList(@NonNull final List<ICacheRecord> cacheRecords) {
+        final String methodName = ":getAccountFromICacheRecords";
+        if (cacheRecords == null || cacheRecords.size() == 0) {
+            return null;
+        }
+        final List<IAccount> account = AccountAdapter.adapt(cacheRecords);
+        if (account.size() != 1) {
+            com.microsoft.identity.common.internal.logging.Logger.verbose(
+                    TAG + methodName,
+                    "Returned cacheRecords were adapted into multiple IAccount. " +
+                            "This is unexpected in Single account mode." +
+                            "Returning the first adapted account.");
+        }
+        return (MultiTenantAccount) account.get(0);
+    }
+    @Override
+    public void acquireToken(@NonNull final Activity activity,
+                             @NonNull final String[] scopes,
+                             @NonNull final AuthenticationCallback callback) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount == null) {
+            callback.onError(new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE));
+            return;
+        }
+        final AcquireTokenParameters acquireTokenParameters = buildAcquireTokenParameters(
+                activity,
+                null,
+                scopes,
+                getPersistedCurrentAccount(), 
+                null, 
+                null, 
+                null, 
+                null, 
+                callback,
+                null, 
+                null 
+        );
+        acquireTokenInternal(
+                acquireTokenParameters,
+                SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_WITH_ACTIVITY_SCOPES_CALLBACK
+        );
+    }
+    @Override
+    public void acquireToken(@NonNull final AcquireTokenParameters acquireTokenParameters) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount != null) {
+            if (acquireTokenParameters.getAccount() == null &&
+                    StringExtensions.isNullOrBlank(acquireTokenParameters.getLoginHint())){
+                acquireTokenParameters
+                        .getCallback()
+                        .onError(new MsalClientException(MsalClientException.CURRENT_ACCOUNT_MISMATCH,
+                                MsalClientException.CURRENT_ACCOUNT_MISMATCH_ERROR_MESSAGE));
+                return;
+            }
+            if (acquireTokenParameters.getAccount() != null &&
+                    !isHomeAccountIdMatching(persistedAccount, acquireTokenParameters.getAccount())) {
+                acquireTokenParameters
+                        .getCallback()
+                        .onError(new MsalClientException(MsalClientException.CURRENT_ACCOUNT_MISMATCH,
+                                MsalClientException.CURRENT_ACCOUNT_MISMATCH_ERROR_MESSAGE));
+                return;
+            }
+            if (!StringExtensions.isNullOrBlank(acquireTokenParameters.getLoginHint()) &&
+                    !persistedAccount.getUsername().equalsIgnoreCase(acquireTokenParameters.getLoginHint())){
+                acquireTokenParameters
+                        .getCallback()
+                        .onError(new MsalClientException(MsalClientException.CURRENT_ACCOUNT_MISMATCH,
+                                MsalClientException.CURRENT_ACCOUNT_MISMATCH_ERROR_MESSAGE));
+                return;
+            }
+        }
+        acquireTokenInternal(acquireTokenParameters, SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_WITH_PARAMETERS);
+    }
+    @Override
+    public void acquireTokenSilentAsync(@NonNull final String[] scopes,
+                                        @NonNull final String authority,
+                                        @NonNull final SilentAuthenticationCallback callback) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount == null) {
+            callback.onError(new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE));
+            return;
+        }
+        final AcquireTokenSilentParameters acquireTokenSilentParameters = buildAcquireTokenSilentParameters(
+                scopes,
+                persistedAccount,
+                authority,
+                false,
+                null, 
+                callback
+        );
+        acquireTokenSilentAsyncInternal(
+                acquireTokenSilentParameters,
+                SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_ASYNC_WITH_SCOPES_AUTHORITY_CALLBACK
+        );
+    }
+    @WorkerThread
+    public IAuthenticationResult acquireTokenSilent(@NonNull final String[] scopes,
+                                                    @NonNull final String authority) throws MsalException, InterruptedException {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount == null) {
+            throw new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE);
+        }
+        return acquireTokenSilentSyncInternal(
+                scopes,
+                authority,
+                persistedAccount,
+                false,
+                SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_WITH_SCOPES_AUTHORITY
+        );
+    }
+    @Override
+    public void acquireTokenSilentAsync(@NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters) {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount == null) {
+            acquireTokenSilentParameters
+                    .getCallback()
+                    .onError(new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                            MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE));
+            return;
+        }
+        if (!isHomeAccountIdMatching(persistedAccount, acquireTokenSilentParameters.getAccount())) {
+            acquireTokenSilentParameters
+                    .getCallback()
+                    .onError(new MsalClientException(MsalClientException.CURRENT_ACCOUNT_MISMATCH,
+                            MsalClientException.CURRENT_ACCOUNT_MISMATCH_ERROR_MESSAGE));
+            return;
+        }
+        acquireTokenSilentAsyncInternal(
+                acquireTokenSilentParameters,
+                SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_ASYNC_WITH_PARAMETERS
+        );
+    }
+    @Override
+    public IAuthenticationResult acquireTokenSilent(@NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters) throws InterruptedException, MsalException {
+        final IAccount persistedAccount = getPersistedCurrentAccount();
+        if (persistedAccount == null) {
+            throw new MsalClientException(MsalClientException.NO_CURRENT_ACCOUNT,
+                    MsalClientException.NO_CURRENT_ACCOUNT_ERROR_MESSAGE);
+        }
+        if (!isHomeAccountIdMatching(persistedAccount, acquireTokenSilentParameters.getAccount())) {
+            throw new MsalClientException(MsalClientException.CURRENT_ACCOUNT_MISMATCH,
+                    MsalClientException.CURRENT_ACCOUNT_MISMATCH_ERROR_MESSAGE);
+        }
+        return acquireTokenSilentInternal(
+                acquireTokenSilentParameters,
+                SINGLE_ACCOUNT_PCA_ACQUIRE_TOKEN_SILENT_WITH_PARAMETERS
+        );
+    }
+}
+package com.microsoft.identity.client;
+import android.app.Activity;
+import androidx.annotation.NonNull;
+import androidx.annotation.WorkerThread;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.common.internal.controllers.TaskCompletedCallbackWithError;
+import java.util.Date;
+import java.util.List;
+public interface IPublicClientApplication {
+    void acquireToken(@NonNull final Activity activity,
+                      @NonNull final String[] scopes,
+                      @NonNull final AuthenticationCallback callback
+    );
+    void acquireToken(@NonNull final AcquireTokenParameters acquireTokenParameters);
+    void acquireTokenSilentAsync(@NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters);
+    @WorkerThread
+    IAuthenticationResult acquireTokenSilent(@NonNull final AcquireTokenSilentParameters acquireTokenSilentParameters) throws InterruptedException, MsalException;
+    void acquireTokenWithDeviceCode(@NonNull String[] scopes, @NonNull final DeviceCodeFlowCallback callback);
+    PublicClientApplicationConfiguration getConfiguration();
+    boolean isSharedDevice();
+    @NonNull
+    String generateSignedHttpRequest(@NonNull final IAccount account,
+                                     @NonNull final PoPAuthenticationScheme popParameters
+    ) throws MsalException;
+    void generateSignedHttpRequest(@NonNull final IAccount account,
+                                   @NonNull final PoPAuthenticationScheme popParameters,
+                                   @NonNull final SignedHttpRequestRequestCallback callback
+    );
+    interface SignedHttpRequestRequestCallback extends TaskCompletedCallbackWithError<String, MsalException> {
+        void onTaskCompleted(String result);
+        void onError(MsalException exception);
+    }
+    interface LoadAccountsCallback extends TaskCompletedCallbackWithError<List<IAccount>, MsalException> {
+        void onTaskCompleted(List<IAccount> result);
+        void onError(MsalException exception);
+    }
+    interface ApplicationCreatedListener {
+        void onCreated(final IPublicClientApplication application);
+        void onError(final MsalException exception);
+    }
+    interface ISingleAccountApplicationCreatedListener {
+        void onCreated(final ISingleAccountPublicClientApplication application);
+        void onError(final MsalException exception);
+    }
+    interface IMultipleAccountApplicationCreatedListener {
+        void onCreated(final IMultipleAccountPublicClientApplication application);
+        void onError(final MsalException exception);
+    }
+    interface DeviceCodeFlowCallback {
+        void onUserCodeReceived(@NonNull final String vUri,
+                                @NonNull final String userCode,
+                                @NonNull final String message,
+                                @NonNull final Date sessionExpirationDate);
+        void onTokenReceived(@NonNull final AuthenticationResult authResult);
+        void onError(@NonNull final MsalException error);
+    }
+}
+package com.microsoft.identity.client;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import java.util.Date;
+import java.util.UUID;
+public interface IAuthenticationResult {
+    @NonNull
+    String getAccessToken();
+    @NonNull
+    String getAuthorizationHeader();
+    @NonNull
+    String getAuthenticationScheme();
+    @NonNull
+    Date getExpiresOn();
+    @Nullable
+    String getTenantId();
+    @NonNull
+    IAccount getAccount();
+    @NonNull
+    String[] getScope();
+    @Nullable
+    UUID getCorrelationId(); 
+}
+package com.microsoft.identity.client;
+import com.microsoft.identity.client.exception.MsalException;
+public interface AuthenticationCallback extends SilentAuthenticationCallback {
+    void onCancel();
+}
+package com.microsoft.identity.client;
+public interface ICurrentAccountResult {
+    IAccount getCurrentAccount();
+    IAccount getPriorAccount();
+    boolean didAccountChange();
+}
+package com.microsoft.identity.client;
+import androidx.annotation.NonNull;
+import java.io.Serializable;
+public interface IAccount extends Serializable, IClaimable {
+    @NonNull
+    String getId();
+    @NonNull
+    String getAuthority();
+}
+package com.microsoft.identity.client;
+import android.app.Activity;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.WorkerThread;
+import com.microsoft.identity.client.exception.MsalException;
+public interface ISingleAccountPublicClientApplication extends IPublicClientApplication {
+    void getCurrentAccountAsync(final CurrentAccountCallback callback);
+    @WorkerThread
+    ICurrentAccountResult getCurrentAccount() throws InterruptedException, MsalException;
+    void signIn(@NonNull final Activity activity,
+                @Nullable final String loginHint,
+                @NonNull final String[] scopes,
+                @NonNull final AuthenticationCallback callback
+    );
+    void signIn(@NonNull final Activity activity,
+                @Nullable final String loginHint,
+                @NonNull final String[] scopes,
+                @Nullable final Prompt prompt,
+                @NonNull final AuthenticationCallback callback
+    );
+    void signInAgain(@NonNull final Activity activity,
+                     @NonNull final String[] scopes,
+                     @Nullable final Prompt prompt,
+                     @NonNull final AuthenticationCallback callback
+    );
+    void signOut(@NonNull final SignOutCallback callback);
+    @WorkerThread
+    boolean signOut() throws MsalException, InterruptedException;
+    void acquireTokenSilentAsync(@NonNull final String[] scopes,
+                                 @NonNull final String authority,
+                                 @NonNull final SilentAuthenticationCallback callback
+    );
+    @WorkerThread
+    IAuthenticationResult acquireTokenSilent(@NonNull final String[] scopes,
+                                             @NonNull final String authority) throws MsalException, InterruptedException;
+    interface CurrentAccountCallback {
+        void onAccountLoaded(@Nullable final IAccount activeAccount);
+        void onAccountChanged(@Nullable final IAccount priorAccount, @Nullable final IAccount currentAccount);
+        void onError(@NonNull final MsalException exception);
+    }
+    interface SignOutCallback {
+        void onSignOut();
+        void onError(@NonNull final MsalException exception);
+    }
+}
+package com.microsoft.identity.client.msal.automationapp.testpass.broker;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import com.microsoft.identity.client.AcquireTokenSilentParameters;
+import com.microsoft.identity.client.IAccount;
+import com.microsoft.identity.client.ISingleAccountPublicClientApplication;
+import com.microsoft.identity.client.MultipleAccountPublicClientApplication;
+import com.microsoft.identity.client.PublicClientApplication;
+import com.microsoft.identity.client.SingleAccountPublicClientApplication;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.msal.automationapp.R;
+import com.microsoft.identity.client.ui.automation.TokenRequestLatch;
+import com.microsoft.identity.client.ui.automation.TokenRequestTimeout;
+import com.microsoft.identity.client.ui.automation.annotations.SupportedBrokers;
+import com.microsoft.identity.client.ui.automation.app.AzureSampleApp;
+import com.microsoft.identity.client.ui.automation.broker.BrokerHost;
+import com.microsoft.identity.client.ui.automation.broker.BrokerMicrosoftAuthenticator;
+import com.microsoft.identity.client.ui.automation.interaction.PromptParameter;
+import com.microsoft.identity.client.ui.automation.interaction.microsoftsts.MicrosoftStsPromptHandlerParameters;
+import com.microsoft.identity.internal.testutils.labutils.LabConfig;
+import com.microsoft.identity.internal.testutils.labutils.LabConstants;
+import com.microsoft.identity.internal.testutils.labutils.LabUserHelper;
+import com.microsoft.identity.internal.testutils.labutils.LabUserQuery;
+import org.junit.Assert;
+import org.junit.Test;
+import java.util.Arrays;
+@SupportedBrokers(brokers = {BrokerMicrosoftAuthenticator.class, BrokerHost.class})
+public class TestCase833514 extends AbstractMsalBrokerTest {
+    @Test
+    public void test_833514() throws MsalException, InterruptedException {
+        Assert.assertTrue(mApplication instanceof MultipleAccountPublicClientApplication);
+        Assert.assertFalse(mApplication.isSharedDevice());
+        mBroker.performSharedDeviceRegistration(
+                mLoginHint, LabConfig.getCurrentLabConfig().getLabUserPassword()
+        );
+        mApplication = PublicClientApplication.create(mContext, getConfigFileResourceId());
+        Assert.assertTrue(mApplication instanceof SingleAccountPublicClientApplication);
+        Assert.assertTrue(mApplication.isSharedDevice());
+        final LabUserQuery query = new LabUserQuery();
+        query.userType = LabConstants.UserType.CLOUD;
+        final String username = LabUserHelper.loadUserForTest(query);
+        String password = LabConfig.getCurrentLabConfig().getLabUserPassword();
+        final AzureSampleApp azureSampleApp = new AzureSampleApp();
+        azureSampleApp.uninstall();
+        azureSampleApp.install();
+        azureSampleApp.launch();
+        azureSampleApp.handleFirstRun();
+        final MicrosoftStsPromptHandlerParameters microsoftStsPromptHandlerParameters =
+                MicrosoftStsPromptHandlerParameters.builder()
+                        .prompt(PromptParameter.SELECT_ACCOUNT)
+                        .broker(mBroker)
+                        .loginHint(null)
+                        .consentPageExpected(false)
+                        .speedBumpExpected(false)
+                        .enrollPageExpected(false)
+                        .registerPageExpected(false)
+                        .expectingBrokerAccountChooserActivity(false)
+                        .expectingLoginPageAccountPicker(false)
+                        .isFederated(false)
+                        .sessionExpected(false)
+                        .build();
+        azureSampleApp.signInWithSingleAccountFragment(username, password, getBrowser(), false, microsoftStsPromptHandlerParameters);
+        azureSampleApp.confirmSignedIn(username);
+        final SingleAccountPublicClientApplication singleAccountPCA =
+                (SingleAccountPublicClientApplication) mApplication;
+        final TokenRequestLatch getAccountLatch = new TokenRequestLatch(1);
+        final IAccount[] accounts = new IAccount[1];
+        ((SingleAccountPublicClientApplication) mApplication).getCurrentAccountAsync(new ISingleAccountPublicClientApplication.CurrentAccountCallback() {
+            @Override
+            public void onAccountLoaded(@Nullable IAccount activeAccount) {
+                assert activeAccount != null;
+                Assert.assertEquals(activeAccount.getUsername(), username);
+                accounts[0] = activeAccount;
+                getAccountLatch.countDown();
+            }
+            @Override
+            public void onAccountChanged(@Nullable IAccount priorAccount, @Nullable IAccount currentAccount) {
+                assert currentAccount != null;
+                Assert.assertEquals(currentAccount.getUsername(), username);
+                accounts[0] = currentAccount;
+                getAccountLatch.countDown();
+            }
+            @Override
+            public void onError(@NonNull MsalException exception) {
+                Assert.fail(exception.getMessage());
+                getAccountLatch.countDown();
+            }
+        });
+        getAccountLatch.await(TokenRequestTimeout.SILENT);
+        final TokenRequestLatch silentLatch = new TokenRequestLatch(1);
+        final AcquireTokenSilentParameters silentParameters = new AcquireTokenSilentParameters.Builder()
+                .fromAuthority(getAuthority())
+                .forAccount(accounts[0])
+                .withScopes(Arrays.asList(mScopes))
+                .withCallback(successfulSilentCallback(silentLatch))
+                .build();
+        singleAccountPCA.acquireTokenSilentAsync(silentParameters);
+        silentLatch.await(TokenRequestTimeout.SILENT);
+    }
+    @Override
+    public LabUserQuery getLabUserQuery() {
+        final LabUserQuery query = new LabUserQuery();
+        query.userRole = LabConstants.UserRole.CLOUD_DEVICE_ADMINISTRATOR;
+        return query;
+    }
+    @Override
+    public String getTempUserType() {
+        return null;
+    }
+    @Override
+    public String[] getScopes() {
+        return new String[]{"User.read"};
+    }
+    @Override
+    public String getAuthority() {
+        return mApplication.getConfiguration().getDefaultAuthority().getAuthorityURL().toString();
+    }
+    @Override
+    public int getConfigFileResourceId() {
+        return R.raw.msal_config_default;
+    }
+}
+package com.microsoft.identity.client;
+import android.app.Activity;
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.net.ConnectivityManager;
+import android.os.Bundle;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import com.microsoft.identity.client.exception.MsalClientException;
+import com.microsoft.identity.client.exception.MsalException;
+import com.microsoft.identity.client.internal.MsalUtils;
+import com.microsoft.identity.common.adal.internal.AuthenticationSettings;
+import com.microsoft.identity.common.internal.net.HttpUrlConnectionFactory;
+import com.microsoft.identity.msal.test.R;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Matchers;
+import org.mockito.Mockito;
+import java.io.IOException;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
+import java.util.ArrayList;
+import java.util.List;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+import static junit.framework.TestCase.assertEquals;
+import static junit.framework.TestCase.fail;
+@RunWith(AndroidJUnit4.class)
+public final class PublicClientApplicationTest {
+    private Context mAppContext;
+    private static final String CLIENT_ID = "client-id";
+    private static final String[] SCOPE = {"scope1", "scope2"};
+    public static final String TEST_REDIRECT_URI = "msauth:
+    @Before
+    public void setUp() {
+        System.setProperty(
+                "dexmaker.dexcache",
+                androidx.test.platform.app.InstrumentationRegistry
+                        .getInstrumentation()
+                        .getTargetContext()
+                        .getCacheDir()
+                        .getPath()
+        );
+        System.setProperty(
+                "org.mockito.android.target",
+                ApplicationProvider
+                        .getApplicationContext()
+                        .getCacheDir()
+                        .getPath()
+        );
+        mAppContext = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().getContext().getApplicationContext();
+    }
+    @After
+    public void tearDown() {
+        HttpUrlConnectionFactory.clearMockedConnectionQueue();
+        AndroidTestUtil.removeAllTokens(mAppContext);
+    }
+    @Test(expected = IllegalArgumentException.class)
+    public void testConfigValidationFailsOnEmptyRedirect() throws MsalException, InterruptedException {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        final IMultipleAccountPublicClientApplication app = PublicClientApplication.createMultipleAccountPublicClientApplication(
+                context,
+                R.raw.test_pcaconfig_empty_redirect
+        );
+    }
+    @Test(expected = IllegalArgumentException.class)
+    public void testConfigValidationFailsOnEmptyClientId() throws MsalException, InterruptedException {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        final IMultipleAccountPublicClientApplication app = PublicClientApplication.createMultipleAccountPublicClientApplication(
+                context,
+                R.raw.test_pcaconfig_empty_clientid
+        );
+    }
+    @Test
+    public void testSingleAccountConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        try {
+            final ISingleAccountPublicClientApplication app = PublicClientApplication.createSingleAccountPublicClientApplication(
+                    context,
+                    R.raw.test_msal_config_single_account
+            );
+            Assert.assertTrue(app instanceof ISingleAccountPublicClientApplication);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (MsalException e) {
+            e.printStackTrace();
+        }
+    }
+    @Test
+    public void testMultipleAccountConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        try {
+            final IMultipleAccountPublicClientApplication app = PublicClientApplication.createMultipleAccountPublicClientApplication(
+                    context,
+                    R.raw.test_msal_config_multiple_account
+            );
+            Assert.assertTrue(app instanceof IMultipleAccountPublicClientApplication);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } catch (MsalException e) {
+            e.printStackTrace();
+        }
+    }
+    @Test
+    public void testMultipleAccountAsyncConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        PublicClientApplication.createMultipleAccountPublicClientApplication(
+                context,
+                R.raw.test_msal_config_multiple_account,
+                new PublicClientApplication.IMultipleAccountApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(IMultipleAccountPublicClientApplication application) {
+                        Assert.assertTrue(application instanceof IMultipleAccountPublicClientApplication);
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        Assert.assertTrue(false);
+                    }
+                });
+    }
+    @Test
+    public void testFailingMultipleAccountAsyncConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        PublicClientApplication.createMultipleAccountPublicClientApplication(
+                context,
+                R.raw.test_msal_config_single_account,
+                new PublicClientApplication.IMultipleAccountApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(IMultipleAccountPublicClientApplication application) {
+                        Assert.assertTrue(false);
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        Assert.assertTrue("Expecting error.", true);
+                    }
+                });
+    }
+    @Test
+    public void testSingleAccountAsyncConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        PublicClientApplication.createSingleAccountPublicClientApplication(
+                context,
+                R.raw.test_msal_config_single_account,
+                new PublicClientApplication.ISingleAccountApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(ISingleAccountPublicClientApplication application) {
+                        Assert.assertTrue(application instanceof ISingleAccountPublicClientApplication);
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                    }
+                });
+    }
+    @Test
+    public void testFailingSingleAccountAsyncConstructor() {
+        final Context context = new PublicClientApplicationTest.MockContext(mAppContext);
+        mockPackageManagerWithDefaultFlag(context);
+        mockHasCustomTabRedirect(context);
+        PublicClientApplication.createSingleAccountPublicClientApplication(
+                context,
+                R.raw.test_msal_config_multiple_account,
+                new PublicClientApplication.ISingleAccountApplicationCreatedListener() {
+                    @Override
+                    public void onCreated(ISingleAccountPublicClientApplication application) {
+                        Assert.assertTrue(false);
+                    }
+                    @Override
+                    public void onError(MsalException exception) {
+                        Assert.assertTrue("Expecting error.", true);
+                    }
+                });
+    }
+    @Ignore
+    @Test(expected = IllegalArgumentException.class)
+    public void testCallBackEmpty() throws PackageManager.NameNotFoundException, MsalClientException {
+        final Context context = new MockContext(mAppContext);
+        mockPackageManagerWithClientId(context, null, CLIENT_ID);
+        mockHasCustomTabRedirect(context);
+        mockPackageManagerWithDefaultFlag(context);
+        final PublicClientApplicationConfiguration config = PublicClientApplicationConfigurationFactory.initializeConfiguration(context);
+        config.setRedirectUri(TEST_REDIRECT_URI);
+        config.setClientId(CLIENT_ID);
+        final PublicClientApplication application = new PublicClientApplication(config);
+        application.acquireToken(getActivity(context), SCOPE, null);
+    }
+    @Test(expected = IllegalStateException.class)
+    public void testInternetPermissionMissing() throws PackageManager.NameNotFoundException, MsalClientException {
+        final Context context = new MockContext(mAppContext);
+        final PackageManager packageManager = context.getPackageManager();
+        mockPackageManagerWithClientId(context, null, CLIENT_ID);
+        mockHasCustomTabRedirect(context);
+        mockPackageManagerWithDefaultFlag(context);
+        Mockito.when(packageManager.checkPermission(Mockito.refEq("android.permission.INTERNET"),
+                Mockito.refEq(mAppContext.getPackageName()))).thenReturn(PackageManager.PERMISSION_DENIED);
+        PublicClientApplicationConfiguration config = PublicClientApplicationConfigurationFactory.initializeConfiguration(context);
+        config.setRedirectUri(TEST_REDIRECT_URI);
+        config.setClientId(CLIENT_ID);
+        new PublicClientApplication(config);
+    }
+    @Test
+    @Ignore
+    public void testUnknownAuthorityException() throws PackageManager.NameNotFoundException, IOException,
+            InterruptedException {
+    }
+    @Test(expected = IllegalArgumentException.class)
+    @Ignore
+    public void testAcquireTokenInteractiveScopeWithEmptyString() throws PackageManager.NameNotFoundException, IOException,
+            InterruptedException {
+    }
+    @Test
+    @Ignore
+    public void testClientInfoNotReturned() throws PackageManager.NameNotFoundException, IOException,
+            InterruptedException {
+    }
+    @Test
+    @Ignore
+    public void testAuthoritySetInManifestGetTokenFailed() {
+    }
+    @Ignore
+    @Test
+    public void testGetTokenWithExtraQueryParam()
+            throws PackageManager.NameNotFoundException, IOException, InterruptedException {
+    }
+    @Test
+    @Ignore
+    public void testB2cAuthorityNotInTrustedList() throws PackageManager.NameNotFoundException, IOException, InterruptedException {
+    }
+    @Test
+    public void testSecretKeysAreSet() throws NoSuchAlgorithmException, InvalidKeySpecException, MsalClientException {
+        final Context context = new MockContext(mAppContext);
+        mockHasCustomTabRedirect(context);
+        mockPackageManagerWithDefaultFlag(context);
+        final PublicClientApplicationConfiguration config = PublicClientApplicationConfigurationFactory.initializeConfiguration(context);
+        config.setRedirectUri(TEST_REDIRECT_URI);
+        config.setClientId(CLIENT_ID);
+        final PublicClientApplication pca = new PublicClientApplication(config);
+        final PublicClientApplicationConfiguration appConfig = pca.getConfiguration();
+        SecretKeyFactory keyFactory = SecretKeyFactory
+                .getInstance("PBEWithSHA256And256BitAES-CBC-BC");
+        SecretKey generatedSecretKey = keyFactory.generateSecret(
+                new PBEKeySpec(
+                        "test_password".toCharArray(),
+                        "byte-code-for-your-salt".getBytes(),
+                        100,
+                        256
+                )
+        );
+        SecretKey secretKey = new SecretKeySpec(generatedSecretKey.getEncoded(), "AES");
+        final byte[] encodedSecretKey = secretKey.getEncoded();
+        appConfig.setTokenCacheSecretKeys(encodedSecretKey);
+        assertEquals(
+                encodedSecretKey,
+                AuthenticationSettings.INSTANCE.getSecretKeyData()
+        );
+    }
+    private void mockPackageManagerWithClientId(final Context context, final String alternateAuthorityInManifest,
+                                                final String clientId)
+            throws PackageManager.NameNotFoundException {
+        final PackageManager mockedPackageManager = context.getPackageManager();
+        final ApplicationInfo applicationInfo = Mockito.mock(ApplicationInfo.class);
+        applicationInfo.metaData = new Bundle();
+        if (!MsalUtils.isEmpty(clientId)) {
+            applicationInfo.metaData.putString("com.microsoft.identity.client.ClientId", clientId);
+        }
+        if (!MsalUtils.isEmpty(alternateAuthorityInManifest)) {
+            applicationInfo.metaData.putString("com.microsoft.identity.client.AuthorityMetadata", alternateAuthorityInManifest);
+        }
+        Mockito.when(mockedPackageManager.getApplicationInfo(
+                Mockito.refEq(mAppContext.getPackageName()), Mockito.eq(
+                        PackageManager.GET_META_DATA))).thenReturn(applicationInfo);
+        final PackageInfo mockedPackageInfo = Mockito.mock(PackageInfo.class);
+        Mockito.when(mockedPackageManager.getPackageInfo(Mockito.anyString(), Mockito.anyInt())).thenReturn(mockedPackageInfo);
+    }
+    private void mockPackageManagerWithDefaultFlag(final Context context) {
+        try {
+            final ApplicationInfo applicationInfo = Mockito.mock(ApplicationInfo.class);
+            Mockito.when(context.getPackageManager().getApplicationInfo(mAppContext.getPackageName(), 0))
+                    .thenReturn(applicationInfo);
+            final PackageInfo packageInfo = Mockito.mock(PackageInfo.class);
+            Mockito.when(context.getPackageManager().getPackageInfo(mAppContext.getPackageName(), 0))
+                    .thenReturn(packageInfo);
+        } catch (Exception e) {
+            fail();
+        }
+    }
+    private void mockHasCustomTabRedirect(final Context context) {
+        final PackageManager packageManager = context.getPackageManager();
+        final List<ResolveInfo> resolveInfos = new ArrayList<>();
+        Mockito.when(packageManager.queryIntentActivities(Matchers.any(Intent.class),
+                Matchers.eq(PackageManager.GET_RESOLVED_FILTER))).thenReturn(resolveInfos);
+        final ResolveInfo mockedResolveInfo1 = Mockito.mock(ResolveInfo.class);
+        final ActivityInfo mockedActivityInfo1 = Mockito.mock(ActivityInfo.class);
+        mockedActivityInfo1.name = BrowserTabActivity.class.getName();
+        mockedResolveInfo1.activityInfo = mockedActivityInfo1;
+        resolveInfos.add(mockedResolveInfo1);
+    }
+    private Activity getActivity(final Context context) {
+        final Activity mockedActivity = Mockito.mock(Activity.class);
+        Mockito.when(mockedActivity.getApplicationContext()).thenReturn(context);
+        return mockedActivity;
+    }
+    public static class MockContext extends ContextWrapper {
+        private final PackageManager mPackageManager;
+        private final ConnectivityManager mConnectivityManager;
+        MockContext(final Context context) {
+            super(context);
+            mPackageManager = Mockito.mock(PackageManager.class);
+            mConnectivityManager = Mockito.mock(ConnectivityManager.class);
+        }
+        @Override
+        public PackageManager getPackageManager() {
+            return mPackageManager;
+        }
+        @Override
+        public Object getSystemService(String name) {
+            if (Context.CONNECTIVITY_SERVICE.equals(name)) {
+                return mConnectivityManager;
+            }
+            return super.getSystemService(name);
+        }
+    }
+}

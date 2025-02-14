@@ -1,0 +1,3359 @@
+package com.getcapacitor;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.webkit.ValueCallback;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContract;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.pm.PackageInfoCompat;
+import androidx.fragment.app.Fragment;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import com.getcapacitor.android.R;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.cordova.MockCordovaInterfaceImpl;
+import com.getcapacitor.cordova.MockCordovaWebViewImpl;
+import com.getcapacitor.util.HostMask;
+import com.getcapacitor.util.InternalUtils;
+import com.getcapacitor.util.PermissionHelper;
+import com.getcapacitor.util.WebColor;
+import java.io.File;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.apache.cordova.ConfigXmlParser;
+import org.apache.cordova.CordovaPreferences;
+import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.PluginEntry;
+import org.apache.cordova.PluginManager;
+import org.json.JSONException;
+
+public class Bridge {
+    private static final String PERMISSION_PREFS_NAME = "PluginPermStates";
+    private static final String BUNDLE_LAST_PLUGIN_ID_KEY = "capacitorLastActivityPluginId";
+    private static final String BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY = "capacitorLastActivityPluginMethod";
+    private static final String BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY = "capacitorLastPluginCallOptions";
+    private static final String BUNDLE_PLUGIN_CALL_BUNDLE_KEY = "capacitorLastPluginCallBundle";
+    private static final String LAST_BINARY_VERSION_CODE = "lastBinaryVersionCode";
+    private static final String LAST_BINARY_VERSION_NAME = "lastBinaryVersionName";
+    private static final String MINIMUM_ANDROID_WEBVIEW_ERROR = "System WebView is not supported";
+    
+    public static final String DEFAULT_WEB_ASSET_DIR = "public";
+    public static final String CAPACITOR_HTTP_SCHEME = "http";
+    public static final String CAPACITOR_HTTPS_SCHEME = "https";
+    public static final String CAPACITOR_FILE_START = "/_capacitor_file_";
+    public static final String CAPACITOR_CONTENT_START = "/_capacitor_content_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_START = "/_capacitor_http_interceptor_";
+    
+    @Deprecated
+    public static final String CAPACITOR_HTTPS_INTERCEPTOR_START = "/_capacitor_https_interceptor_";
+    public static final String CAPACITOR_HTTP_INTERCEPTOR_URL_PARAM = "u";
+    public static final int DEFAULT_ANDROID_WEBVIEW_VERSION = 60;
+    public static final int MINIMUM_ANDROID_WEBVIEW_VERSION = 55;
+    public static final int DEFAULT_HUAWEI_WEBVIEW_VERSION = 10;
+    public static final int MINIMUM_HUAWEI_WEBVIEW_VERSION = 10;
+    
+    private CapConfig config;
+    
+    private final AppCompatActivity context;
+    
+    private final Fragment fragment;
+    private WebViewLocalServer localServer;
+    private String localUrl;
+    private String appUrl;
+    private String appUrlConfig;
+    private HostMask appAllowNavigationMask;
+    private Set<String> allowedOriginRules = new HashSet<String>();
+    private ArrayList<String> authorities = new ArrayList<>();
+    
+    private final WebView webView;
+    public final MockCordovaInterfaceImpl cordovaInterface;
+    private CordovaWebView cordovaWebView;
+    private CordovaPreferences preferences;
+    private BridgeWebViewClient webViewClient;
+    private App app;
+    
+    private final MessageHandler msgHandler;
+    
+    private final HandlerThread handlerThread = new HandlerThread("CapacitorPlugins");
+    
+    private Handler taskHandler = null;
+    private final List<Class<? extends Plugin>> initialPlugins;
+    private final List<Plugin> pluginInstances;
+    
+    private Map<String, PluginHandle> plugins = new HashMap<>();
+    
+    private Map<String, PluginCall> savedCalls = new HashMap<>();
+    
+    private Map<String, LinkedList<String>> savedPermissionCallIds = new HashMap<>();
+    
+    
+    private PluginCall pluginCallForLastActivity;
+    
+    private Uri intentUri;
+    
+    private List<WebViewListener> webViewListeners = new ArrayList<>();
+    
+    private RouteProcessor routeProcessor;
+    
+    private ServerPath serverPath;
+    
+    @Deprecated
+    public Bridge(
+        AppCompatActivity context,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this(context, null, null, webView, initialPlugins, new ArrayList<>(), cordovaInterface, pluginManager, preferences, config);
+    }
+    private Bridge(
+        AppCompatActivity context,
+        ServerPath serverPath,
+        Fragment fragment,
+        WebView webView,
+        List<Class<? extends Plugin>> initialPlugins,
+        List<Plugin> pluginInstances,
+        MockCordovaInterfaceImpl cordovaInterface,
+        PluginManager pluginManager,
+        CordovaPreferences preferences,
+        CapConfig config
+    ) {
+        this.app = new App();
+        this.serverPath = serverPath;
+        this.context = context;
+        this.fragment = fragment;
+        this.webView = webView;
+        this.webViewClient = new BridgeWebViewClient(this);
+        this.initialPlugins = initialPlugins;
+        this.pluginInstances = pluginInstances;
+        this.cordovaInterface = cordovaInterface;
+        this.preferences = preferences;
+        
+        handlerThread.start();
+        taskHandler = new Handler(handlerThread.getLooper());
+        this.config = config != null ? config : CapConfig.loadDefault(getActivity());
+        Logger.init(this.config);
+        
+        this.initWebView();
+        this.setAllowedOriginRules();
+        this.msgHandler = new MessageHandler(this, webView, pluginManager);
+        
+        Intent intent = context.getIntent();
+        this.intentUri = intent.getData();
+        
+        this.registerAllPlugins();
+        this.loadWebView();
+    }
+    private void setAllowedOriginRules() {
+        String[] appAllowNavigationConfig = this.config.getAllowNavigation();
+        String authority = this.getHost();
+        String scheme = this.getScheme();
+        allowedOriginRules.add(scheme + ":
+        if (this.getServerUrl() != null) {
+            allowedOriginRules.add(this.getServerUrl());
+        }
+        if (appAllowNavigationConfig != null) {
+            for (String allowNavigation : appAllowNavigationConfig) {
+                if (!allowNavigation.startsWith("http")) {
+                    allowedOriginRules.add("https:
+                } else {
+                    allowedOriginRules.add(allowNavigation);
+                }
+            }
+            authorities.addAll(Arrays.asList(appAllowNavigationConfig));
+        }
+        this.appAllowNavigationMask = HostMask.Parser.parse(appAllowNavigationConfig);
+    }
+    public App getApp() {
+        return app;
+    }
+    private void loadWebView() {
+        final boolean html5mode = this.config.isHTML5Mode();
+        
+        JSInjector injector = getJSInjector();
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            String allowedOrigin = Uri.parse(appUrl).buildUpon().path(null).fragment(null).clearQuery().build().toString();
+            try {
+                WebViewCompat.addDocumentStartJavaScript(webView, injector.getScriptString(), Collections.singleton(allowedOrigin));
+                injector = null;
+            } catch (IllegalArgumentException ex) {
+                Logger.warn("Invalid url, using fallback");
+            }
+        }
+        localServer = new WebViewLocalServer(context, this, injector, authorities, html5mode);
+        localServer.hostAssets(DEFAULT_WEB_ASSET_DIR);
+        Logger.debug("Loading app at " + appUrl);
+        webView.setWebChromeClient(new BridgeWebChromeClient(this));
+        webView.setWebViewClient(this.webViewClient);
+        if (!isDeployDisabled() && !isNewBinary()) {
+            SharedPreferences prefs = getContext()
+                .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+            String path = prefs.getString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, null);
+            if (path != null && !path.isEmpty() && new File(path).exists()) {
+                setServerBasePath(path);
+            }
+        }
+        if (!this.isMinimumWebViewInstalled()) {
+            String errorUrl = this.getErrorUrl();
+            if (errorUrl != null) {
+                webView.loadUrl(errorUrl);
+                return;
+            } else {
+                Logger.error(MINIMUM_ANDROID_WEBVIEW_ERROR);
+            }
+        }
+        
+        if (serverPath != null) {
+            if (serverPath.getType() == ServerPath.PathType.ASSET_PATH) {
+                setServerAssetPath(serverPath.getPath());
+            } else {
+                setServerBasePath(serverPath.getPath());
+            }
+        } else {
+            
+            webView.loadUrl(appUrl);
+        }
+    }
+    @SuppressLint("WebViewApiAvailability")
+    public boolean isMinimumWebViewInstalled() {
+        PackageManager pm = getContext().getPackageManager();
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PackageInfo info = WebView.getCurrentWebViewPackage();
+            Pattern pattern = Pattern.compile("(\\d+)");
+            Matcher matcher = pattern.matcher(info.versionName);
+            if (matcher.find()) {
+                String majorVersionStr = matcher.group(0);
+                int majorVersion = Integer.parseInt(majorVersionStr);
+                if (info.packageName.equals("com.huawei.webview")) {
+                    return majorVersion >= config.getMinHuaweiWebViewVersion();
+                }
+                return majorVersion >= config.getMinWebViewVersion();
+            } else {
+                return false;
+            }
+        }
+        
+        try {
+            String webViewPackage = "com.google.android.webview";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                webViewPackage = "com.android.chrome";
+            }
+            PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackage);
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.google.android.webview'" + ex.toString());
+        }
+        try {
+            PackageInfo info = InternalUtils.getPackageInfo(pm, "com.android.webview");
+            String majorVersionStr = info.versionName.split("\\.")[0];
+            int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion >= config.getMinWebViewVersion();
+        } catch (Exception ex) {
+            Logger.warn("Unable to get package info for 'com.android.webview'" + ex.toString());
+        }
+        final int amazonFireMajorWebViewVersion = extractWebViewMajorVersion(pm, "com.amazon.webview.chromium");
+        if (amazonFireMajorWebViewVersion >= config.getMinWebViewVersion()) {
+            return true;
+        }
+        
+        return false;
+    }
+    private int extractWebViewMajorVersion(final PackageManager pm, final String webViewPackageName) {
+        try {
+            final PackageInfo info = InternalUtils.getPackageInfo(pm, webViewPackageName);
+            final String majorVersionStr = info.versionName.split("\\.")[0];
+            final int majorVersion = Integer.parseInt(majorVersionStr);
+            return majorVersion;
+        } catch (Exception ex) {
+            Logger.warn(String.format("Unable to get package info for '%s' with err '%s'", webViewPackageName, ex));
+        }
+        return 0;
+    }
+    public boolean launchIntent(Uri url) {
+        
+        for (Map.Entry<String, PluginHandle> entry : plugins.entrySet()) {
+            Plugin plugin = entry.getValue().getInstance();
+            if (plugin != null) {
+                Boolean shouldOverrideLoad = plugin.shouldOverrideLoad(url);
+                if (shouldOverrideLoad != null) {
+                    return shouldOverrideLoad;
+                }
+            }
+        }
+        if (url.getScheme().equals("data") || url.getScheme().equals("blob")) {
+            return false;
+        }
+        Uri appUri = Uri.parse(appUrl);
+        if (
+            !(appUri.getHost().equals(url.getHost()) && url.getScheme().equals(appUri.getScheme())) &&
+            !appAllowNavigationMask.matches(url.getHost())
+        ) {
+            try {
+                Intent openIntent = new Intent(Intent.ACTION_VIEW, url);
+                getContext().startActivity(openIntent);
+            } catch (ActivityNotFoundException e) {
+                
+            }
+            return true;
+        }
+        return false;
+    }
+    private boolean isNewBinary() {
+        String versionCode = "";
+        String versionName = "";
+        SharedPreferences prefs = getContext()
+            .getSharedPreferences(com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+        String lastVersionCode = prefs.getString(LAST_BINARY_VERSION_CODE, null);
+        String lastVersionName = prefs.getString(LAST_BINARY_VERSION_NAME, null);
+        try {
+            PackageManager pm = getContext().getPackageManager();
+            PackageInfo pInfo = InternalUtils.getPackageInfo(pm, getContext().getPackageName());
+            versionCode = Integer.toString((int) PackageInfoCompat.getLongVersionCode(pInfo));
+            versionName = pInfo.versionName;
+        } catch (Exception ex) {
+            Logger.error("Unable to get package info", ex);
+        }
+        if (!versionCode.equals(lastVersionCode) || !versionName.equals(lastVersionName)) {
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(LAST_BINARY_VERSION_CODE, versionCode);
+            editor.putString(LAST_BINARY_VERSION_NAME, versionName);
+            editor.putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, "");
+            editor.apply();
+            return true;
+        }
+        return false;
+    }
+    public boolean isDeployDisabled() {
+        return preferences.getBoolean("DisableDeploy", false);
+    }
+    public boolean shouldKeepRunning() {
+        return preferences.getBoolean("KeepRunning", true);
+    }
+    public void handleAppUrlLoadError(Exception ex) {
+        if (ex instanceof SocketTimeoutException) {
+            Logger.error(
+                "Unable to load app. Ensure the server is running at " +
+                appUrl +
+                ", or modify the " +
+                "appUrl setting in capacitor.config.json (make sure to npx cap copy after to commit changes).",
+                ex
+            );
+        }
+    }
+    public boolean isDevMode() {
+        return (getActivity().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+    protected void setCordovaWebView(CordovaWebView cordovaWebView) {
+        this.cordovaWebView = cordovaWebView;
+    }
+    
+    public Context getContext() {
+        return this.context;
+    }
+    
+    public AppCompatActivity getActivity() {
+        return this.context;
+    }
+    
+    public Fragment getFragment() {
+        return this.fragment;
+    }
+    
+    public WebView getWebView() {
+        return this.webView;
+    }
+    
+    public Uri getIntentUri() {
+        return intentUri;
+    }
+    
+    public String getScheme() {
+        return this.config.getAndroidScheme();
+    }
+    
+    public String getHost() {
+        return this.config.getHostname();
+    }
+    
+    public String getServerUrl() {
+        return this.config.getServerUrl();
+    }
+    public String getErrorUrl() {
+        String errorPath = this.config.getErrorPath();
+        if (errorPath != null && !errorPath.trim().isEmpty()) {
+            String authority = this.getHost();
+            String scheme = this.getScheme();
+            String localUrl = scheme + ":
+            return localUrl + "/" + errorPath;
+        }
+        return null;
+    }
+    public String getAppUrl() {
+        return appUrl;
+    }
+    public CapConfig getConfig() {
+        return this.config;
+    }
+    public void reset() {
+        savedCalls = new HashMap<>();
+    }
+    
+    @SuppressLint("SetJavaScriptEnabled")
+    private void initWebView() {
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setGeolocationEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        if (this.config.isMixedContentAllowed()) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        String appendUserAgent = this.config.getAppendedUserAgentString();
+        if (appendUserAgent != null) {
+            String defaultUserAgent = settings.getUserAgentString();
+            settings.setUserAgentString(defaultUserAgent + " " + appendUserAgent);
+        }
+        String overrideUserAgent = this.config.getOverriddenUserAgentString();
+        if (overrideUserAgent != null) {
+            settings.setUserAgentString(overrideUserAgent);
+        }
+        String backgroundColor = this.config.getBackgroundColor();
+        try {
+            if (backgroundColor != null) {
+                webView.setBackgroundColor(WebColor.parseColor(backgroundColor));
+            }
+        } catch (IllegalArgumentException ex) {
+            Logger.debug("WebView background color not applied");
+        }
+        settings.setDisplayZoomControls(false);
+        settings.setBuiltInZoomControls(this.config.isZoomableWebView());
+        if (config.isInitialFocus()) {
+            webView.requestFocusFromTouch();
+        }
+        WebView.setWebContentsDebuggingEnabled(this.config.isWebContentsDebuggingEnabled());
+        appUrlConfig = this.getServerUrl();
+        String authority = this.getHost();
+        authorities.add(authority);
+        String scheme = this.getScheme();
+        localUrl = scheme + ":
+        if (appUrlConfig != null) {
+            try {
+                URL appUrlObject = new URL(appUrlConfig);
+                authorities.add(appUrlObject.getAuthority());
+            } catch (Exception ex) {
+                Logger.error("Provided server url is invalid: " + ex.getMessage());
+                return;
+            }
+            localUrl = appUrlConfig;
+            appUrl = appUrlConfig;
+        } else {
+            appUrl = localUrl;
+            
+            if (!scheme.equals(Bridge.CAPACITOR_HTTP_SCHEME) && !scheme.equals(CAPACITOR_HTTPS_SCHEME)) {
+                appUrl += "/";
+            }
+        }
+        String appUrlPath = this.config.getStartPath();
+        if (appUrlPath != null && !appUrlPath.trim().isEmpty()) {
+            appUrl += appUrlPath;
+        }
+    }
+    
+    private void registerAllPlugins() {
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorCookies.class);
+        this.registerPlugin(com.getcapacitor.plugin.WebView.class);
+        this.registerPlugin(com.getcapacitor.plugin.CapacitorHttp.class);
+        for (Class<? extends Plugin> pluginClass : this.initialPlugins) {
+            this.registerPlugin(pluginClass);
+        }
+        for (Plugin plugin : pluginInstances) {
+            registerPluginInstance(plugin);
+        }
+    }
+    
+    public void registerPlugins(Class<? extends Plugin>[] pluginClasses) {
+        for (Class<? extends Plugin> plugin : pluginClasses) {
+            this.registerPlugin(plugin);
+        }
+    }
+    public void registerPluginInstances(Plugin[] pluginInstances) {
+        for (Plugin plugin : pluginInstances) {
+            this.registerPluginInstance(plugin);
+        }
+    }
+    @SuppressWarnings("deprecation")
+    private String getLegacyPluginName(Class<? extends Plugin> pluginClass) {
+        NativePlugin legacyPluginAnnotation = pluginClass.getAnnotation(NativePlugin.class);
+        if (legacyPluginAnnotation == null) {
+            Logger.error("Plugin doesn't have the @CapacitorPlugin annotation. Please add it");
+            return null;
+        }
+        return legacyPluginAnnotation.name();
+    }
+    
+    public void registerPlugin(Class<? extends Plugin> pluginClass) {
+        String pluginId = pluginId(pluginClass);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, pluginClass));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(pluginClass);
+        } catch (PluginLoadException ex) {
+            logPluginLoadException(pluginClass, ex);
+        }
+    }
+    public void registerPluginInstance(Plugin plugin) {
+        Class<? extends Plugin> clazz = plugin.getClass();
+        String pluginId = pluginId(clazz);
+        if (pluginId == null) return;
+        try {
+            this.plugins.put(pluginId, new PluginHandle(this, plugin));
+        } catch (InvalidPluginException ex) {
+            logInvalidPluginException(clazz);
+        }
+    }
+    private String pluginId(Class<? extends Plugin> clazz) {
+        String pluginName = pluginName(clazz);
+        String pluginId = clazz.getSimpleName();
+        if (pluginName == null) return null;
+        if (!pluginName.equals("")) {
+            pluginId = pluginName;
+        }
+        Logger.debug("Registering plugin instance: " + pluginId);
+        return pluginId;
+    }
+    private String pluginName(Class<? extends Plugin> clazz) {
+        String pluginName;
+        CapacitorPlugin pluginAnnotation = clazz.getAnnotation(CapacitorPlugin.class);
+        if (pluginAnnotation == null) {
+            pluginName = this.getLegacyPluginName(clazz);
+        } else {
+            pluginName = pluginAnnotation.name();
+        }
+        return pluginName;
+    }
+    private void logInvalidPluginException(Class<? extends Plugin> clazz) {
+        Logger.error(
+            "NativePlugin " +
+            clazz.getName() +
+            " is invalid. Ensure the @CapacitorPlugin annotation exists on the plugin class and" +
+            " the class extends Plugin"
+        );
+    }
+    private void logPluginLoadException(Class<? extends Plugin> clazz, Exception ex) {
+        Logger.error("NativePlugin " + clazz.getName() + " failed to load", ex);
+    }
+    public PluginHandle getPlugin(String pluginId) {
+        return this.plugins.get(pluginId);
+    }
+    
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public PluginHandle getPluginWithRequestCode(int requestCode) {
+        for (PluginHandle handle : this.plugins.values()) {
+            int[] requestCodes;
+            CapacitorPlugin pluginAnnotation = handle.getPluginAnnotation();
+            if (pluginAnnotation == null) {
+                
+                NativePlugin legacyPluginAnnotation = handle.getLegacyPluginAnnotation();
+                if (legacyPluginAnnotation == null) {
+                    continue;
+                }
+                if (legacyPluginAnnotation.permissionRequestCode() == requestCode) {
+                    return handle;
+                }
+                requestCodes = legacyPluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            } else {
+                requestCodes = pluginAnnotation.requestCodes();
+                for (int rc : requestCodes) {
+                    if (rc == requestCode) {
+                        return handle;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    
+    public void callPluginMethod(String pluginId, final String methodName, final PluginCall call) {
+        try {
+            final PluginHandle plugin = this.getPlugin(pluginId);
+            if (plugin == null) {
+                Logger.error("unable to find plugin : " + pluginId);
+                call.errorCallback("unable to find plugin : " + pluginId);
+                return;
+            }
+            if (Logger.shouldLog()) {
+                Logger.verbose(
+                    "callback: " +
+                    call.getCallbackId() +
+                    ", pluginId: " +
+                    plugin.getId() +
+                    ", methodName: " +
+                    methodName +
+                    ", methodData: " +
+                    call.getData().toString()
+                );
+            }
+            Runnable currentThreadTask = () -> {
+                try {
+                    plugin.invoke(methodName, call);
+                    if (call.isKeptAlive()) {
+                        saveCall(call);
+                    }
+                } catch (PluginLoadException | InvalidPluginMethodException ex) {
+                    Logger.error("Unable to execute plugin method", ex);
+                } catch (Exception ex) {
+                    Logger.error("Serious error executing plugin", ex);
+                    throw new RuntimeException(ex);
+                }
+            };
+            taskHandler.post(currentThreadTask);
+        } catch (Exception ex) {
+            Logger.error(Logger.tags("callPluginMethod"), "error : " + ex, null);
+            call.errorCallback(ex.toString());
+        }
+    }
+    
+    public void eval(final String js, final ValueCallback<String> callback) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(() -> webView.evaluateJavascript(js, callback));
+    }
+    public void logToJs(final String message, final String level) {
+        eval("window.Capacitor.logJs(\"" + message + "\", \"" + level + "\")", null);
+    }
+    public void logToJs(final String message) {
+        logToJs(message, "log");
+    }
+    public void triggerJSEvent(final String eventName, final String target) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\")", s -> {});
+    }
+    public void triggerJSEvent(final String eventName, final String target, final String data) {
+        eval("window.Capacitor.triggerEvent(\"" + eventName + "\", \"" + target + "\", " + data + ")", s -> {});
+    }
+    public void triggerWindowJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "window");
+    }
+    public void triggerWindowJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "window", data);
+    }
+    public void triggerDocumentJSEvent(final String eventName) {
+        this.triggerJSEvent(eventName, "document");
+    }
+    public void triggerDocumentJSEvent(final String eventName, final String data) {
+        this.triggerJSEvent(eventName, "document", data);
+    }
+    public void execute(Runnable runnable) {
+        taskHandler.post(runnable);
+    }
+    public void executeOnMainThread(Runnable runnable) {
+        Handler mainHandler = new Handler(context.getMainLooper());
+        mainHandler.post(runnable);
+    }
+    
+    public void saveCall(PluginCall call) {
+        this.savedCalls.put(call.getCallbackId(), call);
+    }
+    
+    public PluginCall getSavedCall(String callbackId) {
+        if (callbackId == null) {
+            return null;
+        }
+        return this.savedCalls.get(callbackId);
+    }
+    PluginCall getPluginCallForLastActivity() {
+        PluginCall pluginCallForLastActivity = this.pluginCallForLastActivity;
+        this.pluginCallForLastActivity = null;
+        return pluginCallForLastActivity;
+    }
+    void setPluginCallForLastActivity(PluginCall pluginCallForLastActivity) {
+        this.pluginCallForLastActivity = pluginCallForLastActivity;
+    }
+    
+    public void releaseCall(PluginCall call) {
+        releaseCall(call.getCallbackId());
+    }
+    
+    public void releaseCall(String callbackId) {
+        this.savedCalls.remove(callbackId);
+    }
+    
+    protected PluginCall getPermissionCall(String pluginId) {
+        LinkedList<String> permissionCallIds = this.savedPermissionCallIds.get(pluginId);
+        String savedCallId = null;
+        if (permissionCallIds != null) {
+            savedCallId = permissionCallIds.poll();
+        }
+        return getSavedCall(savedCallId);
+    }
+    
+    protected void savePermissionCall(PluginCall call) {
+        if (call != null) {
+            if (!savedPermissionCallIds.containsKey(call.getPluginId())) {
+                savedPermissionCallIds.put(call.getPluginId(), new LinkedList<>());
+            }
+            savedPermissionCallIds.get(call.getPluginId()).add(call.getCallbackId());
+            saveCall(call);
+        }
+    }
+    
+    public <I, O> ActivityResultLauncher<I> registerForActivityResult(
+        @NonNull final ActivityResultContract<I, O> contract,
+        @NonNull final ActivityResultCallback<O> callback
+    ) {
+        if (fragment != null) {
+            return fragment.registerForActivityResult(contract, callback);
+        } else {
+            return context.registerForActivityResult(contract, callback);
+        }
+    }
+    
+    private JSInjector getJSInjector() {
+        try {
+            String globalJS = JSExport.getGlobalJS(context, config.isLoggingEnabled(), isDevMode());
+            String bridgeJS = JSExport.getBridgeJS(context);
+            String pluginJS = JSExport.getPluginJS(plugins.values());
+            String cordovaJS = JSExport.getCordovaJS(context);
+            String cordovaPluginsJS = JSExport.getCordovaPluginJS(context);
+            String cordovaPluginsFileJS = JSExport.getCordovaPluginsFileJS(context);
+            String localUrlJS = "window.WEBVIEW_SERVER_URL = '" + localUrl + "';";
+            return new JSInjector(globalJS, bridgeJS, pluginJS, cordovaJS, cordovaPluginsJS, cordovaPluginsFileJS, localUrlJS);
+        } catch (Exception ex) {
+            Logger.error("Unable to export Capacitor JS. App will not function!", ex);
+        }
+        return null;
+    }
+    
+    public void restoreInstanceState(Bundle savedInstanceState) {
+        String lastPluginId = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_ID_KEY);
+        String lastPluginCallMethod = savedInstanceState.getString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY);
+        String lastOptionsJson = savedInstanceState.getString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY);
+        if (lastPluginId != null) {
+            
+            if (lastOptionsJson != null) {
+                try {
+                    JSObject options = new JSObject(lastOptionsJson);
+                    pluginCallForLastActivity = new PluginCall(
+                        msgHandler,
+                        lastPluginId,
+                        PluginCall.CALLBACK_ID_DANGLING,
+                        lastPluginCallMethod,
+                        options
+                    );
+                } catch (JSONException ex) {
+                    Logger.error("Unable to restore plugin call, unable to parse persisted JSON object", ex);
+                }
+            }
+            
+            Bundle bundleData = savedInstanceState.getBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY);
+            PluginHandle lastPlugin = getPlugin(lastPluginId);
+            if (bundleData != null && lastPlugin != null) {
+                lastPlugin.getInstance().restoreState(bundleData);
+            } else {
+                Logger.error("Unable to restore last plugin call");
+            }
+        }
+    }
+    public void saveInstanceState(Bundle outState) {
+        Logger.debug("Saving instance state!");
+        
+        
+        if (pluginCallForLastActivity != null) {
+            PluginCall call = pluginCallForLastActivity;
+            PluginHandle handle = getPlugin(call.getPluginId());
+            if (handle != null) {
+                Bundle bundle = handle.getInstance().saveInstanceState();
+                if (bundle != null) {
+                    outState.putString(BUNDLE_LAST_PLUGIN_ID_KEY, call.getPluginId());
+                    outState.putString(BUNDLE_LAST_PLUGIN_CALL_METHOD_NAME_KEY, call.getMethodName());
+                    outState.putString(BUNDLE_PLUGIN_CALL_OPTIONS_SAVED_KEY, call.getData().toString());
+                    outState.putBundle(BUNDLE_PLUGIN_CALL_BUNDLE_KEY, bundle);
+                } else {
+                    Logger.error("Couldn't save last " + call.getPluginId() + "'s Plugin " + call.getMethodName() + " call");
+                }
+            }
+        }
+    }
+    @Deprecated
+    @SuppressWarnings("deprecation")
+    public void startActivityForPluginWithResult(PluginCall call, Intent intent, int requestCode) {
+        Logger.debug("Starting activity for result");
+        pluginCallForLastActivity = call;
+        getActivity().startActivityForResult(intent, requestCode);
+    }
+    
+    @SuppressWarnings("deprecation")
+    boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null) {
+            boolean permissionHandled = false;
+            Logger.debug("Unable to find a Capacitor plugin to handle permission requestCode, trying Cordova plugins " + requestCode);
+            try {
+                permissionHandled = cordovaInterface.handlePermissionResult(requestCode, permissions, grantResults);
+            } catch (JSONException e) {
+                Logger.debug("Error on Cordova plugin permissions request " + e.getMessage());
+            }
+            return permissionHandled;
+        }
+        
+        if (plugin.getPluginAnnotation() == null) {
+            plugin.getInstance().handleRequestPermissionsResult(requestCode, permissions, grantResults);
+            return true;
+        }
+        return false;
+    }
+    
+    protected boolean validatePermissions(Plugin plugin, PluginCall savedCall, Map<String, Boolean> permissions) {
+        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+        for (Map.Entry<String, Boolean> permission : permissions.entrySet()) {
+            String permString = permission.getKey();
+            boolean isGranted = permission.getValue();
+            if (isGranted) {
+                
+                String state = prefs.getString(permString, null);
+                if (state != null) {
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.remove(permString);
+                    editor.apply();
+                }
+            } else {
+                SharedPreferences.Editor editor = prefs.edit();
+                if (ActivityCompat.shouldShowRequestPermissionRationale(getActivity(), permString)) {
+                    
+                    editor.putString(permString, PermissionState.PROMPT_WITH_RATIONALE.toString());
+                } else {
+                    
+                    editor.putString(permString, PermissionState.DENIED.toString());
+                }
+                editor.apply();
+            }
+        }
+        String[] permStrings = permissions.keySet().toArray(new String[0]);
+        if (!PermissionHelper.hasDefinedPermissions(getContext(), permStrings)) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("Missing the following permissions in AndroidManifest.xml:\n");
+            String[] missing = PermissionHelper.getUndefinedPermissions(getContext(), permStrings);
+            for (String perm : missing) {
+                builder.append(perm + "\n");
+            }
+            savedCall.reject(builder.toString());
+            return false;
+        }
+        return true;
+    }
+    
+    protected Map<String, PermissionState> getPermissionStates(Plugin plugin) {
+        Map<String, PermissionState> permissionsResults = new HashMap<>();
+        CapacitorPlugin annotation = plugin.getPluginHandle().getPluginAnnotation();
+        for (Permission perm : annotation.permissions()) {
+            
+            
+            if (perm.strings().length == 0 || (perm.strings().length == 1 && perm.strings()[0].isEmpty())) {
+                String key = perm.alias();
+                if (!key.isEmpty()) {
+                    PermissionState existingResult = permissionsResults.get(key);
+                    
+                    if (existingResult == null) {
+                        permissionsResults.put(key, PermissionState.GRANTED);
+                    }
+                }
+            } else {
+                for (String permString : perm.strings()) {
+                    String key = perm.alias().isEmpty() ? permString : perm.alias();
+                    PermissionState permissionStatus;
+                    if (ActivityCompat.checkSelfPermission(this.getContext(), permString) == PackageManager.PERMISSION_GRANTED) {
+                        permissionStatus = PermissionState.GRANTED;
+                    } else {
+                        permissionStatus = PermissionState.PROMPT;
+                        
+                        SharedPreferences prefs = getContext().getSharedPreferences(PERMISSION_PREFS_NAME, Activity.MODE_PRIVATE);
+                        String state = prefs.getString(permString, null);
+                        if (state != null) {
+                            permissionStatus = PermissionState.byState(state);
+                        }
+                    }
+                    PermissionState existingResult = permissionsResults.get(key);
+                    
+                    if (existingResult == null || existingResult == PermissionState.GRANTED) {
+                        permissionsResults.put(key, permissionStatus);
+                    }
+                }
+            }
+        }
+        return permissionsResults;
+    }
+    
+    @SuppressWarnings("deprecation")
+    boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        PluginHandle plugin = getPluginWithRequestCode(requestCode);
+        if (plugin == null || plugin.getInstance() == null) {
+            Logger.debug("Unable to find a Capacitor plugin to handle requestCode, trying Cordova plugins " + requestCode);
+            return cordovaInterface.onActivityResult(requestCode, resultCode, data);
+        }
+        
+        PluginCall lastCall = plugin.getInstance().getSavedCall();
+        
+        
+        
+        
+        if (lastCall == null && pluginCallForLastActivity != null) {
+            plugin.getInstance().saveCall(pluginCallForLastActivity);
+        }
+        plugin.getInstance().handleOnActivityResult(requestCode, resultCode, data);
+        
+        pluginCallForLastActivity = null;
+        return true;
+    }
+    
+    public void onNewIntent(Intent intent) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnNewIntent(intent);
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.onNewIntent(intent);
+        }
+    }
+    
+    public void onConfigurationChanged(Configuration newConfig) {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnConfigurationChanged(newConfig);
+        }
+    }
+    
+    public void onRestart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnRestart();
+        }
+    }
+    
+    public void onStart() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStart();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStart();
+        }
+    }
+    
+    public void onResume() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnResume();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleResume(this.shouldKeepRunning());
+        }
+    }
+    
+    public void onPause() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnPause();
+        }
+        if (cordovaWebView != null) {
+            boolean keepRunning = this.shouldKeepRunning() || cordovaInterface.getActivityResultCallback() != null;
+            cordovaWebView.handlePause(keepRunning);
+        }
+    }
+    
+    public void onStop() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnStop();
+        }
+        if (cordovaWebView != null) {
+            cordovaWebView.handleStop();
+        }
+    }
+    
+    public void onDestroy() {
+        for (PluginHandle plugin : plugins.values()) {
+            plugin.getInstance().handleOnDestroy();
+        }
+        handlerThread.quitSafely();
+        if (cordovaWebView != null) {
+            cordovaWebView.handleDestroy();
+        }
+    }
+    
+    public void onDetachedFromWindow() {
+        webView.removeAllViews();
+        webView.destroy();
+    }
+    public String getServerBasePath() {
+        return this.localServer.getBasePath();
+    }
+    
+    public void setServerBasePath(String path) {
+        localServer.hostFiles(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    
+    public void setServerAssetPath(String path) {
+        localServer.hostAssets(path);
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    
+    public void reload() {
+        webView.post(() -> webView.loadUrl(appUrl));
+    }
+    public String getLocalUrl() {
+        return localUrl;
+    }
+    public WebViewLocalServer getLocalServer() {
+        return localServer;
+    }
+    public HostMask getAppAllowNavigationMask() {
+        return appAllowNavigationMask;
+    }
+    public Set<String> getAllowedOriginRules() {
+        return allowedOriginRules;
+    }
+    public BridgeWebViewClient getWebViewClient() {
+        return this.webViewClient;
+    }
+    public void setWebViewClient(BridgeWebViewClient client) {
+        this.webViewClient = client;
+        webView.setWebViewClient(client);
+    }
+    List<WebViewListener> getWebViewListeners() {
+        return webViewListeners;
+    }
+    void setWebViewListeners(List<WebViewListener> webViewListeners) {
+        this.webViewListeners = webViewListeners;
+    }
+    RouteProcessor getRouteProcessor() {
+        return routeProcessor;
+    }
+    void setRouteProcessor(RouteProcessor routeProcessor) {
+        this.routeProcessor = routeProcessor;
+    }
+    ServerPath getServerPath() {
+        return serverPath;
+    }
+    
+    public void addWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.add(webViewListener);
+    }
+    
+    public void removeWebViewListener(WebViewListener webViewListener) {
+        webViewListeners.remove(webViewListener);
+    }
+    public static class Builder {
+        private Bundle instanceState = null;
+        private CapConfig config = null;
+        private List<Class<? extends Plugin>> plugins = new ArrayList<>();
+        private List<Plugin> pluginInstances = new ArrayList<>();
+        private AppCompatActivity activity;
+        private Fragment fragment;
+        private RouteProcessor routeProcessor;
+        private final List<WebViewListener> webViewListeners = new ArrayList<>();
+        private ServerPath serverPath;
+        public Builder(AppCompatActivity activity) {
+            this.activity = activity;
+        }
+        public Builder(Fragment fragment) {
+            this.activity = (AppCompatActivity) fragment.getActivity();
+            this.fragment = fragment;
+        }
+        public Builder setInstanceState(Bundle instanceState) {
+            this.instanceState = instanceState;
+            return this;
+        }
+        public Builder setConfig(CapConfig config) {
+            this.config = config;
+            return this;
+        }
+        public Builder setPlugins(List<Class<? extends Plugin>> plugins) {
+            this.plugins = plugins;
+            return this;
+        }
+        public Builder addPlugin(Class<? extends Plugin> plugin) {
+            this.plugins.add(plugin);
+            return this;
+        }
+        public Builder addPlugins(List<Class<? extends Plugin>> plugins) {
+            for (Class<? extends Plugin> cls : plugins) {
+                this.addPlugin(cls);
+            }
+            return this;
+        }
+        public Builder addPluginInstance(Plugin plugin) {
+            this.pluginInstances.add(plugin);
+            return this;
+        }
+        public Builder addPluginInstances(List<Plugin> plugins) {
+            this.pluginInstances.addAll(plugins);
+            return this;
+        }
+        public Builder addWebViewListener(WebViewListener webViewListener) {
+            webViewListeners.add(webViewListener);
+            return this;
+        }
+        public Builder addWebViewListeners(List<WebViewListener> webViewListeners) {
+            for (WebViewListener listener : webViewListeners) {
+                this.addWebViewListener(listener);
+            }
+            return this;
+        }
+        public Builder setRouteProcessor(RouteProcessor routeProcessor) {
+            this.routeProcessor = routeProcessor;
+            return this;
+        }
+        public Builder setServerPath(ServerPath serverPath) {
+            this.serverPath = serverPath;
+            return this;
+        }
+        public Bridge create() {
+            
+            ConfigXmlParser parser = new ConfigXmlParser();
+            parser.parse(activity.getApplicationContext());
+            CordovaPreferences preferences = parser.getPreferences();
+            preferences.setPreferencesBundle(activity.getIntent().getExtras());
+            List<PluginEntry> pluginEntries = parser.getPluginEntries();
+            MockCordovaInterfaceImpl cordovaInterface = new MockCordovaInterfaceImpl(activity);
+            if (instanceState != null) {
+                cordovaInterface.restoreInstanceState(instanceState);
+            }
+            WebView webView = this.fragment != null ? fragment.getView().findViewById(R.id.webview) : activity.findViewById(R.id.webview);
+            MockCordovaWebViewImpl mockWebView = new MockCordovaWebViewImpl(activity.getApplicationContext());
+            mockWebView.init(cordovaInterface, pluginEntries, preferences, webView);
+            PluginManager pluginManager = mockWebView.getPluginManager();
+            cordovaInterface.onCordovaInit(pluginManager);
+            
+            Bridge bridge = new Bridge(
+                activity,
+                serverPath,
+                fragment,
+                webView,
+                plugins,
+                pluginInstances,
+                cordovaInterface,
+                pluginManager,
+                preferences,
+                config
+            );
+            if (webView instanceof CapacitorWebView) {
+                CapacitorWebView capacitorWebView = (CapacitorWebView) webView;
+                capacitorWebView.setBridge(bridge);
+            }
+            bridge.setCordovaWebView(mockWebView);
+            bridge.setWebViewListeners(webViewListeners);
+            bridge.setRouteProcessor(routeProcessor);
+            if (instanceState != null) {
+                bridge.restoreInstanceState(instanceState);
+            }
+            return bridge;
+        }
+    }
+}
+package com.getcapacitor;
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.net.Uri;
+import android.os.Bundle;
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import com.getcapacitor.util.PermissionHelper;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.json.JSONException;
+
+public class Plugin {
+    
+    
+    private static final String BUNDLE_PERSISTED_OPTIONS_JSON_KEY = "_json";
+    
+    protected Bridge bridge;
+    
+    protected PluginHandle handle;
+    
+    @Deprecated
+    protected PluginCall savedLastCall;
+    
+    private final Map<String, List<PluginCall>> eventListeners;
+    
+    private final Map<String, ActivityResultLauncher<Intent>> activityLaunchers = new HashMap<>();
+    
+    private final Map<String, ActivityResultLauncher<String[]>> permissionLaunchers = new HashMap<>();
+    private String lastPluginCallId;
+    
+    
+    private final Map<String, List<JSObject>> retainedEventArguments;
+    public Plugin() {
+        eventListeners = new HashMap<>();
+        retainedEventArguments = new HashMap<>();
+    }
+    
+    public void load() {}
+    
+    void initializeActivityLaunchers() {
+        List<Method> pluginClassMethods = new ArrayList<>();
+        for (
+            Class<?> pluginCursor = getClass();
+            !pluginCursor.getName().equals(Object.class.getName());
+            pluginCursor = pluginCursor.getSuperclass()
+        ) {
+            pluginClassMethods.addAll(Arrays.asList(pluginCursor.getDeclaredMethods()));
+        }
+        for (final Method method : pluginClassMethods) {
+            if (method.isAnnotationPresent(ActivityCallback.class)) {
+                
+                ActivityResultLauncher<Intent> launcher = bridge.registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> triggerActivityCallback(method, result)
+                );
+                activityLaunchers.put(method.getName(), launcher);
+            } else if (method.isAnnotationPresent(PermissionCallback.class)) {
+                
+                ActivityResultLauncher<String[]> launcher = bridge.registerForActivityResult(
+                    new ActivityResultContracts.RequestMultiplePermissions(),
+                    permissions -> triggerPermissionCallback(method, permissions)
+                );
+                permissionLaunchers.put(method.getName(), launcher);
+            }
+        }
+    }
+    private void triggerPermissionCallback(Method method, Map<String, Boolean> permissionResultMap) {
+        PluginCall savedCall = bridge.getPermissionCall(handle.getId());
+        
+        if (bridge.validatePermissions(this, savedCall, permissionResultMap)) {
+            try {
+                method.setAccessible(true);
+                method.invoke(this, savedCall);
+            } catch (IllegalAccessException | InvocationTargetException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    private void triggerActivityCallback(Method method, ActivityResult result) {
+        PluginCall savedCall = bridge.getSavedCall(lastPluginCallId);
+        if (savedCall == null) {
+            savedCall = bridge.getPluginCallForLastActivity();
+        }
+        
+        try {
+            method.setAccessible(true);
+            method.invoke(this, savedCall, result);
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            e.printStackTrace();
+        }
+    }
+    
+    public void startActivityForResult(PluginCall call, Intent intent, String callbackName) {
+        ActivityResultLauncher<Intent> activityResultLauncher = getActivityLauncherOrReject(call, callbackName);
+        if (activityResultLauncher == null) {
+            
+            return;
+        }
+        bridge.setPluginCallForLastActivity(call);
+        lastPluginCallId = call.getCallbackId();
+        bridge.saveCall(call);
+        activityResultLauncher.launch(intent);
+    }
+    private void permissionActivityResult(PluginCall call, String[] permissionStrings, String callbackName) {
+        ActivityResultLauncher<String[]> permissionResultLauncher = getPermissionLauncherOrReject(call, callbackName);
+        if (permissionResultLauncher == null) {
+            
+            return;
+        }
+        bridge.savePermissionCall(call);
+        permissionResultLauncher.launch(permissionStrings);
+    }
+    
+    public Context getContext() {
+        return this.bridge.getContext();
+    }
+    
+    public AppCompatActivity getActivity() {
+        return this.bridge.getActivity();
+    }
+    
+    public void setBridge(Bridge bridge) {
+        this.bridge = bridge;
+    }
+    
+    public Bridge getBridge() {
+        return this.bridge;
+    }
+    
+    public void setPluginHandle(PluginHandle pluginHandle) {
+        this.handle = pluginHandle;
+    }
+    
+    public PluginHandle getPluginHandle() {
+        return this.handle;
+    }
+    
+    public String getAppId() {
+        return getContext().getPackageName();
+    }
+    
+    @Deprecated
+    public void saveCall(PluginCall lastCall) {
+        this.savedLastCall = lastCall;
+    }
+    
+    @Deprecated
+    public void freeSavedCall() {
+        this.savedLastCall.release(bridge);
+        this.savedLastCall = null;
+    }
+    
+    @Deprecated
+    public PluginCall getSavedCall() {
+        return this.savedLastCall;
+    }
+    
+    public PluginConfig getConfig() {
+        return bridge.getConfig().getPluginConfiguration(handle.getId());
+    }
+    
+    @Deprecated
+    public Object getConfigValue(String key) {
+        try {
+            PluginConfig pluginConfig = getConfig();
+            return pluginConfig.getConfigJSON().get(key);
+        } catch (JSONException ex) {
+            return null;
+        }
+    }
+    
+    @Deprecated
+    public boolean hasDefinedPermissions(String[] permissions) {
+        for (String permission : permissions) {
+            if (!PermissionHelper.hasDefinedPermission(getContext(), permission)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    @Deprecated
+    public boolean hasDefinedRequiredPermissions() {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            
+            NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+            return hasDefinedPermissions(legacyAnnotation.permissions());
+        } else {
+            for (Permission perm : annotation.permissions()) {
+                for (String permString : perm.strings()) {
+                    if (!PermissionHelper.hasDefinedPermission(getContext(), permString)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    
+    public boolean isPermissionDeclared(String alias) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation != null) {
+            for (Permission perm : annotation.permissions()) {
+                if (alias.equalsIgnoreCase(perm.alias())) {
+                    boolean result = true;
+                    for (String permString : perm.strings()) {
+                        result = result && PermissionHelper.hasDefinedPermission(getContext(), permString);
+                    }
+                    return result;
+                }
+            }
+        }
+        Logger.error(String.format("isPermissionDeclared: No alias defined for %s " + "or missing @CapacitorPlugin annotation.", alias));
+        return false;
+    }
+    
+    @Deprecated
+    public boolean hasPermission(String permission) {
+        return ActivityCompat.checkSelfPermission(this.getContext(), permission) == PackageManager.PERMISSION_GRANTED;
+    }
+    
+    @Deprecated
+    public boolean hasRequiredPermissions() {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            
+            NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+            for (String perm : legacyAnnotation.permissions()) {
+                if (ActivityCompat.checkSelfPermission(this.getContext(), perm) != PackageManager.PERMISSION_GRANTED) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        for (Permission perm : annotation.permissions()) {
+            for (String permString : perm.strings()) {
+                if (ActivityCompat.checkSelfPermission(this.getContext(), permString) != PackageManager.PERMISSION_GRANTED) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    
+    protected void requestAllPermissions(@NonNull PluginCall call, @NonNull String callbackName) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation != null) {
+            HashSet<String> perms = new HashSet<>();
+            for (Permission perm : annotation.permissions()) {
+                perms.addAll(Arrays.asList(perm.strings()));
+            }
+            permissionActivityResult(call, perms.toArray(new String[0]), callbackName);
+        }
+    }
+    
+    protected void requestPermissionForAlias(@NonNull String alias, @NonNull PluginCall call, @NonNull String callbackName) {
+        requestPermissionForAliases(new String[] { alias }, call, callbackName);
+    }
+    
+    protected void requestPermissionForAliases(@NonNull String[] aliases, @NonNull PluginCall call, @NonNull String callbackName) {
+        if (aliases.length == 0) {
+            Logger.error("No permission alias was provided");
+            return;
+        }
+        String[] permissions = getPermissionStringsForAliases(aliases);
+        if (permissions.length > 0) {
+            permissionActivityResult(call, permissions, callbackName);
+        }
+    }
+    
+    private String[] getPermissionStringsForAliases(@NonNull String[] aliases) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        HashSet<String> perms = new HashSet<>();
+        for (Permission perm : annotation.permissions()) {
+            if (Arrays.asList(aliases).contains(perm.alias())) {
+                perms.addAll(Arrays.asList(perm.strings()));
+            }
+        }
+        return perms.toArray(new String[0]);
+    }
+    
+    private @Nullable ActivityResultLauncher<Intent> getActivityLauncherOrReject(PluginCall call, String methodName) {
+        ActivityResultLauncher<Intent> activityLauncher = activityLaunchers.get(methodName);
+        
+        if (activityLauncher == null) {
+            String registerError =
+                "There is no ActivityCallback method registered for the name: %s. " +
+                "Please define a callback method annotated with @ActivityCallback " +
+                "that receives arguments: (PluginCall, ActivityResult)";
+            registerError = String.format(Locale.US, registerError, methodName);
+            Logger.error(registerError);
+            call.reject(registerError);
+            return null;
+        }
+        return activityLauncher;
+    }
+    
+    private @Nullable ActivityResultLauncher<String[]> getPermissionLauncherOrReject(PluginCall call, String methodName) {
+        ActivityResultLauncher<String[]> permissionLauncher = permissionLaunchers.get(methodName);
+        
+        if (permissionLauncher == null) {
+            String registerError =
+                "There is no PermissionCallback method registered for the name: %s. " +
+                "Please define a callback method annotated with @PermissionCallback " +
+                "that receives arguments: (PluginCall)";
+            registerError = String.format(Locale.US, registerError, methodName);
+            Logger.error(registerError);
+            call.reject(registerError);
+            return null;
+        }
+        return permissionLauncher;
+    }
+    
+    @Deprecated
+    public void pluginRequestAllPermissions() {
+        NativePlugin legacyAnnotation = handle.getLegacyPluginAnnotation();
+        ActivityCompat.requestPermissions(getActivity(), legacyAnnotation.permissions(), legacyAnnotation.permissionRequestCode());
+    }
+    
+    @Deprecated
+    public void pluginRequestPermission(String permission, int requestCode) {
+        ActivityCompat.requestPermissions(getActivity(), new String[] { permission }, requestCode);
+    }
+    
+    @Deprecated
+    public void pluginRequestPermissions(String[] permissions, int requestCode) {
+        ActivityCompat.requestPermissions(getActivity(), permissions, requestCode);
+    }
+    
+    public PermissionState getPermissionState(String alias) {
+        return getPermissionStates().get(alias);
+    }
+    
+    public Map<String, PermissionState> getPermissionStates() {
+        return bridge.getPermissionStates(this);
+    }
+    
+    private void addEventListener(String eventName, PluginCall call) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null || listeners.isEmpty()) {
+            listeners = new ArrayList<>();
+            eventListeners.put(eventName, listeners);
+            
+            listeners.add(call);
+            sendRetainedArgumentsForEvent(eventName);
+        } else {
+            listeners.add(call);
+        }
+    }
+    
+    private void removeEventListener(String eventName, PluginCall call) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null) {
+            return;
+        }
+        listeners.remove(call);
+    }
+    
+    protected void notifyListeners(String eventName, JSObject data, boolean retainUntilConsumed) {
+        Logger.verbose(getLogTag(), "Notifying listeners for event " + eventName);
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null || listeners.isEmpty()) {
+            Logger.debug(getLogTag(), "No listeners found for event " + eventName);
+            if (retainUntilConsumed) {
+                List<JSObject> argList = retainedEventArguments.get(eventName);
+                if (argList == null) {
+                    argList = new ArrayList<JSObject>();
+                }
+                argList.add(data);
+                retainedEventArguments.put(eventName, argList);
+            }
+            return;
+        }
+        CopyOnWriteArrayList<PluginCall> listenersCopy = new CopyOnWriteArrayList(listeners);
+        for (PluginCall call : listenersCopy) {
+            call.resolve(data);
+        }
+    }
+    
+    protected void notifyListeners(String eventName, JSObject data) {
+        notifyListeners(eventName, data, false);
+    }
+    
+    protected boolean hasListeners(String eventName) {
+        List<PluginCall> listeners = eventListeners.get(eventName);
+        if (listeners == null) {
+            return false;
+        }
+        return !listeners.isEmpty();
+    }
+    
+    private void sendRetainedArgumentsForEvent(String eventName) {
+        
+        List<JSObject> retainedArgs = retainedEventArguments.get(eventName);
+        if (retainedArgs == null) {
+            return;
+        }
+        retainedEventArguments.remove(eventName);
+        for (JSObject retained : retainedArgs) {
+            notifyListeners(eventName, retained);
+        }
+    }
+    
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void addListener(PluginCall call) {
+        String eventName = call.getString("eventName");
+        call.setKeepAlive(true);
+        addEventListener(eventName, call);
+    }
+    
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_NONE)
+    public void removeListener(PluginCall call) {
+        String eventName = call.getString("eventName");
+        String callbackId = call.getString("callbackId");
+        PluginCall savedCall = bridge.getSavedCall(callbackId);
+        if (savedCall != null) {
+            removeEventListener(eventName, savedCall);
+            bridge.releaseCall(savedCall);
+        }
+    }
+    
+    @SuppressWarnings("unused")
+    @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
+    public void removeAllListeners(PluginCall call) {
+        eventListeners.clear();
+        call.resolve();
+    }
+    
+    @PluginMethod
+    @PermissionCallback
+    public void checkPermissions(PluginCall pluginCall) {
+        Map<String, PermissionState> permissionsResult = getPermissionStates();
+        if (permissionsResult.size() == 0) {
+            
+            pluginCall.resolve();
+        } else {
+            JSObject permissionsResultJSON = new JSObject();
+            for (Map.Entry<String, PermissionState> entry : permissionsResult.entrySet()) {
+                permissionsResultJSON.put(entry.getKey(), entry.getValue());
+            }
+            pluginCall.resolve(permissionsResultJSON);
+        }
+    }
+    
+    @PluginMethod
+    public void requestPermissions(PluginCall call) {
+        CapacitorPlugin annotation = handle.getPluginAnnotation();
+        if (annotation == null) {
+            handleLegacyPermission(call);
+        } else {
+            
+            String[] permAliases = null;
+            Set<String> autoGrantPerms = new HashSet<>();
+            
+            
+            JSArray providedPerms = call.getArray("permissions");
+            List<String> providedPermsList = null;
+            if (providedPerms != null) {
+                try {
+                    providedPermsList = providedPerms.toList();
+                } catch (JSONException ignore) {
+                    
+                }
+            }
+            
+            Set<String> aliasSet = new HashSet<>();
+            if (providedPermsList == null || providedPermsList.isEmpty()) {
+                for (Permission perm : annotation.permissions()) {
+                    
+                    
+                    if (perm.strings().length == 0 || (perm.strings().length == 1 && perm.strings()[0].isEmpty())) {
+                        if (!perm.alias().isEmpty()) {
+                            autoGrantPerms.add(perm.alias());
+                        }
+                    } else {
+                        aliasSet.add(perm.alias());
+                    }
+                }
+                permAliases = aliasSet.toArray(new String[0]);
+            } else {
+                for (Permission perm : annotation.permissions()) {
+                    if (providedPermsList.contains(perm.alias())) {
+                        aliasSet.add(perm.alias());
+                    }
+                }
+                if (aliasSet.isEmpty()) {
+                    call.reject("No valid permission alias was requested of this plugin.");
+                } else {
+                    permAliases = aliasSet.toArray(new String[0]);
+                }
+            }
+            if (permAliases != null && permAliases.length > 0) {
+                
+                requestPermissionForAliases(permAliases, call, "checkPermissions");
+            } else if (!autoGrantPerms.isEmpty()) {
+                
+                JSObject permissionsResults = new JSObject();
+                for (String perm : autoGrantPerms) {
+                    permissionsResults.put(perm, PermissionState.GRANTED.toString());
+                }
+                call.resolve(permissionsResults);
+            } else {
+                
+                call.resolve();
+            }
+        }
+    }
+    @SuppressWarnings("deprecation")
+    private void handleLegacyPermission(PluginCall call) {
+        
+        NativePlugin legacyAnnotation = this.handle.getLegacyPluginAnnotation();
+        String[] perms = legacyAnnotation.permissions();
+        if (perms.length > 0) {
+            saveCall(call);
+            pluginRequestPermissions(perms, legacyAnnotation.permissionRequestCode());
+        } else {
+            call.resolve();
+        }
+    }
+    
+    @Deprecated
+    protected void handleRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (!hasDefinedPermissions(permissions)) {
+            StringBuilder builder = new StringBuilder();
+            builder.append("Missing the following permissions in AndroidManifest.xml:\n");
+            String[] missing = PermissionHelper.getUndefinedPermissions(getContext(), permissions);
+            for (String perm : missing) {
+                builder.append(perm + "\n");
+            }
+            savedLastCall.reject(builder.toString());
+            savedLastCall = null;
+        }
+    }
+    
+    protected Bundle saveInstanceState() {
+        PluginCall savedCall = bridge.getSavedCall(lastPluginCallId);
+        if (savedCall == null) {
+            return null;
+        }
+        Bundle ret = new Bundle();
+        JSObject callData = savedCall.getData();
+        if (callData != null) {
+            ret.putString(BUNDLE_PERSISTED_OPTIONS_JSON_KEY, callData.toString());
+        }
+        return ret;
+    }
+    
+    protected void restoreState(Bundle state) {}
+    
+    @Deprecated
+    protected void handleOnActivityResult(int requestCode, int resultCode, Intent data) {}
+    
+    protected void handleOnNewIntent(Intent intent) {}
+    
+    protected void handleOnConfigurationChanged(Configuration newConfig) {}
+    
+    protected void handleOnStart() {}
+    
+    protected void handleOnRestart() {}
+    
+    protected void handleOnResume() {}
+    
+    protected void handleOnPause() {}
+    
+    protected void handleOnStop() {}
+    
+    protected void handleOnDestroy() {}
+    
+    @SuppressWarnings("unused")
+    public Boolean shouldOverrideLoad(Uri url) {
+        return null;
+    }
+    
+    @Deprecated
+    protected void startActivityForResult(PluginCall call, Intent intent, int resultCode) {
+        bridge.startActivityForPluginWithResult(call, intent, resultCode);
+    }
+    
+    public void execute(Runnable runnable) {
+        bridge.execute(runnable);
+    }
+    
+    protected String getLogTag(String... subTags) {
+        return Logger.tags(subTags);
+    }
+    
+    protected String getLogTag() {
+        return Logger.tags(this.getClass().getSimpleName());
+    }
+}
+package com.getcapacitor.plugin;
+import android.Manifest;
+import android.webkit.JavascriptInterface;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginConfig;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.plugin.util.CapacitorHttpUrlConnection;
+import com.getcapacitor.plugin.util.HttpRequestHandler;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+@CapacitorPlugin(
+    permissions = {
+        @Permission(strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE }, alias = "HttpWrite"),
+        @Permission(strings = { Manifest.permission.READ_EXTERNAL_STORAGE }, alias = "HttpRead")
+    }
+)
+public class CapacitorHttp extends Plugin {
+    private final Map<Runnable, PluginCall> activeRequests = new ConcurrentHashMap<>();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    @Override
+    public void load() {
+        this.bridge.getWebView().addJavascriptInterface(this, "CapacitorHttpAndroidInterface");
+        super.load();
+    }
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        for (Map.Entry<Runnable, PluginCall> entry : activeRequests.entrySet()) {
+            Runnable job = entry.getKey();
+            PluginCall call = entry.getValue();
+            if (call.getData().has("activeCapacitorHttpUrlConnection")) {
+                try {
+                    CapacitorHttpUrlConnection connection = (CapacitorHttpUrlConnection) call
+                        .getData()
+                        .get("activeCapacitorHttpUrlConnection");
+                    connection.disconnect();
+                    call.getData().remove("activeCapacitorHttpUrlConnection");
+                } catch (Exception ignored) {}
+            }
+            getBridge().releaseCall(call);
+        }
+        activeRequests.clear();
+        executor.shutdownNow();
+    }
+    private void http(final PluginCall call, final String httpMethod) {
+        Runnable asyncHttpCall = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    JSObject response = HttpRequestHandler.request(call, httpMethod, getBridge());
+                    call.resolve(response);
+                } catch (Exception e) {
+                    call.reject(e.getLocalizedMessage(), e.getClass().getSimpleName(), e);
+                } finally {
+                    activeRequests.remove(this);
+                }
+            }
+        };
+        if (!executor.isShutdown()) {
+            activeRequests.put(asyncHttpCall, call);
+            executor.submit(asyncHttpCall);
+        } else {
+            call.reject("Failed to execute request - Http Plugin was shutdown");
+        }
+    }
+    @JavascriptInterface
+    public boolean isEnabled() {
+        PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorHttp");
+        return pluginConfig.getBoolean("enabled", false);
+    }
+    @PluginMethod
+    public void request(final PluginCall call) {
+        this.http(call, null);
+    }
+    @PluginMethod
+    public void get(final PluginCall call) {
+        this.http(call, "GET");
+    }
+    @PluginMethod
+    public void post(final PluginCall call) {
+        this.http(call, "POST");
+    }
+    @PluginMethod
+    public void put(final PluginCall call) {
+        this.http(call, "PUT");
+    }
+    @PluginMethod
+    public void patch(final PluginCall call) {
+        this.http(call, "PATCH");
+    }
+    @PluginMethod
+    public void delete(final PluginCall call) {
+        this.http(call, "DELETE");
+    }
+}
+package com.getcapacitor.plugin.util;
+import android.text.TextUtils;
+import android.util.Base64;
+import com.getcapacitor.Bridge;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.JSValue;
+import com.getcapacitor.PluginCall;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+public class HttpRequestHandler {
+    
+    public enum ResponseType {
+        ARRAY_BUFFER("arraybuffer"),
+        BLOB("blob"),
+        DOCUMENT("document"),
+        JSON("json"),
+        TEXT("text");
+        private final String name;
+        ResponseType(String name) {
+            this.name = name;
+        }
+        static final ResponseType DEFAULT = TEXT;
+        public static ResponseType parse(String value) {
+            for (ResponseType responseType : values()) {
+                if (responseType.name.equalsIgnoreCase(value)) {
+                    return responseType;
+                }
+            }
+            return DEFAULT;
+        }
+    }
+    
+    public static class HttpURLConnectionBuilder {
+        public Integer connectTimeout;
+        public Integer readTimeout;
+        public Boolean disableRedirects;
+        public JSObject headers;
+        public String method;
+        public URL url;
+        public CapacitorHttpUrlConnection connection;
+        public HttpURLConnectionBuilder setConnectTimeout(Integer connectTimeout) {
+            this.connectTimeout = connectTimeout;
+            return this;
+        }
+        public HttpURLConnectionBuilder setReadTimeout(Integer readTimeout) {
+            this.readTimeout = readTimeout;
+            return this;
+        }
+        public HttpURLConnectionBuilder setDisableRedirects(Boolean disableRedirects) {
+            this.disableRedirects = disableRedirects;
+            return this;
+        }
+        public HttpURLConnectionBuilder setHeaders(JSObject headers) {
+            this.headers = headers;
+            return this;
+        }
+        public HttpURLConnectionBuilder setMethod(String method) {
+            this.method = method;
+            return this;
+        }
+        public HttpURLConnectionBuilder setUrl(URL url) {
+            this.url = url;
+            return this;
+        }
+        public HttpURLConnectionBuilder openConnection() throws IOException {
+            connection = new CapacitorHttpUrlConnection((HttpURLConnection) url.openConnection());
+            connection.setAllowUserInteraction(false);
+            connection.setRequestMethod(method);
+            if (connectTimeout != null) connection.setConnectTimeout(connectTimeout);
+            if (readTimeout != null) connection.setReadTimeout(readTimeout);
+            if (disableRedirects != null) connection.setDisableRedirects(disableRedirects);
+            connection.setRequestHeaders(headers);
+            return this;
+        }
+        public HttpURLConnectionBuilder setUrlParams(JSObject params) throws MalformedURLException, URISyntaxException, JSONException {
+            return this.setUrlParams(params, true);
+        }
+        public HttpURLConnectionBuilder setUrlParams(JSObject params, boolean shouldEncode)
+            throws URISyntaxException, MalformedURLException {
+            String initialQuery = url.getQuery();
+            String initialQueryBuilderStr = initialQuery == null ? "" : initialQuery;
+            Iterator<String> keys = params.keys();
+            if (!keys.hasNext()) {
+                return this;
+            }
+            StringBuilder urlQueryBuilder = new StringBuilder(initialQueryBuilderStr);
+            
+            while (keys.hasNext()) {
+                String key = keys.next();
+                
+                try {
+                    StringBuilder value = new StringBuilder();
+                    JSONArray arr = params.getJSONArray(key);
+                    for (int x = 0; x < arr.length(); x++) {
+                        this.addUrlParam(value, key, arr.getString(x), shouldEncode);
+                        if (x != arr.length() - 1) {
+                            value.append("&");
+                        }
+                    }
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    urlQueryBuilder.append(value);
+                } catch (JSONException e) {
+                    if (urlQueryBuilder.length() > 0) {
+                        urlQueryBuilder.append("&");
+                    }
+                    this.addUrlParam(urlQueryBuilder, key, params.getString(key), shouldEncode);
+                }
+            }
+            String urlQuery = urlQueryBuilder.toString();
+            URI uri = url.toURI();
+            String unEncodedUrlString =
+                uri.getScheme() +
+                ":
+                uri.getAuthority() +
+                uri.getPath() +
+                ((!urlQuery.equals("")) ? "?" + urlQuery : "") +
+                ((uri.getFragment() != null) ? uri.getFragment() : "");
+            this.url = new URL(unEncodedUrlString);
+            return this;
+        }
+        private static void addUrlParam(StringBuilder sb, String key, String value, boolean shouldEncode) {
+            if (shouldEncode) {
+                try {
+                    key = URLEncoder.encode(key, "UTF-8");
+                    value = URLEncoder.encode(value, "UTF-8");
+                } catch (UnsupportedEncodingException ex) {
+                    throw new RuntimeException(ex.getCause());
+                }
+            }
+            sb.append(key).append("=").append(value);
+        }
+        public CapacitorHttpUrlConnection build() {
+            return connection;
+        }
+    }
+    
+    public static JSObject buildResponse(CapacitorHttpUrlConnection connection) throws IOException, JSONException {
+        return buildResponse(connection, ResponseType.DEFAULT);
+    }
+    
+    public static JSObject buildResponse(CapacitorHttpUrlConnection connection, ResponseType responseType)
+        throws IOException, JSONException {
+        int statusCode = connection.getResponseCode();
+        JSObject output = new JSObject();
+        output.put("status", statusCode);
+        output.put("headers", buildResponseHeaders(connection));
+        output.put("url", connection.getURL());
+        output.put("data", readData(connection, responseType));
+        InputStream errorStream = connection.getErrorStream();
+        if (errorStream != null) {
+            output.put("error", true);
+        }
+        return output;
+    }
+    
+    public static Object readData(ICapacitorHttpUrlConnection connection, ResponseType responseType) throws IOException, JSONException {
+        InputStream errorStream = connection.getErrorStream();
+        String contentType = connection.getHeaderField("Content-Type");
+        if (errorStream != null) {
+            if (isOneOf(contentType, MimeType.APPLICATION_JSON, MimeType.APPLICATION_VND_API_JSON)) {
+                return parseJSON(readStreamAsString(errorStream));
+            } else {
+                return readStreamAsString(errorStream);
+            }
+        } else if (contentType != null && contentType.contains(MimeType.APPLICATION_JSON.getValue())) {
+            
+            return parseJSON(readStreamAsString(connection.getInputStream()));
+        } else {
+            InputStream stream = connection.getInputStream();
+            switch (responseType) {
+                case ARRAY_BUFFER:
+                case BLOB:
+                    return readStreamAsBase64(stream);
+                case JSON:
+                    return parseJSON(readStreamAsString(stream));
+                case DOCUMENT:
+                case TEXT:
+                default:
+                    return readStreamAsString(stream);
+            }
+        }
+    }
+    
+    public static boolean isOneOf(String contentType, MimeType... mimeTypes) {
+        if (contentType != null) {
+            for (MimeType mimeType : mimeTypes) {
+                if (contentType.contains(mimeType.getValue())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    
+    public static JSObject buildResponseHeaders(CapacitorHttpUrlConnection connection) {
+        JSObject output = new JSObject();
+        for (Map.Entry<String, List<String>> entry : connection.getHeaderFields().entrySet()) {
+            String valuesString = TextUtils.join(", ", entry.getValue());
+            output.put(entry.getKey(), valuesString);
+        }
+        return output;
+    }
+    
+    public static Object parseJSON(String input) throws JSONException {
+        JSONObject json = new JSONObject();
+        try {
+            if ("null".equals(input.trim())) {
+                return JSONObject.NULL;
+            } else if ("true".equals(input.trim())) {
+                return true;
+            } else if ("false".equals(input.trim())) {
+                return false;
+            } else if (input.trim().length() <= 0) {
+                return "";
+            } else if (input.trim().matches("^\".*\"$")) {
+                
+                return input.trim().substring(1, input.trim().length() - 1);
+            } else if (input.trim().matches("^-?\\d+$")) {
+                return Integer.parseInt(input.trim());
+            } else if (input.trim().matches("^-?\\d+(\\.\\d+)?$")) {
+                return Double.parseDouble(input.trim());
+            } else {
+                try {
+                    return new JSObject(input);
+                } catch (JSONException e) {
+                    return new JSArray(input);
+                }
+            }
+        } catch (JSONException e) {
+            return input;
+        }
+    }
+    
+    public static String readStreamAsBase64(InputStream in) throws IOException {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int readBytes;
+            while ((readBytes = in.read(buffer)) != -1) {
+                out.write(buffer, 0, readBytes);
+            }
+            byte[] result = out.toByteArray();
+            return Base64.encodeToString(result, 0, result.length, Base64.DEFAULT);
+        }
+    }
+    
+    public static String readStreamAsString(InputStream in) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+            StringBuilder builder = new StringBuilder();
+            String line = reader.readLine();
+            while (line != null) {
+                builder.append(line);
+                line = reader.readLine();
+                if (line != null) {
+                    builder.append(System.getProperty("line.separator"));
+                }
+            }
+            return builder.toString();
+        }
+    }
+    
+    public static JSObject request(PluginCall call, String httpMethod, Bridge bridge)
+        throws IOException, URISyntaxException, JSONException {
+        String urlString = call.getString("url", "");
+        JSObject headers = call.getObject("headers", new JSObject());
+        JSObject params = call.getObject("params", new JSObject());
+        Integer connectTimeout = call.getInt("connectTimeout");
+        Integer readTimeout = call.getInt("readTimeout");
+        Boolean disableRedirects = call.getBoolean("disableRedirects");
+        Boolean shouldEncode = call.getBoolean("shouldEncodeUrlParams", true);
+        ResponseType responseType = ResponseType.parse(call.getString("responseType"));
+        String dataType = call.getString("dataType");
+        String method = httpMethod != null ? httpMethod.toUpperCase(Locale.ROOT) : call.getString("method", "GET").toUpperCase(Locale.ROOT);
+        boolean isHttpMutate = method.equals("DELETE") || method.equals("PATCH") || method.equals("POST") || method.equals("PUT");
+        URL url = new URL(urlString);
+        HttpURLConnectionBuilder connectionBuilder = new HttpURLConnectionBuilder()
+            .setUrl(url)
+            .setMethod(method)
+            .setHeaders(headers)
+            .setUrlParams(params, shouldEncode)
+            .setConnectTimeout(connectTimeout)
+            .setReadTimeout(readTimeout)
+            .setDisableRedirects(disableRedirects)
+            .openConnection();
+        CapacitorHttpUrlConnection connection = connectionBuilder.build();
+        if (null != bridge && !isDomainExcludedFromSSL(bridge, url)) {
+            connection.setSSLSocketFactory(bridge);
+        }
+        
+        if (isHttpMutate) {
+            JSValue data = new JSValue(call, "data");
+            if (data.getValue() != null) {
+                connection.setDoOutput(true);
+                connection.setRequestBody(call, data, dataType);
+            }
+        }
+        call.getData().put("activeCapacitorHttpUrlConnection", connection);
+        connection.connect();
+        JSObject response = buildResponse(connection, responseType);
+        connection.disconnect();
+        call.getData().remove("activeCapacitorHttpUrlConnection");
+        return response;
+    }
+    public static Boolean isDomainExcludedFromSSL(Bridge bridge, URL url) {
+        try {
+            Class<?> sslPinningImpl = Class.forName("io.ionic.sslpinning.SSLPinning");
+            Method method = sslPinningImpl.getDeclaredMethod("isDomainExcluded", Bridge.class, URL.class);
+            return (Boolean) method.invoke(sslPinningImpl.getDeclaredConstructor().newInstance(), bridge, url);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+    @FunctionalInterface
+    public interface ProgressEmitter {
+        void emit(Integer bytes, Integer contentLength);
+    }
+}
+package com.getcapacitor;
+import androidx.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+public class PluginCall {
+    
+    public static final String CALLBACK_ID_DANGLING = "-1";
+    private final MessageHandler msgHandler;
+    private final String pluginId;
+    private final String callbackId;
+    private final String methodName;
+    private final JSObject data;
+    private boolean keepAlive = false;
+    
+    @Deprecated
+    private boolean isReleased = false;
+    public PluginCall(MessageHandler msgHandler, String pluginId, String callbackId, String methodName, JSObject data) {
+        this.msgHandler = msgHandler;
+        this.pluginId = pluginId;
+        this.callbackId = callbackId;
+        this.methodName = methodName;
+        this.data = data;
+    }
+    public void successCallback(PluginResult successResult) {
+        if (CALLBACK_ID_DANGLING.equals(this.callbackId)) {
+            
+            return;
+        }
+        this.msgHandler.sendResponseMessage(this, successResult, null);
+    }
+    public void resolve(JSObject data) {
+        PluginResult result = new PluginResult(data);
+        this.msgHandler.sendResponseMessage(this, result, null);
+    }
+    public void resolve() {
+        this.msgHandler.sendResponseMessage(this, null, null);
+    }
+    public void errorCallback(String msg) {
+        PluginResult errorResult = new PluginResult();
+        try {
+            errorResult.put("message", msg);
+        } catch (Exception jsonEx) {
+            Logger.error(Logger.tags("Plugin"), jsonEx.toString(), null);
+        }
+        this.msgHandler.sendResponseMessage(this, null, errorResult);
+    }
+    public void reject(String msg, String code, Exception ex, JSObject data) {
+        PluginResult errorResult = new PluginResult();
+        if (ex != null) {
+            Logger.error(Logger.tags("Plugin"), msg, ex);
+        }
+        try {
+            errorResult.put("message", msg);
+            errorResult.put("code", code);
+            if (null != data) {
+                errorResult.put("data", data);
+            }
+        } catch (Exception jsonEx) {
+            Logger.error(Logger.tags("Plugin"), jsonEx.getMessage(), jsonEx);
+        }
+        this.msgHandler.sendResponseMessage(this, null, errorResult);
+    }
+    public void reject(String msg, Exception ex, JSObject data) {
+        reject(msg, null, ex, data);
+    }
+    public void reject(String msg, String code, JSObject data) {
+        reject(msg, code, null, data);
+    }
+    public void reject(String msg, String code, Exception ex) {
+        reject(msg, code, ex, null);
+    }
+    public void reject(String msg, JSObject data) {
+        reject(msg, null, null, data);
+    }
+    public void reject(String msg, Exception ex) {
+        reject(msg, null, ex, null);
+    }
+    public void reject(String msg, String code) {
+        reject(msg, code, null, null);
+    }
+    public void reject(String msg) {
+        reject(msg, null, null, null);
+    }
+    public void unimplemented() {
+        unimplemented("not implemented");
+    }
+    public void unimplemented(String msg) {
+        reject(msg, "UNIMPLEMENTED", null, null);
+    }
+    public void unavailable() {
+        unavailable("not available");
+    }
+    public void unavailable(String msg) {
+        reject(msg, "UNAVAILABLE", null, null);
+    }
+    public String getPluginId() {
+        return this.pluginId;
+    }
+    public String getCallbackId() {
+        return this.callbackId;
+    }
+    public String getMethodName() {
+        return this.methodName;
+    }
+    public JSObject getData() {
+        return this.data;
+    }
+    @Nullable
+    public String getString(String name) {
+        return this.getString(name, null);
+    }
+    @Nullable
+    public String getString(String name, @Nullable String defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof String) {
+            return (String) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Integer getInt(String name) {
+        return this.getInt(name, null);
+    }
+    @Nullable
+    public Integer getInt(String name, @Nullable Integer defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Integer) {
+            return (Integer) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Long getLong(String name) {
+        return this.getLong(name, null);
+    }
+    @Nullable
+    public Long getLong(String name, @Nullable Long defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Long) {
+            return (Long) value;
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Float getFloat(String name) {
+        return this.getFloat(name, null);
+    }
+    @Nullable
+    public Float getFloat(String name, @Nullable Float defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Float) {
+            return (Float) value;
+        }
+        if (value instanceof Double) {
+            return ((Double) value).floatValue();
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).floatValue();
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Double getDouble(String name) {
+        return this.getDouble(name, null);
+    }
+    @Nullable
+    public Double getDouble(String name, @Nullable Double defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Double) {
+            return (Double) value;
+        }
+        if (value instanceof Float) {
+            return ((Float) value).doubleValue();
+        }
+        if (value instanceof Integer) {
+            return ((Integer) value).doubleValue();
+        }
+        return defaultValue;
+    }
+    @Nullable
+    public Boolean getBoolean(String name) {
+        return this.getBoolean(name, null);
+    }
+    @Nullable
+    public Boolean getBoolean(String name, @Nullable Boolean defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return defaultValue;
+    }
+    public JSObject getObject(String name) {
+        return this.getObject(name, null);
+    }
+    @Nullable
+    public JSObject getObject(String name, JSObject defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof JSONObject) {
+            try {
+                return JSObject.fromJSONObject((JSONObject) value);
+            } catch (JSONException ex) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+    public JSArray getArray(String name) {
+        return this.getArray(name, null);
+    }
+    
+    @Nullable
+    public JSArray getArray(String name, JSArray defaultValue) {
+        Object value = this.data.opt(name);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof JSONArray) {
+            try {
+                JSONArray valueArray = (JSONArray) value;
+                List<Object> items = new ArrayList<>();
+                for (int i = 0; i < valueArray.length(); i++) {
+                    items.add(valueArray.get(i));
+                }
+                return new JSArray(items.toArray());
+            } catch (JSONException ex) {
+                return defaultValue;
+            }
+        }
+        return defaultValue;
+    }
+    
+    @Deprecated
+    public boolean hasOption(String name) {
+        return this.data.has(name);
+    }
+    
+    @Deprecated
+    public void save() {
+        setKeepAlive(true);
+    }
+    
+    public void setKeepAlive(Boolean keepAlive) {
+        this.keepAlive = keepAlive;
+    }
+    public void release(Bridge bridge) {
+        this.keepAlive = false;
+        bridge.releaseCall(this);
+        this.isReleased = true;
+    }
+    
+    @Deprecated
+    public boolean isSaved() {
+        return isKeptAlive();
+    }
+    
+    public boolean isKeptAlive() {
+        return keepAlive;
+    }
+    @Deprecated
+    public boolean isReleased() {
+        return isReleased;
+    }
+    class PluginCallDataTypeException extends Exception {
+        PluginCallDataTypeException(String m) {
+            super(m);
+        }
+    }
+}
+package com.getcapacitor.plugin.util;
+import android.os.Build;
+import android.os.LocaleList;
+import android.text.TextUtils;
+import com.getcapacitor.Bridge;
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.JSValue;
+import com.getcapacitor.PluginCall;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
+import java.net.ProtocolException;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.net.UnknownServiceException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLSocketFactory;
+import org.json.JSONException;
+import org.json.JSONObject;
+public class CapacitorHttpUrlConnection implements ICapacitorHttpUrlConnection {
+    private final HttpURLConnection connection;
+    
+    public CapacitorHttpUrlConnection(HttpURLConnection conn) {
+        connection = conn;
+        this.setDefaultRequestProperties();
+    }
+    
+    public HttpURLConnection getHttpConnection() {
+        return connection;
+    }
+    public void disconnect() {
+        connection.disconnect();
+    }
+    
+    public void setAllowUserInteraction(boolean isAllowedInteraction) {
+        connection.setAllowUserInteraction(isAllowedInteraction);
+    }
+    
+    public void setRequestMethod(String method) throws ProtocolException {
+        connection.setRequestMethod(method);
+    }
+    
+    public void setConnectTimeout(int timeout) {
+        if (timeout < 0) {
+            throw new IllegalArgumentException("timeout can not be negative");
+        }
+        connection.setConnectTimeout(timeout);
+    }
+    
+    public void setReadTimeout(int timeout) {
+        if (timeout < 0) {
+            throw new IllegalArgumentException("timeout can not be negative");
+        }
+        connection.setReadTimeout(timeout);
+    }
+    
+    public void setDisableRedirects(boolean disableRedirects) {
+        connection.setInstanceFollowRedirects(!disableRedirects);
+    }
+    
+    public void setRequestHeaders(JSObject headers) {
+        Iterator<String> keys = headers.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            String value = headers.getString(key);
+            connection.setRequestProperty(key, value);
+        }
+    }
+    
+    public void setDoOutput(boolean shouldDoOutput) {
+        connection.setDoOutput(shouldDoOutput);
+    }
+    
+    public void setRequestBody(PluginCall call, JSValue body) throws JSONException, IOException {
+        setRequestBody(call, body, null);
+    }
+    
+    public void setRequestBody(PluginCall call, JSValue body, String bodyType) throws JSONException, IOException {
+        String contentType = connection.getRequestProperty("Content-Type");
+        String dataString = "";
+        if (contentType == null || contentType.isEmpty()) return;
+        if (contentType.contains("application/json")) {
+            JSArray jsArray = null;
+            if (body != null) {
+                dataString = body.toString();
+            } else {
+                jsArray = call.getArray("data", null);
+            }
+            if (jsArray != null) {
+                dataString = jsArray.toString();
+            } else if (body == null) {
+                dataString = call.getString("data");
+            }
+            this.writeRequestBody(dataString != null ? dataString : "");
+        } else if (bodyType != null && bodyType.equals("file")) {
+            try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    os.write(Base64.getDecoder().decode(body.toString()));
+                }
+                os.flush();
+            }
+        } else if (contentType.contains("application/x-www-form-urlencoded")) {
+            try {
+                JSObject obj = body.toJSObject();
+                this.writeObjectRequestBody(obj);
+            } catch (Exception e) {
+                
+                this.writeRequestBody(body.toString());
+            }
+        } else if (bodyType != null && bodyType.equals("formData")) {
+            this.writeFormDataRequestBody(contentType, body.toJSArray());
+        } else {
+            this.writeRequestBody(body.toString());
+        }
+    }
+    
+    private void writeRequestBody(String body) throws IOException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            os.write(body.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        }
+    }
+    private void writeObjectRequestBody(JSObject object) throws IOException, JSONException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                Object d = object.get(key);
+                os.writeBytes(key);
+                os.writeBytes("=");
+                os.writeBytes(URLEncoder.encode(d.toString(), "UTF-8"));
+                if (keys.hasNext()) {
+                    os.writeBytes("&");
+                }
+            }
+            os.flush();
+        }
+    }
+    private void writeFormDataRequestBody(String contentType, JSArray entries) throws IOException, JSONException {
+        try (DataOutputStream os = new DataOutputStream(connection.getOutputStream())) {
+            String boundary = contentType.split(";")[1].split("=")[1];
+            String lineEnd = "\r\n";
+            String twoHyphens = "--";
+            for (Object e : entries.toList()) {
+                if (e instanceof JSONObject) {
+                    JSONObject entry = (JSONObject) e;
+                    String type = entry.getString("type");
+                    String key = entry.getString("key");
+                    String value = entry.getString("value");
+                    if (type.equals("string")) {
+                        os.writeBytes(twoHyphens + boundary + lineEnd);
+                        os.writeBytes("Content-Disposition: form-data; name=\"" + key + "\"" + lineEnd + lineEnd);
+                        os.write(value.getBytes(StandardCharsets.UTF_8));
+                        os.writeBytes(lineEnd);
+                    } else if (type.equals("base64File")) {
+                        String fileName = entry.getString("fileName");
+                        String fileContentType = entry.getString("contentType");
+                        os.writeBytes(twoHyphens + boundary + lineEnd);
+                        os.writeBytes("Content-Disposition: form-data; name=\"" + key + "\"; filename=\"" + fileName + "\"" + lineEnd);
+                        os.writeBytes("Content-Type: " + fileContentType + lineEnd);
+                        os.writeBytes("Content-Transfer-Encoding: binary" + lineEnd);
+                        os.writeBytes(lineEnd);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            os.write(Base64.getDecoder().decode(value));
+                        } else {
+                            os.write(android.util.Base64.decode(value, android.util.Base64.DEFAULT));
+                        }
+                        os.writeBytes(lineEnd);
+                    }
+                }
+            }
+            os.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd);
+            os.flush();
+        }
+    }
+    
+    public void connect() throws IOException {
+        connection.connect();
+    }
+    
+    public int getResponseCode() throws IOException {
+        return connection.getResponseCode();
+    }
+    
+    public URL getURL() {
+        return connection.getURL();
+    }
+    
+    @Override
+    public InputStream getErrorStream() {
+        return connection.getErrorStream();
+    }
+    
+    @Override
+    public String getHeaderField(String name) {
+        return connection.getHeaderField(name);
+    }
+    
+    @Override
+    public InputStream getInputStream() throws IOException {
+        return connection.getInputStream();
+    }
+    
+    public Map<String, List<String>> getHeaderFields() {
+        return connection.getHeaderFields();
+    }
+    
+    private void setDefaultRequestProperties() {
+        String acceptLanguage = buildDefaultAcceptLanguageProperty();
+        if (!TextUtils.isEmpty(acceptLanguage)) {
+            connection.setRequestProperty("Accept-Language", acceptLanguage);
+        }
+    }
+    
+    private String buildDefaultAcceptLanguageProperty() {
+        Locale locale;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            locale = LocaleList.getDefault().get(0);
+        } else {
+            locale = Locale.getDefault();
+        }
+        String result = "";
+        String lang = locale.getLanguage();
+        String country = locale.getCountry();
+        if (!TextUtils.isEmpty(lang)) {
+            if (!TextUtils.isEmpty(country)) {
+                result = String.format("%s-%s,%s;q=0.5", lang, country, lang);
+            } else {
+                result = String.format("%s;q=0.5", lang);
+            }
+        }
+        return result;
+    }
+    public void setSSLSocketFactory(Bridge bridge) {
+        
+        try {
+            Class<?> sslPinningImpl = Class.forName("io.ionic.sslpinning.SSLPinning");
+            Method method = sslPinningImpl.getDeclaredMethod("getSSLSocketFactory", Bridge.class);
+            SSLSocketFactory sslSocketFactory = (SSLSocketFactory) method.invoke(
+                sslPinningImpl.getDeclaredConstructor().newInstance(),
+                bridge
+            );
+            if (sslSocketFactory != null) {
+                ((HttpsURLConnection) this.connection).setSSLSocketFactory(sslSocketFactory);
+            }
+        } catch (Exception ignored) {}
+    }
+}
+package com.getcapacitor;
+import org.json.JSONException;
+
+public class JSValue {
+    private final Object value;
+    
+    public JSValue(PluginCall call, String name) {
+        this.value = this.toValue(call, name);
+    }
+    
+    public Object getValue() {
+        return this.value;
+    }
+    @Override
+    public String toString() {
+        return this.getValue().toString();
+    }
+    
+    public JSObject toJSObject() throws JSONException {
+        if (this.value instanceof JSObject) return (JSObject) this.value;
+        throw new JSONException("JSValue could not be coerced to JSObject.");
+    }
+    
+    public JSArray toJSArray() throws JSONException {
+        if (this.value instanceof JSArray) return (JSArray) this.value;
+        throw new JSONException("JSValue could not be coerced to JSArray.");
+    }
+    
+    private Object toValue(PluginCall call, String name) {
+        Object value = null;
+        value = call.getArray(name, null);
+        if (value != null) return value;
+        value = call.getObject(name, null);
+        if (value != null) return value;
+        value = call.getString(name, null);
+        if (value != null) return value;
+        return call.getData().opt(name);
+    }
+}
+package com.getcapacitor.plugin;
+import android.app.Activity;
+import android.content.SharedPreferences;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+@CapacitorPlugin
+public class WebView extends Plugin {
+    public static final String WEBVIEW_PREFS_NAME = "CapWebViewSettings";
+    public static final String CAP_SERVER_PATH = "serverBasePath";
+    @PluginMethod
+    public void setServerAssetPath(PluginCall call) {
+        String path = call.getString("path");
+        bridge.setServerAssetPath(path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void setServerBasePath(PluginCall call) {
+        String path = call.getString("path");
+        bridge.setServerBasePath(path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void getServerBasePath(PluginCall call) {
+        String path = bridge.getServerBasePath();
+        JSObject ret = new JSObject();
+        ret.put("path", path);
+        call.resolve(ret);
+    }
+    @PluginMethod
+    public void persistServerBasePath(PluginCall call) {
+        String path = bridge.getServerBasePath();
+        SharedPreferences prefs = getContext().getSharedPreferences(WEBVIEW_PREFS_NAME, Activity.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(CAP_SERVER_PATH, path);
+        editor.apply();
+        call.resolve();
+    }
+}
+package com.getcapacitor;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+
+public class PluginHandle {
+    private final Bridge bridge;
+    private final Class<? extends Plugin> pluginClass;
+    private final Map<String, PluginMethodHandle> pluginMethods = new HashMap<>();
+    private final String pluginId;
+    @SuppressWarnings("deprecation")
+    private NativePlugin legacyPluginAnnotation;
+    private CapacitorPlugin pluginAnnotation;
+    private Plugin instance;
+    @SuppressWarnings("deprecation")
+    private PluginHandle(Class<? extends Plugin> clazz, Bridge bridge) throws InvalidPluginException {
+        this.bridge = bridge;
+        this.pluginClass = clazz;
+        CapacitorPlugin pluginAnnotation = pluginClass.getAnnotation(CapacitorPlugin.class);
+        if (pluginAnnotation == null) {
+            
+            NativePlugin legacyPluginAnnotation = pluginClass.getAnnotation(NativePlugin.class);
+            if (legacyPluginAnnotation == null) {
+                throw new InvalidPluginException("No @CapacitorPlugin annotation found for plugin " + pluginClass.getName());
+            }
+            if (!legacyPluginAnnotation.name().equals("")) {
+                this.pluginId = legacyPluginAnnotation.name();
+            } else {
+                this.pluginId = pluginClass.getSimpleName();
+            }
+            this.legacyPluginAnnotation = legacyPluginAnnotation;
+        } else {
+            if (!pluginAnnotation.name().equals("")) {
+                this.pluginId = pluginAnnotation.name();
+            } else {
+                this.pluginId = pluginClass.getSimpleName();
+            }
+            this.pluginAnnotation = pluginAnnotation;
+        }
+        this.indexMethods(clazz);
+    }
+    public PluginHandle(Bridge bridge, Class<? extends Plugin> pluginClass) throws InvalidPluginException, PluginLoadException {
+        this(pluginClass, bridge);
+        this.load();
+    }
+    public PluginHandle(Bridge bridge, Plugin plugin) throws InvalidPluginException {
+        this(plugin.getClass(), bridge);
+        this.loadInstance(plugin);
+    }
+    public Class<? extends Plugin> getPluginClass() {
+        return pluginClass;
+    }
+    public String getId() {
+        return this.pluginId;
+    }
+    @SuppressWarnings("deprecation")
+    public NativePlugin getLegacyPluginAnnotation() {
+        return this.legacyPluginAnnotation;
+    }
+    public CapacitorPlugin getPluginAnnotation() {
+        return this.pluginAnnotation;
+    }
+    public Plugin getInstance() {
+        return this.instance;
+    }
+    public Collection<PluginMethodHandle> getMethods() {
+        return this.pluginMethods.values();
+    }
+    public Plugin load() throws PluginLoadException {
+        if (this.instance != null) {
+            return this.instance;
+        }
+        try {
+            this.instance = this.pluginClass.getDeclaredConstructor().newInstance();
+            return this.loadInstance(instance);
+        } catch (Exception ex) {
+            throw new PluginLoadException("Unable to load plugin instance. Ensure plugin is publicly accessible");
+        }
+    }
+    public Plugin loadInstance(Plugin plugin) {
+        this.instance = plugin;
+        this.instance.setPluginHandle(this);
+        this.instance.setBridge(this.bridge);
+        this.instance.load();
+        this.instance.initializeActivityLaunchers();
+        return this.instance;
+    }
+    
+    public void invoke(String methodName, PluginCall call)
+        throws PluginLoadException, InvalidPluginMethodException, InvocationTargetException, IllegalAccessException {
+        if (this.instance == null) {
+            
+            this.load();
+        }
+        PluginMethodHandle methodMeta = pluginMethods.get(methodName);
+        if (methodMeta == null) {
+            throw new InvalidPluginMethodException("No method " + methodName + " found for plugin " + pluginClass.getName());
+        }
+        methodMeta.getMethod().invoke(this.instance, call);
+    }
+    
+    private void indexMethods(Class<? extends Plugin> plugin) {
+        
+        Method[] methods = pluginClass.getMethods();
+        for (Method methodReflect : methods) {
+            PluginMethod method = methodReflect.getAnnotation(PluginMethod.class);
+            if (method == null) {
+                continue;
+            }
+            PluginMethodHandle methodMeta = new PluginMethodHandle(methodReflect, method);
+            pluginMethods.put(methodReflect.getName(), methodMeta);
+        }
+    }
+}
+package com.getcapacitor.plugin;
+import android.webkit.JavascriptInterface;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginConfig;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.UnsupportedEncodingException;
+import java.net.CookieHandler;
+import java.net.HttpCookie;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+@CapacitorPlugin
+public class CapacitorCookies extends Plugin {
+    CapacitorCookieManager cookieManager;
+    @Override
+    public void load() {
+        this.bridge.getWebView().addJavascriptInterface(this, "CapacitorCookiesAndroidInterface");
+        this.cookieManager = new CapacitorCookieManager(null, java.net.CookiePolicy.ACCEPT_ALL, this.bridge);
+        this.cookieManager.removeSessionCookies();
+        CookieHandler.setDefault(this.cookieManager);
+        super.load();
+    }
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        this.cookieManager.removeSessionCookies();
+    }
+    @JavascriptInterface
+    public boolean isEnabled() {
+        PluginConfig pluginConfig = getBridge().getConfig().getPluginConfiguration("CapacitorCookies");
+        return pluginConfig.getBoolean("enabled", false);
+    }
+    @JavascriptInterface
+    public void setCookie(String domain, String action) {
+        cookieManager.setCookie(domain, action);
+    }
+    @PluginMethod
+    public void getCookies(PluginCall call) {
+        this.bridge.eval("document.cookie", value -> {
+                String cookies = value.substring(1, value.length() - 1);
+                String[] cookieArray = cookies.split(";");
+                JSObject cookieMap = new JSObject();
+                for (String cookie : cookieArray) {
+                    if (cookie.length() > 0) {
+                        String[] keyValue = cookie.split("=", 2);
+                        if (keyValue.length == 2) {
+                            String key = keyValue[0].trim();
+                            String val = keyValue[1].trim();
+                            try {
+                                key = URLDecoder.decode(keyValue[0].trim(), StandardCharsets.UTF_8.name());
+                                val = URLDecoder.decode(keyValue[1].trim(), StandardCharsets.UTF_8.name());
+                            } catch (UnsupportedEncodingException ignored) {}
+                            cookieMap.put(key, val);
+                        }
+                    }
+                }
+                call.resolve(cookieMap);
+            });
+    }
+    @PluginMethod
+    public void setCookie(PluginCall call) {
+        String key = call.getString("key");
+        if (null == key) {
+            call.reject("Must provide key");
+        }
+        String value = call.getString("value");
+        if (null == value) {
+            call.reject("Must provide value");
+        }
+        String url = call.getString("url");
+        String expires = call.getString("expires", "");
+        String path = call.getString("path", "/");
+        cookieManager.setCookie(url, key, value, expires, path);
+        call.resolve();
+    }
+    @PluginMethod
+    public void deleteCookie(PluginCall call) {
+        String key = call.getString("key");
+        if (null == key) {
+            call.reject("Must provide key");
+        }
+        String url = call.getString("url");
+        cookieManager.setCookie(url, key + "=; Expires=Wed, 31 Dec 2000 23:59:59 GMT");
+        call.resolve();
+    }
+    @PluginMethod
+    public void clearCookies(PluginCall call) {
+        String url = call.getString("url");
+        HttpCookie[] cookies = cookieManager.getCookies(url);
+        for (HttpCookie cookie : cookies) {
+            cookieManager.setCookie(url, cookie.getName() + "=; Expires=Wed, 31 Dec 2000 23:59:59 GMT");
+        }
+        call.resolve();
+    }
+    @PluginMethod
+    public void clearAllCookies(PluginCall call) {
+        cookieManager.removeAllCookies();
+        call.resolve();
+    }
+}
+package com.getcapacitor;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.TimeZone;
+
+public class PluginResult {
+    private final JSObject json;
+    public PluginResult() {
+        this(new JSObject());
+    }
+    public PluginResult(JSObject json) {
+        this.json = json;
+    }
+    public PluginResult put(String name, boolean value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, double value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, int value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, long value) {
+        return this.jsonPut(name, value);
+    }
+    
+    public PluginResult put(String name, Date value) {
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        DateFormat df = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm'Z'");
+        df.setTimeZone(tz);
+        return this.jsonPut(name, df.format(value));
+    }
+    public PluginResult put(String name, Object value) {
+        return this.jsonPut(name, value);
+    }
+    public PluginResult put(String name, PluginResult value) {
+        return this.jsonPut(name, value.json);
+    }
+    PluginResult jsonPut(String name, Object value) {
+        try {
+            this.json.put(name, value);
+        } catch (Exception ex) {
+            Logger.error(Logger.tags("Plugin"), "", ex);
+        }
+        return this;
+    }
+    public String toString() {
+        return this.json.toString();
+    }
+    
+    public JSObject getWrappedResult() {
+        JSObject ret = new JSObject();
+        ret.put("pluginId", this.json.getString("pluginId"));
+        ret.put("methodName", this.json.getString("methodName"));
+        ret.put("success", this.json.getBoolean("success", false));
+        ret.put("data", this.json.getJSObject("data"));
+        ret.put("error", this.json.getJSObject("error"));
+        return ret;
+    }
+}
+package com.getcapacitor;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+import org.apache.cordova.PluginManager;
+
+public class MessageHandler {
+    private Bridge bridge;
+    private WebView webView;
+    private PluginManager cordovaPluginManager;
+    private JavaScriptReplyProxy javaScriptReplyProxy;
+    public MessageHandler(Bridge bridge, WebView webView, PluginManager cordovaPluginManager) {
+        this.bridge = bridge;
+        this.webView = webView;
+        this.cordovaPluginManager = cordovaPluginManager;
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
+            WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                if (isMainFrame) {
+                    postMessage(message.getData());
+                    javaScriptReplyProxy = replyProxy;
+                } else {
+                    Logger.warn("Plugin execution is allowed in Main Frame only");
+                }
+            };
+            try {
+                WebViewCompat.addWebMessageListener(webView, "androidBridge", bridge.getAllowedOriginRules(), capListener);
+            } catch (Exception ex) {
+                webView.addJavascriptInterface(this, "androidBridge");
+            }
+        } else {
+            webView.addJavascriptInterface(this, "androidBridge");
+        }
+    }
+    
+    @JavascriptInterface
+    @SuppressWarnings("unused")
+    public void postMessage(String jsonStr) {
+        try {
+            JSObject postData = new JSObject(jsonStr);
+            String type = postData.getString("type");
+            boolean typeIsNotNull = type != null;
+            boolean isCordovaPlugin = typeIsNotNull && type.equals("cordova");
+            boolean isJavaScriptError = typeIsNotNull && type.equals("js.error");
+            String callbackId = postData.getString("callbackId");
+            if (isCordovaPlugin) {
+                String service = postData.getString("service");
+                String action = postData.getString("action");
+                String actionArgs = postData.getString("actionArgs");
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Cordova plugin): callbackId: " +
+                    callbackId +
+                    ", service: " +
+                    service +
+                    ", action: " +
+                    action +
+                    ", actionArgs: " +
+                    actionArgs
+                );
+                this.callCordovaPluginMethod(callbackId, service, action, actionArgs);
+            } else if (isJavaScriptError) {
+                Logger.error("JavaScript Error: " + jsonStr);
+            } else {
+                String pluginId = postData.getString("pluginId");
+                String methodName = postData.getString("methodName");
+                JSObject methodData = postData.getJSObject("options", new JSObject());
+                Logger.verbose(
+                    Logger.tags("Plugin"),
+                    "To native (Capacitor plugin): callbackId: " + callbackId + ", pluginId: " + pluginId + ", methodName: " + methodName
+                );
+                this.callPluginMethod(callbackId, pluginId, methodName, methodData);
+            }
+        } catch (Exception ex) {
+            Logger.error("Post message error:", ex);
+        }
+    }
+    public void sendResponseMessage(PluginCall call, PluginResult successResult, PluginResult errorResult) {
+        try {
+            PluginResult data = new PluginResult();
+            data.put("save", call.isKeptAlive());
+            data.put("callbackId", call.getCallbackId());
+            data.put("pluginId", call.getPluginId());
+            data.put("methodName", call.getMethodName());
+            boolean pluginResultInError = errorResult != null;
+            if (pluginResultInError) {
+                data.put("success", false);
+                data.put("error", errorResult);
+                Logger.debug("Sending plugin error: " + data.toString());
+            } else {
+                data.put("success", true);
+                if (successResult != null) {
+                    data.put("data", successResult);
+                }
+            }
+            boolean isValidCallbackId = !call.getCallbackId().equals(PluginCall.CALLBACK_ID_DANGLING);
+            if (isValidCallbackId) {
+                if (bridge.getConfig().isUsingLegacyBridge()) {
+                    legacySendResponseMessage(data);
+                } else if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && javaScriptReplyProxy != null) {
+                    javaScriptReplyProxy.postMessage(data.toString());
+                } else {
+                    legacySendResponseMessage(data);
+                }
+            } else {
+                bridge.getApp().fireRestoredResult(data);
+            }
+        } catch (Exception ex) {
+            Logger.error("sendResponseMessage: error: " + ex);
+        }
+        if (!call.isKeptAlive()) {
+            call.release(bridge);
+        }
+    }
+    private void legacySendResponseMessage(PluginResult data) {
+        final String runScript = "window.Capacitor.fromNative(" + data.toString() + ")";
+        final WebView webView = this.webView;
+        webView.post(() -> webView.evaluateJavascript(runScript, null));
+    }
+    private void callPluginMethod(String callbackId, String pluginId, String methodName, JSObject methodData) {
+        PluginCall call = new PluginCall(this, pluginId, callbackId, methodName, methodData);
+        bridge.callPluginMethod(pluginId, methodName, call);
+    }
+    private void callCordovaPluginMethod(String callbackId, String service, String action, String actionArgs) {
+        bridge.execute(() -> {
+            cordovaPluginManager.exec(service, action, callbackId, actionArgs);
+        });
+    }
+}
+package com.getcapacitor;
+import android.text.TextUtils;
+import android.util.Log;
+public class Logger {
+    public static final String LOG_TAG_CORE = "Capacitor";
+    public static CapConfig config;
+    private static Logger instance;
+    private static Logger getInstance() {
+        if (instance == null) {
+            instance = new Logger();
+        }
+        return instance;
+    }
+    public static void init(CapConfig config) {
+        Logger.getInstance().loadConfig(config);
+    }
+    private void loadConfig(CapConfig config) {
+        Logger.config = config;
+    }
+    public static String tags(String... subtags) {
+        if (subtags != null && subtags.length > 0) {
+            return LOG_TAG_CORE + "/" + TextUtils.join("/", subtags);
+        }
+        return LOG_TAG_CORE;
+    }
+    public static void verbose(String message) {
+        verbose(LOG_TAG_CORE, message);
+    }
+    public static void verbose(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.v(tag, message);
+    }
+    public static void debug(String message) {
+        debug(LOG_TAG_CORE, message);
+    }
+    public static void debug(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.d(tag, message);
+    }
+    public static void info(String message) {
+        info(LOG_TAG_CORE, message);
+    }
+    public static void info(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.i(tag, message);
+    }
+    public static void warn(String message) {
+        warn(LOG_TAG_CORE, message);
+    }
+    public static void warn(String tag, String message) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.w(tag, message);
+    }
+    public static void error(String message) {
+        error(LOG_TAG_CORE, message, null);
+    }
+    public static void error(String message, Throwable e) {
+        error(LOG_TAG_CORE, message, e);
+    }
+    public static void error(String tag, String message, Throwable e) {
+        if (!shouldLog()) {
+            return;
+        }
+        Log.e(tag, message, e);
+    }
+    public static boolean shouldLog() {
+        return config == null || config.isLoggingEnabled();
+    }
+}

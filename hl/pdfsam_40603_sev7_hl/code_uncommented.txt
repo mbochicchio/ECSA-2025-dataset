@@ -1,0 +1,2007 @@
+package com.rabbitmq.client.impl.nio;
+import com.rabbitmq.client.impl.Environment;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.Selector;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
+public class NioLoopContext {
+    private static final Logger LOGGER = LoggerFactory.getLogger(NioLoopContext.class);
+    private final SocketChannelFrameHandlerFactory socketChannelFrameHandlerFactory;
+    private final ExecutorService executorService;
+    private final ThreadFactory threadFactory;
+    final ByteBuffer readBuffer, writeBuffer;
+    SelectorHolder readSelectorState;
+    SelectorHolder writeSelectorState;
+    public NioLoopContext(SocketChannelFrameHandlerFactory socketChannelFrameHandlerFactory,
+        NioParams nioParams) {
+        this.socketChannelFrameHandlerFactory = socketChannelFrameHandlerFactory;
+        this.executorService = nioParams.getNioExecutor();
+        this.threadFactory = nioParams.getThreadFactory();
+        NioContext nioContext = new NioContext(nioParams, null);
+        this.readBuffer = nioParams.getByteBufferFactory().createReadBuffer(nioContext);
+        this.writeBuffer = nioParams.getByteBufferFactory().createWriteBuffer(nioContext);
+    }
+    void initStateIfNecessary() throws IOException {
+        socketChannelFrameHandlerFactory.lock();
+        try {
+            if (this.readSelectorState == null) {
+                this.readSelectorState = new SelectorHolder(Selector.open());
+                this.writeSelectorState = new SelectorHolder(Selector.open());
+                startIoLoops();
+            }
+        } finally {
+            socketChannelFrameHandlerFactory.unlock();
+        }
+    }
+    private void startIoLoops() {
+        if (executorService == null) {
+            Thread nioThread = Environment.newThread(
+                threadFactory,
+                new NioLoop(socketChannelFrameHandlerFactory.nioParams, this),
+                "rabbitmq-nio"
+            );
+            nioThread.start();
+        } else {
+            this.executorService.submit(new NioLoop(socketChannelFrameHandlerFactory.nioParams, this));
+        }
+    }
+    protected boolean cleanUp() {
+        int readRegistrationsCount = readSelectorState.registrations.size();
+        if(readRegistrationsCount != 0) {
+            return false;
+        }
+        socketChannelFrameHandlerFactory.lock();
+        try {
+            if (readRegistrationsCount != readSelectorState.registrations.size()) {
+                return false;
+            }
+            try {
+                readSelectorState.selector.close();
+            } catch (IOException e) {
+                LOGGER.warn("Could not close read selector: {}", e.getMessage());
+            }
+            try {
+                writeSelectorState.selector.close();
+            } catch (IOException e) {
+                LOGGER.warn("Could not close write selector: {}", e.getMessage());
+            }
+            this.readSelectorState = null;
+            this.writeSelectorState = null;
+        } finally {
+            socketChannelFrameHandlerFactory.unlock();
+        }
+        return true;
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import com.rabbitmq.client.SocketChannelConfigurator;
+import com.rabbitmq.client.SocketChannelConfigurators;
+import com.rabbitmq.client.SslEngineConfigurator;
+import javax.net.ssl.SSLEngine;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.function.Function;
+import static com.rabbitmq.client.SslEngineConfigurators.ENABLE_HOSTNAME_VERIFICATION;
+public class NioParams {
+    static Function<NioContext, NioQueue> DEFAULT_WRITE_QUEUE_FACTORY =
+        ctx -> new BlockingQueueNioQueue(
+            new ArrayBlockingQueue<>(ctx.getNioParams().getWriteQueueCapacity(), true),
+            ctx.getNioParams().getWriteEnqueuingTimeoutInMs()
+        );
+    private int readByteBufferSize = 32768;
+    private int writeByteBufferSize = 32768;
+    private int nbIoThreads = 1;
+    private int writeEnqueuingTimeoutInMs = 10 * 1000;
+    private int writeQueueCapacity = 10000;
+    private ExecutorService nioExecutor;
+    private ThreadFactory threadFactory;
+    private SocketChannelConfigurator socketChannelConfigurator = SocketChannelConfigurators.defaultConfigurator();
+    private SslEngineConfigurator sslEngineConfigurator = sslEngine -> {
+    };
+    private ExecutorService connectionShutdownExecutor;
+    private ByteBufferFactory byteBufferFactory = new DefaultByteBufferFactory();
+    private Function<NioContext, NioQueue> writeQueueFactory =
+        DEFAULT_WRITE_QUEUE_FACTORY;
+    public NioParams() {
+    }
+    public NioParams(NioParams nioParams) {
+        setReadByteBufferSize(nioParams.getReadByteBufferSize());
+        setWriteByteBufferSize(nioParams.getWriteByteBufferSize());
+        setNbIoThreads(nioParams.getNbIoThreads());
+        setWriteEnqueuingTimeoutInMs(nioParams.getWriteEnqueuingTimeoutInMs());
+        setWriteQueueCapacity(nioParams.getWriteQueueCapacity());
+        setNioExecutor(nioParams.getNioExecutor());
+        setThreadFactory(nioParams.getThreadFactory());
+        setSocketChannelConfigurator(nioParams.getSocketChannelConfigurator());
+        setSslEngineConfigurator(nioParams.getSslEngineConfigurator());
+        setConnectionShutdownExecutor(nioParams.getConnectionShutdownExecutor());
+        setByteBufferFactory(nioParams.getByteBufferFactory());
+        setWriteQueueFactory(nioParams.getWriteQueueFactory());
+    }
+    public NioParams enableHostnameVerification() {
+        if (this.sslEngineConfigurator == null) {
+            this.sslEngineConfigurator = ENABLE_HOSTNAME_VERIFICATION;
+        } else {
+            this.sslEngineConfigurator = this.sslEngineConfigurator.andThen(ENABLE_HOSTNAME_VERIFICATION);
+        }
+        return this;
+    }
+    public int getReadByteBufferSize() {
+        return readByteBufferSize;
+    }
+    public NioParams setReadByteBufferSize(int readByteBufferSize) {
+        if (readByteBufferSize <= 0) {
+            throw new IllegalArgumentException("Buffer size must be greater than 0");
+        }
+        this.readByteBufferSize = readByteBufferSize;
+        return this;
+    }
+    public int getWriteByteBufferSize() {
+        return writeByteBufferSize;
+    }
+    public NioParams setWriteByteBufferSize(int writeByteBufferSize) {
+        if (writeByteBufferSize <= 0) {
+            throw new IllegalArgumentException("Buffer size must be greater than 0");
+        }
+        this.writeByteBufferSize = writeByteBufferSize;
+        return this;
+    }
+    public int getNbIoThreads() {
+        return nbIoThreads;
+    }
+    public NioParams setNbIoThreads(int nbIoThreads) {
+        if (nbIoThreads <= 0) {
+            throw new IllegalArgumentException("Number of threads must be greater than 0");
+        }
+        this.nbIoThreads = nbIoThreads;
+        return this;
+    }
+    public int getWriteEnqueuingTimeoutInMs() {
+        return writeEnqueuingTimeoutInMs;
+    }
+    public NioParams setWriteEnqueuingTimeoutInMs(int writeEnqueuingTimeoutInMs) {
+        this.writeEnqueuingTimeoutInMs = writeEnqueuingTimeoutInMs;
+        return this;
+    }
+    public ExecutorService getNioExecutor() {
+        return nioExecutor;
+    }
+    public NioParams setNioExecutor(ExecutorService nioExecutor) {
+        this.nioExecutor = nioExecutor;
+        return this;
+    }
+    public ThreadFactory getThreadFactory() {
+        return threadFactory;
+    }
+    public NioParams setThreadFactory(ThreadFactory threadFactory) {
+        this.threadFactory = threadFactory;
+        return this;
+    }
+    public int getWriteQueueCapacity() {
+        return writeQueueCapacity;
+    }
+    public NioParams setWriteQueueCapacity(int writeQueueCapacity) {
+        if (writeQueueCapacity <= 0) {
+            throw new IllegalArgumentException("Write queue capacity must be greater than 0");
+        }
+        this.writeQueueCapacity = writeQueueCapacity;
+        return this;
+    }
+    public SocketChannelConfigurator getSocketChannelConfigurator() {
+        return socketChannelConfigurator;
+    }
+    public NioParams setSocketChannelConfigurator(SocketChannelConfigurator configurator) {
+        this.socketChannelConfigurator = configurator;
+        return this;
+    }
+    public SslEngineConfigurator getSslEngineConfigurator() {
+        return sslEngineConfigurator;
+    }
+    public NioParams setSslEngineConfigurator(SslEngineConfigurator configurator) {
+        this.sslEngineConfigurator = configurator;
+        return this;
+    }
+    public ExecutorService getConnectionShutdownExecutor() {
+        return connectionShutdownExecutor;
+    }
+    public NioParams setConnectionShutdownExecutor(ExecutorService connectionShutdownExecutor) {
+        this.connectionShutdownExecutor = connectionShutdownExecutor;
+        return this;
+    }
+    public NioParams setByteBufferFactory(ByteBufferFactory byteBufferFactory) {
+        this.byteBufferFactory = byteBufferFactory;
+        return this;
+    }
+    public ByteBufferFactory getByteBufferFactory() {
+        return byteBufferFactory;
+    }
+    public NioParams setWriteQueueFactory(
+        Function<NioContext, NioQueue> writeQueueFactory) {
+        this.writeQueueFactory = writeQueueFactory;
+        return this;
+    }
+    public Function<NioContext, NioQueue> getWriteQueueFactory() {
+        return writeQueueFactory;
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import com.rabbitmq.client.Address;
+import com.rabbitmq.client.ConnectionFactory;
+import com.rabbitmq.client.SslContextFactory;
+import com.rabbitmq.client.impl.AbstractFrameHandlerFactory;
+import com.rabbitmq.client.impl.FrameHandler;
+import com.rabbitmq.client.impl.TlsUtils;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+public class SocketChannelFrameHandlerFactory extends AbstractFrameHandlerFactory {
+    private static final Logger LOGGER = LoggerFactory.getLogger(SocketChannelFrameHandler.class);
+    final NioParams nioParams;
+    private final SslContextFactory sslContextFactory;
+    private final Lock stateLock = new ReentrantLock();
+    private final AtomicLong globalConnectionCount = new AtomicLong();
+    private final List<NioLoopContext> nioLoopContexts;
+    public SocketChannelFrameHandlerFactory(int connectionTimeout, NioParams nioParams, boolean ssl,
+                                            SslContextFactory sslContextFactory,
+                                            int maxInboundMessageBodySize) {
+        super(connectionTimeout, null, ssl, maxInboundMessageBodySize);
+        this.nioParams = new NioParams(nioParams);
+        this.sslContextFactory = sslContextFactory;
+        this.nioLoopContexts = new ArrayList<>(this.nioParams.getNbIoThreads());
+        for (int i = 0; i < this.nioParams.getNbIoThreads(); i++) {
+            this.nioLoopContexts.add(new NioLoopContext(this, this.nioParams));
+        }
+    }
+    @Override
+    public FrameHandler create(Address addr, String connectionName) throws IOException {
+        int portNumber = ConnectionFactory.portOrDefault(addr.getPort(), ssl);
+        SSLEngine sslEngine = null;
+        SocketChannel channel = null;
+        try {
+            if (ssl) {
+                SSLContext sslContext = sslContextFactory.create(connectionName);
+                sslEngine = sslContext.createSSLEngine(addr.getHost(), portNumber);
+                sslEngine.setUseClientMode(true);
+                if (nioParams.getSslEngineConfigurator() != null) {
+                    nioParams.getSslEngineConfigurator().configure(sslEngine);
+                }
+            }
+            SocketAddress address = addr.toInetSocketAddress(portNumber);
+            channel = SocketChannel.open(); 
+            channel.configureBlocking(true);
+            if(nioParams.getSocketChannelConfigurator() != null) {
+                nioParams.getSocketChannelConfigurator().configure(channel);
+            }
+            channel.socket().connect(address, this.connectionTimeout);
+            if (ssl) {
+                int initialSoTimeout = channel.socket().getSoTimeout();
+                channel.socket().setSoTimeout(this.connectionTimeout);
+                sslEngine.beginHandshake();
+                try {
+                    ReadableByteChannel wrappedReadChannel = Channels.newChannel(
+                        channel.socket().getInputStream());
+                    WritableByteChannel wrappedWriteChannel = Channels.newChannel(
+                        channel.socket().getOutputStream());
+                    boolean handshake = SslEngineHelper.doHandshake(
+                        wrappedWriteChannel, wrappedReadChannel, sslEngine);
+                    if (!handshake) {
+                        LOGGER.error("TLS connection failed");
+                        throw new SSLException("TLS handshake failed");
+                    }
+                    channel.socket().setSoTimeout(initialSoTimeout);
+                } catch (SSLHandshakeException e) {
+                    LOGGER.error("TLS connection failed: {}", e.getMessage());
+                    throw e;
+                }
+                TlsUtils.logPeerCertificateInfo(sslEngine.getSession());
+            }
+            channel.configureBlocking(false);
+            stateLock.lock();
+            NioLoopContext nioLoopContext = null;
+            try {
+                long modulo = globalConnectionCount.getAndIncrement() % nioParams.getNbIoThreads();
+                nioLoopContext = nioLoopContexts.get((int) modulo);
+                nioLoopContext.initStateIfNecessary();
+                SocketChannelFrameHandlerState state = new SocketChannelFrameHandlerState(
+                    channel,
+                    nioLoopContext,
+                    nioParams,
+                    sslEngine,
+                    this.maxInboundMessageBodySize
+                );
+                state.startReading();
+                SocketChannelFrameHandler frameHandler = new SocketChannelFrameHandler(state);
+                return frameHandler;
+            } finally {
+                stateLock.unlock();
+            }
+        } catch(IOException e) {
+            try {
+                if(sslEngine != null && channel != null) {
+                    SslEngineHelper.close(channel, sslEngine);
+                }
+                if (channel != null) {
+                    channel.close();
+                }
+            } catch(IOException closingException) {
+            }
+            throw e;
+        }
+    }
+    void lock() {
+        stateLock.lock();
+    }
+    void unlock() {
+        stateLock.unlock();
+    }
+}
+package com.rabbitmq.client;
+import javax.net.ssl.SSLParameters;
+public abstract class SslEngineConfigurators {
+    public static final SslEngineConfigurator DEFAULT = sslEngine -> {
+    };
+    public static final SslEngineConfigurator ENABLE_HOSTNAME_VERIFICATION = sslEngine -> {
+        SSLParameters sslParameters = SocketConfigurators.enableHostnameVerification(sslEngine.getSSLParameters());
+        sslEngine.setSSLParameters(sslParameters);
+    };
+    public static SslEngineConfigurator defaultConfigurator() {
+        return DEFAULT;
+    }
+    public static SslEngineConfigurator enableHostnameVerification() {
+        return ENABLE_HOSTNAME_VERIFICATION;
+    }
+    public static Builder builder() {
+        return new Builder();
+    }
+    public static class Builder {
+        private SslEngineConfigurator configurator = channel -> {
+        };
+        public Builder defaultConfigurator() {
+            configurator = configurator.andThen(DEFAULT);
+            return this;
+        }
+        public Builder enableHostnameVerification() {
+            configurator = configurator.andThen(ENABLE_HOSTNAME_VERIFICATION);
+            return this;
+        }
+        public Builder add(SslEngineConfigurator extraConfiguration) {
+            configurator = configurator.andThen(extraConfiguration);
+            return this;
+        }
+        public SslEngineConfigurator build() {
+            return configurator;
+        }
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import com.rabbitmq.client.impl.Environment;
+import com.rabbitmq.client.impl.Frame;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.util.Iterator;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
+public class NioLoop implements Runnable {
+    private static final Logger LOGGER = LoggerFactory.getLogger(NioLoop.class);
+    private final NioLoopContext context;
+    private final NioParams nioParams;
+    private final ExecutorService connectionShutdownExecutor;
+    public NioLoop(NioParams nioParams, NioLoopContext loopContext) {
+        this.nioParams = nioParams;
+        this.context = loopContext;
+        this.connectionShutdownExecutor = nioParams.getConnectionShutdownExecutor();
+    }
+    @Override
+    public void run() {
+        final SelectorHolder selectorState = context.readSelectorState;
+        final Selector selector = selectorState.selector;
+        final Set<SocketChannelRegistration> registrations = selectorState.registrations;
+        final ByteBuffer buffer = context.readBuffer;
+        final SelectorHolder writeSelectorState = context.writeSelectorState;
+        final Selector writeSelector = writeSelectorState.selector;
+        final Set<SocketChannelRegistration> writeRegistrations = writeSelectorState.registrations;
+        boolean writeRegistered = false;
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                for (SelectionKey selectionKey : selector.keys()) {
+                    SocketChannelFrameHandlerState state = (SocketChannelFrameHandlerState) selectionKey.attachment();
+                    if (state.getConnection() != null && state.getHeartbeatNanoSeconds() > 0) {
+                        long now = System.nanoTime();
+                        if ((now - state.getLastActivity()) > state.getHeartbeatNanoSeconds() * 2) {
+                            try {
+                                handleHeartbeatFailure(state);
+                            } catch (Exception e) {
+                                LOGGER.warn("Error after heartbeat failure of connection {}", state.getConnection());
+                            } finally {
+                                selectionKey.cancel();
+                            }
+                        }
+                    }
+                }
+                int select;
+                if (!writeRegistered && registrations.isEmpty() && writeRegistrations.isEmpty()) {
+                    select = selector.select(1000);
+                    if (selector.keys().isEmpty()) {
+                        boolean clean = context.cleanUp();
+                        if (clean) {
+                            return;
+                        }
+                    }
+                } else {
+                    select = selector.selectNow();
+                }
+                writeRegistered = false;
+                SocketChannelRegistration registration;
+                Iterator<SocketChannelRegistration> registrationIterator = registrations.iterator();
+                while (registrationIterator.hasNext()) {
+                    registration = registrationIterator.next();
+                    registrationIterator.remove();
+                    int operations = registration.operations;
+                    try {
+                        if (registration.state.getChannel().isOpen()) {
+                            registration.state.getChannel().register(selector, operations, registration.state);
+                        }
+                    } catch (Exception e) {
+                        LOGGER.info("Error while registering socket channel for read: {}", e.getMessage());
+                    }
+                }
+                if (select > 0) {
+                    Set<SelectionKey> readyKeys = selector.selectedKeys();
+                    Iterator<SelectionKey> iterator = readyKeys.iterator();
+                    while (iterator.hasNext()) {
+                        SelectionKey key = iterator.next();
+                        iterator.remove();
+                        if (!key.isValid()) {
+                            continue;
+                        }
+                        final SocketChannelFrameHandlerState state = (SocketChannelFrameHandlerState) key.attachment();
+                        try {
+                            if (key.isReadable()) {
+                                if (!state.getChannel().isOpen()) {
+                                    key.cancel();
+                                    continue;
+                                }
+                                if(state.getConnection() == null) {
+                                    continue;
+                                }
+                                state.prepareForReadSequence();
+                                while (state.continueReading()) {
+                                    final Frame frame = state.frameBuilder.readFrame();
+                                    if (frame != null) {
+                                        try {
+                                            state.getConnection().ioLoopThread(Thread.currentThread());
+                                            boolean noProblem = state.getConnection().handleReadFrame(frame);
+                                            if (noProblem && (!state.getConnection().isRunning() || state.getConnection().hasBrokerInitiatedShutdown())) {
+                                                dispatchShutdownToConnection(state);
+                                                key.cancel();
+                                                break;
+                                            }
+                                        } catch (Throwable ex) {
+                                            handleIoError(state, ex);
+                                            key.cancel();
+                                            break;
+                                        }
+                                    }
+                                }
+                                state.setLastActivity(System.nanoTime());
+                            }
+                        } catch (final Exception e) {
+                            LOGGER.warn("Error during reading frames", e);
+                            handleIoError(state, e);
+                            key.cancel();
+                        } finally {
+                            buffer.clear();
+                        }
+                    }
+                }
+                select = writeSelector.selectNow();
+                SocketChannelRegistration writeRegistration;
+                Iterator<SocketChannelRegistration> writeRegistrationIterator = writeRegistrations.iterator();
+                while (writeRegistrationIterator.hasNext()) {
+                    writeRegistration = writeRegistrationIterator.next();
+                    writeRegistrationIterator.remove();
+                    int operations = writeRegistration.operations;
+                    try {
+                        if (writeRegistration.state.getChannel().isOpen()) {
+                            writeRegistration.state.getChannel().register(writeSelector, operations, writeRegistration.state);
+                            writeRegistered = true;
+                        }
+                    } catch (Exception e) {
+                        LOGGER.info("Error while registering socket channel for write: {}", e.getMessage());
+                    }
+                }
+                if (select > 0) {
+                    Set<SelectionKey> readyKeys = writeSelector.selectedKeys();
+                    Iterator<SelectionKey> iterator = readyKeys.iterator();
+                    while (iterator.hasNext()) {
+                        SelectionKey key = iterator.next();
+                        iterator.remove();
+                        SocketChannelFrameHandlerState state = (SocketChannelFrameHandlerState) key.attachment();
+                        if (!key.isValid()) {
+                            continue;
+                        }
+                        try {
+                            if (key.isWritable()) {
+                                if (!state.getChannel().isOpen()) {
+                                    key.cancel();
+                                    continue;
+                                }
+                                state.prepareForWriteSequence();
+                                int toBeWritten = state.getWriteQueue().size();
+                                int written = 0;
+                                DataOutputStream outputStream = state.outputStream;
+                                WriteRequest request;
+                                while (written <= toBeWritten && (request = state.getWriteQueue().poll()) != null) {
+                                    request.handle(outputStream);
+                                    written++;
+                                }
+                                outputStream.flush();
+                            }
+                        } catch (Exception e) {
+                            handleIoError(state, e);
+                        } finally {
+                            state.endWriteSequence();
+                            key.cancel();
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.error("Error in NIO loop", e);
+        }
+    }
+    protected void handleIoError(SocketChannelFrameHandlerState state, Throwable ex) {
+        if (needToDispatchIoError(state)) {
+            dispatchIoErrorToConnection(state, ex);
+        } else {
+            try {
+                state.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+    protected void handleHeartbeatFailure(SocketChannelFrameHandlerState state) {
+        if (needToDispatchIoError(state)) {
+            dispatchShutdownToConnection(
+                () -> state.getConnection().handleHeartbeatFailure(),
+                state.getConnection().toString()
+            );
+        } else {
+            try {
+                state.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+    protected boolean needToDispatchIoError(final SocketChannelFrameHandlerState state) {
+        return state.getConnection().isOpen();
+    }
+    protected void dispatchIoErrorToConnection(final SocketChannelFrameHandlerState state, final Throwable ex) {
+        dispatchShutdownToConnection(
+            () -> state.getConnection().handleIoError(ex),
+            state.getConnection().toString()
+        );
+    }
+    protected void dispatchShutdownToConnection(final SocketChannelFrameHandlerState state) {
+        dispatchShutdownToConnection(
+            () -> state.getConnection().doFinalShutdown(),
+            state.getConnection().toString()
+        );
+    }
+    protected void dispatchShutdownToConnection(Runnable connectionShutdownRunnable, String connectionName) {
+        if (this.connectionShutdownExecutor != null) {
+            connectionShutdownExecutor.execute(connectionShutdownRunnable);
+        } else if (executorService() != null) {
+            executorService().execute(connectionShutdownRunnable);
+        } else {
+            String name = "rabbitmq-connection-shutdown-" + connectionName;
+            Thread shutdownThread = Environment.newThread(threadFactory(), connectionShutdownRunnable, name);
+            shutdownThread.start();
+        }
+    }
+    private ExecutorService executorService() {
+        return nioParams.getNioExecutor();
+    }
+    private ThreadFactory threadFactory() {
+        return nioParams.getThreadFactory();
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import javax.net.ssl.SSLEngine;
+public class NioContext {
+    private final NioParams nioParams;
+    private final SSLEngine sslEngine;
+    NioContext(NioParams nioParams, SSLEngine sslEngine) {
+        this.nioParams = nioParams;
+        this.sslEngine = sslEngine;
+    }
+    public NioParams getNioParams() {
+        return nioParams;
+    }
+    public SSLEngine getSslEngine() {
+        return sslEngine;
+    }
+}
+package com.rabbitmq.client;
+public abstract class SocketChannelConfigurators {
+    public static final SocketChannelConfigurator DISABLE_NAGLE_ALGORITHM =
+        socketChannel -> SocketConfigurators.DISABLE_NAGLE_ALGORITHM.configure(socketChannel.socket());
+    public static final SocketChannelConfigurator DEFAULT = DISABLE_NAGLE_ALGORITHM;
+    public static SocketChannelConfigurator defaultConfigurator() {
+        return DEFAULT;
+    }
+    public static SocketChannelConfigurator disableNagleAlgorithm() {
+        return DISABLE_NAGLE_ALGORITHM;
+    }
+    public static SocketChannelConfigurators.Builder builder() {
+        return new SocketChannelConfigurators.Builder();
+    }
+    public static class Builder {
+        private SocketChannelConfigurator configurator = channel -> {
+        };
+        public Builder defaultConfigurator() {
+            configurator = configurator.andThen(DEFAULT);
+            return this;
+        }
+        public Builder disableNagleAlgorithm() {
+            configurator = configurator.andThen(DISABLE_NAGLE_ALGORITHM);
+            return this;
+        }
+        public Builder add(SocketChannelConfigurator extraConfiguration) {
+            configurator = configurator.andThen(extraConfiguration);
+            return this;
+        }
+        public SocketChannelConfigurator build() {
+            return configurator;
+        }
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import com.rabbitmq.client.impl.AMQConnection;
+import com.rabbitmq.client.impl.Frame;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import javax.net.ssl.SSLEngine;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.time.Duration;
+public class SocketChannelFrameHandlerState {
+    private static final Logger LOGGER = LoggerFactory.getLogger(SocketChannelFrameHandlerState.class);
+    private static final int SOCKET_CLOSING_TIMEOUT = 1;
+    private final SocketChannel channel;
+    private final NioQueue writeQueue;
+    private volatile AMQConnection connection;
+    private volatile long heartbeatNanoSeconds = -1;
+    private long lastActivity;
+    private final SelectorHolder writeSelectorState;
+    private final SelectorHolder readSelectorState;
+    final boolean ssl;
+    final SSLEngine sslEngine;
+    final ByteBuffer plainOut;
+    final ByteBuffer plainIn;
+    final ByteBuffer cipherOut;
+    final ByteBuffer cipherIn;
+    final DataOutputStream outputStream;
+    final FrameBuilder frameBuilder;
+    public SocketChannelFrameHandlerState(SocketChannel channel, NioLoopContext nioLoopsState,
+                                          NioParams nioParams, SSLEngine sslEngine,
+                                          int maxFramePayloadSize) {
+        this.channel = channel;
+        this.readSelectorState = nioLoopsState.readSelectorState;
+        this.writeSelectorState = nioLoopsState.writeSelectorState;
+        NioContext nioContext = new NioContext(nioParams, sslEngine);
+        this.writeQueue = nioParams.getWriteQueueFactory() == null ?
+            NioParams.DEFAULT_WRITE_QUEUE_FACTORY.apply(nioContext) :
+            nioParams.getWriteQueueFactory().apply(nioContext);
+        this.sslEngine = sslEngine;
+        if(this.sslEngine == null) {
+            this.ssl = false;
+            this.plainOut = nioLoopsState.writeBuffer;
+            this.cipherOut = null;
+            this.plainIn = nioLoopsState.readBuffer;
+            this.cipherIn = null;
+            this.outputStream = new DataOutputStream(
+                new ByteBufferOutputStream(channel, plainOut)
+            );
+            this.frameBuilder = new FrameBuilder(channel, plainIn, maxFramePayloadSize);
+        } else {
+            this.ssl = true;
+            this.plainOut = nioParams.getByteBufferFactory().createWriteBuffer(nioContext);
+            this.cipherOut = nioParams.getByteBufferFactory().createEncryptedWriteBuffer(nioContext);
+            this.plainIn = nioParams.getByteBufferFactory().createReadBuffer(nioContext);
+            this.cipherIn = nioParams.getByteBufferFactory().createEncryptedReadBuffer(nioContext);
+            this.outputStream = new DataOutputStream(
+                new SslEngineByteBufferOutputStream(sslEngine, plainOut, cipherOut, channel)
+            );
+            this.frameBuilder = new SslEngineFrameBuilder(sslEngine, plainIn,
+                cipherIn, channel, maxFramePayloadSize);
+        }
+    }
+    public SocketChannel getChannel() {
+        return channel;
+    }
+    public NioQueue getWriteQueue() {
+        return writeQueue;
+    }
+    public void sendHeader() throws IOException {
+        sendWriteRequest(HeaderWriteRequest.SINGLETON);
+    }
+    public void write(Frame frame) throws IOException {
+        sendWriteRequest(new FrameWriteRequest(frame));
+    }
+    private void sendWriteRequest(WriteRequest writeRequest) throws IOException {
+        try {
+            boolean offered = this.writeQueue.offer(writeRequest);
+            if(offered) {
+                this.writeSelectorState.registerFrameHandlerState(this, SelectionKey.OP_WRITE);
+                this.readSelectorState.selector.wakeup();
+            } else {
+                throw new IOException("Frame enqueuing failed");
+            }
+        } catch (InterruptedException e) {
+            LOGGER.warn("Thread interrupted during enqueuing frame in write queue");
+            Thread.currentThread().interrupt();
+        }
+    }
+    public void startReading() {
+        this.readSelectorState.registerFrameHandlerState(this, SelectionKey.OP_READ);
+    }
+    public AMQConnection getConnection() {
+        return connection;
+    }
+    public void setConnection(AMQConnection connection) {
+        this.connection = connection;
+    }
+    void setHeartbeat(Duration ht) {
+        this.heartbeatNanoSeconds = ht.toNanos();
+    }
+    public void setLastActivity(long lastActivity) {
+        this.lastActivity = lastActivity;
+    }
+    public long getLastActivity() {
+        return lastActivity;
+    }
+    long getHeartbeatNanoSeconds() {
+        return this.heartbeatNanoSeconds;
+    }
+    void prepareForWriteSequence() {
+        if(ssl) {
+            plainOut.clear();
+            cipherOut.clear();
+        }
+    }
+    void endWriteSequence() {
+        if(!ssl) {
+            plainOut.clear();
+        }
+    }
+    void prepareForReadSequence() throws IOException {
+        if(ssl) {
+            if (!frameBuilder.isUnderflowHandlingEnabled()) {
+                cipherIn.clear();
+                cipherIn.flip();
+            }
+            plainIn.clear();
+            plainIn.flip();
+        } else {
+            NioHelper.read(channel, plainIn);
+            plainIn.flip();
+        }
+    }
+    boolean continueReading() throws IOException {
+        if(ssl) {
+            if (frameBuilder.isUnderflowHandlingEnabled()) {
+                int bytesRead = NioHelper.read(channel, cipherIn);
+                if (bytesRead == 0) {
+                    return false;
+                } else {
+                    cipherIn.flip();
+                    return true;
+                }
+            }
+            if (!plainIn.hasRemaining() && !cipherIn.hasRemaining()) {
+                cipherIn.clear();
+                int bytesRead = NioHelper.read(channel, cipherIn);
+                if (bytesRead == 0) {
+                    return false;
+                } else {
+                    cipherIn.flip();
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        } else {
+            if (!plainIn.hasRemaining()) {
+                plainIn.clear();
+                NioHelper.read(channel, plainIn);
+                plainIn.flip();
+            }
+            return plainIn.hasRemaining();
+        }
+    }
+    void close() throws IOException {
+        if(ssl) {
+            SslEngineHelper.close(channel, sslEngine);
+        }
+        if(channel.isOpen()) {
+            channel.socket().setSoLinger(true, SOCKET_CLOSING_TIMEOUT);
+            channel.close();
+        }
+    }
+}
+package com.rabbitmq.client;
+import com.rabbitmq.client.impl.*;
+import com.rabbitmq.client.impl.nio.NioParams;
+import com.rabbitmq.client.impl.nio.SocketChannelFrameHandlerFactory;
+import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
+import com.rabbitmq.client.impl.recovery.RecoveredQueueNameSupplier;
+import com.rabbitmq.client.impl.recovery.RetryHandler;
+import com.rabbitmq.client.impl.recovery.TopologyRecoveryFilter;
+import com.rabbitmq.client.observation.ObservationCollector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URLDecoder;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.*;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
+import static java.util.concurrent.TimeUnit.MINUTES;
+public class ConnectionFactory implements Cloneable {
+    private static final int MAX_UNSIGNED_SHORT = 65535;
+    public static final String DEFAULT_USER = "guest";
+    public static final String DEFAULT_PASS = "guest";
+    public static final String DEFAULT_VHOST = "/";
+    public static final int    DEFAULT_CHANNEL_MAX = 2047;
+    public static final int    DEFAULT_FRAME_MAX = 0;
+    public static final int    DEFAULT_HEARTBEAT = 60;
+    public static final String DEFAULT_HOST = "localhost";
+    public static final int    USE_DEFAULT_PORT = -1;
+    public static final int    DEFAULT_AMQP_PORT = AMQP.PROTOCOL.PORT;
+    public static final int    DEFAULT_AMQP_OVER_SSL_PORT = 5671;
+    public static final int    DEFAULT_CONNECTION_TIMEOUT = 60000;
+    public static final int    DEFAULT_HANDSHAKE_TIMEOUT = 10000;
+    public static final int    DEFAULT_SHUTDOWN_TIMEOUT = 10000;
+    public static final int    DEFAULT_CHANNEL_RPC_TIMEOUT = (int) MINUTES.toMillis(10);
+    public static final long   DEFAULT_NETWORK_RECOVERY_INTERVAL = 5000;
+    public static final int    DEFAULT_WORK_POOL_TIMEOUT = -1;
+    private static final String PREFERRED_TLS_PROTOCOL = "TLSv1.2";
+    private static final String FALLBACK_TLS_PROTOCOL = "TLSv1";
+    private String virtualHost                    = DEFAULT_VHOST;
+    private String host                           = DEFAULT_HOST;
+    private int port                              = USE_DEFAULT_PORT;
+    private int requestedChannelMax               = DEFAULT_CHANNEL_MAX;
+    private int requestedFrameMax                 = DEFAULT_FRAME_MAX;
+    private int requestedHeartbeat                = DEFAULT_HEARTBEAT;
+    private int connectionTimeout                 = DEFAULT_CONNECTION_TIMEOUT;
+    private int handshakeTimeout                  = DEFAULT_HANDSHAKE_TIMEOUT;
+    private int shutdownTimeout                   = DEFAULT_SHUTDOWN_TIMEOUT;
+    private Map<String, Object> _clientProperties = AMQConnection.defaultClientProperties();
+    private SocketFactory socketFactory           = null;
+    private SaslConfig saslConfig                 = DefaultSaslConfig.PLAIN;
+    private ExecutorService sharedExecutor;
+    private ThreadFactory threadFactory             = Executors.defaultThreadFactory();
+    private ExecutorService shutdownExecutor;
+    private ScheduledExecutorService heartbeatExecutor;
+    private SocketConfigurator socketConf           = SocketConfigurators.defaultConfigurator();
+    private ExceptionHandler exceptionHandler       = new DefaultExceptionHandler();
+    private CredentialsProvider credentialsProvider = new DefaultCredentialsProvider(DEFAULT_USER, DEFAULT_PASS);
+    private boolean automaticRecovery               = true;
+    private boolean topologyRecovery                = true;
+    private ExecutorService topologyRecoveryExecutor;
+    private long networkRecoveryInterval          = DEFAULT_NETWORK_RECOVERY_INTERVAL;
+    private RecoveryDelayHandler recoveryDelayHandler;
+    private MetricsCollector metricsCollector;
+    private ObservationCollector observationCollector = ObservationCollector.NO_OP;
+    private boolean nio = false;
+    private FrameHandlerFactory frameHandlerFactory;
+    private NioParams nioParams = new NioParams();
+    private SslContextFactory sslContextFactory;
+    private int channelRpcTimeout = DEFAULT_CHANNEL_RPC_TIMEOUT;
+    private boolean channelShouldCheckRpcResponseType = false;
+    private ErrorOnWriteListener errorOnWriteListener;
+    private int workPoolTimeout = DEFAULT_WORK_POOL_TIMEOUT;
+    private TopologyRecoveryFilter topologyRecoveryFilter;
+    private Predicate<ShutdownSignalException> connectionRecoveryTriggeringCondition;
+    private RetryHandler topologyRecoveryRetryHandler;
+    private RecoveredQueueNameSupplier recoveredQueueNameSupplier;
+    private TrafficListener trafficListener = TrafficListener.NO_OP;
+    private CredentialsRefreshService credentialsRefreshService;
+    private int maxInboundMessageBodySize = 1_048_576 * 64;
+    public String getHost() {
+        return host;
+    }
+    public ConnectionFactory setHost(String host) {
+        this.host = host;
+        return this;
+    }
+    public static int portOrDefault(int port, boolean ssl) {
+        if (port != USE_DEFAULT_PORT) return port;
+        else if (ssl) return DEFAULT_AMQP_OVER_SSL_PORT;
+        else return DEFAULT_AMQP_PORT;
+    }
+    public int getPort() {
+        return portOrDefault(port, isSSL());
+    }
+    public ConnectionFactory setPort(int port) {
+        this.port = port;
+        return this;
+    }
+    public String getUsername() {
+        return credentialsProvider.getUsername();
+    }
+    public ConnectionFactory setUsername(String username) {
+        this.credentialsProvider = new DefaultCredentialsProvider(
+            username,
+            this.credentialsProvider.getPassword()
+        );
+        return this;
+    }
+    public String getPassword() {
+        return credentialsProvider.getPassword();
+    }
+    public ConnectionFactory setPassword(String password) {
+        this.credentialsProvider = new DefaultCredentialsProvider(
+            this.credentialsProvider.getUsername(),
+            password
+        );
+        return this;
+    }
+    public ConnectionFactory setCredentialsProvider(CredentialsProvider credentialsProvider) {
+        this.credentialsProvider = credentialsProvider;
+        return this;
+    }
+    public String getVirtualHost() {
+        return this.virtualHost;
+    }
+    public ConnectionFactory setVirtualHost(String virtualHost) {
+        this.virtualHost = virtualHost;
+        return this;
+    }
+    public ConnectionFactory setUri(URI uri)
+        throws URISyntaxException, NoSuchAlgorithmException, KeyManagementException
+    {
+        if ("amqp".equals(uri.getScheme().toLowerCase())) {
+        } else if ("amqps".equals(uri.getScheme().toLowerCase())) {
+            setPort(DEFAULT_AMQP_OVER_SSL_PORT);
+            if (this.sslContextFactory == null) {
+                useSslProtocol();
+            }
+        } else {
+            throw new IllegalArgumentException("Wrong scheme in AMQP URI: " +
+                                               uri.getScheme());
+        }
+        String host = uri.getHost();
+        if (host != null) {
+            setHost(host);
+        }
+        int port = uri.getPort();
+        if (port != -1) {
+            setPort(port);
+        }
+        String userInfo = uri.getRawUserInfo();
+        if (userInfo != null) {
+            String userPass[] = userInfo.split(":");
+            if (userPass.length > 2) {
+                throw new IllegalArgumentException("Bad user info in AMQP " +
+                                                   "URI: " + userInfo);
+            }
+            setUsername(uriDecode(userPass[0]));
+            if (userPass.length == 2) {
+                setPassword(uriDecode(userPass[1]));
+            }
+        }
+        String path = uri.getRawPath();
+        if (path != null && path.length() > 0) {
+            if (path.indexOf('/', 1) != -1) {
+                throw new IllegalArgumentException("Multiple segments in " +
+                                                   "path of AMQP URI: " +
+                                                   path);
+            }
+            setVirtualHost(uriDecode(uri.getPath().substring(1)));
+        }
+        String rawQuery = uri.getRawQuery();
+        if (rawQuery != null && rawQuery.length() > 0) {
+            setQuery(rawQuery);
+        }
+        return this;
+    }
+    public ConnectionFactory setUri(String uriString)
+        throws URISyntaxException, NoSuchAlgorithmException, KeyManagementException
+    {
+        setUri(new URI(uriString));
+        return this;
+    }
+    private static String uriDecode(String s) {
+        try {
+            return URLDecoder.decode(s.replace("+", "%2B"), "US-ASCII");
+        }
+        catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+  private static final Map<String, BiConsumer<String, ConnectionFactory>> URI_QUERY_PARAMETER_HANDLERS =
+      new HashMap<String, BiConsumer<String, ConnectionFactory>>() {
+        {
+            put("heartbeat", (value, cf) -> {
+                try {
+                    int heartbeatInt = Integer.parseInt(value);
+                    cf.setRequestedHeartbeat(heartbeatInt);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("Requested heartbeat must an integer");
+                }
+            });
+            put("connection_timeout", (value, cf) -> {
+              try {
+                int connectionTimeoutInt = Integer.parseInt(value);
+                cf.setConnectionTimeout(connectionTimeoutInt);
+              } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("TCP connection timeout must an integer");
+              }
+            });
+            put("channel_max", (value, cf) -> {
+                try {
+                    int channelMaxInt = Integer.parseInt(value);
+                    cf.setRequestedChannelMax(channelMaxInt);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("Requested channel max must an integer");
+                }
+            });
+        }
+      };
+    private ConnectionFactory setQuery(String rawQuery) {
+        Map<String, String> parameters = new HashMap<>();
+        try {
+            for (String param : rawQuery.split("&")) {
+                String[] pair = param.split("=");
+                String key = URLDecoder.decode(pair[0], "US-ASCII");
+                String value = null;
+                if (pair.length > 1) {
+                    value = URLDecoder.decode(pair[1], "US-ASCII");
+                }
+                parameters.put(key, value);
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Cannot parse the query parameters", e);
+        }
+        for (Entry<String, String> entry : parameters.entrySet()) {
+            BiConsumer<String, ConnectionFactory> handler = URI_QUERY_PARAMETER_HANDLERS
+                .get(entry.getKey());
+            if (handler != null) {
+                handler.accept(entry.getValue(), this);
+            } else {
+                processUriQueryParameter(entry.getKey(), entry.getValue());
+            }
+        }
+        return this;
+    }
+    protected void processUriQueryParameter(String key, String value) {
+    }
+    public int getRequestedChannelMax() {
+        return this.requestedChannelMax;
+    }
+    public ConnectionFactory setRequestedChannelMax(int requestedChannelMax) {
+        if (requestedChannelMax < 0 || requestedChannelMax > MAX_UNSIGNED_SHORT) {
+            throw new IllegalArgumentException("Requested channel max must be between 0 and " + MAX_UNSIGNED_SHORT);
+        }
+        this.requestedChannelMax = requestedChannelMax;
+        return this;
+    }
+    public int getRequestedFrameMax() {
+        return this.requestedFrameMax;
+    }
+    public ConnectionFactory setRequestedFrameMax(int requestedFrameMax) {
+        this.requestedFrameMax = requestedFrameMax;
+        return this;
+    }
+    public int getRequestedHeartbeat() {
+        return this.requestedHeartbeat;
+    }
+    public ConnectionFactory setConnectionTimeout(int timeout) {
+        if(timeout < 0) {
+            throw new IllegalArgumentException("TCP connection timeout cannot be negative");
+        }
+        this.connectionTimeout = timeout;
+        return this;
+    }
+    public int getConnectionTimeout() {
+        return this.connectionTimeout;
+    }
+    public int getHandshakeTimeout() {
+        return handshakeTimeout;
+    }
+    public ConnectionFactory setHandshakeTimeout(int timeout) {
+        if(timeout < 0) {
+            throw new IllegalArgumentException("handshake timeout cannot be negative");
+        }
+        this.handshakeTimeout = timeout;
+        return this;
+    }
+    public ConnectionFactory setShutdownTimeout(int shutdownTimeout) {
+        this.shutdownTimeout = shutdownTimeout;
+        return this;
+    }
+    public int getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+    public ConnectionFactory setRequestedHeartbeat(int requestedHeartbeat) {
+        if (requestedHeartbeat < 0 || requestedHeartbeat > MAX_UNSIGNED_SHORT) {
+            throw new IllegalArgumentException("Requested heartbeat must be between 0 and " + MAX_UNSIGNED_SHORT);
+        }
+        this.requestedHeartbeat = requestedHeartbeat;
+        return this;
+    }
+    public Map<String, Object> getClientProperties() {
+        return _clientProperties;
+    }
+    public ConnectionFactory setClientProperties(Map<String, Object> clientProperties) {
+        this._clientProperties = clientProperties;
+        return this;
+    }
+    public SaslConfig getSaslConfig() {
+        return saslConfig;
+    }
+    public ConnectionFactory setSaslConfig(SaslConfig saslConfig) {
+        this.saslConfig = saslConfig;
+        return this;
+    }
+    public SocketFactory getSocketFactory() {
+        return this.socketFactory;
+    }
+    public ConnectionFactory setSocketFactory(SocketFactory factory) {
+        this.socketFactory = factory;
+        return this;
+    }
+    public SocketConfigurator getSocketConfigurator() {
+        return socketConf;
+    }
+    public ConnectionFactory setSocketConfigurator(SocketConfigurator socketConfigurator) {
+        this.socketConf = socketConfigurator;
+        return this;
+    }
+    public ConnectionFactory setSharedExecutor(ExecutorService executor) {
+        this.sharedExecutor = executor;
+        return this;
+    }
+    public ConnectionFactory setShutdownExecutor(ExecutorService executor) {
+        this.shutdownExecutor = executor;
+        return this;
+    }
+    public ConnectionFactory setHeartbeatExecutor(ScheduledExecutorService executor) {
+        this.heartbeatExecutor = executor;
+        return this;
+    }
+    public ThreadFactory getThreadFactory() {
+        return threadFactory;
+    }
+    public ConnectionFactory setThreadFactory(ThreadFactory threadFactory) {
+        this.threadFactory = threadFactory;
+        return this;
+    }
+    public ExceptionHandler getExceptionHandler() {
+        return exceptionHandler;
+    }
+    public ConnectionFactory setExceptionHandler(ExceptionHandler exceptionHandler) {
+        if (exceptionHandler == null) {
+          throw new IllegalArgumentException("exception handler cannot be null!");
+        }
+        this.exceptionHandler = exceptionHandler;
+        return this;
+    }
+    public boolean isSSL(){
+        return getSocketFactory() instanceof SSLSocketFactory || sslContextFactory != null;
+    }
+    public ConnectionFactory useSslProtocol()
+        throws NoSuchAlgorithmException, KeyManagementException
+    {
+        return useSslProtocol(computeDefaultTlsProtocol(SSLContext.getDefault().getSupportedSSLParameters().getProtocols()));
+    }
+    public ConnectionFactory useSslProtocol(String protocol)
+        throws NoSuchAlgorithmException, KeyManagementException
+    {
+        return useSslProtocol(protocol, new TrustEverythingTrustManager());
+    }
+    public ConnectionFactory useSslProtocol(String protocol, TrustManager trustManager)
+        throws NoSuchAlgorithmException, KeyManagementException
+    {
+        SSLContext c = SSLContext.getInstance(protocol);
+        c.init(null, new TrustManager[] { trustManager }, null);
+        return useSslProtocol(c);
+    }
+    public ConnectionFactory useSslProtocol(SSLContext context) {
+        this.sslContextFactory = name -> context;
+        setSocketFactory(context.getSocketFactory());
+        return this;
+    }
+    public ConnectionFactory enableHostnameVerification() {
+        enableHostnameVerificationForNio();
+        enableHostnameVerificationForBlockingIo();
+        return this;
+    }
+    protected void enableHostnameVerificationForNio() {
+        if (this.nioParams == null) {
+            this.nioParams = new NioParams();
+        }
+        this.nioParams = this.nioParams.enableHostnameVerification();
+    }
+    protected void enableHostnameVerificationForBlockingIo() {
+        if (this.socketConf == null) {
+            this.socketConf = SocketConfigurators.builder().defaultConfigurator().enableHostnameVerification().build();
+        } else {
+            this.socketConf = this.socketConf.andThen(SocketConfigurators.enableHostnameVerification());
+        }
+    }
+    public static String computeDefaultTlsProtocol(String[] supportedProtocols) {
+        if(supportedProtocols != null) {
+            for (String supportedProtocol : supportedProtocols) {
+                if(PREFERRED_TLS_PROTOCOL.equalsIgnoreCase(supportedProtocol)) {
+                    return supportedProtocol;
+                }
+            }
+        }
+        return FALLBACK_TLS_PROTOCOL;
+    }
+    public boolean isAutomaticRecoveryEnabled() {
+        return automaticRecovery;
+    }
+    public ConnectionFactory setAutomaticRecoveryEnabled(boolean automaticRecovery) {
+        this.automaticRecovery = automaticRecovery;
+        return this;
+    }
+    public boolean isTopologyRecoveryEnabled() {
+        return topologyRecovery;
+    }
+    public ConnectionFactory setTopologyRecoveryEnabled(boolean topologyRecovery) {
+        this.topologyRecovery = topologyRecovery;
+        return this;
+    }
+    public ExecutorService getTopologyRecoveryExecutor() {
+        return topologyRecoveryExecutor;
+    }
+    public ConnectionFactory setTopologyRecoveryExecutor(final ExecutorService topologyRecoveryExecutor) {
+        this.topologyRecoveryExecutor = topologyRecoveryExecutor;
+        return this;
+    }
+    public ConnectionFactory setMetricsCollector(MetricsCollector metricsCollector) {
+        this.metricsCollector = metricsCollector;
+        return this;
+    }
+    public MetricsCollector getMetricsCollector() {
+        return metricsCollector;
+    }
+  public void setObservationCollector(ObservationCollector observationCollector) {
+        this.observationCollector = observationCollector;
+    }
+    public ConnectionFactory setCredentialsRefreshService(CredentialsRefreshService credentialsRefreshService) {
+        this.credentialsRefreshService = credentialsRefreshService;
+        return this;
+    }
+    protected synchronized FrameHandlerFactory createFrameHandlerFactory() throws IOException {
+        if(nio) {
+            if(this.frameHandlerFactory == null) {
+                if(this.nioParams.getNioExecutor() == null && this.nioParams.getThreadFactory() == null) {
+                    this.nioParams.setThreadFactory(getThreadFactory());
+                }
+                this.frameHandlerFactory = new SocketChannelFrameHandlerFactory(
+                    connectionTimeout, nioParams, isSSL(), sslContextFactory,
+                    this.maxInboundMessageBodySize);
+            }
+            return this.frameHandlerFactory;
+        } else {
+            return new SocketFrameHandlerFactory(connectionTimeout, socketFactory,
+                socketConf, isSSL(), this.shutdownExecutor, sslContextFactory,
+                this.maxInboundMessageBodySize);
+        }
+    }
+    public Connection newConnection(Address[] addrs) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, Arrays.asList(addrs), null);
+    }
+    public Connection newConnection(AddressResolver addressResolver) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, addressResolver, null);
+    }
+    public Connection newConnection(Address[] addrs, String clientProvidedName) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, Arrays.asList(addrs), clientProvidedName);
+    }
+    public Connection newConnection(List<Address> addrs) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, addrs, null);
+    }
+    public Connection newConnection(List<Address> addrs, String clientProvidedName) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, addrs, clientProvidedName);
+    }
+    public Connection newConnection(ExecutorService executor, Address[] addrs) throws IOException, TimeoutException {
+        return newConnection(executor, Arrays.asList(addrs), null);
+    }
+    public Connection newConnection(ExecutorService executor, Address[] addrs, String clientProvidedName) throws IOException, TimeoutException {
+        return newConnection(executor, Arrays.asList(addrs), clientProvidedName);
+    }
+    public Connection newConnection(ExecutorService executor, List<Address> addrs) throws IOException, TimeoutException {
+        return newConnection(executor, addrs, null);
+    }
+    public Connection newConnection(ExecutorService executor, AddressResolver addressResolver) throws IOException, TimeoutException {
+        return newConnection(executor, addressResolver, null);
+    }
+    public Connection newConnection(ExecutorService executor, List<Address> addrs, String clientProvidedName)
+            throws IOException, TimeoutException {
+        return newConnection(executor, createAddressResolver(addrs), clientProvidedName);
+    }
+    public Connection newConnection(ExecutorService executor, AddressResolver addressResolver, String clientProvidedName)
+        throws IOException, TimeoutException {
+        if(this.metricsCollector == null) {
+            this.metricsCollector = new NoOpMetricsCollector();
+        }
+        FrameHandlerFactory fhFactory = createFrameHandlerFactory();
+        ConnectionParams params = params(executor);
+        if (clientProvidedName != null) {
+            Map<String, Object> properties = new HashMap<String, Object>(params.getClientProperties());
+            properties.put("connection_name", clientProvidedName);
+            params.setClientProperties(properties);
+        }
+        if (isAutomaticRecoveryEnabled()) {
+            AutorecoveringConnection conn = new AutorecoveringConnection(
+                params, fhFactory, addressResolver, metricsCollector, observationCollector); 
+            conn.init();
+            return conn;
+        } else {
+            List<Address> addrs = addressResolver.getAddresses();
+            Exception lastException = null;
+            for (Address addr : addrs) {
+                try {
+                    FrameHandler handler = fhFactory.create(addr, clientProvidedName);
+                    AMQConnection conn = createConnection(params, handler, metricsCollector);
+                    conn.start();
+                    this.metricsCollector.newConnection(conn);
+                    return conn;
+                } catch (IOException e) {
+                    lastException = e;
+                } catch (TimeoutException te) {
+                    lastException = te;
+                }
+            }
+            if (lastException != null) {
+                if (lastException instanceof IOException) {
+                    throw (IOException) lastException;
+                } else if (lastException instanceof TimeoutException) {
+                    throw (TimeoutException) lastException;
+                }
+            }
+            throw new IOException("failed to connect");
+        }
+    }
+    public ConnectionParams params(ExecutorService consumerWorkServiceExecutor) {
+        ConnectionParams result = new ConnectionParams();
+        result.setCredentialsProvider(credentialsProvider);
+        result.setConsumerWorkServiceExecutor(consumerWorkServiceExecutor);
+        result.setVirtualHost(virtualHost);
+        result.setClientProperties(getClientProperties());
+        result.setRequestedFrameMax(requestedFrameMax);
+        result.setRequestedChannelMax(requestedChannelMax);
+        result.setShutdownTimeout(shutdownTimeout);
+        result.setSaslConfig(saslConfig);
+        result.setNetworkRecoveryInterval(networkRecoveryInterval);
+        result.setRecoveryDelayHandler(recoveryDelayHandler);
+        result.setTopologyRecovery(topologyRecovery);
+        result.setTopologyRecoveryExecutor(topologyRecoveryExecutor);
+        result.setExceptionHandler(exceptionHandler);
+        result.setThreadFactory(threadFactory);
+        result.setHandshakeTimeout(handshakeTimeout);
+        result.setRequestedHeartbeat(requestedHeartbeat);
+        result.setShutdownExecutor(shutdownExecutor);
+        result.setHeartbeatExecutor(heartbeatExecutor);
+        result.setChannelRpcTimeout(channelRpcTimeout);
+        result.setChannelShouldCheckRpcResponseType(channelShouldCheckRpcResponseType);
+        result.setWorkPoolTimeout(workPoolTimeout);
+        result.setErrorOnWriteListener(errorOnWriteListener);
+        result.setTopologyRecoveryFilter(topologyRecoveryFilter);
+        result.setConnectionRecoveryTriggeringCondition(connectionRecoveryTriggeringCondition);
+        result.setTopologyRecoveryRetryHandler(topologyRecoveryRetryHandler);
+        result.setRecoveredQueueNameSupplier(recoveredQueueNameSupplier);
+        result.setTrafficListener(trafficListener);
+        result.setCredentialsRefreshService(credentialsRefreshService);
+        result.setMaxInboundMessageBodySize(maxInboundMessageBodySize);
+        return result;
+    }
+    protected AMQConnection createConnection(ConnectionParams params, FrameHandler frameHandler, MetricsCollector metricsCollector) {
+        return new AMQConnection(params, frameHandler, metricsCollector, observationCollector);
+    }
+    public Connection newConnection() throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, Collections.singletonList(new Address(getHost(), getPort())));
+    }
+    public Connection newConnection(String connectionName) throws IOException, TimeoutException {
+        return newConnection(this.sharedExecutor, Collections.singletonList(new Address(getHost(), getPort())), connectionName);
+    }
+    public Connection newConnection(ExecutorService executor) throws IOException, TimeoutException {
+        return newConnection(executor, Collections.singletonList(new Address(getHost(), getPort())));
+    }
+    public Connection newConnection(ExecutorService executor, String connectionName) throws IOException, TimeoutException {
+        return newConnection(executor, Collections.singletonList(new Address(getHost(), getPort())), connectionName);
+    }
+    protected AddressResolver createAddressResolver(List<Address> addresses) {
+        if (addresses == null || addresses.isEmpty()) {
+            throw new IllegalArgumentException("Please provide at least one address to connect to");
+        } else if (addresses.size() > 1) {
+            return new ListAddressResolver(addresses);
+        } else {
+            return new DnsRecordIpAddressResolver(addresses.get(0), isSSL());
+        }
+    }
+    @Override public ConnectionFactory clone(){
+        try {
+            ConnectionFactory clone = (ConnectionFactory)super.clone();
+            return clone;
+        } catch (CloneNotSupportedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    public ConnectionFactory load(String propertyFileLocation) throws IOException {
+        ConnectionFactoryConfigurator.load(this, propertyFileLocation);
+        return this;
+    }
+    public ConnectionFactory load(String propertyFileLocation, String prefix) throws IOException {
+        ConnectionFactoryConfigurator.load(this, propertyFileLocation, prefix);
+        return this;
+    }
+    public ConnectionFactory load(Properties properties) {
+        ConnectionFactoryConfigurator.load(this, properties);
+        return this;
+    }
+    @SuppressWarnings("unchecked")
+    public ConnectionFactory load(Properties properties, String prefix) {
+        ConnectionFactoryConfigurator.load(this, (Map) properties, prefix);
+        return this;
+    }
+    public ConnectionFactory load(Map<String, String> properties) {
+        ConnectionFactoryConfigurator.load(this, properties);
+        return this;
+    }
+    public ConnectionFactory load(Map<String, String> properties, String prefix) {
+        ConnectionFactoryConfigurator.load(this, properties, prefix);
+        return this;
+    }
+    public long getNetworkRecoveryInterval() {
+        return networkRecoveryInterval;
+    }
+    public ConnectionFactory setNetworkRecoveryInterval(int networkRecoveryInterval) {
+        this.networkRecoveryInterval = networkRecoveryInterval;
+        return this;
+    }
+    public ConnectionFactory setNetworkRecoveryInterval(long networkRecoveryInterval) {
+        this.networkRecoveryInterval = networkRecoveryInterval;
+        return this;
+    }
+    public RecoveryDelayHandler getRecoveryDelayHandler() {
+        return recoveryDelayHandler;
+    }
+    public ConnectionFactory setRecoveryDelayHandler(final RecoveryDelayHandler recoveryDelayHandler) {
+        this.recoveryDelayHandler = recoveryDelayHandler;
+        return this;
+    }
+    public ConnectionFactory setNioParams(NioParams nioParams) {
+        this.nioParams = nioParams;
+        return this;
+    }
+    public NioParams getNioParams() {
+        return nioParams;
+    }
+    public ConnectionFactory useNio() {
+        this.nio = true;
+        return this;
+    }
+    public ConnectionFactory useBlockingIo() {
+        this.nio = false;
+        return this;
+    }
+    public ConnectionFactory setChannelRpcTimeout(int channelRpcTimeout) {
+        if(channelRpcTimeout < 0) {
+            throw new IllegalArgumentException("Timeout cannot be less than 0");
+        }
+        this.channelRpcTimeout = channelRpcTimeout;
+        return this;
+    }
+    public int getChannelRpcTimeout() {
+        return channelRpcTimeout;
+    }
+    public void setMaxInboundMessageBodySize(int maxInboundMessageBodySize) {
+        if (maxInboundMessageBodySize <= 0) {
+            throw new IllegalArgumentException("Max inbound message body size must be greater than 0: "
+                + maxInboundMessageBodySize);
+        }
+        this.maxInboundMessageBodySize = maxInboundMessageBodySize;
+    }
+    public ConnectionFactory setSslContextFactory(SslContextFactory sslContextFactory) {
+        this.sslContextFactory = sslContextFactory;
+        return this;
+    }
+    public ConnectionFactory setChannelShouldCheckRpcResponseType(boolean channelShouldCheckRpcResponseType) {
+        this.channelShouldCheckRpcResponseType = channelShouldCheckRpcResponseType;
+        return this;
+    }
+    public boolean isChannelShouldCheckRpcResponseType() {
+        return channelShouldCheckRpcResponseType;
+    }
+    public ConnectionFactory setWorkPoolTimeout(int workPoolTimeout) {
+        this.workPoolTimeout = workPoolTimeout;
+        return this;
+    }
+    public int getWorkPoolTimeout() {
+        return workPoolTimeout;
+    }
+    public ConnectionFactory setErrorOnWriteListener(ErrorOnWriteListener errorOnWriteListener) {
+        this.errorOnWriteListener = errorOnWriteListener;
+        return this;
+    }
+    public ConnectionFactory setTopologyRecoveryFilter(TopologyRecoveryFilter topologyRecoveryFilter) {
+        this.topologyRecoveryFilter = topologyRecoveryFilter;
+        return this;
+    }
+    public ConnectionFactory setConnectionRecoveryTriggeringCondition(Predicate<ShutdownSignalException> connectionRecoveryTriggeringCondition) {
+        this.connectionRecoveryTriggeringCondition = connectionRecoveryTriggeringCondition;
+        return this;
+    }
+    public ConnectionFactory setTopologyRecoveryRetryHandler(RetryHandler topologyRecoveryRetryHandler) {
+        this.topologyRecoveryRetryHandler = topologyRecoveryRetryHandler;
+        return this;
+    }
+    public ConnectionFactory setRecoveredQueueNameSupplier(RecoveredQueueNameSupplier recoveredQueueNameSupplier) {
+        this.recoveredQueueNameSupplier = recoveredQueueNameSupplier;
+        return this;
+    }
+    public ConnectionFactory setTrafficListener(TrafficListener trafficListener) {
+        this.trafficListener = trafficListener;
+        return this;
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import java.nio.ByteBuffer;
+import java.util.function.Function;
+public class DefaultByteBufferFactory implements ByteBufferFactory {
+    private final Function<Integer, ByteBuffer> allocator;
+    public DefaultByteBufferFactory(Function<Integer, ByteBuffer> allocator) {
+        this.allocator = allocator;
+    }
+    public DefaultByteBufferFactory() {
+        this(capacity -> ByteBuffer.allocate(capacity));
+    }
+    @Override
+    public ByteBuffer createReadBuffer(NioContext nioContext) {
+        if (nioContext.getSslEngine() == null) {
+            return allocator.apply(nioContext.getNioParams().getReadByteBufferSize());
+        } else {
+            return allocator.apply(nioContext.getSslEngine().getSession().getApplicationBufferSize());
+        }
+    }
+    @Override
+    public ByteBuffer createWriteBuffer(NioContext nioContext) {
+        if (nioContext.getSslEngine() == null) {
+            return allocator.apply(nioContext.getNioParams().getWriteByteBufferSize());
+        } else {
+            return allocator.apply(nioContext.getSslEngine().getSession().getApplicationBufferSize());
+        }
+    }
+    @Override
+    public ByteBuffer createEncryptedReadBuffer(NioContext nioContext) {
+        return createEncryptedByteBuffer(nioContext);
+    }
+    @Override
+    public ByteBuffer createEncryptedWriteBuffer(NioContext nioContext) {
+        return createEncryptedByteBuffer(nioContext);
+    }
+    protected ByteBuffer createEncryptedByteBuffer(NioContext nioContext) {
+        if (nioContext.getSslEngine() == null) {
+            throw new IllegalArgumentException("Encrypted byte buffer should be created only in SSL/TLS context");
+        } else {
+            return allocator.apply(nioContext.getSslEngine().getSession().getPacketBufferSize());
+        }
+    }
+}
+package com.rabbitmq.client;
+import com.rabbitmq.client.impl.AMQConnection;
+import com.rabbitmq.client.impl.nio.NioParams;
+import javax.net.ssl.*;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URISyntaxException;
+import java.security.*;
+import java.security.cert.CertificateException;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+public class ConnectionFactoryConfigurator {
+    public static final String DEFAULT_PREFIX = "rabbitmq.";
+    public static final String USERNAME = "username";
+    public static final String PASSWORD = "password"; 
+    public static final String VIRTUAL_HOST = "virtual.host";
+    public static final String HOST = "host";
+    public static final String PORT = "port";
+    public static final String CONNECTION_CHANNEL_MAX = "connection.channel.max";
+    public static final String CONNECTION_FRAME_MAX = "connection.frame.max";
+    public static final String CONNECTION_HEARTBEAT = "connection.heartbeat";
+    public static final String CONNECTION_TIMEOUT = "connection.timeout";
+    public static final String HANDSHAKE_TIMEOUT = "handshake.timeout";
+    public static final String SHUTDOWN_TIMEOUT = "shutdown.timeout";
+    public static final String CLIENT_PROPERTIES_PREFIX = "client.properties.";
+    public static final String CONNECTION_RECOVERY_ENABLED = "connection.recovery.enabled";
+    public static final String TOPOLOGY_RECOVERY_ENABLED = "topology.recovery.enabled";
+    public static final String CONNECTION_RECOVERY_INTERVAL = "connection.recovery.interval";
+    public static final String CHANNEL_RPC_TIMEOUT = "channel.rpc.timeout";
+    public static final String CHANNEL_SHOULD_CHECK_RPC_RESPONSE_TYPE = "channel.should.check.rpc.response.type";
+    public static final String USE_NIO = "use.nio";
+    public static final String NIO_READ_BYTE_BUFFER_SIZE = "nio.read.byte.buffer.size";
+    public static final String NIO_WRITE_BYTE_BUFFER_SIZE = "nio.write.byte.buffer.size";
+    public static final String NIO_NB_IO_THREADS = "nio.nb.io.threads";
+    public static final String NIO_WRITE_ENQUEUING_TIMEOUT_IN_MS = "nio.write.enqueuing.timeout.in.ms";
+    public static final String NIO_WRITE_QUEUE_CAPACITY = "nio.write.queue.capacity";
+    public static final String SSL_ALGORITHM = "ssl.algorithm";
+    public static final String SSL_ENABLED = "ssl.enabled";
+    public static final String SSL_KEY_STORE = "ssl.key.store";
+    public static final String SSL_KEY_STORE_PASSWORD = "ssl.key.store.password";
+    public static final String SSL_KEY_STORE_TYPE = "ssl.key.store.type";
+    public static final String SSL_KEY_STORE_ALGORITHM = "ssl.key.store.algorithm";
+    public static final String SSL_TRUST_STORE = "ssl.trust.store";
+    public static final String SSL_TRUST_STORE_PASSWORD = "ssl.trust.store.password";
+    public static final String SSL_TRUST_STORE_TYPE = "ssl.trust.store.type";
+    public static final String SSL_TRUST_STORE_ALGORITHM = "ssl.trust.store.algorithm";
+    public static final String SSL_VALIDATE_SERVER_CERTIFICATE = "ssl.validate.server.certificate";
+    public static final String SSL_VERIFY_HOSTNAME = "ssl.verify.hostname";
+    private static final Map<String, List<String>> ALIASES = new ConcurrentHashMap<String, List<String>>() {{
+        put(SSL_KEY_STORE, Arrays.asList("ssl.key-store"));
+        put(SSL_KEY_STORE_PASSWORD, Arrays.asList("ssl.key-store-password"));
+        put(SSL_KEY_STORE_TYPE, Arrays.asList("ssl.key-store-type"));
+        put(SSL_KEY_STORE_ALGORITHM, Arrays.asList("ssl.key-store-algorithm"));
+        put(SSL_TRUST_STORE, Arrays.asList("ssl.trust-store"));
+        put(SSL_TRUST_STORE_PASSWORD, Arrays.asList("ssl.trust-store-password"));
+        put(SSL_TRUST_STORE_TYPE, Arrays.asList("ssl.trust-store-type"));
+        put(SSL_TRUST_STORE_ALGORITHM, Arrays.asList("ssl.trust-store-algorithm"));
+        put(SSL_VALIDATE_SERVER_CERTIFICATE, Arrays.asList("ssl.validate-server-certificate"));
+        put(SSL_VERIFY_HOSTNAME, Arrays.asList("ssl.verify-hostname"));
+    }};
+    @SuppressWarnings("unchecked")
+    public static void load(ConnectionFactory cf, String propertyFileLocation, String prefix) throws IOException {
+        if (propertyFileLocation == null || propertyFileLocation.isEmpty()) {
+            throw new IllegalArgumentException("Property file argument cannot be null or empty");
+        }
+        Properties properties = new Properties();
+        try (InputStream in = loadResource(propertyFileLocation)) {
+            properties.load(in);
+        }
+        load(cf, (Map) properties, prefix);
+    }
+    private static InputStream loadResource(String location) throws FileNotFoundException {
+        if (location.startsWith("classpath:")) {
+            return ConnectionFactoryConfigurator.class.getResourceAsStream(
+                    location.substring("classpath:".length())
+            );
+        } else {
+            return new FileInputStream(location);
+        }
+    }
+    public static void load(ConnectionFactory cf, Map<String, String> properties, String prefix) {
+        prefix = prefix == null ? "" : prefix;
+        String uri = properties.get(prefix + "uri");
+        if (uri != null) {
+            try {
+                cf.setUri(uri);
+            } catch (URISyntaxException e) {
+                throw new IllegalArgumentException("Error while setting AMQP URI: " + uri, e);
+            } catch (NoSuchAlgorithmException e) {
+                throw new IllegalArgumentException("Error while setting AMQP URI: " + uri, e);
+            } catch (KeyManagementException e) {
+                throw new IllegalArgumentException("Error while setting AMQP URI: " + uri, e);
+            }
+        }
+        String username = lookUp(USERNAME, properties, prefix);
+        if (username != null) {
+            cf.setUsername(username);
+        }
+        String password = lookUp(PASSWORD, properties, prefix);
+        if (password != null) {
+            cf.setPassword(password);
+        }
+        String vhost = lookUp(VIRTUAL_HOST, properties, prefix);
+        if (vhost != null) {
+            cf.setVirtualHost(vhost);
+        }
+        String host = lookUp(HOST, properties, prefix);
+        if (host != null) {
+            cf.setHost(host);
+        }
+        String port = lookUp(PORT, properties, prefix);
+        if (port != null) {
+            cf.setPort(Integer.valueOf(port));
+        }
+        String requestedChannelMax = lookUp(CONNECTION_CHANNEL_MAX, properties, prefix);
+        if (requestedChannelMax != null) {
+            cf.setRequestedChannelMax(Integer.valueOf(requestedChannelMax));
+        }
+        String requestedFrameMax = lookUp(CONNECTION_FRAME_MAX, properties, prefix);
+        if (requestedFrameMax != null) {
+            cf.setRequestedFrameMax(Integer.valueOf(requestedFrameMax));
+        }
+        String requestedHeartbeat = lookUp(CONNECTION_HEARTBEAT, properties, prefix);
+        if (requestedHeartbeat != null) {
+            cf.setRequestedHeartbeat(Integer.valueOf(requestedHeartbeat));
+        }
+        String connectionTimeout = lookUp(CONNECTION_TIMEOUT, properties, prefix);
+        if (connectionTimeout != null) {
+            cf.setConnectionTimeout(Integer.valueOf(connectionTimeout));
+        }
+        String handshakeTimeout = lookUp(HANDSHAKE_TIMEOUT, properties, prefix);
+        if (handshakeTimeout != null) {
+            cf.setHandshakeTimeout(Integer.valueOf(handshakeTimeout));
+        }
+        String shutdownTimeout = lookUp(SHUTDOWN_TIMEOUT, properties, prefix);
+        if (shutdownTimeout != null) {
+            cf.setShutdownTimeout(Integer.valueOf(shutdownTimeout));
+        }
+        Map<String, Object> clientProperties = new HashMap<String, Object>();
+        Map<String, Object> defaultClientProperties = AMQConnection.defaultClientProperties();
+        clientProperties.putAll(defaultClientProperties);
+        for (Map.Entry<String, String> entry : properties.entrySet()) {
+            if (entry.getKey().startsWith(prefix + CLIENT_PROPERTIES_PREFIX)) {
+                String clientPropertyKey = entry.getKey().substring((prefix + CLIENT_PROPERTIES_PREFIX).length());
+                if (defaultClientProperties.containsKey(clientPropertyKey) && (entry.getValue() == null || entry.getValue().trim().isEmpty())) {
+                    clientProperties.remove(clientPropertyKey);
+                } else {
+                    clientProperties.put(
+                            clientPropertyKey,
+                            entry.getValue()
+                    );
+                }
+            }
+        }
+        cf.setClientProperties(clientProperties);
+        String automaticRecovery = lookUp(CONNECTION_RECOVERY_ENABLED, properties, prefix);
+        if (automaticRecovery != null) {
+            cf.setAutomaticRecoveryEnabled(Boolean.valueOf(automaticRecovery));
+        }
+        String topologyRecovery = lookUp(TOPOLOGY_RECOVERY_ENABLED, properties, prefix);
+        if (topologyRecovery != null) {
+            cf.setTopologyRecoveryEnabled(Boolean.valueOf(topologyRecovery));
+        }
+        String networkRecoveryInterval = lookUp(CONNECTION_RECOVERY_INTERVAL, properties, prefix);
+        if (networkRecoveryInterval != null) {
+            cf.setNetworkRecoveryInterval(Long.valueOf(networkRecoveryInterval));
+        }
+        String channelRpcTimeout = lookUp(CHANNEL_RPC_TIMEOUT, properties, prefix);
+        if (channelRpcTimeout != null) {
+            cf.setChannelRpcTimeout(Integer.valueOf(channelRpcTimeout));
+        }
+        String channelShouldCheckRpcResponseType = lookUp(CHANNEL_SHOULD_CHECK_RPC_RESPONSE_TYPE, properties, prefix);
+        if (channelShouldCheckRpcResponseType != null) {
+            cf.setChannelShouldCheckRpcResponseType(Boolean.valueOf(channelShouldCheckRpcResponseType));
+        }
+        String useNio = lookUp(USE_NIO, properties, prefix);
+        if (useNio != null && Boolean.valueOf(useNio)) {
+            cf.useNio();
+            NioParams nioParams = new NioParams();
+            String readByteBufferSize = lookUp(NIO_READ_BYTE_BUFFER_SIZE, properties, prefix);
+            if (readByteBufferSize != null) {
+                nioParams.setReadByteBufferSize(Integer.valueOf(readByteBufferSize));
+            }
+            String writeByteBufferSize = lookUp(NIO_WRITE_BYTE_BUFFER_SIZE, properties, prefix);
+            if (writeByteBufferSize != null) {
+                nioParams.setWriteByteBufferSize(Integer.valueOf(writeByteBufferSize));
+            }
+            String nbIoThreads = lookUp(NIO_NB_IO_THREADS, properties, prefix);
+            if (nbIoThreads != null) {
+                nioParams.setNbIoThreads(Integer.valueOf(nbIoThreads));
+            }
+            String writeEnqueuingTime = lookUp(NIO_WRITE_ENQUEUING_TIMEOUT_IN_MS, properties, prefix);
+            if (writeEnqueuingTime != null) {
+                nioParams.setWriteEnqueuingTimeoutInMs(Integer.valueOf(writeEnqueuingTime));
+            }
+            String writeQueueCapacity = lookUp(NIO_WRITE_QUEUE_CAPACITY, properties, prefix);
+            if (writeQueueCapacity != null) {
+                nioParams.setWriteQueueCapacity(Integer.valueOf(writeQueueCapacity));
+            }
+            cf.setNioParams(nioParams);
+        }
+        String useSsl = lookUp(SSL_ENABLED, properties, prefix);
+        if (useSsl != null && Boolean.valueOf(useSsl)) {
+            setUpSsl(cf, properties, prefix);
+        }
+    }
+    private static void setUpSsl(ConnectionFactory cf, Map<String, String> properties, String prefix) {
+        String algorithm = lookUp(SSL_ALGORITHM, properties, prefix);
+        String keyStoreLocation = lookUp(SSL_KEY_STORE, properties, prefix);
+        String keyStorePassword = lookUp(SSL_KEY_STORE_PASSWORD, properties, prefix);
+        String keyStoreType = lookUp(SSL_KEY_STORE_TYPE, properties, prefix, "PKCS12");
+        String keyStoreAlgorithm = lookUp(SSL_KEY_STORE_ALGORITHM, properties, prefix, "SunX509");
+        String trustStoreLocation = lookUp(SSL_TRUST_STORE, properties, prefix);
+        String trustStorePassword = lookUp(SSL_TRUST_STORE_PASSWORD, properties, prefix);
+        String trustStoreType = lookUp(SSL_TRUST_STORE_TYPE, properties, prefix, "JKS");
+        String trustStoreAlgorithm = lookUp(SSL_TRUST_STORE_ALGORITHM, properties, prefix, "SunX509");
+        String validateServerCertificate = lookUp(SSL_VALIDATE_SERVER_CERTIFICATE, properties, prefix);
+        String verifyHostname = lookUp(SSL_VERIFY_HOSTNAME, properties, prefix);
+        try {
+            algorithm = algorithm == null ?
+                    ConnectionFactory.computeDefaultTlsProtocol(SSLContext.getDefault().getSupportedSSLParameters().getProtocols()) : algorithm;
+            boolean enableHostnameVerification = verifyHostname == null ? Boolean.FALSE : Boolean.valueOf(verifyHostname);
+            if (keyStoreLocation == null && trustStoreLocation == null) {
+                setUpBasicSsl(
+                        cf,
+                        validateServerCertificate == null ? Boolean.FALSE : Boolean.valueOf(validateServerCertificate),
+                        enableHostnameVerification,
+                        algorithm
+                );
+            } else {
+                KeyManager[] keyManagers = configureKeyManagers(keyStoreLocation, keyStorePassword, keyStoreType, keyStoreAlgorithm);
+                TrustManager[] trustManagers = configureTrustManagers(trustStoreLocation, trustStorePassword, trustStoreType, trustStoreAlgorithm);
+                SSLContext sslContext = SSLContext.getInstance(algorithm);
+                sslContext.init(keyManagers, trustManagers, null);
+                cf.useSslProtocol(sslContext);
+                if (enableHostnameVerification) {
+                    cf.enableHostnameVerification();
+                }
+            }
+        } catch (NoSuchAlgorithmException | IOException | CertificateException |
+                UnrecoverableKeyException | KeyStoreException | KeyManagementException e) {
+            throw new IllegalStateException("Error while configuring TLS", e);
+        }
+    }
+    private static KeyManager[] configureKeyManagers(String keystore, String keystorePassword, String keystoreType, String keystoreAlgorithm) throws KeyStoreException, IOException, NoSuchAlgorithmException,
+            CertificateException, UnrecoverableKeyException {
+        char[] keyPassphrase = null;
+        if (keystorePassword != null) {
+            keyPassphrase = keystorePassword.toCharArray();
+        }
+        KeyManager[] keyManagers = null;
+        if (keystore != null) {
+            KeyStore ks = KeyStore.getInstance(keystoreType);
+            try (InputStream in = loadResource(keystore)) {
+                ks.load(in, keyPassphrase);
+            }
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(keystoreAlgorithm);
+            kmf.init(ks, keyPassphrase);
+            keyManagers = kmf.getKeyManagers();
+        }
+        return keyManagers;
+    }
+    private static TrustManager[] configureTrustManagers(String truststore, String truststorePassword, String truststoreType, String truststoreAlgorithm)
+            throws KeyStoreException, IOException, NoSuchAlgorithmException, CertificateException {
+        char[] trustPassphrase = null;
+        if (truststorePassword != null) {
+            trustPassphrase = truststorePassword.toCharArray();
+        }
+        TrustManager[] trustManagers = null;
+        if (truststore != null) {
+            KeyStore tks = KeyStore.getInstance(truststoreType);
+            try (InputStream in = loadResource(truststore)) {
+                tks.load(in, trustPassphrase);
+            }
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(truststoreAlgorithm);
+            tmf.init(tks);
+            trustManagers = tmf.getTrustManagers();
+        }
+        return trustManagers;
+    }
+    private static void setUpBasicSsl(ConnectionFactory cf, boolean validateServerCertificate, boolean verifyHostname, String sslAlgorithm) throws KeyManagementException, NoSuchAlgorithmException, KeyStoreException {
+        if (validateServerCertificate) {
+            useDefaultTrustStore(cf, sslAlgorithm, verifyHostname);
+        } else {
+            if (sslAlgorithm == null) {
+                cf.useSslProtocol();
+            } else {
+                cf.useSslProtocol(sslAlgorithm);
+            }
+        }
+    }
+    private static void useDefaultTrustStore(ConnectionFactory cf, String sslAlgorithm, boolean verifyHostname) throws NoSuchAlgorithmException, KeyStoreException, KeyManagementException {
+        SSLContext sslContext = SSLContext.getInstance(sslAlgorithm);
+        TrustManagerFactory trustManagerFactory =
+                TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trustManagerFactory.init((KeyStore) null);
+        sslContext.init(null, trustManagerFactory.getTrustManagers(), null);
+        cf.useSslProtocol(sslContext);
+        if (verifyHostname) {
+            cf.enableHostnameVerification();
+        }
+    }
+    public static void load(ConnectionFactory connectionFactory, String propertyFileLocation) throws IOException {
+        load(connectionFactory, propertyFileLocation, DEFAULT_PREFIX);
+    }
+    @SuppressWarnings("unchecked")
+    public static void load(ConnectionFactory connectionFactory, Properties properties) {
+        load(connectionFactory, (Map) properties, DEFAULT_PREFIX);
+    }
+    @SuppressWarnings("unchecked")
+    public static void load(ConnectionFactory connectionFactory, Properties properties, String prefix) {
+        load(connectionFactory, (Map) properties, prefix);
+    }
+    public static void load(ConnectionFactory connectionFactory, Map<String, String> properties) {
+        load(connectionFactory, properties, DEFAULT_PREFIX);
+    }
+    public static String lookUp(String key, Map<String, String> properties, String prefix) {
+        return lookUp(key, properties, prefix, null);
+    }
+    public static String lookUp(String key, Map<String, String> properties, String prefix, String defaultValue) {
+        String value = properties.get(prefix + key);
+        if (value == null) {
+            value = ALIASES.getOrDefault(key, Collections.emptyList()).stream()
+                    .map(alias -> properties.get(prefix + alias))
+                    .filter(v -> v != null)
+                    .findFirst().orElse(defaultValue);
+        }
+        return value;
+    }
+}
+package com.rabbitmq.client.impl.nio;
+import java.nio.ByteBuffer;
+public interface ByteBufferFactory {
+    ByteBuffer createReadBuffer(NioContext nioContext);
+    ByteBuffer createWriteBuffer(NioContext nioContext);
+    ByteBuffer createEncryptedReadBuffer(NioContext nioContext);
+    ByteBuffer createEncryptedWriteBuffer(NioContext nioContext);
+}
+package com.rabbitmq.client.impl.nio;
+public interface NioQueue {
+    boolean offer(WriteRequest writeRequest) throws InterruptedException;
+    int size();
+    WriteRequest poll();
+    boolean isEmpty();
+}
+package com.rabbitmq.client.impl.nio;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
+public class BlockingQueueNioQueue implements NioQueue {
+    private final BlockingQueue<WriteRequest> delegate;
+    private final int writeEnqueuingTimeoutInMs;
+    public BlockingQueueNioQueue(BlockingQueue<WriteRequest> delegate, int writeEnqueuingTimeoutInMs) {
+        this.delegate = delegate;
+        this.writeEnqueuingTimeoutInMs = writeEnqueuingTimeoutInMs;
+    }
+    @Override
+    public boolean offer(WriteRequest writeRequest) throws InterruptedException {
+        return this.delegate.offer(writeRequest, writeEnqueuingTimeoutInMs, TimeUnit.MILLISECONDS);
+    }
+    @Override
+    public int size() {
+        return this.delegate.size();
+    }
+    @Override
+    public WriteRequest poll() {
+        return this.delegate.poll();
+    }
+    @Override
+    public boolean isEmpty() {
+        return this.delegate.isEmpty();
+    }
+}

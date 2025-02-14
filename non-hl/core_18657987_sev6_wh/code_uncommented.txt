@@ -1,0 +1,1191 @@
+package org.wicketstuff.jquery.ui.plugins.sfmenu;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.resource.HoverIntentJavaScriptResourceReference;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.resource.SuperfishJavaScriptResourceReference;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.settings.SuperfishLibrarySettings;
+public class SfMenuBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "superfish";
+	public SfMenuBehavior(String selector)
+	{
+		this(selector, new Options(), false);
+	}
+	public SfMenuBehavior(String selector, Options options, Boolean isVertical)
+	{
+		super(selector, METHOD, options);
+		SuperfishLibrarySettings settings = SuperfishLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (isVertical && settings.getVerticalStyleSheetReference() != null)
+		{
+			this.add(settings.getVerticalStyleSheetReference());
+		}
+		this.add(HoverIntentJavaScriptResourceReference.get());
+		this.add(SuperfishJavaScriptResourceReference.get());
+	}
+}
+package org.wicketstuff.jquery.core;
+import java.util.List;
+import java.util.Map.Entry;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Args;
+import org.apache.wicket.util.lang.Generics;
+import org.wicketstuff.jquery.core.utils.JQueryUtils;
+public class JQueryBehavior extends JQueryAbstractBehavior
+{
+	private static final long serialVersionUID = 1L;
+	protected String selector = null;
+	protected final String method;
+	protected final Options options;
+	private List<String> events = null;
+	public JQueryBehavior(String selector)
+	{
+		this(selector, "");
+	}
+	public JQueryBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	public JQueryBehavior(String selector, String method, Options options)
+	{
+		this.method = Args.notNull(method, "method");
+		this.options = Args.notNull(options, "options");
+		this.selector = selector;
+	}
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		super.renderHead(component, response);
+		if (this.events != null)
+		{
+			StringBuilder statements = new StringBuilder();
+			for (String event : this.events)
+			{
+				statements.append(event);
+			}
+			this.renderOnDomReadyScript(statements.toString(), response);
+		}
+	}
+	public void detach(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(JQueryUtils.detach(this.selector));
+	}
+	public void remove(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(JQueryUtils.remove(this.selector));
+	}
+	public String getSelector()
+	{
+		return this.selector;
+	}
+	protected void setSelector(String selector)
+	{
+		this.selector = selector;
+	}
+	public String getMethod()
+	{
+		return this.method;
+	}
+	public <T> T getOption(String key)
+	{
+		return this.options.get(key);
+	}
+	public JQueryBehavior setOption(String key, Object value)
+	{
+		this.options.set(key, value);
+		return this;
+	}
+	public JQueryBehavior setOption(String key, Object... values)
+	{
+		this.options.set(key, values);
+		return this;
+	}
+	public JQueryBehavior setOption(String key, List<?> values)
+	{
+		this.options.set(key, values);
+		return this;
+	}
+	public Options getOptions()
+	{
+		return this.options;
+	}
+	public void setOptions(Options options)
+	{
+		for (Entry<String, Object> option : options.entries())
+		{
+			this.setOption(option.getKey(), option.getValue());
+		}
+	}
+	protected void on(String event, String callback)
+	{
+		this.on(this.selector, event, callback);
+	}
+	protected void on(String selector, String event, String callback)
+	{
+		this.register(String.format("jQuery('%s').on('%s', %s);", selector, event, callback));
+	}
+	protected void off(String selector, String event)
+	{
+		this.register(String.format("jQuery('%s').off('%s');", selector, event));
+	}
+	protected void register(String statement)
+	{
+		if (this.events == null)
+		{
+			this.events = Generics.newArrayList();
+		}
+		this.events.add(statement);
+	}
+	@Override
+	protected String $()
+	{
+		return JQueryBehavior.$(this.selector, this.method, this.options.toString());
+	}
+	public String $(String options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, options);
+	}
+	public String $(Options options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, options.toString());
+	}
+	public String $(Object... options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, Options.fromArray(options));
+	}
+	private static String $(String selector, String method, String options)
+	{
+		return String.format("jQuery('%s').%s(%s);", selector, method, options);
+	}
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (component instanceof IJQueryWidget)
+		{
+			((IJQueryWidget) component).onConfigure(this);
+		}
+	}
+	@Override
+	public void beforeRender(Component component)
+	{
+		super.beforeRender(component);
+		if (component instanceof IJQueryWidget)
+		{
+			((IJQueryWidget) component).onBeforeRender(this);
+		}
+	}
+}
+package org.wicketstuff.kendo.ui;
+import java.util.Collection;
+import java.util.List;
+import org.apache.wicket.Application;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Generics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.IJQueryWidget.JQueryWidget;
+import org.wicketstuff.kendo.ui.KendoDestroyListener.IDestroyable;
+import org.wicketstuff.kendo.ui.settings.KendoUILibrarySettings;
+public class KendoUIBehavior extends JQueryBehavior implements IDestroyable
+{
+	private static final long serialVersionUID = 1L;
+	private static final Logger LOG = LoggerFactory.getLogger(KendoUIBehavior.class);
+	private List<IKendoDataSource> datasources = null;
+	public KendoUIBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	public KendoUIBehavior(String selector, String method, Options options)
+	{
+		super(selector, method, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		KendoUILibrarySettings settings = KendoUILibrarySettings.get();
+		if (settings.getCommonStyleSheetReference() != null)
+		{
+			this.add(settings.getCommonStyleSheetReference());
+		}
+		if (settings.getThemeStyleSheetReference() != null)
+		{
+			this.add(settings.getThemeStyleSheetReference());
+		}
+		if (settings.getMobileStyleSheetReference() != null)
+		{
+			this.add(settings.getMobileStyleSheetReference());
+		}
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+	public boolean add(IKendoDataSource datasource)
+	{
+		if (this.datasources == null)
+		{
+			this.datasources = Generics.newArrayList();
+		}
+		return this.datasources.add(datasource);
+	}
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		if (this.datasources != null)
+		{
+			for (IKendoDataSource datasource : this.datasources)
+			{
+				this.renderOnDomReadyScript(datasource.toScript(), response); 
+			}
+		}
+		super.renderHead(component, response);
+	}
+	public String widget()
+	{
+		return KendoUIBehavior.widget(this.selector, this.method);
+	}
+	protected String widget(String method)
+	{
+		return KendoUIBehavior.widget(this.selector, method);
+	}
+	public static String widget(String selector, String method)
+	{
+		return String.format("jQuery('%s').data('%s')", selector, method);
+	}
+	public static String widget(Component component, String method)
+	{
+		return KendoUIBehavior.widget(JQueryWidget.getSelector(component), method);
+	}
+	@Override
+	public void destroy(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(String.format("var $w = %s; if($w) { $w.destroy(); }", this.widget()));
+		this.onDestroy(handler);
+	}
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (!Application.get().getMarkupSettings().getStripWicketTags())
+		{
+			LOG.warn("Application > MarkupSettings > StripWicketTags: setting is currently set to false. It is highly recommended to set it to true to prevent widget misbehaviors.");
+		}
+	}
+	protected void onDestroy(IPartialPageRequestHandler handler)
+	{
+	}
+}
+package org.wicketstuff.jquery.ui.plugins.fixedheadertable;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.fixedheadertable.settings.FixedHeaderTableLibrarySettings;
+public class FixedHeaderTableBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "fixedHeaderTable";
+	public FixedHeaderTableBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	public FixedHeaderTableBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		FixedHeaderTableLibrarySettings settings = FixedHeaderTableLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+}
+package org.wicketstuff.jquery.ui.plugins.datepicker;
+import org.apache.wicket.Component;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.ajax.attributes.CallbackParameter;
+import org.apache.wicket.request.resource.CssResourceReference;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.apache.wicket.util.lang.Args;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.JQueryEvent;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.ajax.IJQueryAjaxAware;
+import org.wicketstuff.jquery.core.ajax.JQueryAjaxBehavior;
+import org.wicketstuff.jquery.core.utils.RequestCycleUtils;
+@Deprecated
+public class RangeDatePickerBehavior extends JQueryBehavior implements IJQueryAjaxAware
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "DatePicker";
+	private final IRangeDatePickerListener listener;
+	private JQueryAjaxBehavior onRangeChangeAjaxBehavior;
+	public RangeDatePickerBehavior(final String selector, IRangeDatePickerListener listener)
+	{
+		this(selector, new Options(), listener);
+	}
+	public RangeDatePickerBehavior(final String selector, final Options options, IRangeDatePickerListener listener)
+	{
+		super(selector, METHOD, options);
+		this.listener = Args.notNull(listener, "listener");
+		this.add(new CssResourceReference(RangeDatePickerBehavior.class, "css/base.css"));
+		this.add(new CssResourceReference(RangeDatePickerBehavior.class, "css/clean.css"));
+		this.add(new JQueryPluginResourceReference(RangeDatePickerBehavior.class, "js/datepicker.js"));
+	}
+	@Override
+	public void bind(Component component)
+	{
+		super.bind(component);
+		this.onRangeChangeAjaxBehavior = this.newOnRangeChangeAjaxBehavior(this);
+		component.add(this.onRangeChangeAjaxBehavior);
+	}
+	@Override
+	public void onConfigure(Component component)
+	{
+		this.setOption("onRangeChange", this.onRangeChangeAjaxBehavior.getCallbackFunction());
+		super.onConfigure(component);
+	}
+	@Override
+	public void onAjax(AjaxRequestTarget target, JQueryEvent event)
+	{
+		if (event instanceof DateChangeEvent)
+		{
+			DateChangeEvent ev = (DateChangeEvent) event;
+			this.listener.onValueChanged(target, new DateRange(ev.getStart(), ev.getEnd()));
+		}
+	}
+	private JQueryAjaxBehavior newOnRangeChangeAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnRangeChangeAjaxBehavior(source);
+	}
+	protected static class OnRangeChangeAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnRangeChangeAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { 
+			CallbackParameter.context("dates"), 
+					CallbackParameter.context("el"), 
+					CallbackParameter.resolved("startTime", "dates[0].getTime()"), 
+					CallbackParameter.resolved("startOffset", "dates[0].getTimezoneOffset()"), 
+					CallbackParameter.resolved("endTime", "dates[1].getTime()"), 
+					CallbackParameter.resolved("endOffset", "dates[1].getTimezoneOffset()") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DateChangeEvent();
+		}
+	}
+	protected static class DateChangeEvent extends JQueryEvent
+	{
+		private final long start;
+		private final long end;
+		public DateChangeEvent()
+		{
+			long startTime = RequestCycleUtils.getQueryParameterValue("startTime").toLong();
+			int startOffset = RequestCycleUtils.getQueryParameterValue("startOffset").toInt(0) * 60 * 1000; 
+			this.start = startTime - startOffset;
+			long endTime = RequestCycleUtils.getQueryParameterValue("endTime").toLong();
+			int endOffset = RequestCycleUtils.getQueryParameterValue("endOffset").toInt(0) * 60 * 1000; 
+			this.end = endTime - endOffset;
+		}
+		public long getStart()
+		{
+			return this.start;
+		}
+		public long getEnd()
+		{
+			return this.end;
+		}
+	}
+}
+package org.wicketstuff.jquery.ui.plugins.wysiwyg;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.wysiwyg.settings.WysiwygLibrarySettings;
+public class WysiwygBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "wysiwyg";
+	public WysiwygBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	public WysiwygBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		WysiwygLibrarySettings settings = WysiwygLibrarySettings.get();
+		if (settings.getBootstrapCssReference() != null)
+		{
+			this.add(settings.getBootstrapCssReference());
+		}
+		if (settings.getEditorStyleSheetReference() != null)
+		{
+			this.add(settings.getEditorStyleSheetReference());
+		}
+		if (settings.getEditorJavaScriptResourceReference() != null)
+		{
+			this.add(settings.getEditorJavaScriptResourceReference());
+		}
+		if (settings.getBootstrapWysiwygJavaScriptReference() != null)
+		{
+			this.add(settings.getBootstrapWysiwygJavaScriptReference());
+		}
+		if (settings.getBootstrapDropDownJavaScriptReference() != null)
+		{
+			this.add(settings.getBootstrapDropDownJavaScriptReference());
+		}
+		if (settings.getJQueryHotKeysJavaScriptReference() != null)
+		{
+			this.add(settings.getJQueryHotKeysJavaScriptReference());
+		}
+		if (settings.getPrettifyJavaScriptReference() != null)
+		{
+			this.add(settings.getPrettifyJavaScriptReference());
+		}
+	}
+}
+package org.wicketstuff.jquery.ui.plugins.emoticons;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.emoticons.settings.EmoticonsLibrarySettings;
+public class EmoticonsBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "emoticonize";
+	public EmoticonsBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	public EmoticonsBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		EmoticonsLibrarySettings settings = EmoticonsLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+}
+package org.wicketstuff.jquery.ui.plugins;
+import org.apache.wicket.request.resource.CssResourceReference;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+public class SnippetBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	private final String language;
+	public SnippetBehavior(String selector, String language)
+	{
+		this(selector, language, new Options());
+	}
+	public SnippetBehavior(String selector, String language, Options options)
+	{
+		super(selector, "snippet", options);
+		this.language = language;
+		this.add(new JQueryPluginResourceReference(SnippetBehavior.class, "jquery.snippet.min.js"));
+		this.add(new CssResourceReference(SnippetBehavior.class, "jquery.snippet.min.css"));
+	}
+	@Override
+	protected String $()
+	{
+		return String.format("jQuery('%s').%s('%s', %s);", this.selector, this.method, this.language, this.options);
+	}
+}
+package org.wicketstuff.jquery.ui;
+import org.apache.wicket.Application;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.IJQueryWidget.JQueryWidget;
+import org.wicketstuff.jquery.core.utils.JQueryUtils;
+import org.wicketstuff.jquery.ui.JQueryDestroyListener.IDestroyable;
+import org.wicketstuff.jquery.ui.settings.JQueryUILibrarySettings;
+public class JQueryUIBehavior extends JQueryBehavior implements IDestroyable
+{
+	private static final long serialVersionUID = 1L;
+	private static final Logger LOG = LoggerFactory.getLogger(JQueryUIBehavior.class);
+	public JQueryUIBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	public JQueryUIBehavior(String selector, String method, Options options)
+	{
+		super(selector, method, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		JQueryUILibrarySettings settings = JQueryUILibrarySettings.get();
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+	}
+	public String widget()
+	{
+		return JQueryUIBehavior.widget(this.selector, this.method);
+	}
+	protected String widget(String method)
+	{
+		return JQueryUIBehavior.widget(this.selector, method);
+	}
+	public static String widget(String selector, String method)
+	{
+		return String.format("jQuery('%s').%s('instance')", selector, method);
+	}
+	public static String widget(Component component, String method)
+	{
+		return JQueryUIBehavior.widget(JQueryWidget.getSelector(component), method);
+	}
+	@Override
+	public void destroy(IPartialPageRequestHandler handler)
+	{
+		String statement = String.format("var $w = %s; if($w) { $w.destroy(); }", this.widget());
+		handler.prependJavaScript(JQueryUtils.trycatch(statement));
+		this.onDestroy(handler);
+	}
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (!Application.get().getMarkupSettings().getStripWicketTags())
+		{
+			LOG.warn("Application > MarkupSettings > StripWicketTags: setting is currently set to false. It is highly recommended to set it to true to prevent widget misbehaviors.");
+		}
+	}
+	protected void onDestroy(IPartialPageRequestHandler handler)
+	{
+	}
+}
+package org.wicketstuff.jquery.ui.plugins;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+public class FontSizeBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public FontSizeBehavior(String selector, Options options)
+	{
+		super(selector, "jfontsize", options);
+		this.add(new JQueryPluginResourceReference(FontSizeBehavior.class, "jquery.jfontsize-1.0.min.js"));
+	}
+}
+package org.wicketstuff.jquery.ui.calendar;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import org.apache.wicket.Component;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.ajax.attributes.AjaxCallListener;
+import org.apache.wicket.ajax.attributes.AjaxRequestAttributes;
+import org.apache.wicket.ajax.attributes.CallbackParameter;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Args;
+import org.apache.wicket.util.string.Strings;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.JQueryEvent;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.ajax.IJQueryAjaxAware;
+import org.wicketstuff.jquery.core.ajax.JQueryAjaxBehavior;
+import org.wicketstuff.jquery.core.utils.RequestCycleUtils;
+import org.wicketstuff.jquery.ui.calendar.settings.CalendarLibrarySettings;
+public class CalendarBehavior extends JQueryBehavior implements IJQueryAjaxAware
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "fullCalendar";
+	private final ICalendarListener listener;
+	private JQueryAjaxBehavior onSelectAjaxBehavior = null;
+	private JQueryAjaxBehavior onDayClickAjaxBehavior;
+	private JQueryAjaxBehavior onEventClickAjaxBehavior;
+	private JQueryAjaxBehavior onEventDropAjaxBehavior = null;
+	private JQueryAjaxBehavior onEventResizeAjaxBehavior = null;
+	private JQueryAjaxBehavior onObjectDropAjaxBehavior = null;
+	private JQueryAjaxBehavior onViewRenderAjaxBehavior = null;
+	public CalendarBehavior(final String selector, ICalendarListener listener)
+	{
+		this(selector, new Options(), listener);
+	}
+	public CalendarBehavior(final String selector, Options options, ICalendarListener listener)
+	{
+		super(selector, METHOD, options);
+		this.listener = Args.notNull(listener, "listener");
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		CalendarLibrarySettings settings = CalendarLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+		if (settings.getGCalJavaScriptReference() != null)
+		{
+			this.add(settings.getGCalJavaScriptReference());
+		}
+		if (settings.getLocalesJavaScriptReference() != null)
+		{
+			this.add(settings.getLocalesJavaScriptReference());
+		}
+	}
+	@Override
+	public void bind(Component component)
+	{
+		super.bind(component);
+		if (this.listener.isSelectable())
+		{
+			this.onSelectAjaxBehavior = this.newOnSelectAjaxBehavior(this);
+			component.add(this.onSelectAjaxBehavior);
+		}
+		if (this.listener.isDayClickEnabled())
+		{
+			this.onDayClickAjaxBehavior = this.newOnDayClickAjaxBehavior(this);
+			component.add(this.onDayClickAjaxBehavior);
+		}
+		if (this.listener.isEventClickEnabled())
+		{
+			this.onEventClickAjaxBehavior = this.newOnEventClickAjaxBehavior(this);
+			component.add(this.onEventClickAjaxBehavior);
+		}
+		if (this.listener.isEventDropEnabled())
+		{
+			this.onEventDropAjaxBehavior = this.newOnEventDropAjaxBehavior(this, this.listener.getEventDropPrecondition());
+			component.add(this.onEventDropAjaxBehavior);
+		}
+		if (this.listener.isEventResizeEnabled())
+		{
+			this.onEventResizeAjaxBehavior = this.newOnEventResizeAjaxBehavior(this, this.listener.getEventResizePrecondition());
+			component.add(this.onEventResizeAjaxBehavior);
+		}
+		if (this.listener.isObjectDropEnabled())
+		{
+			this.onObjectDropAjaxBehavior = this.newOnObjectDropAjaxBehavior(this);
+			component.add(this.onObjectDropAjaxBehavior);
+		}
+		if (this.listener.isViewRenderEnabled())
+		{
+			this.onViewRenderAjaxBehavior = this.newOnViewRenderAjaxBehavior(this);
+			component.add(this.onViewRenderAjaxBehavior);
+		}
+	}
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		super.renderHead(component, response);
+		StringBuilder builder = new StringBuilder();
+		builder.append("jQuery(\"<img id='calendar-indicator' src='").append(RequestCycleUtils.getAjaxIndicatorUrl()).append("' />\").appendTo('.fc-header-center');\n"); 
+		builder.append("jQuery(document).ajaxStart(function() { jQuery('#calendar-indicator').show(); });\n");
+		builder.append("jQuery(document).ajaxStop(function() { jQuery('#calendar-indicator').hide(); });\n");
+		this.renderOnDomReadyScript(builder.toString(), response);
+	}
+	protected boolean isEditable()
+	{
+		return (this.onDayClickAjaxBehavior != null) || (this.onEventClickAjaxBehavior != null);
+	}
+	@Override
+	public void onConfigure(Component component)
+	{
+		this.setOption("editable", this.isEditable());
+		this.setOption("selectable", this.listener.isSelectable());
+		this.setOption("selectHelper", this.listener.isSelectable());
+		this.setOption("disableDragging", !this.listener.isEventDropEnabled());
+		this.setOption("disableResizing", !this.listener.isEventResizeEnabled());
+		this.setOption("droppable", this.listener.isObjectDropEnabled());
+		if (this.onSelectAjaxBehavior != null)
+		{
+			this.setOption("select", this.onSelectAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onDayClickAjaxBehavior != null)
+		{
+			this.setOption("dayClick", this.onDayClickAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventClickAjaxBehavior != null)
+		{
+			this.setOption("eventClick", this.onEventClickAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventDropAjaxBehavior != null)
+		{
+			this.setOption("eventDrop", this.onEventDropAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventResizeAjaxBehavior != null)
+		{
+			this.setOption("eventResize", this.onEventResizeAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onObjectDropAjaxBehavior != null)
+		{
+			this.setOption("drop", this.onObjectDropAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onViewRenderAjaxBehavior != null)
+		{
+			this.setOption("viewRender", this.onViewRenderAjaxBehavior.getCallbackFunction());
+		}
+		super.onConfigure(component);
+	}
+	@Override
+	public void onAjax(AjaxRequestTarget target, JQueryEvent event)
+	{
+		if (event instanceof SelectEvent)
+		{
+			SelectEvent selectEvent = (SelectEvent) event;
+			this.listener.onSelect(target, selectEvent.getView(), selectEvent.getStart(), selectEvent.getEnd(), selectEvent.isAllDay());
+		}
+		else if (event instanceof DayClickEvent)
+		{
+			DayClickEvent dayClickEvent = (DayClickEvent) event;
+			this.listener.onDayClick(target, dayClickEvent.getView(), dayClickEvent.getDate(), dayClickEvent.isAllDay());
+		}
+		else if (event instanceof ClickEvent)
+		{
+			ClickEvent clickEvent = (ClickEvent) event;
+			this.listener.onEventClick(target, clickEvent.getView(), clickEvent.getEventId());
+		}
+		else if (event instanceof DropEvent)
+		{
+			DropEvent dropEvent = (DropEvent) event;
+			this.listener.onEventDrop(target, dropEvent.getEventId(), dropEvent.getDelta(), dropEvent.isAllDay());
+		}
+		else if (event instanceof ResizeEvent)
+		{
+			ResizeEvent resizeEvent = (ResizeEvent) event;
+			this.listener.onEventResize(target, resizeEvent.getEventId(), resizeEvent.getDelta());
+		}
+		else if (event instanceof ObjectDropEvent)
+		{
+			ObjectDropEvent dropEvent = (ObjectDropEvent) event;
+			this.listener.onObjectDrop(target, dropEvent.getTitle(), dropEvent.getDate(), dropEvent.isAllDay());
+		}
+		else if (event instanceof ViewRenderEvent)
+		{
+			ViewRenderEvent renderEvent = (ViewRenderEvent) event;
+			this.listener.onViewRender(target, renderEvent.getView(), renderEvent.getStart(), renderEvent.getEnd());
+		}
+	}
+	protected JQueryAjaxBehavior newOnSelectAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnSelectAjaxBehavior(source);
+	}
+	protected JQueryAjaxBehavior newOnDayClickAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnDayClickAjaxBehavior(source);
+	}
+	protected JQueryAjaxBehavior newOnEventClickAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnEventClickAjaxBehavior(source);
+	}
+	protected JQueryAjaxBehavior newOnEventDropAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+	{
+		return new OnEventDropAjaxBehavior(source, precondition);
+	}
+	protected JQueryAjaxBehavior newOnEventResizeAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+	{
+		return new OnEventResizeAjaxBehavior(source, precondition);
+	}
+	protected JQueryAjaxBehavior newOnObjectDropAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnObjectDropAjaxBehavior(source);
+	}
+	protected JQueryAjaxBehavior newOnViewRenderAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnViewRenderAjaxBehavior(source);
+	}
+	protected static class OnSelectAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnSelectAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.converted("startDate", "startDate.format()"), 
+					CallbackParameter.converted("endDate", "endDate.format()"), 
+					CallbackParameter.resolved("allDay", "!startDate.hasTime()"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("view"), 
+					CallbackParameter.resolved("viewName", "view.name") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new SelectEvent();
+		}
+	}
+	protected static class OnDayClickAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnDayClickAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.converted("date", "date.format()"), 
+					CallbackParameter.resolved("allDay", "!date.hasTime()"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("view"),
+					CallbackParameter.resolved("viewName", "view.name") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DayClickEvent();
+		}
+	}
+	protected static class OnEventClickAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnEventClickAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.context("event"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("view"), 
+					CallbackParameter.resolved("eventId", "event.id"),
+					CallbackParameter.resolved("viewName", "view.name") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ClickEvent();
+		}
+	}
+	protected static class OnEventDropAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		private final CharSequence precondition;
+		public OnEventDropAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+		{
+			super(source);
+			this.precondition = precondition;
+		}
+		@Override
+		protected void updateAjaxAttributes(AjaxRequestAttributes attributes)
+		{
+			super.updateAjaxAttributes(attributes);
+			if (!Strings.isEmpty(this.precondition))
+			{
+				AjaxCallListener ajaxCallListener = new AjaxCallListener();
+				ajaxCallListener.onPrecondition(this.precondition);
+				attributes.getAjaxCallListeners().add(ajaxCallListener);
+			}
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.context("event"), 
+					CallbackParameter.context("delta"), 
+					CallbackParameter.resolved("millisDelta", "delta.asMilliseconds()"), 
+					CallbackParameter.resolved("allDay", "!event.start.hasTime()"), 
+					CallbackParameter.context("revertFunc"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("ui"), 
+					CallbackParameter.context("view"), 
+					CallbackParameter.resolved("eventId", "event.id") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DropEvent();
+		}
+	}
+	protected static class OnEventResizeAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		private final CharSequence precondition;
+		public OnEventResizeAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+		{
+			super(source);
+			this.precondition = precondition;
+		}
+		@Override
+		protected void updateAjaxAttributes(AjaxRequestAttributes attributes)
+		{
+			super.updateAjaxAttributes(attributes);
+			if (!Strings.isEmpty(this.precondition))
+			{
+				AjaxCallListener ajaxCallListener = new AjaxCallListener();
+				ajaxCallListener.onPrecondition(this.precondition);
+				attributes.getAjaxCallListeners().add(ajaxCallListener);
+			}
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.context("event"), 
+					CallbackParameter.context("delta"), 
+					CallbackParameter.context("revertFunc"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("ui"), 
+					CallbackParameter.context("view"), 
+					CallbackParameter.resolved("millisDelta", "delta.asMilliseconds()"), 
+					CallbackParameter.resolved("allDay", "!event.start.hasTime()"), 
+					CallbackParameter.resolved("eventId", "event.id") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ResizeEvent();
+		}
+	}
+	protected static class OnObjectDropAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnObjectDropAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.converted("date", "date.format()"), 
+					CallbackParameter.resolved("allDay", "!date.hasTime()"), 
+					CallbackParameter.context("jsEvent"), 
+					CallbackParameter.context("ui"), 
+					CallbackParameter.resolved("title", "jQuery(this).data('title')") 
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ObjectDropEvent();
+		}
+	}
+	protected static class OnViewRenderAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnViewRenderAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.context("view"),
+					CallbackParameter.context("element"), 
+					CallbackParameter.resolved("viewName", "view.name"), 
+					CallbackParameter.resolved("startDate", "view.start.format()"), 
+					CallbackParameter.resolved("endDate", "view.end.format()") }; 
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ViewRenderEvent();
+		}
+	}
+	protected static class SelectEvent extends JQueryEvent
+	{
+		private final LocalDateTime start;
+		private final LocalDateTime end;
+		private final boolean isAllDay;
+		private final String viewName;
+		public SelectEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String start = RequestCycleUtils.getQueryParameterValue("startDate").toString();
+			this.start = this.isAllDay ? LocalDate.parse(start).atStartOfDay() : LocalDateTime.parse(start);
+			String end = RequestCycleUtils.getQueryParameterValue("endDate").toString();
+			this.end = this.isAllDay ? LocalDate.parse(end).atStartOfDay() : LocalDateTime.parse(end);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		public LocalDateTime getStart()
+		{
+			return this.start;
+		}
+		public LocalDateTime getEnd()
+		{
+			return this.end;
+		}
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	protected static class DayClickEvent extends JQueryEvent
+	{
+		private final LocalDateTime day;
+		private final boolean isAllDay;
+		private final String viewName;
+		public DayClickEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String date = RequestCycleUtils.getQueryParameterValue("date").toString();
+			this.day = this.isAllDay ? LocalDate.parse(date).atStartOfDay() : LocalDateTime.parse(date);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		public LocalDateTime getDate()
+		{
+			return this.day;
+		}
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	protected static class ClickEvent extends JQueryEvent
+	{
+		private final String eventId;
+		private final String viewName;
+		public ClickEvent()
+		{
+			this.eventId = RequestCycleUtils.getQueryParameterValue("eventId").toString();
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		public String getEventId()
+		{
+			return this.eventId;
+		}
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	protected static class ViewRenderEvent extends JQueryEvent
+	{
+		private final LocalDate start;
+		private final LocalDate end;
+		private final String viewName;
+		public ViewRenderEvent()
+		{
+			String start = RequestCycleUtils.getQueryParameterValue("startDate").toString();
+			this.start = LocalDate.parse(start);
+			String end = RequestCycleUtils.getQueryParameterValue("endDate").toString();
+			this.end = LocalDate.parse(end);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		public LocalDate getStart()
+		{
+			return this.start;
+		}
+		public LocalDate getEnd()
+		{
+			return this.end;
+		}
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	protected abstract static class DeltaEvent extends JQueryEvent
+	{
+		private final String eventId;
+		private final long delta;
+		public DeltaEvent()
+		{
+			this.eventId = RequestCycleUtils.getQueryParameterValue("eventId").toString();
+			this.delta = RequestCycleUtils.getQueryParameterValue("millisDelta").toLong();
+		}
+		public String getEventId()
+		{
+			return this.eventId;
+		}
+		public long getDelta()
+		{
+			return this.delta;
+		}
+	}
+	protected static class DropEvent extends DeltaEvent
+	{
+		private final boolean isAllDay;
+		public DropEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+		}
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+	}
+	protected static class ResizeEvent extends DeltaEvent
+	{
+	}
+	protected static class ObjectDropEvent extends JQueryEvent
+	{
+		private final LocalDateTime day;
+		private final String title;
+		private final boolean isAllDay;
+		public ObjectDropEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String date = RequestCycleUtils.getQueryParameterValue("date").toString();
+			this.day = this.isAllDay ? LocalDate.parse(date).atStartOfDay() : LocalDateTime.parse(date);
+			this.title = RequestCycleUtils.getQueryParameterValue("title").toString();
+		}
+		public LocalDateTime getDate()
+		{
+			return this.day;
+		}
+		public String getTitle()
+		{
+			return this.title;
+		}
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+	}
+}

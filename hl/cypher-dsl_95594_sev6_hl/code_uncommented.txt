@@ -1,0 +1,3254 @@
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import org.apiguardian.api.API;
+import org.apiguardian.api.API.Status;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+import org.neo4j.cypherdsl.core.utils.LRUCache;
+@API(status = Status.EXPERIMENTAL, since = "1.0")
+public final class SymbolicName implements Expression, IdentifiableElement {
+	private static final Map<String, SymbolicName> CACHE = Collections.synchronizedMap(new LRUCache<>(32));
+	static SymbolicName of(String name) {
+		Assertions.hasText(name, "Name must not be empty.");
+		return CACHE.computeIfAbsent(name, SymbolicName::new);
+	}
+	static SymbolicName unsafe(String name) {
+		Assertions.hasText(name, "Name must not be empty.");
+		return new SymbolicName(name);
+	}
+	static SymbolicName unresolved() {
+		return new SymbolicName(null);
+	}
+	private final String value;
+	private SymbolicName(String value) {
+		this.value = value;
+	}
+	@API(status = INTERNAL)
+	public String getValue() {
+		return value;
+	}
+	@NotNull @Contract(pure = true)
+	public SymbolicName concat(String otherValue) {
+		Assertions.notNull(otherValue, "Value to concat must not be null.");
+		if (otherValue.isEmpty()) {
+			return this;
+		}
+		return SymbolicName.of(this.value + otherValue);
+	}
+	@NotNull @Contract(pure = true)
+	public MapProjection project(List<Object> entries) {
+		return project(entries.toArray());
+	}
+	@NotNull @Contract(pure = true)
+	public MapProjection project(Object... entries) {
+		return MapProjection.create(this, entries);
+	}
+	@Override
+	public String toString() {
+		return value != null ? RendererBridge.render(this) : "Unresolved SymbolicName";
+	}
+	@Override
+	public boolean equals(Object o) {
+		if (this == o) {
+			return true;
+		}
+		if (o == null || getClass() != o.getClass()) {
+			return false;
+		}
+		if (value == null) {
+			return false;
+		}
+		SymbolicName that = (SymbolicName) o;
+		return value.equals(that.value);
+	}
+	@Override
+	public int hashCode() {
+		return value == null ? super.hashCode() : Objects.hash(value);
+	}
+	@NotNull
+	@Override
+	public Expression asExpression() {
+		return this;
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public interface Expression extends Visitable, PropertyAccessor {
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition includesAll(Expression rhs) {
+		return Conditions.includesAll(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition includesAny(Expression rhs) {
+		return Conditions.includesAny(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	default AliasedExpression as(String alias) {
+		Assertions.hasText(alias, "The alias may not be null or empty.");
+		return new AliasedExpression(this, alias);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Expression size() {
+		return Functions.size(this);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition hasSize(Expression expectedSize) {
+		return Functions.size(this).isEqualTo(expectedSize);
+	}
+	@NotNull @Contract(pure = true)
+	default AliasedExpression as(SymbolicName alias) {
+		Assertions.notNull(alias, "The alias may not be null.");
+		return as(alias.getValue());
+	}
+	@NotNull @Contract(pure = true)
+	default Condition asCondition() {
+		return this instanceof Condition condition ? condition : new ExpressionCondition(this);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isEqualTo(Expression rhs) {
+		return Conditions.isEqualTo(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	default Condition eq(Expression rhs) {
+		return isEqualTo(rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isNotEqualTo(Expression rhs) {
+		return Conditions.isNotEqualTo(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	default Condition ne(Expression rhs) {
+		return isNotEqualTo(rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition lt(Expression rhs) {
+		return Conditions.lt(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition lte(Expression rhs) {
+		return Conditions.lte(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition gt(Expression rhs) {
+		return Conditions.gt(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition gte(Expression rhs) {
+		return Conditions.gte(this, rhs);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isTrue() {
+		return Conditions.isEqualTo(this, Cypher.literalTrue());
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isFalse() {
+		return Conditions.isEqualTo(this, Cypher.literalFalse());
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition matches(Expression expression) {
+		return Conditions.matches(this, expression);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition matches(String pattern) {
+		return Conditions.matches(this, Cypher.literalOf(pattern));
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition startsWith(Expression expression) {
+		return Conditions.startsWith(this, expression);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition contains(Expression expression) {
+		return Conditions.contains(this, expression);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition endsWith(Expression expression) {
+		return Conditions.endsWith(this, expression);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation concat(Expression expression) {
+		return Operations.concat(this, expression);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation add(Expression addend) {
+		return Operations.add(this, addend);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation subtract(Expression subtrahend) {
+		return Operations.subtract(this, subtrahend);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation multiply(Expression multiplicand) {
+		return Operations.multiply(this, multiplicand);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation divide(Expression dividend) {
+		return Operations.divide(this, dividend);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation remainder(Expression dividend) {
+		return Operations.remainder(this, dividend);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Operation pow(Expression n) {
+		return Operations.pow(this, n);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isNull() {
+		return Conditions.isNull(this);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isNotNull() {
+		return Conditions.isNotNull(this);
+	}
+	@NotNull @Contract(pure = true)
+	default Condition in(Expression haystack) {
+		return Comparison.create(this, Operator.IN, haystack);
+	}
+	@NotNull @Contract(pure = true)
+	@SuppressWarnings("deprecation")
+	default Condition isEmpty() {
+		return Functions.size(this).isEqualTo(Cypher.literalOf(0L));
+	}
+	@NotNull @Contract(pure = true)
+	default SortItem descending() {
+		return SortItem.create(this, SortItem.Direction.DESC);
+	}
+	@NotNull @Contract(pure = true)
+	default SortItem ascending() {
+		return SortItem.create(this, SortItem.Direction.ASC);
+	}
+	@NotNull @Contract(pure = true)
+	default SortItem sorted(SortItem.Direction direction) {
+		return SortItem.create(this, direction);
+	}
+	@Override @NotNull
+	default Property property(String... names) {
+		return InternalPropertyImpl.create(this, names);
+	}
+	@Override @NotNull
+	default Property property(@NotNull Expression lookup) {
+		return InternalPropertyImpl.create(this, lookup);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+public sealed interface IdentifiableElement permits AliasedExpression, Asterisk, Named, Property, SymbolicName {
+	@NotNull @Contract(pure = true)
+	Expression asExpression();
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public final class MapProjection implements Expression {
+	private final SymbolicName name;
+	private final MapExpression map;
+	@API(status = INTERNAL, since = "2023.9.0")
+	public static MapProjection create(SymbolicName name, Object... content) {
+		return new MapProjection(name, MapExpression.withEntries(createNewContent(false, content)));
+	}
+	@API(status = INTERNAL, since = "2024.1.1")
+	public static MapProjection sorted(SymbolicName name, Object... content) {
+		return new MapProjection(name, MapExpression.withEntries(createNewContent(true, content)));
+	}
+	MapProjection(SymbolicName name, MapExpression map) {
+		this.name = name;
+		this.map = map;
+	}
+	@NotNull @Contract(pure = true)
+	public MapProjection and(Object... content) {
+		return new MapProjection(this.name, this.map.addEntries(createNewContent(false, content)));
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		this.name.accept(visitor);
+		this.map.accept(visitor);
+		visitor.leave(this);
+	}
+	@SuppressWarnings("deprecation")
+	private static Object contentAt(Object[] content, int i) {
+		Object currentObject = content[i];
+		if (currentObject instanceof Expression expression) {
+			return Expressions.nameOrExpression(expression);
+		} else if (currentObject instanceof Named named) {
+			return named.getSymbolicName().map(Object.class::cast).orElse(currentObject);
+		}
+		return currentObject;
+	}
+	private static List<Expression> createNewContent(boolean sort, Object... content) {
+		final List<Expression> newContent = new ArrayList<>(content.length);
+		final Set<String> knownKeys = new HashSet<>();
+		String lastKey = null;
+		Expression lastExpression = null;
+		int i = 0;
+		while (i < content.length) {
+			Object next;
+			if (i + 1 >= content.length) {
+				next = null;
+			} else {
+				next = contentAt(content, i + 1);
+			}
+			Object current = contentAt(content, i);
+			if (current instanceof String stringValue) {
+				if (next instanceof Expression expression) {
+					lastKey = stringValue;
+					lastExpression = expression;
+					i += 2;
+				} else {
+					lastExpression = PropertyLookup.forName((String) current);
+					i += 1;
+				}
+			} else if (current instanceof Expression expression) {
+				lastExpression = expression;
+				i += 1;
+			}
+			if (lastExpression instanceof Asterisk) {
+				lastExpression = PropertyLookup.wildcard();
+			}
+			if (lastKey != null) {
+				Assertions.isTrue(!knownKeys.contains(lastKey), "Duplicate key '" + lastKey + "'");
+				newContent.add(KeyValueMapEntry.create(lastKey, lastExpression));
+				knownKeys.add(lastKey);
+			} else if (lastExpression instanceof SymbolicName || lastExpression instanceof PropertyLookup) {
+				newContent.add(lastExpression);
+			} else if (lastExpression instanceof Property property) {
+				List<PropertyLookup> names = property.getNames();
+				if (names.size() > 1) {
+					throw new IllegalArgumentException("Cannot project nested properties!");
+				}
+				newContent.addAll(names);
+			} else if (lastExpression instanceof AliasedExpression aliasedExpression) {
+				newContent.add(KeyValueMapEntry.create(aliasedExpression.getAlias(), aliasedExpression));
+			} else if (lastExpression instanceof KeyValueMapEntry) {
+				newContent.add(lastExpression);
+			} else if (lastExpression == null) {
+				throw new IllegalArgumentException("Could not determine an expression from the given content!");
+			} else {
+				throw new IllegalArgumentException(lastExpression + " of type " + lastExpression.getClass()
+					+ " cannot be used with an implicit name as map entry.");
+			}
+			lastKey = null;
+			lastExpression = null;
+		}
+		if (sort) {
+			newContent.sort((o1, o2) -> {
+				if (o1 instanceof KeyValueMapEntry kvm1 && o2 instanceof KeyValueMapEntry kvm2) {
+					return kvm1.getKey().compareTo(kvm2.getKey());
+				} else if (o1 instanceof PropertyLookup pl1 && o2 instanceof PropertyLookup pl2) {
+					if (pl1 == PropertyLookup.wildcard()) {
+						return -1;
+					} else if (pl2 == PropertyLookup.wildcard()) {
+						return 1;
+					}
+					return pl1.getPropertyKeyName().getValue().compareTo(pl2.getPropertyKeyName().getValue());
+				} else if (o1 instanceof PropertyLookup) {
+					return 1;
+				}
+				return -1;
+			});
+		}
+		return newContent;
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.apiguardian.api.API;
+import org.neo4j.cypherdsl.core.ast.TypedSubtree;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public final class MapExpression extends TypedSubtree<Expression> implements Expression {
+	static MapExpression create(Map<String, Object> map) {
+		Object[] args = new Object[map.size() * 2];
+		int i = 0;
+		for (Map.Entry<String, Object> entry : map.entrySet()) {
+			Object value = entry.getValue();
+			args[i++] = entry.getKey();
+			args[i++] = value instanceof Expression ? value : Cypher.literalOf(value);
+		}
+		return create(false, args);
+	}
+	static MapExpression create(boolean sort, Object... input) {
+		Assertions.isTrue(input.length % 2 == 0, "Need an even number of input parameters");
+		List<Expression> newContent = new ArrayList<>(input.length / 2);
+		Set<String> knownKeys = new HashSet<>();
+		for (int i = 0; i < input.length; i += 2) {
+			Object keyCandidate = input[i];
+			String key;
+			if (keyCandidate instanceof String v) {
+				key = v;
+			} else if (keyCandidate instanceof Property property) {
+				List<PropertyLookup> names = property.getNames();
+				if (names.size() != 1) {
+					throw new IllegalArgumentException("Nested properties are not supported in a map expression");
+				}
+				key = names.get(0).getPropertyKeyName().getValue();
+			} else {
+				throw new IllegalStateException("Key needs to be of type String or Property.");
+			}
+			Assertions.isInstanceOf(Expression.class, input[i + 1], "Value needs to be of type Expression.");
+			Assertions.isTrue(!knownKeys.contains(input[i]), "Duplicate key '" + input[i] + "'");
+			final KeyValueMapEntry entry = KeyValueMapEntry.create(key, (Expression) input[i + 1]);
+			newContent.add(entry);
+			knownKeys.add(entry.getKey());
+		}
+		if (sort) {
+			newContent.sort(Comparator.comparing(o -> ((KeyValueMapEntry) o).getKey()));
+		}
+		return new MapExpression(newContent);
+	}
+	static MapExpression withEntries(List<Expression> entries) {
+		return new MapExpression(entries);
+	}
+	private MapExpression(List<Expression> children) {
+		super(children);
+	}
+	MapExpression addEntries(List<Expression> entries) {
+		List<Expression> newContent = new ArrayList<>(super.children.size() + entries.size());
+		newContent.addAll(super.children);
+		newContent.addAll(entries);
+		return new MapExpression(newContent);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	protected Visitable prepareVisit(Expression child) {
+		return Expressions.nameOrExpression(child);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core.ast;
+public interface Visitable {
+	static void visitIfNotNull(Visitable visitable, Visitor visitor) {
+		if (visitable != null) {
+			visitable.accept(visitor);
+		}
+	}
+	default void accept(Visitor visitor) {
+		visitor.enter(this);
+		visitor.leave(this);
+	}
+	String toString();
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+@API(status = STABLE, since = "1.0")
+public non-sealed interface Property extends Expression, IdentifiableElement {
+	@API(status = STABLE, since = "2021.1.0")
+	@NotNull @Contract(pure = true)
+	String getName();
+	@NotNull @Contract(pure = true)
+	List<PropertyLookup> getNames();
+	@Contract(pure = true)
+	Named getContainer();
+	@API(status = INTERNAL, since = "2023.1.0")
+	@NotNull
+	@Contract(pure = true)
+	default Expression getContainerReference() {
+		if (getContainer() == null) {
+			throw new UnsupportedOperationException();
+		}
+		return getContainer().getRequiredSymbolicName();
+	}
+	@API(status = STABLE, since = "2021.1.0")
+	@NotNull @Contract(pure = true)
+	Property referencedAs(String newReference);
+	@NotNull @Contract(pure = true)
+	Operation to(Expression expression);
+}
+package org.neo4j.cypherdsl.core;
+import java.util.Arrays;
+import java.util.List;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.Statement.UnionQuery;
+final class Expressions {
+	@NotNull
+	static CountExpression count(PatternElement requiredPattern, PatternElement... patternElement) {
+		return CountExpression.count(Pattern.of(requiredPattern, patternElement));
+	}
+	@NotNull
+	static CountExpression count(UnionQuery union) {
+		return CountExpression.count(union);
+	}
+	@NotNull
+	static CountExpression count(Statement statement, IdentifiableElement... imports) {
+		return CountExpression.count(statement, imports);
+	}
+	static CountExpression count(List<PatternElement> pattern, @Nullable Where where) {
+		return CountExpression.count(pattern, where);
+	}
+	static SubqueryExpressionBuilder with(IdentifiableElement... identifiableElements) {
+		var returnItems = new ExpressionList(
+			Arrays.stream(identifiableElements).map(IdentifiableElement::asExpression).toList());
+		var with = new With(false, returnItems, null, null, null, null);
+		return new SubqueryExpressionBuilder() {
+			@Override @NotNull
+			public CountExpression count(PatternElement requiredPattern, PatternElement... patternElement) {
+				return CountExpression.count(with, Pattern.of(requiredPattern, patternElement));
+			}
+			@Override @NotNull
+			public CountExpression count(UnionQuery union) {
+				return CountExpression.count(with, union);
+			}
+			@Override
+			public CollectExpression collect(Statement statement) {
+				return CollectExpression.collect(with, statement);
+			}
+		};
+	}
+	@NotNull
+	static Expression collect(Statement statement) {
+		if (!statement.doesReturnOrYield()) {
+			throw new IllegalArgumentException(
+				"The final RETURN clause in a subquery used with COLLECT is mandatory and the RETURN clause must return exactly one column.");
+		}
+		return CollectExpression.collect(statement);
+	}
+	static <T extends Expression> Expression nameOrExpression(T expression) {
+		if (expression instanceof Named named) {
+			return named.getSymbolicName().map(Expression.class::cast).orElse(expression);
+		} else {
+			return expression;
+		}
+	}
+	static SymbolicName[] createSymbolicNames(String[] variables) {
+		return Arrays.stream(variables).map(SymbolicName::of).toArray(SymbolicName[]::new);
+	}
+	static SymbolicName[] createSymbolicNames(Named[] variables) {
+		return Arrays.stream(variables).map(Named::getRequiredSymbolicName)
+			.toArray(SymbolicName[]::new);
+	}
+	static String format(Expression expression) {
+		if (expression instanceof Named named) {
+			return named.getRequiredSymbolicName().getValue();
+		} else if (expression instanceof AliasedExpression aliasedExpression) {
+			return aliasedExpression.getAlias();
+		} else if (expression instanceof SymbolicName symbolicName) {
+			return symbolicName.getValue();
+		} else if (expression instanceof Property) {
+			StringBuilder ref = new StringBuilder();
+			expression.accept(segment -> {
+				if (segment instanceof SymbolicName symbolicName) {
+					if (!ref.isEmpty()) {
+						ref.append(".");
+					}
+					ref.append(symbolicName.getValue());
+				}
+			});
+			return ref.toString();
+		}
+		throw new IllegalArgumentException("Cannot format expression " + expression.toString());
+	}
+	private Expressions() {
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.lang.reflect.Array;
+import java.net.URI;
+import java.time.Duration;
+import java.time.Period;
+import java.time.temporal.TemporalAccessor;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.ResourceBundle;
+import java.util.TimeZone;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.ListComprehension.OngoingDefinitionWithVariable;
+import org.neo4j.cypherdsl.core.Literal.UnsupportedLiteralException;
+import org.neo4j.cypherdsl.core.PatternComprehension.OngoingDefinitionWithPattern;
+import org.neo4j.cypherdsl.core.Statement.SingleQuery;
+import org.neo4j.cypherdsl.core.Statement.UnionQuery;
+import org.neo4j.cypherdsl.core.Statement.UseStatement;
+import org.neo4j.cypherdsl.core.StatementBuilder.OngoingStandaloneCallWithoutArguments;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@SuppressWarnings("unused") @API(status = STABLE, since = "1.0")
+public final class Cypher {
+	static final ResourceBundle MESSAGES = ResourceBundle.getBundle("org.neo4j.cypherdsl.core.messages");
+	@NotNull @Contract(pure = true)
+	public static Node node(String primaryLabel, String... additionalLabels) {
+		return new InternalNodeImpl(primaryLabel, additionalLabels);
+	}
+	@NotNull @Contract(pure = true)
+	public static Node node(String primaryLabel, List<String> additionalLabels) {
+		return new InternalNodeImpl(primaryLabel, additionalLabels.toArray(new String[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static Node node(String primaryLabel, MapExpression properties, String... additionalLabels) {
+		return new InternalNodeImpl(null, primaryLabel, properties, additionalLabels);
+	}
+	@NotNull @Contract(pure = true)
+	public static Node node(String primaryLabel, MapExpression properties, Collection<String> additionalLabels) {
+		return node(primaryLabel, properties, additionalLabels.toArray(new String[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static Node anyNode() {
+		return new InternalNodeImpl();
+	}
+	@NotNull @Contract(pure = true)
+	public static Node node(LabelExpression labelExpression) {
+		return new InternalNodeImpl(Objects.requireNonNull(labelExpression), null);
+	}
+	@NotNull @Contract(pure = true)
+	public static Asterisk asterisk() {
+		return Asterisk.INSTANCE;
+	}
+	@NotNull @Contract(pure = true)
+	public static Node anyNode(String symbolicName) {
+		return new InternalNodeImpl().named(symbolicName);
+	}
+	@NotNull @Contract(pure = true)
+	public static Node anyNode(SymbolicName symbolicName) {
+		return new InternalNodeImpl().named(symbolicName);
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(String containerName, String... names) {
+		return property(name(containerName), names);
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(String containerName, Collection<String> names) {
+		return property(name(containerName), names.toArray(new String[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(Expression expression, String... names) {
+		return InternalPropertyImpl.create(expression, names);
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(Expression expression, Collection<String> names) {
+		return property(expression, names.toArray(new String[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(String containerName, Expression lookup) {
+		return property(name(containerName), lookup);
+	}
+	@NotNull @Contract(pure = true)
+	public static Property property(Expression expression, Expression lookup) {
+		return InternalPropertyImpl.create(expression, lookup);
+	}
+	@NotNull @Contract(pure = true)
+	public static NamedPath.OngoingDefinitionWithName path(String name) {
+		return NamedPath.named(name);
+	}
+	@NotNull @Contract(pure = true)
+	public static NamedPath.OngoingDefinitionWithName path(SymbolicName name) {
+		return NamedPath.named(name);
+	}
+	@NotNull @Contract(pure = true)
+	public static NamedPath.OngoingShortestPathDefinitionWithName shortestPath(String name) {
+		return NamedPath.named(name, BuiltInFunctions.Scalars.SHORTEST_PATH);
+	}
+	@NotNull @Contract(pure = true)
+	public static NamedPath.OngoingShortestPathDefinitionWithName shortestPath(SymbolicName name) {
+		return NamedPath.named(name, BuiltInFunctions.Scalars.SHORTEST_PATH);
+	}
+	@NotNull @Contract(pure = true)
+	public static SymbolicName name(String value) {
+		return SymbolicName.of(value);
+	}
+	@NotNull @Contract(pure = true)
+	public static Parameter<Object> parameter(String name) {
+		return Parameter.create(name);
+	}
+	@NotNull @Contract(pure = true)
+	public static <T> Parameter<T> parameter(String name, T value) {
+		return Parameter.create(name, value);
+	}
+	@NotNull @Contract(pure = true)
+	public static <T> Parameter<T> anonParameter(T value) {
+		return Parameter.anon(value);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere optionalMatch(PatternElement... pattern) {
+		return Statement.builder().optionalMatch(pattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere optionalMatch(
+		Collection<? extends PatternElement> pattern) {
+		return optionalMatch(pattern.toArray(new PatternElement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere match(PatternElement... pattern) {
+		return Statement.builder().match(pattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere match(Collection<? extends PatternElement> pattern) {
+		return match(pattern.toArray(new PatternElement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere match(boolean optional, PatternElement... pattern) {
+		return Statement.builder().match(optional, pattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere match(boolean optional,
+		Collection<? extends PatternElement> pattern) {
+		return match(optional, pattern.toArray(new PatternElement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingUpdate create(PatternElement... pattern) {
+		return Statement.builder().create(pattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingUpdate create(Collection<? extends PatternElement> pattern) {
+		return create(pattern.toArray(new PatternElement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OrderableOngoingReadingAndWithWithoutWhere with(String... variables) {
+		return Statement.builder().with(variables);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OrderableOngoingReadingAndWithWithoutWhere with(IdentifiableElement... elements) {
+		return Statement.builder().with(elements);
+	}
+	public static SubqueryExpressionBuilder subqueryWith(String... identifiableElements) {
+		return subqueryWith(Arrays.stream(identifiableElements).map(SymbolicName::of).toArray(SymbolicName[]::new));
+	}
+	public static SubqueryExpressionBuilder subqueryWith(IdentifiableElement... identifiableElements) {
+		return Expressions.with(identifiableElements);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OrderableOngoingReadingAndWithWithoutWhere with(
+		Collection<IdentifiableElement> elements) {
+		return Statement.builder().with(elements);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingMerge merge(PatternElement... pattern) {
+		return Statement.builder().merge(pattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingMerge merge(Collection<? extends PatternElement> pattern) {
+		return merge(pattern.toArray(new PatternElement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingUnwind unwind(Expression expression) {
+		return Statement.builder().unwind(expression);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingUnwind unwind(Expression... expressions) {
+		return Statement.builder().unwind(Cypher.listOf(expressions));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingUnwind unwind(Collection<? extends Expression> expressions) {
+		return unwind(expressions.toArray(new Expression[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static SortItem sort(Expression expression) {
+		return SortItem.create(expression, null);
+	}
+	@NotNull @Contract(pure = true)
+	public static SortItem sort(Expression expression, SortItem.Direction direction) {
+		return SortItem.create(expression, direction);
+	}
+	@NotNull @Contract(pure = true)
+	public static MapExpression mapOf(Object... keysAndValues) {
+		return MapExpression.create(false, keysAndValues);
+	}
+	@NotNull @Contract(pure = true)
+	public static MapExpression sortedMapOf(Object... keysAndValues) {
+		return MapExpression.create(true, keysAndValues);
+	}
+	@NotNull @Contract(pure = true)
+	public static MapExpression asExpression(Map<String, Object> map) {
+		return MapExpression.create(map);
+	}
+	@NotNull @Contract(pure = true)
+	public static ListExpression listOf(Expression... expressions) {
+		return ListExpression.create(expressions);
+	}
+	@NotNull @Contract(pure = true)
+	public static ListExpression listOf(Collection<? extends Expression> expressions) {
+		return Cypher.listOf(expressions.toArray(new Expression[0]));
+	}
+	@SuppressWarnings("unchecked")
+	@NotNull @Contract(pure = true)
+	public static <T> Literal<T> literalOf(Object object) {
+		if (object == null) {
+			return (Literal<T>) NullLiteral.INSTANCE;
+		}
+		if (object instanceof Literal<?>) {
+			return (Literal<T>) object;
+		}
+		if (object instanceof CharSequence charSequence) {
+			return (Literal<T>) new StringLiteral(charSequence);
+		}
+		if (object instanceof Character) {
+			return (Literal<T>) new StringLiteral(String.valueOf(object));
+		}
+		if (object instanceof Number number) {
+			return (Literal<T>) new NumberLiteral(number);
+		}
+		if (object instanceof TemporalAccessor temporalAccessor) {
+			return (Literal<T>) new TemporalLiteral(temporalAccessor);
+		}
+		if (object instanceof Duration duration) {
+			return (Literal<T>) DurationLiteral.of(duration);
+		}
+		if (object instanceof Period period) {
+			return (Literal<T>) PeriodLiteral.of(period);
+		}
+		if (object instanceof Iterable || object.getClass().isArray()) {
+			List<Literal<?>> elements = new ArrayList<>();
+			Consumer<Object> handleElement = element -> {
+				if (element instanceof Literal) {
+					elements.add((Literal<?>) element);
+				} else {
+					try {
+						elements.add(Cypher.literalOf(element));
+					} catch (UnsupportedLiteralException e) {
+						throw new UnsupportedLiteralException("Unsupported literal type in iterable.", element);
+					}
+				}
+			};
+			if (object.getClass().isArray()) {
+				for (int i = 0; i < Array.getLength(object); i++) {
+					handleElement.accept(Array.get(object, i));
+				}
+			} else {
+				((Iterable<?>) object).forEach(handleElement);
+			}
+			ListLiteral listLiteral = new ListLiteral(elements);
+			return (Literal<T>) listLiteral;
+		}
+		if (object instanceof Map) {
+			Map<String, Literal<?>> map = new LinkedHashMap<>();
+			BiConsumer<Object, Object> handleEntry = (key, value) -> {
+				if (!(key instanceof CharSequence || key instanceof Character)) {
+					throw new UnsupportedLiteralException(
+						"Unsupported literal map key (not a string/char type).", key);
+				}
+				if (value instanceof Literal) {
+					map.put(key.toString(), (Literal<?>) value);
+				} else {
+					try {
+						map.put(key.toString(), Cypher.literalOf(value));
+					} catch (UnsupportedLiteralException e) {
+						throw new UnsupportedLiteralException("Unsupported literal type in map.", value);
+					}
+				}
+			};
+			((Map<?, ?>) object).forEach(handleEntry);
+			MapLiteral mapLiteral = new MapLiteral(map);
+			return (Literal<T>) mapLiteral;
+		}
+		if (object instanceof Boolean b) {
+			return (Literal<T>) BooleanLiteral.of(b);
+		}
+		throw new UnsupportedLiteralException(object);
+	}
+	@NotNull @Contract(pure = true)
+	public static Literal<Boolean> literalTrue() {
+		return BooleanLiteral.TRUE;
+	}
+	@NotNull @Contract(pure = true)
+	public static Literal<Boolean> literalFalse() {
+		return BooleanLiteral.FALSE;
+	}
+	@NotNull @Contract(pure = true)
+	public static Literal<Void> literalNull() {
+		return NullLiteral.INSTANCE;
+	}
+	@NotNull @Contract(pure = true)
+	public static UnionQuery union(Statement... statements) {
+		return unionImpl(false, statements);
+	}
+	@NotNull @Contract(pure = true)
+	public static UnionQuery union(Collection<Statement> statements) {
+		return union(statements.toArray(new Statement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static Statement unionAll(Statement... statements) {
+		return unionImpl(true, statements);
+	}
+	@NotNull @Contract(pure = true)
+	public static Statement unionAll(Collection<Statement> statements) {
+		return unionAll(statements.toArray(new Statement[] {}));
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingAndReturn returning(Expression... expressions) {
+		return Statement.builder().returning(expressions);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingAndReturn returning(Collection<? extends Expression> expressions) {
+		return Statement.builder().returning(expressions);
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingDefinitionWithPattern listBasedOn(RelationshipPattern relationshipPattern) {
+		return PatternComprehension.basedOn(relationshipPattern);
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingDefinitionWithPattern listBasedOn(NamedPath namedPath) {
+		return PatternComprehension.basedOn(namedPath);
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingDefinitionWithVariable listWith(SymbolicName variable) {
+		return ListComprehension.with(variable);
+	}
+	@NotNull @Contract(pure = true)
+	public static String quote(String unquotedString) {
+		return literalOf(unquotedString).asString();
+	}
+	@NotNull @Contract(pure = true)
+	public static Case caseExpression() {
+		return Case.create(null);
+	}
+	@NotNull @Contract(pure = true)
+	public static Case caseExpression(@Nullable Expression expression) {
+		return Case.create(expression);
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingStandaloneCallWithoutArguments call(String procedureName) {
+		Assertions.hasText(procedureName, "The procedure name must not be null or empty.");
+		return call(procedureName.split("\\."));
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingStandaloneCallWithoutArguments call(String... namespaceAndProcedure) {
+		return Statement.call(namespaceAndProcedure);
+	}
+	@NotNull @Contract(pure = true)
+	public static OngoingStandaloneCallWithoutArguments call(Collection<String> namespaceAndProcedure) {
+		return call(namespaceAndProcedure.toArray(new String[] {}));
+	}
+	@Neo4jVersion(minimum = "4.0.0")
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingWithoutWhere call(Statement subquery) {
+		return Statement.builder().call(subquery);
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subList(Expression targetExpression, Integer start, Integer end) {
+		return ListOperator.subList(targetExpression, Cypher.literalOf(start), Cypher.literalOf(end));
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subList(Expression targetExpression, Expression start, Expression end) {
+		return ListOperator.subList(targetExpression, start, end);
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subListFrom(Expression targetExpression, Integer start) {
+		return ListOperator.subListFrom(targetExpression, Cypher.literalOf(start));
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subListFrom(Expression targetExpression, Expression start) {
+		return ListOperator.subListFrom(targetExpression, start);
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subListUntil(Expression targetExpression, Integer end) {
+		return ListOperator.subListUntil(targetExpression, Cypher.literalOf(end));
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression subListUntil(Expression targetExpression, Expression end) {
+		return ListOperator.subListUntil(targetExpression, end);
+	}
+	@NotNull @Contract(pure = true)
+	public static ListOperator valueAt(Expression targetExpression, Integer index) {
+		return valueAt(targetExpression, Cypher.literalOf(index));
+	}
+	@NotNull @Contract(pure = true)
+	public static ListOperator valueAt(Expression targetExpression, Expression index) {
+		return ListOperator.valueAt(targetExpression, index);
+	}
+	@NotNull @Contract(pure = true)
+	public static Expression raw(String format, Object... mixedArgs) {
+		return RawLiteral.create(format, mixedArgs);
+	}
+	public static ExposesSubqueryCall.BuildableSubquery callRawCypher(String rawCypher, Object... args) {
+		return Statement.builder().callRawCypher(rawCypher, args);
+	}
+	@NotNull @Contract(pure = true)
+	public static StatementBuilder.OngoingReadingAndReturn returningRaw(Expression rawExpression) {
+		return Statement.builder().returningRaw(rawExpression);
+	}
+	@SuppressWarnings("squid:S3077")
+	private static volatile ForeignAdapterFactory foreignAdapterFactory;
+	@NotNull @Contract(pure = true)
+	public static <FE> ForeignAdapter<FE> adapt(FE expression) {
+		ForeignAdapterFactory initializedForeignAdapterFactory = foreignAdapterFactory;
+		if (initializedForeignAdapterFactory == null) {
+			synchronized (Cypher.class) {
+				initializedForeignAdapterFactory = foreignAdapterFactory;
+				if (initializedForeignAdapterFactory == null) {
+					foreignAdapterFactory = new ForeignAdapterFactory();
+					initializedForeignAdapterFactory = foreignAdapterFactory;
+				}
+			}
+		}
+		return initializedForeignAdapterFactory.getAdapterFor(expression);
+	}
+	@NotNull @Contract(pure = true)
+	public static ExposesLoadCSV usingPeriodicCommit() {
+		return usingPeriodicCommit(null);
+	}
+	@NotNull @Contract(pure = true)
+	public static ExposesLoadCSV usingPeriodicCommit(@Nullable Integer rate) {
+		return LoadCSVStatementBuilder.usingPeriodicCommit(rate);
+	}
+	public static LoadCSVStatementBuilder.OngoingLoadCSV loadCSV(URI from) {
+		return loadCSV(from, false);
+	}
+	public static LoadCSVStatementBuilder.OngoingLoadCSV loadCSV(URI from, boolean withHeaders) {
+		return LoadCSVStatementBuilder.loadCSV(from, withHeaders);
+	}
+	private static UnionQuery unionImpl(boolean unionAll, Statement... statements) {
+		Assertions.isTrue(statements != null && statements.length >= 2, "At least two statements are required!");
+		int i = 0;
+		UnionQueryImpl existingUnionQuery = null;
+		@SuppressWarnings("squid:S2259") 
+		boolean isUnionQuery = statements[0] instanceof UnionQueryImpl;
+		if (isUnionQuery) {
+			existingUnionQuery = (UnionQueryImpl) statements[0];
+			Assertions.isTrue(existingUnionQuery.isAll() == unionAll, "Cannot mix union and union all!");
+			i = 1;
+		}
+		List<Statement> listOfQueries = new ArrayList<>();
+		do {
+			Assertions.isTrue(statements[i] instanceof SingleQuery || statements[i] instanceof ClausesBasedStatement,
+				"Can only union single queries!");
+			listOfQueries.add(statements[i]);
+		} while (++i < statements.length);
+		if (existingUnionQuery == null) {
+			return UnionQueryImpl.create(unionAll, listOfQueries);
+		} else {
+			return existingUnionQuery.addAdditionalQueries(listOfQueries);
+		}
+	}
+	@SuppressWarnings("deprecation")
+	public static String format(Expression expression) {
+		return Expressions.format(expression);
+	}
+	public static UseStatement use(String target, Statement statement) {
+		return DecoratedQuery.decorate(statement, UseClauseImpl.of(target));
+	}
+	public static UseStatement use(Parameter<?> target, Statement statement) {
+		return DecoratedQuery.decorate(statement, UseClauseImpl.of(target));
+	}
+	public static UseStatement use(StringLiteral target, Statement statement) {
+		return DecoratedQuery.decorate(statement, UseClauseImpl.of(target));
+	}
+	public static UseStatement use(Expression target, Statement statement) {
+		return DecoratedQuery.decorate(statement, UseClauseImpl.of(target));
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition includesAll(Expression lhs, Expression rhs) {
+		return Conditions.includesAll(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition includesAny(Expression lhs, Expression rhs) {
+		return Conditions.includesAny(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition matching(RelationshipPattern relationshipPattern) {
+		return Conditions.matching(relationshipPattern);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition matches(Expression lhs, Expression rhs) {
+		return Conditions.matches(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isEqualTo(Expression lhs, Expression rhs) {
+		return Conditions.isEqualTo(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isNotEqualTo(Expression lhs, Expression rhs) {
+		return Conditions.isNotEqualTo(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition lt(Expression lhs, Expression rhs) {
+		return Conditions.lt(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition lte(Expression lhs, Expression rhs) {
+		return Conditions.lte(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition gte(Expression lhs, Expression rhs) {
+		return Conditions.gte(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition gt(Expression lhs, Expression rhs) {
+		return Conditions.gt(lhs, rhs);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Condition not(@NotNull Condition condition) {
+		return Conditions.not(condition);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Condition not(@NotNull RelationshipPattern pattern) {
+		return Conditions.not(pattern);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition startsWith(Expression lhs, Expression rhs) {
+		return Conditions.startsWith(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition contains(Expression lhs, Expression rhs) {
+		return Conditions.contains(lhs, rhs);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition endsWith(Expression lhs, Expression rhs) {
+		return Conditions.endsWith(lhs, rhs);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Condition noCondition() {
+		return Conditions.noCondition();
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isNull(Expression expression) {
+		return Conditions.isNull(expression);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isNotNull(Expression expression) {
+		return Conditions.isNotNull(expression);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isEmpty(Expression expression) {
+		return Predicates.isEmpty(expression);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isTrue() {
+		return Conditions.isTrue();
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition isFalse() {
+		return Conditions.isFalse();
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition hasLabelsOrType(SymbolicName symbolicName, String... labelsOrTypes) {
+		return Conditions.hasLabelsOrType(symbolicName, labelsOrTypes);
+	}
+	@NotNull
+	@SuppressWarnings("deprecation")
+	public static CountExpression count(PatternElement requiredPattern, PatternElement... patternElement) {
+		return Expressions.count(requiredPattern, patternElement);
+	}
+	@NotNull
+	@SuppressWarnings("deprecation")
+	public static CountExpression count(UnionQuery union) {
+		return Expressions.count(union);
+	}
+	@NotNull
+	@SuppressWarnings("deprecation")
+	public static CountExpression count(Statement statement, IdentifiableElement... imports) {
+		return Expressions.count(statement, imports);
+	}
+	@SuppressWarnings("deprecation")
+	public static CountExpression count(List<PatternElement> pattern, @Nullable Where where) {
+		return Expressions.count(pattern, where);
+	}
+	@SuppressWarnings("deprecation")
+	@NotNull public static Expression collect(Statement statement) {
+		return Expressions.collect(statement);
+	}
+	@SuppressWarnings("deprecation")
+	public static <T extends Expression> Expression nameOrExpression(T expression) {
+		return Expressions.nameOrExpression(expression);
+	}
+	@SuppressWarnings("deprecation")
+	public static SymbolicName[] createSymbolicNames(String[] variables) {
+		return Expressions.createSymbolicNames(variables);
+	}
+	@SuppressWarnings("deprecation")
+	public static SymbolicName[] createSymbolicNames(Named[] variables) {
+		return Expressions.createSymbolicNames(variables);
+	}
+	@Neo4jVersion(minimum = "5.0.0") @Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation elementId(
+		@NotNull Node node) {
+		return Functions.elementId(node);
+	}
+	@Neo4jVersion(minimum = "5.0.0") @Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation elementId(
+		@NotNull Relationship relationship) {
+		return Functions.elementId(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation keys(@NotNull Node node) {
+		return Functions.keys(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation keys(@NotNull Relationship relationship) {
+		return Functions.keys(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation keys(@NotNull Expression expression) {
+		return Functions.keys(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation labels(@NotNull Node node) {
+		return Functions.labels(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation labels(@NotNull SymbolicName node) {
+		return Functions.labels(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation type(@NotNull Relationship relationship) {
+		return Functions.type(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation type(@NotNull SymbolicName relationship) {
+		return Functions.type(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation count(@NotNull Node node) {
+		return Functions.count(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation count(Expression expression) {
+		return Functions.count(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation countDistinct(@NotNull Node node) {
+		return Functions.countDistinct(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation countDistinct(Expression expression) {
+		return Functions.countDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation properties(Node node) {
+		return Functions.properties(node);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation properties(Relationship relationship) {
+		return Functions.properties(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation properties(MapExpression map) {
+		return Functions.properties(map);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation coalesce(Expression... expressions) {
+		return Functions.coalesce(expressions);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation left(Expression expression, Expression length) {
+		return Functions.left(expression, length);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation ltrim(@NotNull Expression expression) {
+		return Functions.ltrim(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation replace(Expression original, Expression search,
+		Expression replace) {
+		return Functions.replace(original, search, replace);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation reverse(@NotNull Expression original) {
+		return Functions.reverse(original);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation right(Expression expression, Expression length) {
+		return Functions.right(expression, length);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation rtrim(@NotNull Expression expression) {
+		return Functions.rtrim(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation substring(Expression original, Expression start,
+		Expression length) {
+		return Functions.substring(original, start, length);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toLower(@NotNull Expression expression) {
+		return Functions.toLower(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toUpper(@NotNull Expression expression) {
+		return Functions.toUpper(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation trim(@NotNull Expression expression) {
+		return Functions.trim(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation split(@NotNull Expression expression,
+		@NotNull Expression delimiter) {
+		return Functions.split(expression, delimiter);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation split(@NotNull Expression expression,
+		@NotNull String delimiter) {
+		return Functions.split(expression, delimiter);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation size(Expression expression) {
+		return Functions.size(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation size(RelationshipPattern pattern) {
+		return Functions.size(pattern);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation exists(Expression expression) {
+		return Functions.exists(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation distance(@NotNull Expression point1,
+		@NotNull Expression point2) {
+		return Functions.distance(point1, point2);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation point(MapExpression parameterMap) {
+		return Functions.point(parameterMap);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation point(Expression expression) {
+		return Functions.point(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation point(Parameter<?> parameter) {
+		return Functions.point(parameter);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation cartesian(double x, double y) {
+		return Functions.cartesian(x, y);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation coordinate(double longitude, double latitude) {
+		return Functions.coordinate(longitude, latitude);
+	}
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation withinBBox(Expression point, Expression lowerLeft, Expression upperRight) {
+		return Functions.withinBBox(point, lowerLeft, upperRight);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation avg(Expression expression) {
+		return Functions.avg(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation avgDistinct(Expression expression) {
+		return Functions.avgDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation collect(@NotNull Named variable) {
+		return Functions.collect(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation collectDistinct(@NotNull Named variable) {
+		return Functions.collectDistinct(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation collect(Expression expression) {
+		return Functions.collect(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation collectDistinct(Expression expression) {
+		return Functions.collectDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation max(Expression expression) {
+		return Functions.max(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation maxDistinct(Expression expression) {
+		return Functions.maxDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation min(Expression expression) {
+		return Functions.min(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation minDistinct(Expression expression) {
+		return Functions.minDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation percentileCont(Expression expression,
+		Number percentile) {
+		return Functions.percentileCont(expression, percentile);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation percentileContDistinct(Expression expression,
+		Number percentile) {
+		return Functions.percentileContDistinct(expression, percentile);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation percentileDisc(Expression expression,
+		Number percentile) {
+		return Functions.percentileDisc(expression, percentile);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation percentileDiscDistinct(Expression expression,
+		Number percentile) {
+		return Functions.percentileDiscDistinct(expression, percentile);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation stDev(Expression expression) {
+		return Functions.stDev(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation stDevDistinct(Expression expression) {
+		return Functions.stDevDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation stDevP(Expression expression) {
+		return Functions.stDevP(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation stDevPDistinct(Expression expression) {
+		return Functions.stDevPDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation sum(Expression expression) {
+		return Functions.sum(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation sumDistinct(Expression expression) {
+		return Functions.sumDistinct(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation range(Integer start, Integer end) {
+		return Functions.range(start, end);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation range(@NotNull Expression start,
+		@NotNull Expression end) {
+		return Functions.range(start, end);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation range(@NotNull Integer start, @NotNull Integer end,
+		Integer step) {
+		return Functions.range(start, end, step);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation range(@NotNull Expression start,
+		@NotNull Expression end, Expression step) {
+		return Functions.range(start, end, step);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation head(Expression expression) {
+		return Functions.head(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation last(Expression expression) {
+		return Functions.last(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation nodes(@NotNull NamedPath path) {
+		return Functions.nodes(path);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation nodes(@NotNull SymbolicName symbolicName) {
+		return Functions.nodes(symbolicName);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation relationships(@NotNull NamedPath path) {
+		return Functions.relationships(path);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation relationships(@NotNull SymbolicName symbolicName) {
+		return Functions.relationships(symbolicName);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation startNode(@NotNull Relationship relationship) {
+		return Functions.startNode(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation endNode(@NotNull Relationship relationship) {
+		return Functions.endNode(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation date() {
+		return Functions.date();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation calendarDate(Integer year, Integer month,
+		Integer day) {
+		return Functions.calendarDate(year, month, day);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation weekDate(Integer year, Integer week,
+		Integer dayOfWeek) {
+		return Functions.weekDate(year, week, dayOfWeek);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation quarterDate(Integer year, Integer quarter,
+		Integer dayOfQuarter) {
+		return Functions.quarterDate(year, quarter, dayOfQuarter);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation ordinalDate(Integer year, Integer ordinalDay) {
+		return Functions.ordinalDate(year, ordinalDay);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation date(@NotNull MapExpression components) {
+		return Functions.date(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation date(@NotNull String temporalValue) {
+		return Functions.date(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation date(@NotNull Expression temporalValue) {
+		return Functions.date(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation datetime() {
+		return Functions.datetime();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation datetime(@NotNull TimeZone timeZone) {
+		return Functions.datetime(timeZone);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation datetime(@NotNull MapExpression components) {
+		return Functions.datetime(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation datetime(@NotNull String temporalValue) {
+		return Functions.datetime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation datetime(@NotNull Expression temporalValue) {
+		return Functions.datetime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localdatetime() {
+		return Functions.localdatetime();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localdatetime(@NotNull TimeZone timeZone) {
+		return Functions.localdatetime(timeZone);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localdatetime(@NotNull MapExpression components) {
+		return Functions.localdatetime(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localdatetime(@NotNull String temporalValue) {
+		return Functions.localdatetime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localdatetime(@NotNull Expression temporalValue) {
+		return Functions.localdatetime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localtime() {
+		return Functions.localtime();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localtime(@NotNull TimeZone timeZone) {
+		return Functions.localtime(timeZone);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localtime(@NotNull MapExpression components) {
+		return Functions.localtime(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localtime(@NotNull String temporalValue) {
+		return Functions.localtime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation localtime(@NotNull Expression temporalValue) {
+		return Functions.localtime(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation time() {
+		return Functions.time();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation time(@NotNull TimeZone timeZone) {
+		return Functions.time(timeZone);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation time(@NotNull MapExpression components) {
+		return Functions.time(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation time(@NotNull String temporalValue) {
+		return Functions.time(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation time(@NotNull Expression temporalValue) {
+		return Functions.time(temporalValue);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation duration(@NotNull MapExpression components) {
+		return Functions.duration(components);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation duration(@NotNull String temporalAmount) {
+		return Functions.duration(temporalAmount);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation duration(@NotNull Expression temporalAmount) {
+		return Functions.duration(temporalAmount);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation shortestPath(Relationship relationship) {
+		return Functions.shortestPath(relationship);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Reduction.OngoingDefinitionWithVariable reduce(
+		@NotNull SymbolicName variable) {
+		return Functions.reduce(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation abs(@NotNull Expression expression) {
+		return Functions.abs(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation ceil(@NotNull Expression expression) {
+		return Functions.ceil(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation floor(@NotNull Expression expression) {
+		return Functions.floor(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation rand() {
+		return Functions.rand();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation round(Expression value, Expression... expression) {
+		return Functions.round(value, expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation sign(@NotNull Expression expression) {
+		return Functions.sign(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation e() {
+		return Functions.e();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation exp(@NotNull Expression expression) {
+		return Functions.exp(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation log(@NotNull Expression expression) {
+		return Functions.log(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation log10(@NotNull Expression expression) {
+		return Functions.log10(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation sqrt(@NotNull Expression expression) {
+		return Functions.sqrt(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation acos(@NotNull Expression expression) {
+		return Functions.acos(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation asin(@NotNull Expression expression) {
+		return Functions.asin(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation atan(@NotNull Expression expression) {
+		return Functions.atan(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation atan2(@NotNull Expression y,
+		@NotNull Expression x) {
+		return Functions.atan2(y, x);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation cos(@NotNull Expression expression) {
+		return Functions.cos(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation cot(@NotNull Expression expression) {
+		return Functions.cot(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation degrees(@NotNull Expression expression) {
+		return Functions.degrees(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation haversin(@NotNull Expression expression) {
+		return Functions.haversin(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation pi() {
+		return Functions.pi();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation radians(@NotNull Expression expression) {
+		return Functions.radians(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation sin(@NotNull Expression expression) {
+		return Functions.sin(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation tan(@NotNull Expression expression) {
+		return Functions.tan(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toInteger(@NotNull Expression expression) {
+		return Functions.toInteger(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toString(@NotNull Expression expression) {
+		return Functions.toString(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toStringOrNull(@NotNull Expression expression) {
+		return Functions.toStringOrNull(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toFloat(@NotNull Expression expression) {
+		return Functions.toFloat(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation toBoolean(@NotNull Expression expression) {
+		return Functions.toBoolean(expression);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation linenumber() {
+		return Functions.linenumber();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation file() {
+		return Functions.file();
+	}
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation randomUUID() {
+		return Functions.randomUUID();
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation length(@NotNull NamedPath path) {
+		return Functions.length(path);
+	}
+	@Neo4jVersion(minimum = "5.0.0") @Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation graphNames() {
+		return Functions.graphNames();
+	}
+	@Neo4jVersion(minimum = "5.0.0") @Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation graphPropertiesByName(Expression name) {
+		return Functions.graphPropertiesByName(name);
+	}
+	@Neo4jVersion(minimum = "5.0.0") @Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static FunctionInvocation graphByName(
+		Expression name) {
+		return Functions.graphByName(name);
+	}
+	public static MapProjection createProjection(SymbolicName name, Object... content) {
+		return MapProjection.create(name, content);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation minus(Expression e) {
+		return Operations.minus(e);
+	}
+	@SuppressWarnings("deprecation")
+	public static Expression plus(Expression e) {
+		return Operations.plus(e);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation concat(Expression op1, Expression op2) {
+		return Operations.concat(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation add(Expression op1, Expression op2) {
+		return Operations.add(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation subtract(Expression op1, Expression op2) {
+		return Operations.subtract(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation multiply(Expression op1, Expression op2) {
+		return Operations.multiply(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation divide(Expression op1, Expression op2) {
+		return Operations.divide(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation remainder(Expression op1, Expression op2) {
+		return Operations.remainder(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation pow(Expression op1, Expression op2) {
+		return Operations.pow(op1, op2);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation set(Expression target, Expression value) {
+		return Operations.set(target, value);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation mutate(Expression target, MapExpression value) {
+		return Operations.mutate(target, value);
+	}
+	public static Operation mutate(Expression target, Expression value) {
+		return Operations.mutate(target, value);
+	}
+	public static Operation setLabel(Node target, String... label) {
+		return Operations.set(target, label);
+	}
+	@SuppressWarnings("deprecation")
+	public static Operation removeLabel(Node target, String... label) {
+		return Operations.remove(target, label);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Condition exists(Property property) {
+		return Predicates.exists(property);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static Condition exists(RelationshipPattern pattern) {
+		return Predicates.exists(pattern);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition exists(Statement statement, IdentifiableElement... imports) {
+		return Predicates.exists(statement, imports);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition exists(PatternElement pattern) {
+		return Predicates.exists(pattern);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition exists(List<PatternElement> pattern) {
+		return Predicates.exists(pattern);
+	}
+	@SuppressWarnings("deprecation")
+	public static Condition exists(List<PatternElement> pattern, @Nullable Where where) {
+		return Predicates.exists(pattern, where);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction all(String variable) {
+		return Predicates.all(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction all(
+		SymbolicName variable) {
+		return Predicates.all(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction any(String variable) {
+		return Predicates.any(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction any(
+		SymbolicName variable) {
+		return Predicates.any(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction none(String variable) {
+		return Predicates.none(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction none(
+		SymbolicName variable) {
+		return Predicates.none(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction single(String variable) {
+		return Predicates.single(variable);
+	}
+	@Contract(pure = true) @NotNull
+	@SuppressWarnings("deprecation")
+	public static OngoingListBasedPredicateFunction single(
+		SymbolicName variable) {
+		return Predicates.single(variable);
+	}
+	private Cypher() {
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+@API(status = STABLE, since = "1.0")
+public final class Where implements Visitable {
+	private final Condition condition;
+	@Nullable
+	public static Where from(@Nullable Expression optionalWhere) {
+		return optionalWhere == null ? null : new Where(optionalWhere.asCondition());
+	}
+	Where(Condition condition) {
+		this.condition = condition;
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		this.condition.accept(visitor);
+		visitor.leave(this);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core.ast;
+@FunctionalInterface
+public interface Visitor {
+	void enter(Visitable segment);
+	default EnterResult enterWithResult(Visitable segment) {
+		enter(segment);
+		return EnterResult.CONTINUE;
+	}
+	default void leave(Visitable segment) {
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.Arrays;
+import java.util.Collection;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.StatementBuilder.OrderableOngoingReadingAndWithWithoutWhere;
+import org.neo4j.cypherdsl.core.annotations.CheckReturnValue;
+@API(status = STABLE, since = "2023.0.0")
+public interface ExposesWith {
+	@NotNull
+	@CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default OrderableOngoingReadingAndWithWithoutWhere with(String... variables) {
+		return with(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull
+	@CheckReturnValue
+	default OrderableOngoingReadingAndWithWithoutWhere with(IdentifiableElement... elements) {
+		return with(Arrays.asList(elements));
+	}
+	@NotNull
+	@CheckReturnValue
+	OrderableOngoingReadingAndWithWithoutWhere with(Collection<IdentifiableElement> elements);
+	@NotNull
+	@CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default OrderableOngoingReadingAndWithWithoutWhere withDistinct(String... variables) {
+		return withDistinct(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull
+	@CheckReturnValue
+	default OrderableOngoingReadingAndWithWithoutWhere withDistinct(IdentifiableElement... elements) {
+		return withDistinct(Arrays.asList(elements));
+	}
+	@NotNull
+	@CheckReturnValue
+	OrderableOngoingReadingAndWithWithoutWhere withDistinct(Collection<IdentifiableElement> expressions);
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import java.util.Optional;
+import org.apiguardian.api.API;
+import org.neo4j.cypherdsl.core.ast.ProvidesAffixes;
+import org.neo4j.cypherdsl.core.ast.TypedSubtree;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+@API(status = INTERNAL, since = "2020.0.1")
+final class Arguments extends TypedSubtree<Expression> implements ProvidesAffixes {
+	Arguments(Expression... children) {
+		super(children);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	protected Visitable prepareVisit(Expression child) {
+		return Expressions.nameOrExpression(child);
+	}
+	@Override
+	public Optional<String> getPrefix() {
+		return Optional.of("(");
+	}
+	@Override
+	public Optional<String> getSuffix() {
+		return Optional.of(")");
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.Optional;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+@API(status = STABLE, since = "1.0")
+public non-sealed interface Named extends IdentifiableElement {
+	@NotNull @Contract(pure = true)
+	Optional<SymbolicName> getSymbolicName();
+	@NotNull @Contract(pure = true)
+	default SymbolicName getRequiredSymbolicName() {
+		return getSymbolicName().orElseThrow(() -> new IllegalStateException("No name present."));
+	}
+	@Override @NotNull
+	default Expression asExpression() {
+		return getRequiredSymbolicName();
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.internal.RelationshipPatternCondition;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+import org.neo4j.cypherdsl.core.annotations.CheckReturnValue;
+@API(status = STABLE, since = "1.0")
+public final class PatternComprehension implements Expression {
+	static OngoingDefinitionWithPattern basedOn(RelationshipPattern pattern) {
+		Assertions.notNull(pattern, "A pattern is required");
+		return new Builder(pattern);
+	}
+	static OngoingDefinitionWithPattern basedOn(NamedPath pattern) {
+		Assertions.notNull(pattern, "A pattern is required");
+		return new Builder(pattern);
+	}
+	public interface OngoingDefinitionWithoutReturn {
+		@NotNull @Contract(pure = true)
+		@SuppressWarnings("deprecation")
+		default PatternComprehension returning(Named... variables) {
+			return returning(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @Contract(pure = true)
+		PatternComprehension returning(Expression... listDefinition);
+	}
+	public interface OngoingDefinitionWithPattern extends OngoingDefinitionWithoutReturn {
+		@NotNull @CheckReturnValue
+		OngoingDefinitionWithPatternAndWhere where(Condition condition);
+		@NotNull @CheckReturnValue
+		default OngoingDefinitionWithPatternAndWhere where(RelationshipPattern pathPattern) {
+			Assertions.notNull(pathPattern, "The path pattern must not be null.");
+			return this.where(RelationshipPatternCondition.of(pathPattern));
+		}
+	}
+	public interface OngoingDefinitionWithPatternAndWhere extends OngoingDefinitionWithoutReturn, ExposesLogicalOperators<OngoingDefinitionWithPatternAndWhere>  {
+	}
+	private static class Builder implements OngoingDefinitionWithPattern, OngoingDefinitionWithPatternAndWhere  {
+		private final PatternElement pattern;
+		private final DefaultStatementBuilder.ConditionBuilder conditionBuilder = new DefaultStatementBuilder.ConditionBuilder();
+		private Builder(PatternElement pattern) {
+			this.pattern = pattern;
+		}
+		@Override
+		public OngoingDefinitionWithPatternAndWhere where(Condition condition) {
+			conditionBuilder.where(condition);
+			return this;
+		}
+		@Override
+		public OngoingDefinitionWithPatternAndWhere and(Condition condition) {
+			conditionBuilder.and(condition);
+			return this;
+		}
+		@Override
+		public OngoingDefinitionWithPatternAndWhere or(Condition condition) {
+			conditionBuilder.or(condition);
+			return this;
+		}
+		@Override
+		public PatternComprehension returning(Expression... expressions) {
+			Where where = conditionBuilder.buildCondition().map(Where::new).orElse(null);
+			return new PatternComprehension(pattern, where, ListExpression.listOrSingleExpression(expressions));
+		}
+	}
+	private final PatternElement pattern;
+	private final Where where;
+	private final Expression listDefinition;
+	private PatternComprehension(PatternElement pattern, Where where, Expression listDefinition) {
+		this.pattern = pattern;
+		this.where = where;
+		this.listDefinition = listDefinition;
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		this.pattern.accept(visitor);
+		Visitable.visitIfNotNull(this.where, visitor);
+		Operator.PIPE.accept(visitor);
+		this.listDefinition.accept(visitor);
+		visitor.leave(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+@API(status = STABLE, since = "1.0")
+public interface PatternElement extends Visitable {
+	@Neo4jVersion(minimum = "5.0")
+	@NotNull @Contract(pure = true)
+	default PatternElement where(@Nullable Expression predicate) {
+		throw new UnsupportedOperationException();
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.Optional;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+@API(status = STABLE, since = "1.0")
+public final class SortItem implements Visitable {
+	private final Expression expression;
+	private final Direction direction;
+	static SortItem create(Expression expression, Direction direction) {
+		Assertions.notNull(expression, "Expression to sort must not be null.");
+		return new SortItem(expression, Optional.ofNullable(direction).orElse(SortItem.Direction.UNDEFINED));
+	}
+	private SortItem(Expression expression, Direction direction) {
+		this.expression = expression;
+		this.direction = direction;
+	}
+	@NotNull @Contract(pure = true)
+	public SortItem ascending() {
+		return new SortItem(this.expression, Direction.ASC);
+	}
+	@NotNull @Contract(pure = true)
+	public SortItem descending() {
+		return new SortItem(this.expression, Direction.DESC);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		Expressions.nameOrExpression(this.expression).accept(visitor);
+		if (this.direction != Direction.UNDEFINED) {
+			this.direction.accept(visitor);
+		}
+		visitor.leave(this);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+	@API(status = STABLE)
+	public enum Direction implements Visitable {
+		UNDEFINED(""),
+		ASC("ASC"),
+		DESC("DESC");
+		private final String symbol;
+		Direction(String symbol) {
+			this.symbol = symbol;
+		}
+		public String getSymbol() {
+			return this.symbol;
+		}
+		@Override
+		public String toString() {
+			return RendererBridge.render(this);
+		}
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public final class Operation implements Expression {
+	private static final EnumSet<Operator> LABEL_OPERATORS = EnumSet.of(Operator.SET_LABEL, Operator.REMOVE_LABEL);
+	private static final EnumSet<Operator.Type> NEEDS_GROUPING_BY_TYPE = EnumSet
+		.complementOf(EnumSet.of(Operator.Type.PROPERTY, Operator.Type.LABEL));
+	private static final EnumSet<Operator> DONT_GROUP = EnumSet.of(Operator.EXPONENTIATION, Operator.PIPE, Operator.UNARY_MINUS, Operator.UNARY_PLUS);
+	static Operation create(@NotNull Operator operator, @NotNull Expression expression) {
+		Assertions.notNull(operator, "Operator must not be null.");
+		Assertions.isTrue(operator.isUnary(), "Operator must be unary.");
+		Assertions.notNull(expression, "The expression must not be null.");
+		return switch (operator.getType()) {
+			case PREFIX -> new Operation(null, operator, expression);
+			case POSTFIX -> new Operation(expression, operator, (Expression) null);
+			default -> throw new IllegalArgumentException("Invalid operator type " + operator.getType());
+		};
+	}
+	static Operation create(Expression op1, Operator operator, Expression op2) {
+		Assertions.notNull(op1, "The first operand must not be null.");
+		Assertions.notNull(operator, "Operator must not be null.");
+		Assertions.notNull(op2, "The second operand must not be null.");
+		return new Operation(op1, operator, op2);
+	}
+	static Operation create(Node op1, Operator operator, String... nodeLabels) {
+		Assertions.notNull(op1, "The first operand must not be null.");
+		Assertions.isTrue(op1.getSymbolicName().isPresent(), "The node must have a name.");
+		Assertions.isTrue(LABEL_OPERATORS.contains(operator),
+			String.format("Only operators %s can be used to modify labels", LABEL_OPERATORS));
+		Assertions.notEmpty(nodeLabels, "The labels cannot be empty.");
+		List<NodeLabel> listOfNodeLabels = Arrays.stream(nodeLabels).map(NodeLabel::new).toList();
+		return new Operation(op1.getRequiredSymbolicName(), operator, new NodeLabels(listOfNodeLabels));
+	}
+	private final Expression left;
+	private final Operator operator;
+	private final Visitable right;
+	Operation(Expression left, Operator operator, Expression right) {
+		this.left = left;
+		this.operator = operator;
+		this.right = right;
+	}
+	Operation(Expression left, Operator operator, NodeLabels right) {
+		this.left = left;
+		this.operator = operator;
+		this.right = right;
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		if (left != null) {
+			Expressions.nameOrExpression(left).accept(visitor);
+		}
+		operator.accept(visitor);
+		Visitable.visitIfNotNull(right, visitor);
+		visitor.leave(this);
+	}
+	public boolean needsGrouping() {
+		return NEEDS_GROUPING_BY_TYPE.contains(this.operator.getType()) && !DONT_GROUP.contains(this.operator);
+	}
+	@API(status = INTERNAL)
+	Operator getOperator() {
+		return operator;
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public final class AliasedExpression implements Aliased, Expression, IdentifiableElement {
+	private final Expression delegate;
+	private final String alias;
+	AliasedExpression(Expression delegate, String alias) {
+		this.delegate = delegate;
+		this.alias = alias;
+	}
+	@NotNull
+	@Override
+	public String getAlias() {
+		return alias;
+	}
+	@NotNull
+	@Override
+	public AliasedExpression as(String newAlias) {
+		Assertions.hasText(newAlias, "The alias may not be null or empty.");
+		return new AliasedExpression(this.delegate, newAlias);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		Expressions.nameOrExpression(this.delegate).accept(visitor);
+		visitor.leave(this);
+	}
+	Expression getDelegate() {
+		return delegate;
+	}
+	@NotNull
+	@Override
+	public Expression asExpression() {
+		return this;
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+import org.neo4j.cypherdsl.core.annotations.CheckReturnValue;
+@API(status = STABLE, since = "1.0.1")
+public final class ListComprehension implements Expression {
+	private final SymbolicName variable;
+	private final Expression listExpression;
+	private final Where where;
+	private final Expression listDefinition;
+	static OngoingDefinitionWithVariable with(SymbolicName variable) {
+		Assertions.notNull(variable, "A variable is required");
+		return new Builder(variable);
+	}
+	public interface OngoingDefinitionWithVariable {
+		@NotNull @CheckReturnValue
+		OngoingDefinitionWithList in(Expression list);
+	}
+	public interface OngoingDefinitionWithList extends OngoingDefinitionWithoutReturn {
+		@NotNull @CheckReturnValue
+		OngoingDefinitionWithoutReturn where(Condition condition);
+	}
+	public interface OngoingDefinitionWithoutReturn {
+		@NotNull @Contract(pure = true)
+		@SuppressWarnings("deprecation")
+		default ListComprehension returning(Named... variables) {
+			return returning(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @Contract(pure = true)
+		ListComprehension returning(Expression... listDefinition);
+		@NotNull @Contract(pure = true)
+		ListComprehension returning();
+	}
+	private static class Builder
+		implements OngoingDefinitionWithVariable, OngoingDefinitionWithList {
+		private final SymbolicName variable;
+		private Expression listExpression;
+		private Where where;
+		private Builder(SymbolicName variable) {
+			this.variable = variable;
+		}
+		@NotNull
+		@Override
+		public OngoingDefinitionWithList in(Expression list) {
+			this.listExpression = list;
+			return this;
+		}
+		@NotNull
+		@Override
+		public OngoingDefinitionWithoutReturn where(Condition condition) {
+			this.where = new Where(condition);
+			return this;
+		}
+		@NotNull
+		@Override
+		public ListComprehension returning() {
+			return new ListComprehension(variable, listExpression, where, null);
+		}
+		@NotNull
+		@Override
+		public ListComprehension returning(Expression... expressions) {
+			return new ListComprehension(variable, listExpression, where,
+				ListExpression.listOrSingleExpression(expressions));
+		}
+	}
+	private ListComprehension(SymbolicName variable, Expression listExpression,
+		Where where, Expression listDefinition) {
+		this.variable = variable;
+		this.listExpression = listExpression;
+		this.where = where;
+		this.listDefinition = listDefinition;
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		this.variable.accept(visitor);
+		Operator.IN.accept(visitor);
+		this.listExpression.accept(visitor);
+		Visitable.visitIfNotNull(this.where, visitor);
+		if (this.listDefinition != null) {
+			Operator.PIPE.accept(visitor);
+			this.listDefinition.accept(visitor);
+		}
+		visitor.leave(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.Collection;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.annotations.CheckReturnValue;
+import org.neo4j.cypherdsl.core.internal.RelationshipPatternCondition;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public interface StatementBuilder
+	extends ExposesMatch, ExposesCreate, ExposesMerge, ExposesUnwind, ExposesReturning, ExposesFinish, ExposesSubqueryCall, ExposesWith {
+	interface OngoingUpdate extends BuildableStatement<Statement>,
+		ExposesCreate, ExposesMerge, ExposesDelete, ExposesReturning, ExposesFinish, ExposesWith, ExposesSet, ExposesForeach {
+	}
+	interface OngoingMerge extends OngoingUpdate, ExposesMergeAction, ExposesSetAndRemove {
+	}
+	interface ExposesExistentialSubqueryCall {
+		@Neo4jVersion(minimum = "4.0.0")
+		@NotNull @Contract(pure = true)
+		Condition asCondition();
+	}
+	interface OngoingReadingWithoutWhere
+		extends OngoingReading, ExposesHints, ExposesWhere<StatementBuilder.OngoingReadingWithWhere>, ExposesMatch, ExposesExistentialSubqueryCall {
+	}
+	interface OngoingReadingWithWhere extends OngoingReading, ExposesMatch,
+		ExposesLogicalOperators<OngoingReadingWithWhere>, ExposesExistentialSubqueryCall {
+	}
+	interface OngoingReading
+		extends ExposesReturning, ExposesFinish, ExposesWith, ExposesUpdatingClause, ExposesUnwind, ExposesCreate, ExposesMatch,
+		ExposesCall<OngoingInQueryCallWithoutArguments>, ExposesSubqueryCall {
+	}
+	interface OngoingUnwind {
+		@NotNull @CheckReturnValue
+		OngoingReading as(@NotNull String variable);
+		@NotNull @CheckReturnValue
+		default OngoingReading as(SymbolicName variable) {
+			return as(variable.getValue());
+		}
+	}
+	interface OngoingReadingAndReturn
+		extends TerminalExposesOrderBy, TerminalExposesSkip, TerminalExposesLimit, BuildableStatement<ResultStatement> {
+		Collection<Expression> getIdentifiableExpressions();
+	}
+	interface OrderableOngoingReadingAndWithWithoutWhere extends OrderableOngoingReadingAndWith {
+		@NotNull @CheckReturnValue
+		OrderableOngoingReadingAndWithWithWhere where(@NotNull Condition condition);
+		@NotNull @CheckReturnValue
+		default OrderableOngoingReadingAndWithWithWhere where(@NotNull RelationshipPattern pathPattern) {
+			Assertions.notNull(pathPattern, "The path pattern must not be null.");
+			return this.where(RelationshipPatternCondition.of(pathPattern));
+		}
+	}
+	interface OrderableOngoingReadingAndWithWithWhere
+		extends OrderableOngoingReadingAndWith, ExposesLogicalOperators<OrderableOngoingReadingAndWithWithWhere> {
+	}
+	interface OngoingReadingAndWith extends OngoingReading, ExposesMatch, ExposesLoadCSV {
+	}
+	interface OrderableOngoingReadingAndWith
+		extends ExposesOrderBy, ExposesSkip, ExposesLimit, OngoingReadingAndWith {
+		Collection<Expression> getIdentifiableExpressions();
+	}
+	interface OngoingMatchAndReturnWithOrder extends TerminalExposesSkip, TerminalExposesLimit, BuildableStatement<ResultStatement> {
+		@NotNull @CheckReturnValue
+		TerminalOngoingOrderDefinition and(@NotNull Expression expression);
+	}
+	interface TerminalOngoingOrderDefinition extends TerminalExposesSkip, TerminalExposesLimit, BuildableStatement<ResultStatement> {
+		@NotNull @CheckReturnValue
+		OngoingMatchAndReturnWithOrder descending();
+		@NotNull @CheckReturnValue
+		OngoingMatchAndReturnWithOrder ascending();
+	}
+	interface OngoingReadingAndWithWithWhereAndOrder extends ExposesSkip, ExposesLimit,
+		OngoingReadingAndWith {
+		@NotNull @CheckReturnValue
+		OngoingOrderDefinition and(@NotNull Expression expression);
+	}
+	interface OngoingOrderDefinition extends ExposesSkip, ExposesLimit {
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWithWithWhereAndOrder descending();
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWithWithWhereAndOrder ascending();
+	}
+	interface BuildableStatement<T extends Statement> {
+		@NotNull @Contract(pure = true)
+		T build();
+		@NotNull @Contract(pure = true)
+		default Statement explain() {
+			return DecoratedQuery.explain(build());
+		}
+		@NotNull @Contract(pure = true)
+		default Statement profile() {
+			return DecoratedQuery.profile(build());
+		}
+	}
+	interface TerminalExposesOrderBy {
+		@NotNull @CheckReturnValue
+		OngoingMatchAndReturnWithOrder orderBy(SortItem... sortItem);
+		@NotNull @CheckReturnValue
+		OngoingMatchAndReturnWithOrder orderBy(Collection<SortItem> sortItem);
+		@NotNull @CheckReturnValue
+		TerminalOngoingOrderDefinition orderBy(@NotNull Expression expression);
+	}
+	interface TerminalExposesSkip {
+		@NotNull @CheckReturnValue
+		TerminalExposesLimit skip(Number number);
+		@NotNull @CheckReturnValue
+		TerminalExposesLimit skip(Expression expression);
+	}
+	interface TerminalExposesLimit extends BuildableStatement<ResultStatement> {
+		@NotNull @CheckReturnValue
+		BuildableStatement<ResultStatement> limit(Number number);
+		@NotNull @CheckReturnValue
+		BuildableStatement<ResultStatement> limit(Expression expression);
+	}
+	interface Terminal extends BuildableStatement<Statement> {
+	}
+	interface ExposesOrderBy {
+		@NotNull @CheckReturnValue
+		OrderableOngoingReadingAndWithWithWhere orderBy(SortItem... sortItem);
+		@NotNull @CheckReturnValue
+		OrderableOngoingReadingAndWithWithWhere orderBy(Collection<SortItem> sortItem);
+		@NotNull @CheckReturnValue
+		OngoingOrderDefinition orderBy(@NotNull Expression expression);
+	}
+	interface OngoingReadingAndWithWithSkip extends OngoingReadingAndWith, ExposesLimit {
+	}
+	interface ExposesSkip {
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWithWithSkip skip(Number number);
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWithWithSkip skip(Expression expression);
+	}
+	interface ExposesLimit {
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWith limit(Number number);
+		@NotNull @CheckReturnValue
+		OngoingReadingAndWith limit(Expression expression);
+	}
+	interface ExposesForeach {
+		@NotNull
+		@Contract(pure = true)
+		ForeachSourceStep foreach(SymbolicName variable);
+	}
+	sealed interface ForeachSourceStep permits DefaultStatementBuilder.ForeachBuilder {
+		ForeachUpdateStep in(Expression list);
+	}
+	sealed interface ForeachUpdateStep permits DefaultStatementBuilder.ForeachBuilder {
+		OngoingUpdate apply(UpdatingClause... updatingClauses);
+	}
+	interface ExposesUpdatingClause extends ExposesDelete, ExposesMerge, ExposesSetAndRemove, ExposesForeach {
+	}
+	interface ExposesDelete {
+		@NotNull @CheckReturnValue
+		@SuppressWarnings("deprecation")
+		default OngoingUpdate delete(String... variables) {
+			return delete(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @CheckReturnValue
+		@SuppressWarnings("deprecation")
+		default OngoingUpdate delete(Named... variables) {
+			return delete(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @CheckReturnValue
+		OngoingUpdate delete(Expression... expressions);
+		@NotNull @CheckReturnValue
+		OngoingUpdate delete(Collection<? extends Expression> expressions);
+		@NotNull @CheckReturnValue
+		@SuppressWarnings("deprecation")
+		default OngoingUpdate detachDelete(String... variables) {
+			return detachDelete(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @CheckReturnValue
+		@SuppressWarnings("deprecation")
+		default OngoingUpdate detachDelete(Named... variables) {
+			return detachDelete(Expressions.createSymbolicNames(variables));
+		}
+		@NotNull @CheckReturnValue
+		OngoingUpdate detachDelete(Expression... expressions);
+		@NotNull @CheckReturnValue
+		OngoingUpdate detachDelete(Collection<? extends Expression> expressions);
+	}
+	interface ExposesSet {
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate set(Expression... expressions);
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate set(Collection<? extends Expression> expressions);
+		@NotNull @CheckReturnValue
+		default BuildableMatchAndUpdate set(Named variable, Expression expression) {
+			return set(variable.getRequiredSymbolicName(), expression);
+		}
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate mutate(Expression target, Expression properties);
+		@NotNull @CheckReturnValue
+		default BuildableMatchAndUpdate mutate(Named variable, Expression properties) {
+			return mutate(variable.getRequiredSymbolicName(), properties);
+		}
+	}
+	interface ExposesSetLabel<R> {
+		@NotNull @CheckReturnValue
+		R set(Node node, String... labels);
+		@NotNull @CheckReturnValue
+		R set(Node node, Collection<String> labels);
+	}
+	interface ExposesSetAndRemove extends ExposesSet, ExposesSetLabel<BuildableMatchAndUpdate> {
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate remove(Node node, String... labels);
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate remove(Node node, Collection<String> labels);
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate remove(Property... properties);
+		@NotNull @CheckReturnValue
+		BuildableMatchAndUpdate remove(Collection<Property> properties);
+	}
+	interface OngoingMatchAndUpdate extends ExposesReturning, ExposesFinish, ExposesWith, ExposesUpdatingClause, ExposesCreate {
+	}
+	interface BuildableMatchAndUpdate extends OngoingMatchAndUpdate, BuildableStatement<Statement> {
+	}
+	interface ExposesMergeAction {
+		@NotNull @CheckReturnValue
+		OngoingMergeAction onCreate();
+		@NotNull @CheckReturnValue
+		OngoingMergeAction onMatch();
+	}
+	interface BuildableOngoingMergeAction extends BuildableMatchAndUpdate, ExposesMergeAction {
+	}
+	interface OngoingMergeAction extends ExposesSetLabel<BuildableOngoingMergeAction> {
+		@NotNull @CheckReturnValue
+		BuildableOngoingMergeAction set(Expression... expressions);
+		@NotNull @CheckReturnValue
+		BuildableOngoingMergeAction set(Collection<? extends Expression> expressions);
+		@NotNull @CheckReturnValue
+		default BuildableOngoingMergeAction set(Named variable, Expression expression) {
+			return set(variable.getRequiredSymbolicName(), expression);
+		}
+		@NotNull @CheckReturnValue
+		BuildableOngoingMergeAction mutate(Expression target, Expression properties);
+		@NotNull @CheckReturnValue
+		default BuildableOngoingMergeAction mutate(Named variable, Expression properties) {
+			return mutate(variable.getRequiredSymbolicName(), properties);
+		}
+	}
+	interface ExposesYieldStar {
+		OngoingStandaloneCallWithReturnFields yield(Asterisk asterisk);
+		default OngoingStandaloneCallWithReturnFields yieldStar() {
+			return this.yield(Cypher.asterisk());
+		}
+	}
+	interface OngoingStandaloneCallWithoutArguments extends
+		StatementBuilder.BuildableStatement<Statement>, ExposesCall.ExposesWithArgs<OngoingStandaloneCallWithArguments>,
+		ExposesCall.ExposesYield<OngoingStandaloneCallWithReturnFields>, ExposesCall.AsFunction, ExposesYieldStar {
+		VoidCall withoutResults();
+	}
+	interface OngoingStandaloneCallWithArguments extends
+		StatementBuilder.BuildableStatement<Statement>,
+		ExposesCall.ExposesYield<OngoingStandaloneCallWithReturnFields>, ExposesCall.AsFunction, ExposesYieldStar {
+		VoidCall withoutResults();
+	}
+	sealed interface OngoingStandaloneCallWithReturnFields extends
+		StatementBuilder.BuildableStatement<Statement>,
+		ExposesMatch,
+		ExposesWhere<StatementBuilder.OngoingReadingWithWhere>,
+		ExposesReturning, ExposesFinish, ExposesWith, ExposesSubqueryCall,
+		ExposesAndThen<OngoingStandaloneCallWithReturnFields, Statement>
+		permits DefaultStatementBuilder.YieldingStandaloneCallBuilder {
+	}
+	interface OngoingInQueryCallWithoutArguments extends
+		ExposesCall.ExposesWithArgs<OngoingInQueryCallWithArguments>,
+		ExposesCall.ExposesYield<OngoingInQueryCallWithReturnFields> {
+		VoidCall withoutResults();
+	}
+	interface OngoingInQueryCallWithArguments extends
+		ExposesCall.ExposesYield<OngoingInQueryCallWithReturnFields> {
+		VoidCall withoutResults();
+	}
+	interface VoidCall extends OngoingReading {
+	}
+	interface OngoingInQueryCallWithReturnFields extends
+		ExposesMatch, ExposesWhere<StatementBuilder.OngoingReadingWithWhere>, ExposesReturning, ExposesFinish, ExposesWith, ExposesSubqueryCall, ExposesForeach {
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.annotations.CheckReturnValue;
+import java.util.Arrays;
+import java.util.Collection;
+@API(status = STABLE, since = "1.0")
+public interface ExposesReturning {
+	@NotNull @CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default StatementBuilder.OngoingReadingAndReturn returning(String... variables) {
+		return returning(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull @CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default StatementBuilder.OngoingReadingAndReturn returning(Named... variables) {
+		return returning(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull @CheckReturnValue
+	default StatementBuilder.OngoingReadingAndReturn returning(Expression... expressions) {
+		return returning(expressions == null ? null : Arrays.asList(expressions));
+	}
+	@NotNull @CheckReturnValue
+	StatementBuilder.OngoingReadingAndReturn returning(Collection<? extends Expression> expressions);
+	@NotNull @CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default StatementBuilder.OngoingReadingAndReturn returningDistinct(String... variables) {
+		return returningDistinct(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull @CheckReturnValue
+	@SuppressWarnings("deprecation")
+	default StatementBuilder.OngoingReadingAndReturn returningDistinct(Named... variables) {
+		return returningDistinct(Expressions.createSymbolicNames(variables));
+	}
+	@NotNull @CheckReturnValue
+	default StatementBuilder.OngoingReadingAndReturn returningDistinct(Expression... expressions) {
+		return returningDistinct(expressions == null ? null : Arrays.asList(expressions));
+	}
+	@NotNull @CheckReturnValue
+	StatementBuilder.OngoingReadingAndReturn returningDistinct(Collection<? extends Expression> expressions);
+	@NotNull @CheckReturnValue
+	StatementBuilder.OngoingReadingAndReturn returningRaw(Expression rawExpression);
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.StatementBuilder.OngoingStandaloneCallWithoutArguments;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.internal.LoadCSV;
+import org.neo4j.cypherdsl.core.internal.ProcedureName;
+import org.neo4j.cypherdsl.core.internal.UsingPeriodicCommit;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public interface Statement extends Visitable {
+	@NotNull @Contract(pure = true)
+	static StatementBuilder builder() {
+		return new DefaultStatementBuilder();
+	}
+	@NotNull
+	static Statement of(@NotNull List<Clause> clauses) {
+		Assertions.notNull(clauses, "Clauses must not be null.");
+		return new ClausesBasedStatement(clauses, null);
+	}
+	@API(status = STABLE, since = "2021.3.0")
+	@NotNull
+	static Statement usingPeriodic(Integer batchSize, @NotNull List<Clause> clauses) {
+		Assertions.notNull(clauses, "Clauses must not be null.");
+		Assertions.isTrue(!clauses.isEmpty(), "Clauses must not be empty.");
+		Assertions.isInstanceOf(LoadCSV.class, clauses.get(0), "First clause must be a LOAD CSV clause.");
+		return new ClausesBasedStatement(clauses, new UsingPeriodicCommit(batchSize));
+	}
+	@NotNull @Contract(pure = true)
+	static OngoingStandaloneCallWithoutArguments call(String... namespaceAndProcedure) {
+		return new DefaultStatementBuilder.StandaloneCallBuilder(ProcedureName.from(namespaceAndProcedure));
+	}
+	@NotNull @Contract(pure = true)
+	StatementCatalog getCatalog();
+	@NotNull @Contract(pure = true)
+	String getCypher();
+	@API(status = INTERNAL, since = "2021.0.0")
+	@NotNull @Contract(pure = true)
+	StatementContext getContext();
+	@Contract(pure = true)
+	boolean isRenderConstantsAsParameters();
+	void setRenderConstantsAsParameters(boolean renderConstantsAsParameters);
+	interface RegularQuery extends Statement {
+	}
+	interface SingleQuery extends RegularQuery {
+	}
+	sealed interface UnionQuery extends RegularQuery permits UnionQueryImpl {
+	}
+	sealed interface UseStatement extends Statement permits DecoratedQuery {
+		@NotNull @Contract(pure = true)
+		default Statement explain() {
+			return DecoratedQuery.explain(this);
+		}
+	}
+	default boolean doesReturnOrYield() {
+		return this instanceof ResultStatement || this instanceof UnionQueryImpl;
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+import org.neo4j.cypherdsl.core.ast.EnterResult;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.utils.Assertions;
+@API(status = STABLE, since = "1.0")
+public final class Comparison implements Condition {
+	static Comparison create(Operator operator, Expression expression) {
+		Assertions.isTrue(operator.isUnary(), "Operator must be unary.");
+		Assertions.notNull(expression, "Expression must not be null.");
+		return switch (operator.getType()) {
+			case PREFIX -> new Comparison(null, operator, expression);
+			case POSTFIX -> new Comparison(expression, operator, null);
+			default -> throw new IllegalArgumentException("Invalid operator type " + operator.getType());
+		};
+	}
+	static Comparison create(Expression lhs, Operator operator, Expression rhs) {
+		Assertions.notNull(lhs, "Left expression must not be null.");
+		Assertions.notNull(operator, "Operator must not be empty.");
+		Assertions.notNull(rhs, "Right expression must not be null.");
+		return new Comparison(lhs, operator, rhs);
+	}
+	private static Expression nestedIfCondition(Expression expression) {
+		return expression instanceof Condition ? new NestedExpression(expression) : expression;
+	}
+	private final Expression left;
+	private final Operator comparator;
+	private final Expression right;
+	private Comparison(Expression left, Operator operator, Expression right) {
+		this.left = nestedIfCondition(left);
+		this.comparator = operator;
+		this.right = nestedIfCondition(right);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	public void accept(Visitor visitor) {
+		EnterResult result = visitor.enterWithResult(this);
+		if (result == EnterResult.CONTINUE) {
+			if (left != null) {
+				Expressions.nameOrExpression(left).accept(visitor);
+			}
+			comparator.accept(visitor);
+			if (right != null) {
+				Expressions.nameOrExpression(right).accept(visitor);
+			}
+		}
+		visitor.leave(this);
+	}
+	@NotNull
+	@Override
+	public Condition not() {
+		if (this.comparator == Operator.IS_NULL) {
+			return new Comparison(left, Operator.IS_NOT_NULL, right);
+		} else if (this.comparator == Operator.IS_NOT_NULL) {
+			return new Comparison(left, Operator.IS_NULL, right);
+		}
+		return Condition.super.not();
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.NotNull;
+@API(status = STABLE, since = "2023.9.0")
+public interface SubqueryExpressionBuilder {
+	@NotNull
+	CountExpression count(PatternElement requiredPattern, PatternElement... patternElement);
+	@NotNull
+	CountExpression count(Statement.UnionQuery union);
+	CollectExpression collect(Statement statement);
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+@API(status = STABLE, since = "2023.0.0")
+@Neo4jVersion(minimum = "5.6")
+public final class CollectExpression implements SubqueryExpression {
+	private final ImportingWith optionalWith;
+	private final Statement resultStatement;
+	static CollectExpression collect(Statement statement, IdentifiableElement... imports) {
+		return new CollectExpression(ImportingWith.of(imports), statement);
+	}
+	static CollectExpression collect(Statement resultStatement) {
+		return new CollectExpression(new ImportingWith(), resultStatement);
+	}
+	static CollectExpression collect(@Nullable With optionalWith, Statement resultStatement) {
+		return new CollectExpression(new ImportingWith(optionalWith, null), resultStatement);
+	}
+	private CollectExpression(ImportingWith optionalWith, Statement resultStatement) {
+		this.optionalWith = optionalWith;
+		this.resultStatement = resultStatement;
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		this.optionalWith.accept(visitor);
+		this.resultStatement.accept(visitor);
+		visitor.leave(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+@API(status = STABLE, since = "2023.0.0")
+@Neo4jVersion(minimum = "5.0")
+public final class CountExpression implements SubqueryExpression, ExposesWhere<Expression> {
+	private final ImportingWith importingWith;
+	private final List<Visitable> fragments;
+	@Nullable
+	private final Where innerWhere;
+	static CountExpression count(Statement statement, IdentifiableElement... imports) {
+		return new CountExpression(ImportingWith.of(imports), List.of(statement), null);
+	}
+	static CountExpression count(Visitable patternOrUnion) {
+		return new CountExpression(new ImportingWith(), List.of(patternOrUnion), null);
+	}
+	static CountExpression count(@Nullable With optionalWith, Visitable patternOrUnion) {
+		return new CountExpression(new ImportingWith(optionalWith, null), List.of(patternOrUnion), null);
+	}
+	static CountExpression count(List<PatternElement> patternElements, @Nullable Where innerWhere) {
+		return new CountExpression(new ImportingWith(), patternElements, innerWhere);
+	}
+	private CountExpression(ImportingWith optionalWith, List<? extends Visitable> fragments, @Nullable Where innerWhere) {
+		var patternOrUnion = fragments.size() == 1 ? fragments.get(0) : null;
+		if (patternOrUnion instanceof Statement.UnionQuery && innerWhere != null) {
+			throw new IllegalArgumentException("Cannot use a UNION with a WHERE clause inside a COUNT {} expression");
+		}
+		this.importingWith = optionalWith;
+		var imports = optionalWith.imports();
+		if (imports != null && patternOrUnion instanceof Pattern pattern) {
+			this.fragments = List.of(new Match(false, pattern, innerWhere, null));
+			this.innerWhere = null;
+		} else if (imports != null && patternOrUnion instanceof Match match) {
+			this.fragments = List.of(new Match(false, match.pattern, innerWhere, null));
+			this.innerWhere = null;
+		} else {
+			this.fragments = List.copyOf(fragments);
+			this.innerWhere = innerWhere;
+		}
+	}
+	@NotNull @Contract(pure = true)
+	public CountExpression where(Condition condition) {
+		if (fragments.size() == 1 && fragments.get(0) instanceof Statement) {
+			throw new IllegalArgumentException(
+				"This count expression is build upon a full statement, adding a condition to it is not supported.");
+		}
+		return new CountExpression(importingWith, fragments, new Where(condition));
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		importingWith.accept(visitor);
+		fragments.forEach(v -> v.accept(visitor));
+		Visitable.visitIfNotNull(innerWhere, visitor);
+		visitor.leave(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.neo4j.cypherdsl.core.ast.TypedSubtree;
+@API(status = INTERNAL, since = "1.0")
+final class Pattern extends TypedSubtree<PatternElement> {
+	static Pattern of(PatternElement requiredPattern, PatternElement... patternElement) {
+		List<PatternElement> elements;
+		if (patternElement == null || patternElement.length == 0) {
+			elements = List.of(requiredPattern);
+		} else {
+			elements = new ArrayList<>();
+			elements.add(requiredPattern);
+			elements.addAll(Arrays.asList(patternElement));
+		}
+		return Pattern.of(elements);
+	}
+	static Pattern of(Collection<? extends PatternElement> elements) {
+		return new Pattern(elements.stream().map(PatternElement.class::cast).toList());
+	}
+	private Pattern(List<PatternElement> patternElements) {
+		super(patternElements);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.INTERNAL;
+import static org.apiguardian.api.API.Status.STABLE;
+import java.util.List;
+import org.apiguardian.api.API;
+import org.neo4j.cypherdsl.core.ast.EnterResult;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+import org.neo4j.cypherdsl.core.internal.Distinct;
+@API(status = STABLE, since = "1.0")
+public final class With implements Visitable, Clause {
+	private final Distinct distinct;
+	private final ReturnBody body;
+	private final Where where;
+	With(Return returnClause, Where where) {
+		this.distinct = returnClause.getDistinct();
+		this.body = returnClause.getBody();
+		this.where = where;
+	}
+	With(boolean distinct, ExpressionList returnItems, Order order, Skip skip, Limit limit, Where where) {
+		this.distinct = distinct ? Distinct.INSTANCE : null;
+		this.body = new ReturnBody(returnItems, order, skip, limit);
+		this.where = where;
+	}
+	@Override
+	public void accept(Visitor visitor) {
+		if (visitor.enterWithResult(this) == EnterResult.CONTINUE) {
+			Visitable.visitIfNotNull(this.distinct, visitor);
+			this.body.accept(visitor);
+			Visitable.visitIfNotNull(where, visitor);
+		}
+		visitor.leave(this);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+	@API(status = INTERNAL)
+	public List<Expression> getItems() {
+		return body.getReturnItems();
+	}
+}
+package org.neo4j.cypherdsl.core;
+import static org.apiguardian.api.API.Status.STABLE;
+import org.apiguardian.api.API;
+import org.neo4j.cypherdsl.core.ast.Visitor;
+@API(status = STABLE, since = "1.0")
+public final class NestedExpression implements Expression {
+	private final Expression delegate;
+	NestedExpression(Expression delegate) {
+		this.delegate = delegate;
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	public void accept(Visitor visitor) {
+		visitor.enter(this);
+		Expressions.nameOrExpression(this.delegate).accept(visitor);
+		visitor.leave(this);
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}
+package org.neo4j.cypherdsl.core;
+import java.util.List;
+import org.neo4j.cypherdsl.core.ast.TypedSubtree;
+import org.neo4j.cypherdsl.core.ast.Visitable;
+class ExpressionList extends TypedSubtree<Expression> {
+	ExpressionList(List<Expression> returnItems) {
+		super(returnItems);
+	}
+	ExpressionList(Expression... children) {
+		super(children);
+	}
+	@Override
+	@SuppressWarnings("deprecation")
+	protected Visitable prepareVisit(Expression child) {
+		return Expressions.nameOrExpression(child);
+	}
+	boolean isEmpty() {
+		return super.children.isEmpty();
+	}
+	@Override
+	protected List<Expression> getChildren() {
+		return super.getChildren();
+	}
+	@Override
+	public String toString() {
+		return RendererBridge.render(this);
+	}
+}

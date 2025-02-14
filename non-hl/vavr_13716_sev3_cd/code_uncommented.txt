@@ -1,0 +1,2928 @@
+package io.vavr.collection;
+import io.vavr.*;
+import io.vavr.collection.CharSeqModule.Combinations;
+import io.vavr.collection.JavaConverters.ListView;
+import io.vavr.control.Option;
+import java.io.Serializable;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.Charset;
+import java.util.*;
+import java.util.function.*;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import java.util.stream.Collector;
+import static io.vavr.collection.JavaConverters.ChangePolicy.IMMUTABLE;
+import static io.vavr.collection.JavaConverters.ChangePolicy.MUTABLE;
+public final class CharSeq implements CharSequence, IndexedSeq<Character>, Serializable, Comparable<CharSeq> {
+    private static final long serialVersionUID = 1L;
+    private static final CharSeq EMPTY = new CharSeq("");
+    private final String back;
+    private CharSeq(String javaString) {
+        this.back = javaString;
+    }
+    public static CharSeq empty() {
+        return EMPTY;
+    }
+    public static Collector<Character, ArrayList<Character>, CharSeq> collector() {
+        final Supplier<ArrayList<Character>> supplier = ArrayList::new;
+        final BiConsumer<ArrayList<Character>, Character> accumulator = ArrayList::add;
+        final BinaryOperator<ArrayList<Character>> combiner = (left, right) -> {
+            left.addAll(right);
+            return left;
+        };
+        final Function<ArrayList<Character>, CharSeq> finisher = CharSeq::ofAll;
+        return Collector.of(supplier, accumulator, combiner, finisher);
+    }
+    public static CharSeq of(CharSequence sequence) {
+        Objects.requireNonNull(sequence, "sequence is null");
+        if (sequence instanceof CharSeq) {
+            return (CharSeq) sequence;
+        } else {
+            return sequence.length() == 0 ? empty() : new CharSeq(sequence.toString());
+        }
+    }
+    public static CharSeq of(char character) {
+        return new CharSeq(new String(new char[] { character }));
+    }
+    public static CharSeq of(char... characters) {
+        Objects.requireNonNull(characters, "characters is null");
+        if (characters.length == 0) {
+            return empty();
+        } else {
+            final char[] chrs = new char[characters.length];
+            System.arraycopy(characters, 0, chrs, 0, characters.length);
+            return new CharSeq(new String(chrs));
+        }
+    }
+    @SuppressWarnings("unchecked")
+    public static CharSeq ofAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)){
+            return EMPTY;
+        }
+        if (elements instanceof CharSeq) {
+            return (CharSeq) elements;
+        }
+        if (elements instanceof ListView
+                && ((ListView<Character, ?>) elements).getDelegate() instanceof CharSeq) {
+            return (CharSeq) ((ListView<Character, ?>) elements).getDelegate();
+        }
+        final StringBuilder sb = new StringBuilder();
+        for (char character : elements) {
+            sb.append(character);
+        }
+        return of(sb);
+    }
+    public static CharSeq tabulate(int n, Function<? super Integer, ? extends Character> f) {
+        Objects.requireNonNull(f, "f is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            sb.append(f.apply(i).charValue());
+        }
+        return of(sb);
+    }
+    public static CharSeq fill(int n, Supplier<? extends Character> s) {
+        return tabulate(n, anything -> s.get());
+    }
+    public static CharSeq range(char from, char toExclusive) {
+        return new CharSeq(io.vavr.collection.Iterator.range(from, toExclusive).mkString());
+    }
+    public static CharSeq rangeBy(char from, char toExclusive, int step) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeBy(from, toExclusive, step).mkString());
+    }
+    public static CharSeq rangeClosed(char from, char toInclusive) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeClosed(from, toInclusive).mkString());
+    }
+    public static CharSeq rangeClosedBy(char from, char toInclusive, int step) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeClosedBy(from, toInclusive, step).mkString());
+    }
+    public static <T> CharSeq unfoldRight(T seed, Function<? super T, Option<Tuple2<? extends Character, ? extends T>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfoldRight(seed, f));
+    }
+    public static <T> CharSeq unfoldLeft(T seed, Function<? super T, Option<Tuple2<? extends T, ? extends Character>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfoldLeft(seed, f));
+    }
+    public static CharSeq unfold(Character seed, Function<? super Character, Option<Tuple2<? extends Character, ? extends Character>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfold(seed, f));
+    }
+    private Tuple2<CharSeq, CharSeq> splitByBuilder(StringBuilder sb) {
+        if (sb.length() == 0) {
+            return Tuple.of(EMPTY, this);
+        } else if (sb.length() == length()) {
+            return Tuple.of(this, EMPTY);
+        } else {
+            return Tuple.of(of(sb), of(back.substring(sb.length())));
+        }
+    }
+    public static CharSeq repeat(char character, int times) {
+        final int length = Math.max(times, 0);
+        final char[] characters = new char[length];
+        java.util.Arrays.fill(characters, character);
+        return new CharSeq(String.valueOf(characters));
+    }
+    public CharSeq repeat(int times) {
+        if (times <= 0 || isEmpty()) {
+            return empty();
+        } else if (times == 1) {
+            return this;
+        } else {
+            final int finalLength = length() * times;
+            final char[] result = new char[finalLength];
+            back.getChars(0, length(), result, 0);
+            int i = length();
+            for (; i <= (finalLength >>> 1); i <<= 1) {
+                System.arraycopy(result, 0, result, i, i);
+            }
+            System.arraycopy(result, 0, result, i, finalLength - i);
+            return of(new String(result));
+        }
+    }
+    @Override
+    public CharSeq append(Character element) {
+        final char c = element;
+        return of(back + c);
+    }
+    @Override
+    public CharSeq appendAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)) {
+            return this;
+        }
+        final StringBuilder sb = new StringBuilder(back);
+        for (char element : elements) {
+            sb.append(element);
+        }
+        return of(sb);
+    }
+    @GwtIncompatible
+    @Override
+    public java.util.List<Character> asJava() {
+        return JavaConverters.asJava(this, IMMUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public CharSeq asJava(Consumer<? super java.util.List<Character>> action) {
+        return Collections.asJava(this, action, IMMUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public java.util.List<Character> asJavaMutable() {
+        return JavaConverters.asJava(this, MUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public CharSeq asJavaMutable(Consumer<? super java.util.List<Character>> action) {
+        return Collections.asJava(this, action, MUTABLE);
+    }
+    @Override
+    public <R> IndexedSeq<R> collect(PartialFunction<? super Character, ? extends R> partialFunction) {
+        return Vector.ofAll(iterator().<R> collect(partialFunction));
+    }
+    @Override
+    public IndexedSeq<CharSeq> combinations() {
+        return Vector.rangeClosed(0, length()).map(this::combinations).flatMap(Function.identity());
+    }
+    @Override
+    public IndexedSeq<CharSeq> combinations(int k) {
+        return Combinations.apply(this, Math.max(k, 0));
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> crossProduct(int power) {
+        return io.vavr.collection.Collections.crossProduct(CharSeq.empty(), this, power);
+    }
+    @Override
+    public CharSeq distinct() {
+        return distinctBy(Function.identity());
+    }
+    @Override
+    public CharSeq distinctBy(Comparator<? super Character> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        final java.util.Set<Character> seen = new java.util.TreeSet<>(comparator);
+        return filter(seen::add);
+    }
+    @Override
+    public <U> CharSeq distinctBy(Function<? super Character, ? extends U> keyExtractor) {
+        Objects.requireNonNull(keyExtractor, "keyExtractor is null");
+        final java.util.Set<U> seen = new java.util.HashSet<>();
+        return filter(t -> seen.add(keyExtractor.apply(t)));
+    }
+    @Override
+    public CharSeq drop(int n) {
+        if (n <= 0) {
+            return this;
+        } else if (n >= length()) {
+            return EMPTY;
+        } else {
+            return of(back.substring(n));
+        }
+    }
+    @Override
+    public CharSeq dropUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.dropUntil(this, predicate);
+    }
+    @Override
+    public CharSeq dropWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return dropUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq dropRight(int n) {
+        if (n <= 0) {
+            return this;
+        } else if (n >= length()) {
+            return EMPTY;
+        } else {
+            return of(back.substring(0, length() - n));
+        }
+    }
+    @Override
+    public CharSeq dropRightWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return dropRightUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq dropRightUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.dropRightUntil(this, predicate);
+    }
+    @Override
+    public CharSeq filter(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < back.length(); i++) {
+            final char ch = get(i);
+            if (predicate.test(ch)) {
+                sb.append(ch);
+            }
+        }
+        if (sb.length() == 0) {
+            return EMPTY;
+        } else if (sb.length() == length()) {
+            return this;
+        } else {
+            return of(sb);
+        }
+    }
+    @Override
+    public CharSeq reject(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return Collections.reject(this, predicate);
+    }
+    @Override
+    public <U> IndexedSeq<U> flatMap(Function<? super Character, ? extends Iterable<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return Vector.empty();
+        } else {
+            IndexedSeq<U> result = Vector.empty();
+            for (int i = 0; i < length(); i++) {
+                for (U u : mapper.apply(get(i))) {
+                    result = result.append(u);
+                }
+            }
+            return result;
+        }
+    }
+    public CharSeq flatMapChars(CharFunction<? extends CharSequence> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return this;
+        } else {
+            final StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < back.length(); i++) {
+                builder.append(mapper.apply(back.charAt(i)));
+            }
+            return of(builder);
+        }
+    }
+    @Override
+    public <C> Map<C, CharSeq> groupBy(Function<? super Character, ? extends C> classifier) {
+        return io.vavr.collection.Collections.groupBy(this, classifier, CharSeq::ofAll);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> grouped(int size) {
+        return sliding(size, size);
+    }
+    @Override
+    public boolean hasDefiniteSize() {
+        return true;
+    }
+    @Override
+    public CharSeq init() {
+        if (isEmpty()) {
+            throw new UnsupportedOperationException("init of empty string");
+        } else {
+            return of(back.substring(0, length() - 1));
+        }
+    }
+    @Override
+    public Option<CharSeq> initOption() {
+        return isEmpty() ? Option.none() : Option.some(init());
+    }
+    @Override
+    public CharSeq insert(int index, Character element) {
+        if (index < 0) {
+            throw new IndexOutOfBoundsException("insert(" + index + ", e)");
+        }
+        if (index > length()) {
+            throw new IndexOutOfBoundsException("insert(" + index + ", e) on String of length " + length());
+        }
+        final char c = element;
+        return of(new StringBuilder(back).insert(index, c).toString());
+    }
+    @Override
+    public CharSeq insertAll(int index, Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (index < 0) {
+            throw new IndexOutOfBoundsException("insertAll(" + index + ", elements)");
+        }
+        if (index > length()) {
+            throw new IndexOutOfBoundsException("insertAll(" + index + ", elements) on String of length " + length());
+        }
+        final StringBuilder sb = new StringBuilder(back.substring(0, index));
+        for (char element : elements) {
+            sb.append(element);
+        }
+        sb.append(back.substring(index));
+        return of(sb);
+    }
+    @Override
+    public io.vavr.collection.Iterator<Character> iterator() {
+        return io.vavr.collection.Iterator.ofAll(toCharArray());
+    }
+    @Override
+    public CharSeq intersperse(Character element) {
+        final char c = element; 
+        if (isEmpty()) {
+            return EMPTY;
+        } else {
+            final StringBuilder sb = new StringBuilder().append(head());
+            for (int i = 1; i < length(); i++) {
+                sb.append(c).append(get(i));
+            }
+            return of(sb);
+        }
+    }
+    @Override
+    public <U> IndexedSeq<U> map(Function<? super Character, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<U> result = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            result = result.append(mapper.apply(get(i)));
+        }
+        return result;
+    }
+    @Override
+    public String mkString() {
+        return back;
+    }
+    @Override
+    public CharSeq padTo(int length, Character element) {
+        final int actualLength = back.length();
+        if (length <= actualLength) {
+            return this;
+        } else {
+            return new CharSeq(back + padding(element, length - actualLength));
+        }
+    }
+    @Override
+    public CharSeq leftPadTo(int length, Character element) {
+        final int actualLength = back.length();
+        if (length <= actualLength) {
+            return this;
+        } else {
+            return of(padding(element, length - actualLength).append(back));
+        }
+    }
+    @Override
+    public CharSeq orElse(Iterable<? extends Character> other) {
+        return isEmpty() ? ofAll(other) : this;
+    }
+    @Override
+    public CharSeq orElse(Supplier<? extends Iterable<? extends Character>> supplier) {
+        return isEmpty() ? ofAll(supplier.get()) : this;
+    }
+    private static StringBuilder padding(char element, int limit) {
+        final StringBuilder padding = new StringBuilder();
+        for (int i = 0; i < limit; i++) {
+            padding.append(element);
+        }
+        return padding;
+    }
+    @Override
+    public CharSeq patch(int from, Iterable<? extends Character> that, int replaced) {
+        from = from < 0 ? 0 : from > length() ? length() : from;
+        replaced = replaced < 0 ? 0 : replaced;
+        final StringBuilder sb = new StringBuilder(back.substring(0, from));
+        for (char character : that) {
+            sb.append(character);
+        }
+        from += replaced;
+        if (from < length()) {
+            sb.append(back.substring(from));
+        }
+        return sb.length() == 0 ? EMPTY : of(sb);
+    }
+    public CharSeq mapChars(CharUnaryOperator mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return this;
+        } else {
+            final char[] chars = back.toCharArray();
+            for (int i = 0; i < chars.length; i++) {
+                chars[i] = mapper.apply(chars[i]);
+            }
+            return CharSeq.of(chars);
+        }
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> partition(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        final StringBuilder right = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            (predicate.test(t) ? left : right).append(t);
+        }
+        if (left.length() == 0) {
+            return Tuple.of(EMPTY, of(right.toString()));
+        } else if (right.length() == 0) {
+            return Tuple.of(of(left.toString()), EMPTY);
+        } else {
+            return Tuple.of(of(left.toString()), of(right.toString()));
+        }
+    }
+    @Override
+    public CharSeq peek(Consumer<? super Character> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (!isEmpty()) {
+            action.accept(get(0));
+        }
+        return this;
+    }
+    @Override
+    public IndexedSeq<CharSeq> permutations() {
+        if (isEmpty()) {
+            return Vector.empty();
+        } else {
+            if (length() == 1) {
+                return Vector.of(this);
+            } else {
+                IndexedSeq<CharSeq> result = Vector.empty();
+                for (Character t : distinct()) {
+                    for (CharSeq ts : remove(t).permutations()) {
+                        result = result.append(CharSeq.of(t).appendAll(ts));
+                    }
+                }
+                return result;
+            }
+        }
+    }
+    @Override
+    public CharSeq prepend(Character element) {
+        final char c = element;
+        return of(c + back);
+    }
+    @Override
+    public CharSeq prependAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)) {
+            return this;
+        } else if (isEmpty()) {
+            return ofAll(elements);
+        } else {
+            final StringBuilder sb = new StringBuilder();
+            for (char element : elements) {
+                sb.append(element);
+            }
+            sb.append(back);
+            return CharSeq.of(sb);
+        }
+    }
+    @Override
+    public CharSeq remove(Character element) {
+        if (element == null) {
+            return this;
+        }
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (!found && c == element) {
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.length() == 0 ? EMPTY : sb.length() == length() ? this : of(sb);
+    }
+    @Override
+    public CharSeq removeFirst(Predicate<Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < back.length(); i++) {
+            final char ch = get(i);
+            if (predicate.test(ch)) {
+                if (found) {
+                    sb.append(ch);
+                }
+                found = true;
+            } else {
+                sb.append(ch);
+            }
+        }
+        return found ? (sb.length() == 0 ? EMPTY : of(sb.toString())) : this;
+    }
+    @Override
+    public CharSeq removeLast(Predicate<Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        for (int i = length() - 1; i >= 0; i--) {
+            if (predicate.test(get(i))) {
+                return removeAt(i);
+            }
+        }
+        return this;
+    }
+    @Override
+    public CharSeq removeAt(int index) {
+        final String removed = back.substring(0, index) + back.substring(index + 1);
+        return removed.isEmpty() ? EMPTY : of(removed);
+    }
+    @Override
+    public CharSeq removeAll(Character element) {
+        if (element == null) {
+            return this;
+        }
+        return io.vavr.collection.Collections.removeAll(this, element);
+    }
+    @Override
+    public CharSeq removeAll(Iterable<? extends Character> elements) {
+        return io.vavr.collection.Collections.removeAll(this, elements);
+    }
+    @Override
+    @Deprecated
+    public CharSeq removeAll(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return reject(predicate);
+    }
+    @Override
+    public CharSeq replace(Character currentElement, Character newElement) {
+        if (currentElement == null) {
+            return this;
+        }
+        final char currentChar = currentElement;
+        final char newChar = newElement;
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (!found && c == currentChar) {
+                sb.append(newChar);
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return found ? of(sb) : this;
+    }
+    @Override
+    public CharSeq replaceAll(Character currentElement, Character newElement) {
+        if (currentElement == null) {
+            return this;
+        }
+        final char currentChar = currentElement;
+        final char newChar = newElement;
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (c == currentChar) {
+                sb.append(newChar);
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return found ? of(sb) : this;
+    }
+    @Override
+    public CharSeq retainAll(Iterable<? extends Character> elements) {
+        return io.vavr.collection.Collections.retainAll(this, elements);
+    }
+    @Override
+    public CharSeq reverse() {
+        return of(new StringBuilder(back).reverse().toString());
+    }
+    @Override
+    public CharSeq rotateLeft(int n) {
+        return Collections.rotateLeft(this, n);
+    }
+    @Override
+    public CharSeq rotateRight(int n) {
+        return Collections.rotateRight(this, n);
+    }
+    @Override
+    public CharSeq scan(Character zero, BiFunction<? super Character, ? super Character, ? extends Character> operation) {
+        return io.vavr.collection.Collections.scanLeft(this, zero, operation, io.vavr.collection.Iterator::toCharSeq);
+    }
+    @Override
+    public <U> IndexedSeq<U> scanLeft(U zero, BiFunction<? super U, ? super Character, ? extends U> operation) {
+        return io.vavr.collection.Collections.scanLeft(this, zero, operation, io.vavr.collection.Iterator::toVector);
+    }
+    @Override
+    public <U> IndexedSeq<U> scanRight(U zero, BiFunction<? super Character, ? super U, ? extends U> operation) {
+        return io.vavr.collection.Collections.scanRight(this, zero, operation, io.vavr.collection.Iterator::toVector);
+    }
+    @Override
+    public CharSeq shuffle() {
+        return io.vavr.collection.Collections.shuffle(this, CharSeq::ofAll);
+    }
+    @Override
+    public CharSeq slice(int beginIndex, int endIndex) {
+        final int from = beginIndex < 0 ? 0 : beginIndex;
+        final int to = endIndex > length() ? length() : endIndex;
+        if (from >= to) {
+            return EMPTY;
+        }
+        if (from <= 0 && to >= length()) {
+            return this;
+        }
+        return CharSeq.of(back.substring(from, to));
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> slideBy(Function<? super Character, ?> classifier) {
+        return iterator().slideBy(classifier).map(CharSeq::ofAll);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> sliding(int size) {
+        return sliding(size, 1);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> sliding(int size, int step) {
+        return iterator().sliding(size, step).map(CharSeq::ofAll);
+    }
+    @Override
+    public CharSeq sorted() {
+        return isEmpty() ? this : toJavaStream().sorted().collect(CharSeq.collector());
+    }
+    @Override
+    public CharSeq sorted(Comparator<? super Character> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        return isEmpty() ? this : toJavaStream().sorted(comparator).collect(CharSeq.collector());
+    }
+    @Override
+    public <U extends Comparable<? super U>> CharSeq sortBy(Function<? super Character, ? extends U> mapper) {
+        return sortBy(U::compareTo, mapper);
+    }
+    @Override
+    public <U> CharSeq sortBy(Comparator<? super U> comparator, Function<? super Character, ? extends U> mapper) {
+        return Collections.sortBy(this, comparator, mapper, collector());
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> span(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (predicate.test(c)) {
+                sb.append(c);
+            } else {
+                break;
+            }
+        }
+        return splitByBuilder(sb);
+    }
+    @Override
+    public CharSeq subSequence(int beginIndex) {
+        if (beginIndex < 0 || beginIndex > length()) {
+            throw new IndexOutOfBoundsException("begin index " + beginIndex + " < 0");
+        }
+        if (beginIndex == 0) {
+            return this;
+        } else if (beginIndex == length()) {
+            return EMPTY;
+        } else {
+            return CharSeq.of(back.substring(beginIndex));
+        }
+    }
+    @Override
+    public CharSeq tail() {
+        if (isEmpty()) {
+            throw new UnsupportedOperationException("tail of empty string");
+        } else {
+            return CharSeq.of(back.substring(1));
+        }
+    }
+    @Override
+    public Option<CharSeq> tailOption() {
+        return isEmpty() ? Option.none() : Option.some(tail());
+    }
+    @Override
+    public CharSeq take(int n) {
+        if (n <= 0) {
+            return EMPTY;
+        } else if (n >= length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.substring(0, n));
+        }
+    }
+    @Override
+    public CharSeq takeUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.takeUntil(this, predicate);
+    }
+    @Override
+    public CharSeq takeWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return takeUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq takeRight(int n) {
+        if (n <= 0) {
+            return EMPTY;
+        } else if (n >= length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.substring(length() - n));
+        }
+    }
+    @Override
+    public CharSeq takeRightUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.takeRightUntil(this, predicate);
+    }
+    @Override
+    public CharSeq takeRightWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return takeRightUntil(predicate.negate());
+    }
+    public <U> U transform(Function<? super CharSeq, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        return f.apply(this);
+    }
+    @Override
+    public <T1, T2> Tuple2<IndexedSeq<T1>, IndexedSeq<T2>> unzip(Function<? super Character, Tuple2<? extends T1, ? extends T2>> unzipper) {
+        Objects.requireNonNull(unzipper, "unzipper is null");
+        IndexedSeq<T1> xs = Vector.empty();
+        IndexedSeq<T2> ys = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            final Tuple2<? extends T1, ? extends T2> t = unzipper.apply(get(i));
+            xs = xs.append(t._1);
+            ys = ys.append(t._2);
+        }
+        return Tuple.of(xs, ys);
+    }
+    @Override
+    public <T1, T2, T3> Tuple3<IndexedSeq<T1>, IndexedSeq<T2>, IndexedSeq<T3>> unzip3(Function<? super Character, Tuple3<? extends T1, ? extends T2, ? extends T3>> unzipper) {
+        Objects.requireNonNull(unzipper, "unzipper is null");
+        IndexedSeq<T1> xs = Vector.empty();
+        IndexedSeq<T2> ys = Vector.empty();
+        IndexedSeq<T3> zs = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            final Tuple3<? extends T1, ? extends T2, ? extends T3> t = unzipper.apply(get(i));
+            xs = xs.append(t._1);
+            ys = ys.append(t._2);
+            zs = zs.append(t._3);
+        }
+        return Tuple.of(xs, ys, zs);
+    }
+    @Override
+    public CharSeq update(int index, Character element) {
+        if ((index < 0) || (index >= length())) {
+            throw new IndexOutOfBoundsException("update(" + index + ")");
+        } else {
+            char c = element;
+            return of(back.substring(0, index) + c + back.substring(index + 1));
+        }
+    }
+    @Override
+    public CharSeq update(int index, Function<? super Character, ? extends Character> updater) {
+        Objects.requireNonNull(updater, "updater is null");
+        final char c = updater.apply(get(index));
+        return update(index, c);
+    }
+    @Override
+    public <U> IndexedSeq<Tuple2<Character, U>> zip(Iterable<? extends U> that) {
+        return zipWith(that, Tuple::of);
+    }
+    @Override
+    public <U, R> IndexedSeq<R> zipWith(Iterable<? extends U> that, BiFunction<? super Character, ? super U, ? extends R> mapper) {
+        Objects.requireNonNull(that, "that is null");
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<R> result = Vector.empty();
+        final io.vavr.collection.Iterator<Character> list1 = iterator();
+        final java.util.Iterator<? extends U> list2 = that.iterator();
+        while (list1.hasNext() && list2.hasNext()) {
+            result = result.append(mapper.apply(list1.next(), list2.next()));
+        }
+        return result;
+    }
+    @Override
+    public <U> IndexedSeq<Tuple2<Character, U>> zipAll(Iterable<? extends U> that, Character thisElem, U thatElem) {
+        Objects.requireNonNull(that, "that is null");
+        IndexedSeq<Tuple2<Character, U>> result = Vector.empty();
+        final io.vavr.collection.Iterator<Character> list1 = iterator();
+        final java.util.Iterator<? extends U> list2 = that.iterator();
+        while (list1.hasNext() || list2.hasNext()) {
+            final Character elem1 = list1.hasNext() ? list1.next() : thisElem;
+            final U elem2 = list2.hasNext() ? list2.next() : thatElem;
+            result = result.append(Tuple.of(elem1, elem2));
+        }
+        return result;
+    }
+    @Override
+    public IndexedSeq<Tuple2<Character, Integer>> zipWithIndex() {
+        return zipWithIndex(Tuple::of);
+    }
+    @Override
+    public <U> IndexedSeq<U> zipWithIndex(BiFunction<? super Character, ? super Integer, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<U> result = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            result = result.append(mapper.apply(get(i), i));
+        }
+        return result;
+    }
+    @Override
+    public Character get(int index) {
+        return back.charAt(index);
+    }
+    @Override
+    public int indexOf(Character element, int from) {
+        return back.indexOf(element, from);
+    }
+    @Override
+    public int lastIndexOf(Character element, int end) {
+        return back.lastIndexOf(element, end);
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAt(int n) {
+        if (n <= 0) {
+            return Tuple.of(EMPTY, this);
+        } else if (n >= length()) {
+            return Tuple.of(this, EMPTY);
+        } else {
+            return Tuple.of(of(back.substring(0, n)), of(back.substring(n)));
+        }
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAt(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            if (!predicate.test(t)) {
+                left.append(t);
+            } else {
+                break;
+            }
+        }
+        return splitByBuilder(left);
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAtInclusive(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            left.append(t);
+            if (predicate.test(t)) {
+                break;
+            }
+        }
+        return splitByBuilder(left);
+    }
+    @Override
+    public boolean startsWith(Iterable<? extends Character> that, int offset) {
+        return startsWith(CharSeq.ofAll(that), offset);
+    }
+    @Override
+    public Character head() {
+        if (isEmpty()) {
+            throw new NoSuchElementException("head of empty string");
+        } else {
+            return get(0);
+        }
+    }
+    @Override
+    public boolean isAsync() {
+        return false;
+    }
+    @Override
+    public boolean isEmpty() {
+        return back.isEmpty();
+    }
+    @Override
+    public boolean isLazy() {
+        return false;
+    }
+    @Override
+    public boolean isTraversableAgain() {
+        return true;
+    }
+    private Object readResolve() {
+        return isEmpty() ? EMPTY : this;
+    }
+    @Override
+    public boolean equals(Object o) {
+        return io.vavr.collection.Collections.equals(this, o);
+    }
+    @Override
+    public int hashCode() {
+        return io.vavr.collection.Collections.hashOrdered(this);
+    }
+    @Override
+    public char charAt(int index) {
+        return get(index);
+    }
+    @Override
+    public int length() {
+        return back.length();
+    }
+    public int codePointAt(int index) {
+        return back.codePointAt(index);
+    }
+    public int codePointBefore(int index) {
+        return back.codePointBefore(index);
+    }
+    public int codePointCount(int beginIndex, int endIndex) {
+        return back.codePointCount(beginIndex, endIndex);
+    }
+    public int offsetByCodePoints(int index, int codePointOffset) {
+        return back.offsetByCodePoints(index, codePointOffset);
+    }
+    public void getChars(int srcBegin, int srcEnd, char dst[], int dstBegin) {
+        back.getChars(srcBegin, srcEnd, dst, dstBegin);
+    }
+    public byte[] getBytes(String charsetName) throws UnsupportedEncodingException {
+        return back.getBytes(charsetName);
+    }
+    public byte[] getBytes(Charset charset) {
+        return back.getBytes(charset);
+    }
+    public byte[] getBytes() {
+        return back.getBytes();
+    }
+    public boolean contentEquals(StringBuffer sb) {
+        return back.contentEquals(sb);
+    }
+    public boolean contentEquals(CharSequence cs) {
+        return back.contentEquals(cs);
+    }
+    public boolean equalsIgnoreCase(CharSeq anotherString) {
+        return back.equalsIgnoreCase(anotherString.back);
+    }
+    public int compareTo(CharSeq anotherString) {
+        return back.compareTo(anotherString.back);
+    }
+    public int compareToIgnoreCase(CharSeq str) {
+        return back.compareToIgnoreCase(str.back);
+    }
+    public boolean regionMatches(int toffset, CharSeq other, int ooffset, int len) {
+        return back.regionMatches(toffset, other.back, ooffset, len);
+    }
+    public boolean regionMatches(boolean ignoreCase, int toffset, CharSeq other, int ooffset, int len) {
+        return back.regionMatches(ignoreCase, toffset, other.back, ooffset, len);
+    }
+    @Override
+    public CharSeq subSequence(int beginIndex, int endIndex) {
+        if (beginIndex < 0) {
+            throw new IndexOutOfBoundsException("begin index " + beginIndex + " < 0");
+        }
+        if (endIndex > length()) {
+            throw new IndexOutOfBoundsException("endIndex " + endIndex + " > length " + length());
+        }
+        final int subLen = endIndex - beginIndex;
+        if (subLen < 0) {
+            throw new IllegalArgumentException("beginIndex " + beginIndex + " > endIndex " + endIndex);
+        }
+        if (beginIndex == 0 && endIndex == length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.subSequence(beginIndex, endIndex));
+        }
+    }
+    public boolean startsWith(CharSeq prefix, int toffset) {
+        return back.startsWith(prefix.back, toffset);
+    }
+    public boolean startsWith(CharSeq prefix) {
+        return back.startsWith(prefix.back);
+    }
+    public boolean endsWith(CharSeq suffix) {
+        return back.endsWith(suffix.back);
+    }
+    public int indexOf(int ch) {
+        return back.indexOf(ch);
+    }
+    Option<Integer> indexOfOption(int ch) {
+        return io.vavr.collection.Collections.indexOption(indexOf(ch));
+    }
+    public int indexOf(int ch, int fromIndex) {
+        return back.indexOf(ch, fromIndex);
+    }
+    Option<Integer> indexOfOption(int ch, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(indexOf(ch, fromIndex));
+    }
+    public int lastIndexOf(int ch) {
+        return back.lastIndexOf(ch);
+    }
+    Option<Integer> lastIndexOfOption(int ch) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(ch));
+    }
+    public int lastIndexOf(int ch, int fromIndex) {
+        return back.lastIndexOf(ch, fromIndex);
+    }
+    public Option<Integer> lastIndexOfOption(int ch, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(ch, fromIndex));
+    }
+    public int indexOf(CharSeq str) {
+        return back.indexOf(str.back);
+    }
+    public Option<Integer> indexOfOption(CharSeq str) {
+        return io.vavr.collection.Collections.indexOption(indexOf(str));
+    }
+    public int indexOf(CharSeq str, int fromIndex) {
+        return back.indexOf(str.back, fromIndex);
+    }
+    public Option<Integer> indexOfOption(CharSeq str, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(indexOf(str, fromIndex));
+    }
+    public int lastIndexOf(CharSeq str) {
+        return back.lastIndexOf(str.back);
+    }
+    public Option<Integer> lastIndexOfOption(CharSeq str) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(str));
+    }
+    public int lastIndexOf(CharSeq str, int fromIndex) {
+        return back.lastIndexOf(str.back, fromIndex);
+    }
+    public Option<Integer> lastIndexOfOption(CharSeq str, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(str, fromIndex));
+    }
+    public CharSeq substring(int beginIndex) {
+        return CharSeq.of(back.substring(beginIndex));
+    }
+    public CharSeq substring(int beginIndex, int endIndex) {
+        return CharSeq.of(back.substring(beginIndex, endIndex));
+    }
+    @Override
+    public String stringPrefix() {
+        return "CharSeq";
+    }
+    @Override
+    public String toString() {
+        return back;
+    }
+    public CharSeq concat(CharSeq str) {
+        return CharSeq.of(back.concat(str.back));
+    }
+    public boolean matches(String regex) {
+        return back.matches(regex);
+    }
+    public boolean contains(CharSequence s) {
+        return back.contains(s);
+    }
+    public CharSeq replaceFirst(String regex, String replacement) {
+        return CharSeq.of(back.replaceFirst(regex, replacement));
+    }
+    public CharSeq replaceAll(String regex, String replacement) {
+        return CharSeq.of(back.replaceAll(regex, replacement));
+    }
+    public CharSeq replace(CharSequence target, CharSequence replacement) {
+        return CharSeq.of(back.replace(target, replacement));
+    }
+    public Seq<CharSeq> split(String regex) {
+        return split(regex, 0);
+    }
+    public Seq<CharSeq> split(String regex, int limit) {
+        final Seq<String> split = Array.wrap(back.split(regex, limit));
+        return split.map(CharSeq::of);
+    }
+    public CharSeq toLowerCase(Locale locale) {
+        return CharSeq.of(back.toLowerCase(locale));
+    }
+    public CharSeq toLowerCase() {
+        return CharSeq.of(back.toLowerCase(Locale.getDefault()));
+    }
+    public CharSeq toUpperCase(Locale locale) {
+        return CharSeq.of(back.toUpperCase(locale));
+    }
+    public CharSeq toUpperCase() {
+        return CharSeq.of(back.toUpperCase(Locale.getDefault()));
+    }
+    public CharSeq capitalize(Locale locale) {
+        if (back.isEmpty()) {
+            return this;
+        }
+        return CharSeq.of(back.substring(0, 1).toUpperCase(locale) + back.substring(1));
+    }
+    public CharSeq capitalize() {
+        return capitalize(Locale.getDefault());
+    }
+    public CharSeq trim() {
+        return of(back.trim());
+    }
+    public char[] toCharArray() {
+        return back.toCharArray();
+    }
+    public Byte decodeByte() {
+        return Byte.decode(back);
+    }
+    public Integer decodeInteger() {
+        return Integer.decode(back);
+    }
+    public Long decodeLong() {
+        return Long.decode(back);
+    }
+    public Short decodeShort() {
+        return Short.decode(back);
+    }
+    public boolean parseBoolean() {
+        return Boolean.parseBoolean(back);
+    }
+    public byte parseByte() {
+        return Byte.parseByte(back);
+    }
+    public byte parseByte(int radix) {
+        return Byte.parseByte(back, radix);
+    }
+    public double parseDouble() {
+        return Double.parseDouble(back);
+    }
+    public float parseFloat() {
+        return Float.parseFloat(back);
+    }
+    public int parseInt() {
+        return Integer.parseInt(back);
+    }
+    public int parseInt(int radix) {
+        return Integer.parseInt(back, radix);
+    }
+    @GwtIncompatible
+    public int parseUnsignedInt() {
+        return Integer.parseUnsignedInt(back);
+    }
+    @GwtIncompatible
+    public int parseUnsignedInt(int radix) {
+        return Integer.parseUnsignedInt(back, radix);
+    }
+    public long parseLong() {
+        return Long.parseLong(back);
+    }
+    public long parseLong(int radix) {
+        return Long.parseLong(back, radix);
+    }
+    @GwtIncompatible
+    public long parseUnsignedLong() {
+        return Long.parseUnsignedLong(back);
+    }
+    @GwtIncompatible
+    public long parseUnsignedLong(int radix) {
+        return Long.parseUnsignedLong(back, radix);
+    }
+    public short parseShort() {
+        return Short.parseShort(back);
+    }
+    public short parseShort(int radix) {
+        return Short.parseShort(back, radix);
+    }
+    public Boolean toBoolean() {
+        return Boolean.valueOf(back);
+    }
+    public Byte toByte() {
+        return Byte.valueOf(back);
+    }
+    public Byte toByte(int radix) {
+        return Byte.valueOf(back, radix);
+    }
+    public Double toDouble() {
+        return Double.valueOf(back);
+    }
+    public Float toFloat() {
+        return Float.valueOf(back);
+    }
+    public Integer toInteger() {
+        return Integer.valueOf(back);
+    }
+    public Integer toInteger(int radix) {
+        return Integer.valueOf(back, radix);
+    }
+    public Long toLong() {
+        return Long.valueOf(back);
+    }
+    public Long toLong(int radix) {
+        return Long.valueOf(back, radix);
+    }
+    public Short toShort() {
+        return Short.valueOf(back);
+    }
+    public Short toShort(int radix) {
+        return Short.valueOf(back, radix);
+    }
+    @Override
+    public Character[] toJavaArray() {
+        return toJavaList().toArray(new Character[0]);
+    }
+    @FunctionalInterface
+    public interface CharUnaryOperator {
+        char apply(char c);
+    }
+    @FunctionalInterface
+    public interface CharFunction<R> {
+        R apply(char c);
+    }
+}
+interface CharSeqModule {
+    interface Combinations {
+        static IndexedSeq<CharSeq> apply(CharSeq elements, int k) {
+            if (k == 0) {
+                return Vector.of(CharSeq.empty());
+            } else {
+                return elements.zipWithIndex().flatMap(
+                        t -> apply(elements.drop(t._2 + 1), (k - 1)).map((CharSeq c) -> c.prepend(t._1))
+                );
+            }
+        }
+    }
+}
+package io.vavr.collection;
+import io.vavr.PartialFunction;
+import io.vavr.Tuple2;
+import io.vavr.Tuple3;
+import io.vavr.Value;
+import io.vavr.control.Option;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.*;
+import java.util.function.*;
+import java.util.stream.DoubleStream;
+public interface Traversable<T> extends Foldable<T>, Value<T> {
+    @SuppressWarnings("unchecked")
+    static <T> Traversable<T> narrow(Traversable<? extends T> traversable) {
+        return (Traversable<T>) traversable;
+    }
+    default <K> Option<Map<K, T>> arrangeBy(Function<? super T, ? extends K> getKey) {
+        return Option.of(groupBy(getKey).mapValues(Traversable<T>::singleOption))
+                .filter(map -> !map.exists(kv -> kv._2.isEmpty()))
+                .map(map -> Map.narrow(map.mapValues(Option::get)));
+    }
+    default Option<Double> average() {
+        try {
+            final double[] sum = TraversableModule.neumaierSum(this, t -> ((Number) t).doubleValue());
+            final double count = sum[1];
+            return (count == 0) ? Option.none() : Option.some(sum[0] / count);
+        } catch(ClassCastException x) {
+            throw new UnsupportedOperationException("not numeric", x);
+        }
+    }
+    <R> Traversable<R> collect(PartialFunction<? super T, ? extends R> partialFunction);
+    default boolean containsAll(Iterable<? extends T> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        for (T element : elements) {
+            if (!contains(element)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default int count(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return foldLeft(0, (i, t) -> predicate.test(t) ? i + 1 : i);
+    }
+    Traversable<T> distinct();
+    Traversable<T> distinctBy(Comparator<? super T> comparator);
+    <U> Traversable<T> distinctBy(Function<? super T, ? extends U> keyExtractor);
+    Traversable<T> drop(int n);
+    Traversable<T> dropRight(int n);
+    Traversable<T> dropUntil(Predicate<? super T> predicate);
+    Traversable<T> dropWhile(Predicate<? super T> predicate);
+    boolean equals(Object obj);
+    default boolean existsUnique(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        boolean exists = false;
+        for (T t : this) {
+            if (predicate.test(t)) {
+                if (exists) {
+                    return false;
+                } else {
+                    exists = true;
+                }
+            }
+        }
+        return exists;
+    }
+    Traversable<T> filter(Predicate<? super T> predicate);
+    default Traversable<T> reject(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return filter(predicate.negate());
+    }
+    default Option<T> find(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        for (T a : this) {
+            if (predicate.test(a)) {
+                return Option.some(a); 
+            }
+        }
+        return Option.none();
+    }
+    default Option<T> findLast(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return iterator().findLast(predicate);
+    }
+    <U> Traversable<U> flatMap(Function<? super T, ? extends Iterable<? extends U>> mapper);
+    @Override
+    default <U> U foldLeft(U zero, BiFunction<? super U, ? super T, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        U xs = zero;
+        for (T x : this) {
+            xs = f.apply(xs, x);
+        }
+        return xs;
+    }
+    @Override
+    <U> U foldRight(U zero, BiFunction<? super T, ? super U, ? extends U> f);
+    default void forEachWithIndex(ObjIntConsumer<? super T> action) {
+        Objects.requireNonNull(action, "action is null");
+        int index = 0;
+        for (T t : this) {
+            action.accept(t, index++);
+        }
+    }
+    @Override
+    default T get() {
+        return head();
+    }
+    <C> Map<C, ? extends Traversable<T>> groupBy(Function<? super T, ? extends C> classifier);
+    Iterator<? extends Traversable<T>> grouped(int size);
+    boolean hasDefiniteSize();
+    T head();
+    default Option<T> headOption() {
+        return isEmpty() ? Option.none() : Option.some(head());
+    }
+    int hashCode();
+    Traversable<T> init();
+    default Option<? extends Traversable<T>> initOption() {
+        return isEmpty() ? Option.none() : Option.some(init());
+    }
+    default boolean isDistinct() {
+        return false;
+    }
+    @Override
+    default boolean isEmpty() {
+        return length() == 0;
+    }
+    default boolean isOrdered() {
+        return false;
+    }
+    default boolean isSequential() {
+        return false;
+    }
+    @Override
+    default boolean isSingleValued() {
+        return false;
+    }
+    boolean isTraversableAgain();
+    @Override
+    default Iterator<T> iterator() {
+        final Traversable<T> that = this;
+        return new AbstractIterator<T>() {
+            Traversable<T> traversable = that;
+            @Override
+            public boolean hasNext() {
+                return !traversable.isEmpty();
+            }
+            @Override
+            public T getNext() {
+                final T result = traversable.head();
+                traversable = traversable.tail();
+                return result;
+            }
+        };
+    }
+    T last();
+    default Option<T> lastOption() {
+        return isEmpty() ? Option.none() : Option.some(last());
+    }
+    int length();
+    @Override
+    <U> Traversable<U> map(Function<? super T, ? extends U> mapper);
+    default Option<T> max() {
+        return maxBy(Comparators.naturalComparator());
+    }
+    default Option<T> maxBy(Comparator<? super T> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        if (isEmpty()) {
+            return Option.none();
+        } else {
+            final T value = reduce((t1, t2) -> comparator.compare(t1, t2) >= 0 ? t1 : t2);
+            return Option.some(value);
+        }
+    }
+    default <U extends Comparable<? super U>> Option<T> maxBy(Function<? super T, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        if (isEmpty()) {
+            return Option.none();
+        } else {
+            final Iterator<T> iter = iterator();
+            T tm = iter.next();
+            U um = f.apply(tm);
+            while (iter.hasNext()) {
+                final T t = iter.next();
+                final U u = f.apply(t);
+                if (u.compareTo(um) > 0) {
+                    um = u;
+                    tm = t;
+                }
+            }
+            return Option.some(tm);
+        }
+    }
+    @SuppressWarnings("unchecked")
+    default Option<T> min() {
+        if (isEmpty()) {
+            return Option.none();
+        } else {
+            final T head = head();
+            final T min;
+            if (head instanceof Double) {
+                min = (T) ((Traversable<Double>) this).foldLeft((Double) head, Math::min);
+            } else if (head instanceof Float) {
+                min = (T) ((Traversable<Float>) this).foldLeft((Float) head, Math::min);
+            } else {
+                final Comparator<T> comparator = Comparators.naturalComparator();
+                min = this.foldLeft(head, (t1, t2) -> comparator.compare(t1, t2) <= 0 ? t1 : t2);
+            }
+            return Option.some(min);
+        }
+    }
+    default Option<T> minBy(Comparator<? super T> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        if (isEmpty()) {
+            return Option.none();
+        } else {
+            final T value = reduce((t1, t2) -> comparator.compare(t1, t2) <= 0 ? t1 : t2);
+            return Option.some(value);
+        }
+    }
+    default <U extends Comparable<? super U>> Option<T> minBy(Function<? super T, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        if (isEmpty()) {
+            return Option.none();
+        } else {
+            final Iterator<T> iter = iterator();
+            T tm = iter.next();
+            U um = f.apply(tm);
+            while (iter.hasNext()) {
+                final T t = iter.next();
+                final U u = f.apply(t);
+                if (u.compareTo(um) < 0) {
+                    um = u;
+                    tm = t;
+                }
+            }
+            return Option.some(tm);
+        }
+    }
+    default CharSeq mkCharSeq() {
+        return mkCharSeq("", "", "");
+    }
+    default CharSeq mkCharSeq(CharSequence delimiter) {
+        return mkCharSeq("", delimiter, "");
+    }
+    default CharSeq mkCharSeq(CharSequence prefix, CharSequence delimiter, CharSequence suffix) {
+        return CharSeq.of(mkString(prefix, delimiter, suffix));
+    }
+    default String mkString() {
+        return mkString("", "", "");
+    }
+    default String mkString(CharSequence delimiter) {
+        return mkString("", delimiter, "");
+    }
+    default String mkString(CharSequence prefix, CharSequence delimiter, CharSequence suffix) {
+        final StringBuilder builder = new StringBuilder(prefix);
+        iterator().map(String::valueOf).intersperse(String.valueOf(delimiter)).forEach(builder::append);
+        return builder.append(suffix).toString();
+    }
+    default boolean nonEmpty() {
+        return !isEmpty();
+    }
+    Traversable<T> orElse(Iterable<? extends T> other);
+    Traversable<T> orElse(Supplier<? extends Iterable<? extends T>> supplier);
+    Tuple2<? extends Traversable<T>, ? extends Traversable<T>> partition(Predicate<? super T> predicate);
+    @Override
+    Traversable<T> peek(Consumer<? super T> action);
+    @SuppressWarnings("unchecked")
+    default Number product() {
+        if (isEmpty()) {
+            return 1;
+        } else {
+            try {
+                final Iterator<?> iter = iterator();
+                final Object o = iter.next();
+                if (o instanceof Integer || o instanceof Long || o instanceof Byte || o instanceof Short) {
+                    return ((Iterator<Number>) iter).foldLeft(((Number) o).longValue(), (product, number) -> product * number.longValue());
+                } else if (o instanceof BigInteger) {
+                    return ((Iterator<BigInteger>) iter).foldLeft(((BigInteger) o), BigInteger::multiply);
+                } else if (o instanceof BigDecimal) {
+                    return ((Iterator<BigDecimal>) iter).foldLeft(((BigDecimal) o), BigDecimal::multiply);
+                } else {
+                    return ((Iterator<Number>) iter).toJavaStream().mapToDouble(Number::doubleValue).reduce(((Number) o).doubleValue(), (d1, d2) -> d1 * d2);
+                }
+            } catch(ClassCastException x) {
+                throw new UnsupportedOperationException("not numeric", x);
+            }
+        }
+    }
+    @Override
+    default T reduceLeft(BiFunction<? super T, ? super T, ? extends T> op) {
+        Objects.requireNonNull(op, "op is null");
+        return iterator().reduceLeft(op);
+    }
+    @Override
+    default Option<T> reduceLeftOption(BiFunction<? super T, ? super T, ? extends T> op) {
+        Objects.requireNonNull(op, "op is null");
+        return isEmpty() ? Option.none() : Option.some(reduceLeft(op));
+    }
+    @Override
+    default T reduceRight(BiFunction<? super T, ? super T, ? extends T> op) {
+        Objects.requireNonNull(op, "op is null");
+        if (isEmpty()) {
+            throw new NoSuchElementException("reduceRight on empty");
+        } else {
+            return iterator().reduceRight(op);
+        }
+    }
+    @Override
+    default Option<T> reduceRightOption(BiFunction<? super T, ? super T, ? extends T> op) {
+        Objects.requireNonNull(op, "op is null");
+        return isEmpty() ? Option.none() : Option.some(reduceRight(op));
+    }
+    Traversable<T> replace(T currentElement, T newElement);
+    Traversable<T> replaceAll(T currentElement, T newElement);
+    Traversable<T> retainAll(Iterable<? extends T> elements);
+    Traversable<T> scan(T zero, BiFunction<? super T, ? super T, ? extends T> operation);
+    <U> Traversable<U> scanLeft(U zero, BiFunction<? super U, ? super T, ? extends U> operation);
+    <U> Traversable<U> scanRight(U zero, BiFunction<? super T, ? super U, ? extends U> operation);
+    default T single() {
+        return singleOption().getOrElseThrow(() -> new NoSuchElementException("Does not contain a single value"));
+    }
+    default Option<T> singleOption() {
+        final Iterator<T> it = iterator();
+        if (!it.hasNext()) {
+            return Option.none();
+        }
+        final T first = it.next();
+        if (it.hasNext()) {
+            return Option.none();
+        } else {
+            return Option.some(first);
+        }
+    }
+    default int size() {
+        return length();
+    }
+    Iterator<? extends Traversable<T>> slideBy(Function<? super T, ?> classifier);
+    Iterator<? extends Traversable<T>> sliding(int size);
+    Iterator<? extends Traversable<T>> sliding(int size, int step);
+    Tuple2<? extends Traversable<T>, ? extends Traversable<T>> span(Predicate<? super T> predicate);
+    @Override
+    default Spliterator<T> spliterator() {
+        int characteristics = Spliterator.IMMUTABLE;
+        if (isDistinct()) {
+            characteristics |= Spliterator.DISTINCT;
+        }
+        if (isOrdered()) {
+            characteristics |= (Spliterator.SORTED | Spliterator.ORDERED);
+        }
+        if (isSequential()) {
+            characteristics |= Spliterator.ORDERED;
+        }
+        if (hasDefiniteSize()) {
+            characteristics |= (Spliterator.SIZED | Spliterator.SUBSIZED);
+            return Spliterators.spliterator(iterator(), length(), characteristics);
+        } else {
+            return Spliterators.spliteratorUnknownSize(iterator(), characteristics);
+        }
+    }
+    @SuppressWarnings("unchecked")
+    default Number sum() {
+        if (isEmpty()) {
+            return 0;
+        } else {
+            try {
+                final Iterator<?> iter = iterator();
+                final Object o = iter.next();
+                if (o instanceof Integer || o instanceof Long || o instanceof Byte || o instanceof Short) {
+                    return ((Iterator<Number>) iter).foldLeft(((Number) o).longValue(), (sum, number) -> sum + number.longValue());
+                } else if (o instanceof BigInteger) {
+                    return ((Iterator<BigInteger>) iter).foldLeft(((BigInteger) o), BigInteger::add);
+                } else if (o instanceof BigDecimal) {
+                    return ((Iterator<BigDecimal>) iter).foldLeft(((BigDecimal) o), BigDecimal::add);
+                } else {
+                    return TraversableModule.neumaierSum(Iterator.of(o).concat(iter), t -> ((Number) t).doubleValue())[0];
+                }
+            } catch(ClassCastException x) {
+                throw new UnsupportedOperationException("not numeric", x);
+            }
+        }
+    }
+    Traversable<T> tail();
+    Option<? extends Traversable<T>> tailOption();
+    Traversable<T> take(int n);
+    Traversable<T> takeRight(int n);
+    Traversable<T> takeUntil(Predicate<? super T> predicate);
+    Traversable<T> takeWhile(Predicate<? super T> predicate);
+    <T1, T2> Tuple2<? extends Traversable<T1>, ? extends Traversable<T2>> unzip(
+            Function<? super T, Tuple2<? extends T1, ? extends T2>> unzipper);
+    <T1, T2, T3> Tuple3<? extends Traversable<T1>, ? extends Traversable<T2>, ? extends Traversable<T3>> unzip3(
+            Function<? super T, Tuple3<? extends T1, ? extends T2, ? extends T3>> unzipper);
+    <U> Traversable<Tuple2<T, U>> zip(Iterable<? extends U> that);
+    <U> Traversable<Tuple2<T, U>> zipAll(Iterable<? extends U> that, T thisElem, U thatElem);
+    <U, R> Traversable<R> zipWith(Iterable<? extends U> that, BiFunction<? super T, ? super U, ? extends R> mapper);
+    Traversable<Tuple2<T, Integer>> zipWithIndex();
+    <U> Traversable<U> zipWithIndex(BiFunction<? super T, ? super Integer, ? extends U> mapper);
+}
+interface TraversableModule {
+    static <T> double[] neumaierSum(Iterable<T> ts, ToDoubleFunction<T> toDouble) {
+        double simpleSum = 0.0;
+        double sum = 0.0;
+        double compensation = 0.0;
+        int size = 0;
+        for (T t : ts) {
+            final double d = toDouble.applyAsDouble(t);
+            final double tmp = sum + d;
+            compensation += (Math.abs(sum) >= Math.abs(d)) ? (sum - tmp) + d : (d - tmp) + sum;
+            sum = tmp;
+            simpleSum += d;
+            size++;
+        }
+        sum += compensation;
+        if (size > 0 && Double.isNaN(sum) && Double.isInfinite(simpleSum)) {
+            sum = simpleSum;
+        }
+        return new double[] { sum, size };
+    }
+}
+package io.vavr.collection;
+import io.vavr.*;
+import io.vavr.collection.CharSeqModule.Combinations;
+import io.vavr.collection.JavaConverters.ListView;
+import io.vavr.control.Option;
+import java.io.Serializable;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.Charset;
+import java.util.*;
+import java.util.function.*;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import java.util.stream.Collector;
+import static io.vavr.collection.JavaConverters.ChangePolicy.IMMUTABLE;
+import static io.vavr.collection.JavaConverters.ChangePolicy.MUTABLE;
+public final class CharSeq implements CharSequence, IndexedSeq<Character>, Serializable, Comparable<CharSeq> {
+    private static final long serialVersionUID = 1L;
+    private static final CharSeq EMPTY = new CharSeq("");
+    private final String back;
+    private CharSeq(String javaString) {
+        this.back = javaString;
+    }
+    public static CharSeq empty() {
+        return EMPTY;
+    }
+    public static Collector<Character, ArrayList<Character>, CharSeq> collector() {
+        final Supplier<ArrayList<Character>> supplier = ArrayList::new;
+        final BiConsumer<ArrayList<Character>, Character> accumulator = ArrayList::add;
+        final BinaryOperator<ArrayList<Character>> combiner = (left, right) -> {
+            left.addAll(right);
+            return left;
+        };
+        final Function<ArrayList<Character>, CharSeq> finisher = CharSeq::ofAll;
+        return Collector.of(supplier, accumulator, combiner, finisher);
+    }
+    public static CharSeq of(CharSequence sequence) {
+        Objects.requireNonNull(sequence, "sequence is null");
+        if (sequence instanceof CharSeq) {
+            return (CharSeq) sequence;
+        } else {
+            return sequence.length() == 0 ? empty() : new CharSeq(sequence.toString());
+        }
+    }
+    public static CharSeq of(char character) {
+        return new CharSeq(new String(new char[] { character }));
+    }
+    public static CharSeq of(char... characters) {
+        Objects.requireNonNull(characters, "characters is null");
+        if (characters.length == 0) {
+            return empty();
+        } else {
+            final char[] chrs = new char[characters.length];
+            System.arraycopy(characters, 0, chrs, 0, characters.length);
+            return new CharSeq(new String(chrs));
+        }
+    }
+    @SuppressWarnings("unchecked")
+    public static CharSeq ofAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)){
+            return EMPTY;
+        }
+        if (elements instanceof CharSeq) {
+            return (CharSeq) elements;
+        }
+        if (elements instanceof ListView
+                && ((ListView<Character, ?>) elements).getDelegate() instanceof CharSeq) {
+            return (CharSeq) ((ListView<Character, ?>) elements).getDelegate();
+        }
+        final StringBuilder sb = new StringBuilder();
+        for (char character : elements) {
+            sb.append(character);
+        }
+        return of(sb);
+    }
+    public static CharSeq tabulate(int n, Function<? super Integer, ? extends Character> f) {
+        Objects.requireNonNull(f, "f is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            sb.append(f.apply(i).charValue());
+        }
+        return of(sb);
+    }
+    public static CharSeq fill(int n, Supplier<? extends Character> s) {
+        return tabulate(n, anything -> s.get());
+    }
+    public static CharSeq range(char from, char toExclusive) {
+        return new CharSeq(io.vavr.collection.Iterator.range(from, toExclusive).mkString());
+    }
+    public static CharSeq rangeBy(char from, char toExclusive, int step) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeBy(from, toExclusive, step).mkString());
+    }
+    public static CharSeq rangeClosed(char from, char toInclusive) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeClosed(from, toInclusive).mkString());
+    }
+    public static CharSeq rangeClosedBy(char from, char toInclusive, int step) {
+        return new CharSeq(io.vavr.collection.Iterator.rangeClosedBy(from, toInclusive, step).mkString());
+    }
+    public static <T> CharSeq unfoldRight(T seed, Function<? super T, Option<Tuple2<? extends Character, ? extends T>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfoldRight(seed, f));
+    }
+    public static <T> CharSeq unfoldLeft(T seed, Function<? super T, Option<Tuple2<? extends T, ? extends Character>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfoldLeft(seed, f));
+    }
+    public static CharSeq unfold(Character seed, Function<? super Character, Option<Tuple2<? extends Character, ? extends Character>>> f) {
+        return CharSeq.ofAll(io.vavr.collection.Iterator.unfold(seed, f));
+    }
+    private Tuple2<CharSeq, CharSeq> splitByBuilder(StringBuilder sb) {
+        if (sb.length() == 0) {
+            return Tuple.of(EMPTY, this);
+        } else if (sb.length() == length()) {
+            return Tuple.of(this, EMPTY);
+        } else {
+            return Tuple.of(of(sb), of(back.substring(sb.length())));
+        }
+    }
+    public static CharSeq repeat(char character, int times) {
+        final int length = Math.max(times, 0);
+        final char[] characters = new char[length];
+        java.util.Arrays.fill(characters, character);
+        return new CharSeq(String.valueOf(characters));
+    }
+    public CharSeq repeat(int times) {
+        if (times <= 0 || isEmpty()) {
+            return empty();
+        } else if (times == 1) {
+            return this;
+        } else {
+            final int finalLength = length() * times;
+            final char[] result = new char[finalLength];
+            back.getChars(0, length(), result, 0);
+            int i = length();
+            for (; i <= (finalLength >>> 1); i <<= 1) {
+                System.arraycopy(result, 0, result, i, i);
+            }
+            System.arraycopy(result, 0, result, i, finalLength - i);
+            return of(new String(result));
+        }
+    }
+    @Override
+    public CharSeq append(Character element) {
+        final char c = element;
+        return of(back + c);
+    }
+    @Override
+    public CharSeq appendAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)) {
+            return this;
+        }
+        final StringBuilder sb = new StringBuilder(back);
+        for (char element : elements) {
+            sb.append(element);
+        }
+        return of(sb);
+    }
+    @GwtIncompatible
+    @Override
+    public java.util.List<Character> asJava() {
+        return JavaConverters.asJava(this, IMMUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public CharSeq asJava(Consumer<? super java.util.List<Character>> action) {
+        return Collections.asJava(this, action, IMMUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public java.util.List<Character> asJavaMutable() {
+        return JavaConverters.asJava(this, MUTABLE);
+    }
+    @GwtIncompatible
+    @Override
+    public CharSeq asJavaMutable(Consumer<? super java.util.List<Character>> action) {
+        return Collections.asJava(this, action, MUTABLE);
+    }
+    @Override
+    public <R> IndexedSeq<R> collect(PartialFunction<? super Character, ? extends R> partialFunction) {
+        return Vector.ofAll(iterator().<R> collect(partialFunction));
+    }
+    @Override
+    public IndexedSeq<CharSeq> combinations() {
+        return Vector.rangeClosed(0, length()).map(this::combinations).flatMap(Function.identity());
+    }
+    @Override
+    public IndexedSeq<CharSeq> combinations(int k) {
+        return Combinations.apply(this, Math.max(k, 0));
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> crossProduct(int power) {
+        return io.vavr.collection.Collections.crossProduct(CharSeq.empty(), this, power);
+    }
+    @Override
+    public CharSeq distinct() {
+        return distinctBy(Function.identity());
+    }
+    @Override
+    public CharSeq distinctBy(Comparator<? super Character> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        final java.util.Set<Character> seen = new java.util.TreeSet<>(comparator);
+        return filter(seen::add);
+    }
+    @Override
+    public <U> CharSeq distinctBy(Function<? super Character, ? extends U> keyExtractor) {
+        Objects.requireNonNull(keyExtractor, "keyExtractor is null");
+        final java.util.Set<U> seen = new java.util.HashSet<>();
+        return filter(t -> seen.add(keyExtractor.apply(t)));
+    }
+    @Override
+    public CharSeq drop(int n) {
+        if (n <= 0) {
+            return this;
+        } else if (n >= length()) {
+            return EMPTY;
+        } else {
+            return of(back.substring(n));
+        }
+    }
+    @Override
+    public CharSeq dropUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.dropUntil(this, predicate);
+    }
+    @Override
+    public CharSeq dropWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return dropUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq dropRight(int n) {
+        if (n <= 0) {
+            return this;
+        } else if (n >= length()) {
+            return EMPTY;
+        } else {
+            return of(back.substring(0, length() - n));
+        }
+    }
+    @Override
+    public CharSeq dropRightWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return dropRightUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq dropRightUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.dropRightUntil(this, predicate);
+    }
+    @Override
+    public CharSeq filter(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < back.length(); i++) {
+            final char ch = get(i);
+            if (predicate.test(ch)) {
+                sb.append(ch);
+            }
+        }
+        if (sb.length() == 0) {
+            return EMPTY;
+        } else if (sb.length() == length()) {
+            return this;
+        } else {
+            return of(sb);
+        }
+    }
+    @Override
+    public CharSeq reject(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return Collections.reject(this, predicate);
+    }
+    @Override
+    public <U> IndexedSeq<U> flatMap(Function<? super Character, ? extends Iterable<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return Vector.empty();
+        } else {
+            IndexedSeq<U> result = Vector.empty();
+            for (int i = 0; i < length(); i++) {
+                for (U u : mapper.apply(get(i))) {
+                    result = result.append(u);
+                }
+            }
+            return result;
+        }
+    }
+    public CharSeq flatMapChars(CharFunction<? extends CharSequence> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return this;
+        } else {
+            final StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < back.length(); i++) {
+                builder.append(mapper.apply(back.charAt(i)));
+            }
+            return of(builder);
+        }
+    }
+    @Override
+    public <C> Map<C, CharSeq> groupBy(Function<? super Character, ? extends C> classifier) {
+        return io.vavr.collection.Collections.groupBy(this, classifier, CharSeq::ofAll);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> grouped(int size) {
+        return sliding(size, size);
+    }
+    @Override
+    public boolean hasDefiniteSize() {
+        return true;
+    }
+    @Override
+    public CharSeq init() {
+        if (isEmpty()) {
+            throw new UnsupportedOperationException("init of empty string");
+        } else {
+            return of(back.substring(0, length() - 1));
+        }
+    }
+    @Override
+    public Option<CharSeq> initOption() {
+        return isEmpty() ? Option.none() : Option.some(init());
+    }
+    @Override
+    public CharSeq insert(int index, Character element) {
+        if (index < 0) {
+            throw new IndexOutOfBoundsException("insert(" + index + ", e)");
+        }
+        if (index > length()) {
+            throw new IndexOutOfBoundsException("insert(" + index + ", e) on String of length " + length());
+        }
+        final char c = element;
+        return of(new StringBuilder(back).insert(index, c).toString());
+    }
+    @Override
+    public CharSeq insertAll(int index, Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (index < 0) {
+            throw new IndexOutOfBoundsException("insertAll(" + index + ", elements)");
+        }
+        if (index > length()) {
+            throw new IndexOutOfBoundsException("insertAll(" + index + ", elements) on String of length " + length());
+        }
+        final StringBuilder sb = new StringBuilder(back.substring(0, index));
+        for (char element : elements) {
+            sb.append(element);
+        }
+        sb.append(back.substring(index));
+        return of(sb);
+    }
+    @Override
+    public io.vavr.collection.Iterator<Character> iterator() {
+        return io.vavr.collection.Iterator.ofAll(toCharArray());
+    }
+    @Override
+    public CharSeq intersperse(Character element) {
+        final char c = element; 
+        if (isEmpty()) {
+            return EMPTY;
+        } else {
+            final StringBuilder sb = new StringBuilder().append(head());
+            for (int i = 1; i < length(); i++) {
+                sb.append(c).append(get(i));
+            }
+            return of(sb);
+        }
+    }
+    @Override
+    public <U> IndexedSeq<U> map(Function<? super Character, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<U> result = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            result = result.append(mapper.apply(get(i)));
+        }
+        return result;
+    }
+    @Override
+    public String mkString() {
+        return back;
+    }
+    @Override
+    public CharSeq padTo(int length, Character element) {
+        final int actualLength = back.length();
+        if (length <= actualLength) {
+            return this;
+        } else {
+            return new CharSeq(back + padding(element, length - actualLength));
+        }
+    }
+    @Override
+    public CharSeq leftPadTo(int length, Character element) {
+        final int actualLength = back.length();
+        if (length <= actualLength) {
+            return this;
+        } else {
+            return of(padding(element, length - actualLength).append(back));
+        }
+    }
+    @Override
+    public CharSeq orElse(Iterable<? extends Character> other) {
+        return isEmpty() ? ofAll(other) : this;
+    }
+    @Override
+    public CharSeq orElse(Supplier<? extends Iterable<? extends Character>> supplier) {
+        return isEmpty() ? ofAll(supplier.get()) : this;
+    }
+    private static StringBuilder padding(char element, int limit) {
+        final StringBuilder padding = new StringBuilder();
+        for (int i = 0; i < limit; i++) {
+            padding.append(element);
+        }
+        return padding;
+    }
+    @Override
+    public CharSeq patch(int from, Iterable<? extends Character> that, int replaced) {
+        from = from < 0 ? 0 : from > length() ? length() : from;
+        replaced = replaced < 0 ? 0 : replaced;
+        final StringBuilder sb = new StringBuilder(back.substring(0, from));
+        for (char character : that) {
+            sb.append(character);
+        }
+        from += replaced;
+        if (from < length()) {
+            sb.append(back.substring(from));
+        }
+        return sb.length() == 0 ? EMPTY : of(sb);
+    }
+    public CharSeq mapChars(CharUnaryOperator mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isEmpty()) {
+            return this;
+        } else {
+            final char[] chars = back.toCharArray();
+            for (int i = 0; i < chars.length; i++) {
+                chars[i] = mapper.apply(chars[i]);
+            }
+            return CharSeq.of(chars);
+        }
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> partition(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        final StringBuilder right = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            (predicate.test(t) ? left : right).append(t);
+        }
+        if (left.length() == 0) {
+            return Tuple.of(EMPTY, of(right.toString()));
+        } else if (right.length() == 0) {
+            return Tuple.of(of(left.toString()), EMPTY);
+        } else {
+            return Tuple.of(of(left.toString()), of(right.toString()));
+        }
+    }
+    @Override
+    public CharSeq peek(Consumer<? super Character> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (!isEmpty()) {
+            action.accept(get(0));
+        }
+        return this;
+    }
+    @Override
+    public IndexedSeq<CharSeq> permutations() {
+        if (isEmpty()) {
+            return Vector.empty();
+        } else {
+            if (length() == 1) {
+                return Vector.of(this);
+            } else {
+                IndexedSeq<CharSeq> result = Vector.empty();
+                for (Character t : distinct()) {
+                    for (CharSeq ts : remove(t).permutations()) {
+                        result = result.append(CharSeq.of(t).appendAll(ts));
+                    }
+                }
+                return result;
+            }
+        }
+    }
+    @Override
+    public CharSeq prepend(Character element) {
+        final char c = element;
+        return of(c + back);
+    }
+    @Override
+    public CharSeq prependAll(Iterable<? extends Character> elements) {
+        Objects.requireNonNull(elements, "elements is null");
+        if (Collections.isEmpty(elements)) {
+            return this;
+        } else if (isEmpty()) {
+            return ofAll(elements);
+        } else {
+            final StringBuilder sb = new StringBuilder();
+            for (char element : elements) {
+                sb.append(element);
+            }
+            sb.append(back);
+            return CharSeq.of(sb);
+        }
+    }
+    @Override
+    public CharSeq remove(Character element) {
+        if (element == null) {
+            return this;
+        }
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (!found && c == element) {
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.length() == 0 ? EMPTY : sb.length() == length() ? this : of(sb);
+    }
+    @Override
+    public CharSeq removeFirst(Predicate<Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < back.length(); i++) {
+            final char ch = get(i);
+            if (predicate.test(ch)) {
+                if (found) {
+                    sb.append(ch);
+                }
+                found = true;
+            } else {
+                sb.append(ch);
+            }
+        }
+        return found ? (sb.length() == 0 ? EMPTY : of(sb.toString())) : this;
+    }
+    @Override
+    public CharSeq removeLast(Predicate<Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        for (int i = length() - 1; i >= 0; i--) {
+            if (predicate.test(get(i))) {
+                return removeAt(i);
+            }
+        }
+        return this;
+    }
+    @Override
+    public CharSeq removeAt(int index) {
+        final String removed = back.substring(0, index) + back.substring(index + 1);
+        return removed.isEmpty() ? EMPTY : of(removed);
+    }
+    @Override
+    public CharSeq removeAll(Character element) {
+        if (element == null) {
+            return this;
+        }
+        return io.vavr.collection.Collections.removeAll(this, element);
+    }
+    @Override
+    public CharSeq removeAll(Iterable<? extends Character> elements) {
+        return io.vavr.collection.Collections.removeAll(this, elements);
+    }
+    @Override
+    @Deprecated
+    public CharSeq removeAll(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return reject(predicate);
+    }
+    @Override
+    public CharSeq replace(Character currentElement, Character newElement) {
+        if (currentElement == null) {
+            return this;
+        }
+        final char currentChar = currentElement;
+        final char newChar = newElement;
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (!found && c == currentChar) {
+                sb.append(newChar);
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return found ? of(sb) : this;
+    }
+    @Override
+    public CharSeq replaceAll(Character currentElement, Character newElement) {
+        if (currentElement == null) {
+            return this;
+        }
+        final char currentChar = currentElement;
+        final char newChar = newElement;
+        final StringBuilder sb = new StringBuilder();
+        boolean found = false;
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (c == currentChar) {
+                sb.append(newChar);
+                found = true;
+            } else {
+                sb.append(c);
+            }
+        }
+        return found ? of(sb) : this;
+    }
+    @Override
+    public CharSeq retainAll(Iterable<? extends Character> elements) {
+        return io.vavr.collection.Collections.retainAll(this, elements);
+    }
+    @Override
+    public CharSeq reverse() {
+        return of(new StringBuilder(back).reverse().toString());
+    }
+    @Override
+    public CharSeq rotateLeft(int n) {
+        return Collections.rotateLeft(this, n);
+    }
+    @Override
+    public CharSeq rotateRight(int n) {
+        return Collections.rotateRight(this, n);
+    }
+    @Override
+    public CharSeq scan(Character zero, BiFunction<? super Character, ? super Character, ? extends Character> operation) {
+        return io.vavr.collection.Collections.scanLeft(this, zero, operation, io.vavr.collection.Iterator::toCharSeq);
+    }
+    @Override
+    public <U> IndexedSeq<U> scanLeft(U zero, BiFunction<? super U, ? super Character, ? extends U> operation) {
+        return io.vavr.collection.Collections.scanLeft(this, zero, operation, io.vavr.collection.Iterator::toVector);
+    }
+    @Override
+    public <U> IndexedSeq<U> scanRight(U zero, BiFunction<? super Character, ? super U, ? extends U> operation) {
+        return io.vavr.collection.Collections.scanRight(this, zero, operation, io.vavr.collection.Iterator::toVector);
+    }
+    @Override
+    public CharSeq shuffle() {
+        return io.vavr.collection.Collections.shuffle(this, CharSeq::ofAll);
+    }
+    @Override
+    public CharSeq slice(int beginIndex, int endIndex) {
+        final int from = beginIndex < 0 ? 0 : beginIndex;
+        final int to = endIndex > length() ? length() : endIndex;
+        if (from >= to) {
+            return EMPTY;
+        }
+        if (from <= 0 && to >= length()) {
+            return this;
+        }
+        return CharSeq.of(back.substring(from, to));
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> slideBy(Function<? super Character, ?> classifier) {
+        return iterator().slideBy(classifier).map(CharSeq::ofAll);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> sliding(int size) {
+        return sliding(size, 1);
+    }
+    @Override
+    public io.vavr.collection.Iterator<CharSeq> sliding(int size, int step) {
+        return iterator().sliding(size, step).map(CharSeq::ofAll);
+    }
+    @Override
+    public CharSeq sorted() {
+        return isEmpty() ? this : toJavaStream().sorted().collect(CharSeq.collector());
+    }
+    @Override
+    public CharSeq sorted(Comparator<? super Character> comparator) {
+        Objects.requireNonNull(comparator, "comparator is null");
+        return isEmpty() ? this : toJavaStream().sorted(comparator).collect(CharSeq.collector());
+    }
+    @Override
+    public <U extends Comparable<? super U>> CharSeq sortBy(Function<? super Character, ? extends U> mapper) {
+        return sortBy(U::compareTo, mapper);
+    }
+    @Override
+    public <U> CharSeq sortBy(Comparator<? super U> comparator, Function<? super Character, ? extends U> mapper) {
+        return Collections.sortBy(this, comparator, mapper, collector());
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> span(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final char c = get(i);
+            if (predicate.test(c)) {
+                sb.append(c);
+            } else {
+                break;
+            }
+        }
+        return splitByBuilder(sb);
+    }
+    @Override
+    public CharSeq subSequence(int beginIndex) {
+        if (beginIndex < 0 || beginIndex > length()) {
+            throw new IndexOutOfBoundsException("begin index " + beginIndex + " < 0");
+        }
+        if (beginIndex == 0) {
+            return this;
+        } else if (beginIndex == length()) {
+            return EMPTY;
+        } else {
+            return CharSeq.of(back.substring(beginIndex));
+        }
+    }
+    @Override
+    public CharSeq tail() {
+        if (isEmpty()) {
+            throw new UnsupportedOperationException("tail of empty string");
+        } else {
+            return CharSeq.of(back.substring(1));
+        }
+    }
+    @Override
+    public Option<CharSeq> tailOption() {
+        return isEmpty() ? Option.none() : Option.some(tail());
+    }
+    @Override
+    public CharSeq take(int n) {
+        if (n <= 0) {
+            return EMPTY;
+        } else if (n >= length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.substring(0, n));
+        }
+    }
+    @Override
+    public CharSeq takeUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.takeUntil(this, predicate);
+    }
+    @Override
+    public CharSeq takeWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return takeUntil(predicate.negate());
+    }
+    @Override
+    public CharSeq takeRight(int n) {
+        if (n <= 0) {
+            return EMPTY;
+        } else if (n >= length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.substring(length() - n));
+        }
+    }
+    @Override
+    public CharSeq takeRightUntil(Predicate<? super Character> predicate) {
+        return io.vavr.collection.Collections.takeRightUntil(this, predicate);
+    }
+    @Override
+    public CharSeq takeRightWhile(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return takeRightUntil(predicate.negate());
+    }
+    public <U> U transform(Function<? super CharSeq, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        return f.apply(this);
+    }
+    @Override
+    public <T1, T2> Tuple2<IndexedSeq<T1>, IndexedSeq<T2>> unzip(Function<? super Character, Tuple2<? extends T1, ? extends T2>> unzipper) {
+        Objects.requireNonNull(unzipper, "unzipper is null");
+        IndexedSeq<T1> xs = Vector.empty();
+        IndexedSeq<T2> ys = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            final Tuple2<? extends T1, ? extends T2> t = unzipper.apply(get(i));
+            xs = xs.append(t._1);
+            ys = ys.append(t._2);
+        }
+        return Tuple.of(xs, ys);
+    }
+    @Override
+    public <T1, T2, T3> Tuple3<IndexedSeq<T1>, IndexedSeq<T2>, IndexedSeq<T3>> unzip3(Function<? super Character, Tuple3<? extends T1, ? extends T2, ? extends T3>> unzipper) {
+        Objects.requireNonNull(unzipper, "unzipper is null");
+        IndexedSeq<T1> xs = Vector.empty();
+        IndexedSeq<T2> ys = Vector.empty();
+        IndexedSeq<T3> zs = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            final Tuple3<? extends T1, ? extends T2, ? extends T3> t = unzipper.apply(get(i));
+            xs = xs.append(t._1);
+            ys = ys.append(t._2);
+            zs = zs.append(t._3);
+        }
+        return Tuple.of(xs, ys, zs);
+    }
+    @Override
+    public CharSeq update(int index, Character element) {
+        if ((index < 0) || (index >= length())) {
+            throw new IndexOutOfBoundsException("update(" + index + ")");
+        } else {
+            char c = element;
+            return of(back.substring(0, index) + c + back.substring(index + 1));
+        }
+    }
+    @Override
+    public CharSeq update(int index, Function<? super Character, ? extends Character> updater) {
+        Objects.requireNonNull(updater, "updater is null");
+        final char c = updater.apply(get(index));
+        return update(index, c);
+    }
+    @Override
+    public <U> IndexedSeq<Tuple2<Character, U>> zip(Iterable<? extends U> that) {
+        return zipWith(that, Tuple::of);
+    }
+    @Override
+    public <U, R> IndexedSeq<R> zipWith(Iterable<? extends U> that, BiFunction<? super Character, ? super U, ? extends R> mapper) {
+        Objects.requireNonNull(that, "that is null");
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<R> result = Vector.empty();
+        final io.vavr.collection.Iterator<Character> list1 = iterator();
+        final java.util.Iterator<? extends U> list2 = that.iterator();
+        while (list1.hasNext() && list2.hasNext()) {
+            result = result.append(mapper.apply(list1.next(), list2.next()));
+        }
+        return result;
+    }
+    @Override
+    public <U> IndexedSeq<Tuple2<Character, U>> zipAll(Iterable<? extends U> that, Character thisElem, U thatElem) {
+        Objects.requireNonNull(that, "that is null");
+        IndexedSeq<Tuple2<Character, U>> result = Vector.empty();
+        final io.vavr.collection.Iterator<Character> list1 = iterator();
+        final java.util.Iterator<? extends U> list2 = that.iterator();
+        while (list1.hasNext() || list2.hasNext()) {
+            final Character elem1 = list1.hasNext() ? list1.next() : thisElem;
+            final U elem2 = list2.hasNext() ? list2.next() : thatElem;
+            result = result.append(Tuple.of(elem1, elem2));
+        }
+        return result;
+    }
+    @Override
+    public IndexedSeq<Tuple2<Character, Integer>> zipWithIndex() {
+        return zipWithIndex(Tuple::of);
+    }
+    @Override
+    public <U> IndexedSeq<U> zipWithIndex(BiFunction<? super Character, ? super Integer, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        IndexedSeq<U> result = Vector.empty();
+        for (int i = 0; i < length(); i++) {
+            result = result.append(mapper.apply(get(i), i));
+        }
+        return result;
+    }
+    @Override
+    public Character get(int index) {
+        return back.charAt(index);
+    }
+    @Override
+    public int indexOf(Character element, int from) {
+        return back.indexOf(element, from);
+    }
+    @Override
+    public int lastIndexOf(Character element, int end) {
+        return back.lastIndexOf(element, end);
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAt(int n) {
+        if (n <= 0) {
+            return Tuple.of(EMPTY, this);
+        } else if (n >= length()) {
+            return Tuple.of(this, EMPTY);
+        } else {
+            return Tuple.of(of(back.substring(0, n)), of(back.substring(n)));
+        }
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAt(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            if (!predicate.test(t)) {
+                left.append(t);
+            } else {
+                break;
+            }
+        }
+        return splitByBuilder(left);
+    }
+    @Override
+    public Tuple2<CharSeq, CharSeq> splitAtInclusive(Predicate<? super Character> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        if (isEmpty()) {
+            return Tuple.of(EMPTY, EMPTY);
+        }
+        final StringBuilder left = new StringBuilder();
+        for (int i = 0; i < length(); i++) {
+            final Character t = get(i);
+            left.append(t);
+            if (predicate.test(t)) {
+                break;
+            }
+        }
+        return splitByBuilder(left);
+    }
+    @Override
+    public boolean startsWith(Iterable<? extends Character> that, int offset) {
+        return startsWith(CharSeq.ofAll(that), offset);
+    }
+    @Override
+    public Character head() {
+        if (isEmpty()) {
+            throw new NoSuchElementException("head of empty string");
+        } else {
+            return get(0);
+        }
+    }
+    @Override
+    public boolean isAsync() {
+        return false;
+    }
+    @Override
+    public boolean isEmpty() {
+        return back.isEmpty();
+    }
+    @Override
+    public boolean isLazy() {
+        return false;
+    }
+    @Override
+    public boolean isTraversableAgain() {
+        return true;
+    }
+    private Object readResolve() {
+        return isEmpty() ? EMPTY : this;
+    }
+    @Override
+    public boolean equals(Object o) {
+        return io.vavr.collection.Collections.equals(this, o);
+    }
+    @Override
+    public int hashCode() {
+        return io.vavr.collection.Collections.hashOrdered(this);
+    }
+    @Override
+    public char charAt(int index) {
+        return get(index);
+    }
+    @Override
+    public int length() {
+        return back.length();
+    }
+    public int codePointAt(int index) {
+        return back.codePointAt(index);
+    }
+    public int codePointBefore(int index) {
+        return back.codePointBefore(index);
+    }
+    public int codePointCount(int beginIndex, int endIndex) {
+        return back.codePointCount(beginIndex, endIndex);
+    }
+    public int offsetByCodePoints(int index, int codePointOffset) {
+        return back.offsetByCodePoints(index, codePointOffset);
+    }
+    public void getChars(int srcBegin, int srcEnd, char dst[], int dstBegin) {
+        back.getChars(srcBegin, srcEnd, dst, dstBegin);
+    }
+    public byte[] getBytes(String charsetName) throws UnsupportedEncodingException {
+        return back.getBytes(charsetName);
+    }
+    public byte[] getBytes(Charset charset) {
+        return back.getBytes(charset);
+    }
+    public byte[] getBytes() {
+        return back.getBytes();
+    }
+    public boolean contentEquals(StringBuffer sb) {
+        return back.contentEquals(sb);
+    }
+    public boolean contentEquals(CharSequence cs) {
+        return back.contentEquals(cs);
+    }
+    public boolean equalsIgnoreCase(CharSeq anotherString) {
+        return back.equalsIgnoreCase(anotherString.back);
+    }
+    public int compareTo(CharSeq anotherString) {
+        return back.compareTo(anotherString.back);
+    }
+    public int compareToIgnoreCase(CharSeq str) {
+        return back.compareToIgnoreCase(str.back);
+    }
+    public boolean regionMatches(int toffset, CharSeq other, int ooffset, int len) {
+        return back.regionMatches(toffset, other.back, ooffset, len);
+    }
+    public boolean regionMatches(boolean ignoreCase, int toffset, CharSeq other, int ooffset, int len) {
+        return back.regionMatches(ignoreCase, toffset, other.back, ooffset, len);
+    }
+    @Override
+    public CharSeq subSequence(int beginIndex, int endIndex) {
+        if (beginIndex < 0) {
+            throw new IndexOutOfBoundsException("begin index " + beginIndex + " < 0");
+        }
+        if (endIndex > length()) {
+            throw new IndexOutOfBoundsException("endIndex " + endIndex + " > length " + length());
+        }
+        final int subLen = endIndex - beginIndex;
+        if (subLen < 0) {
+            throw new IllegalArgumentException("beginIndex " + beginIndex + " > endIndex " + endIndex);
+        }
+        if (beginIndex == 0 && endIndex == length()) {
+            return this;
+        } else {
+            return CharSeq.of(back.subSequence(beginIndex, endIndex));
+        }
+    }
+    public boolean startsWith(CharSeq prefix, int toffset) {
+        return back.startsWith(prefix.back, toffset);
+    }
+    public boolean startsWith(CharSeq prefix) {
+        return back.startsWith(prefix.back);
+    }
+    public boolean endsWith(CharSeq suffix) {
+        return back.endsWith(suffix.back);
+    }
+    public int indexOf(int ch) {
+        return back.indexOf(ch);
+    }
+    Option<Integer> indexOfOption(int ch) {
+        return io.vavr.collection.Collections.indexOption(indexOf(ch));
+    }
+    public int indexOf(int ch, int fromIndex) {
+        return back.indexOf(ch, fromIndex);
+    }
+    Option<Integer> indexOfOption(int ch, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(indexOf(ch, fromIndex));
+    }
+    public int lastIndexOf(int ch) {
+        return back.lastIndexOf(ch);
+    }
+    Option<Integer> lastIndexOfOption(int ch) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(ch));
+    }
+    public int lastIndexOf(int ch, int fromIndex) {
+        return back.lastIndexOf(ch, fromIndex);
+    }
+    public Option<Integer> lastIndexOfOption(int ch, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(ch, fromIndex));
+    }
+    public int indexOf(CharSeq str) {
+        return back.indexOf(str.back);
+    }
+    public Option<Integer> indexOfOption(CharSeq str) {
+        return io.vavr.collection.Collections.indexOption(indexOf(str));
+    }
+    public int indexOf(CharSeq str, int fromIndex) {
+        return back.indexOf(str.back, fromIndex);
+    }
+    public Option<Integer> indexOfOption(CharSeq str, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(indexOf(str, fromIndex));
+    }
+    public int lastIndexOf(CharSeq str) {
+        return back.lastIndexOf(str.back);
+    }
+    public Option<Integer> lastIndexOfOption(CharSeq str) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(str));
+    }
+    public int lastIndexOf(CharSeq str, int fromIndex) {
+        return back.lastIndexOf(str.back, fromIndex);
+    }
+    public Option<Integer> lastIndexOfOption(CharSeq str, int fromIndex) {
+        return io.vavr.collection.Collections.indexOption(lastIndexOf(str, fromIndex));
+    }
+    public CharSeq substring(int beginIndex) {
+        return CharSeq.of(back.substring(beginIndex));
+    }
+    public CharSeq substring(int beginIndex, int endIndex) {
+        return CharSeq.of(back.substring(beginIndex, endIndex));
+    }
+    @Override
+    public String stringPrefix() {
+        return "CharSeq";
+    }
+    @Override
+    public String toString() {
+        return back;
+    }
+    public CharSeq concat(CharSeq str) {
+        return CharSeq.of(back.concat(str.back));
+    }
+    public boolean matches(String regex) {
+        return back.matches(regex);
+    }
+    public boolean contains(CharSequence s) {
+        return back.contains(s);
+    }
+    public CharSeq replaceFirst(String regex, String replacement) {
+        return CharSeq.of(back.replaceFirst(regex, replacement));
+    }
+    public CharSeq replaceAll(String regex, String replacement) {
+        return CharSeq.of(back.replaceAll(regex, replacement));
+    }
+    public CharSeq replace(CharSequence target, CharSequence replacement) {
+        return CharSeq.of(back.replace(target, replacement));
+    }
+    public Seq<CharSeq> split(String regex) {
+        return split(regex, 0);
+    }
+    public Seq<CharSeq> split(String regex, int limit) {
+        final Seq<String> split = Array.wrap(back.split(regex, limit));
+        return split.map(CharSeq::of);
+    }
+    public CharSeq toLowerCase(Locale locale) {
+        return CharSeq.of(back.toLowerCase(locale));
+    }
+    public CharSeq toLowerCase() {
+        return CharSeq.of(back.toLowerCase(Locale.getDefault()));
+    }
+    public CharSeq toUpperCase(Locale locale) {
+        return CharSeq.of(back.toUpperCase(locale));
+    }
+    public CharSeq toUpperCase() {
+        return CharSeq.of(back.toUpperCase(Locale.getDefault()));
+    }
+    public CharSeq capitalize(Locale locale) {
+        if (back.isEmpty()) {
+            return this;
+        }
+        return CharSeq.of(back.substring(0, 1).toUpperCase(locale) + back.substring(1));
+    }
+    public CharSeq capitalize() {
+        return capitalize(Locale.getDefault());
+    }
+    public CharSeq trim() {
+        return of(back.trim());
+    }
+    public char[] toCharArray() {
+        return back.toCharArray();
+    }
+    public Byte decodeByte() {
+        return Byte.decode(back);
+    }
+    public Integer decodeInteger() {
+        return Integer.decode(back);
+    }
+    public Long decodeLong() {
+        return Long.decode(back);
+    }
+    public Short decodeShort() {
+        return Short.decode(back);
+    }
+    public boolean parseBoolean() {
+        return Boolean.parseBoolean(back);
+    }
+    public byte parseByte() {
+        return Byte.parseByte(back);
+    }
+    public byte parseByte(int radix) {
+        return Byte.parseByte(back, radix);
+    }
+    public double parseDouble() {
+        return Double.parseDouble(back);
+    }
+    public float parseFloat() {
+        return Float.parseFloat(back);
+    }
+    public int parseInt() {
+        return Integer.parseInt(back);
+    }
+    public int parseInt(int radix) {
+        return Integer.parseInt(back, radix);
+    }
+    @GwtIncompatible
+    public int parseUnsignedInt() {
+        return Integer.parseUnsignedInt(back);
+    }
+    @GwtIncompatible
+    public int parseUnsignedInt(int radix) {
+        return Integer.parseUnsignedInt(back, radix);
+    }
+    public long parseLong() {
+        return Long.parseLong(back);
+    }
+    public long parseLong(int radix) {
+        return Long.parseLong(back, radix);
+    }
+    @GwtIncompatible
+    public long parseUnsignedLong() {
+        return Long.parseUnsignedLong(back);
+    }
+    @GwtIncompatible
+    public long parseUnsignedLong(int radix) {
+        return Long.parseUnsignedLong(back, radix);
+    }
+    public short parseShort() {
+        return Short.parseShort(back);
+    }
+    public short parseShort(int radix) {
+        return Short.parseShort(back, radix);
+    }
+    public Boolean toBoolean() {
+        return Boolean.valueOf(back);
+    }
+    public Byte toByte() {
+        return Byte.valueOf(back);
+    }
+    public Byte toByte(int radix) {
+        return Byte.valueOf(back, radix);
+    }
+    public Double toDouble() {
+        return Double.valueOf(back);
+    }
+    public Float toFloat() {
+        return Float.valueOf(back);
+    }
+    public Integer toInteger() {
+        return Integer.valueOf(back);
+    }
+    public Integer toInteger(int radix) {
+        return Integer.valueOf(back, radix);
+    }
+    public Long toLong() {
+        return Long.valueOf(back);
+    }
+    public Long toLong(int radix) {
+        return Long.valueOf(back, radix);
+    }
+    public Short toShort() {
+        return Short.valueOf(back);
+    }
+    public Short toShort(int radix) {
+        return Short.valueOf(back, radix);
+    }
+    @Override
+    public Character[] toJavaArray() {
+        return toJavaList().toArray(new Character[0]);
+    }
+    @FunctionalInterface
+    public interface CharUnaryOperator {
+        char apply(char c);
+    }
+    @FunctionalInterface
+    public interface CharFunction<R> {
+        R apply(char c);
+    }
+}
+interface CharSeqModule {
+    interface Combinations {
+        static IndexedSeq<CharSeq> apply(CharSeq elements, int k) {
+            if (k == 0) {
+                return Vector.of(CharSeq.empty());
+            } else {
+                return elements.zipWithIndex().flatMap(
+                        t -> apply(elements.drop(t._2 + 1), (k - 1)).map((CharSeq c) -> c.prepend(t._1))
+                );
+            }
+        }
+    }
+}

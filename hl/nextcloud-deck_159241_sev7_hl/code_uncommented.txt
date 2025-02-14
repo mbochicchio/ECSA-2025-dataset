@@ -1,0 +1,3009 @@
+package it.niedermann.nextcloud.deck.ui.card.comments;
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+import android.content.Context;
+import android.os.Bundle;
+import android.text.TextUtils;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Toast;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.request.RequestOptions;
+import com.nextcloud.android.common.ui.theme.utils.ColorRole;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import java.time.Instant;
+import java.util.stream.Stream;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.FragmentCardEditTabCommentsBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.ocs.comment.DeckComment;
+import it.niedermann.nextcloud.deck.model.ocs.comment.full.FullDeckComment;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.card.EditCardViewModel;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.Themed;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import it.niedermann.nextcloud.deck.util.KeyboardUtils;
+import okhttp3.Headers;
+public class CardCommentsFragment extends Fragment implements Themed, CommentEditedListener, CommentDeletedListener, CommentSelectAsReplyListener {
+    private static final String KEY_ACCOUNT = "account";
+    private FragmentCardEditTabCommentsBinding binding;
+    private EditCardViewModel editCardViewModel;
+    private CommentsViewModel commentsViewModel;
+    private CardCommentsAdapter adapter;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        final var args = getArguments();
+        if (args == null || !args.containsKey(KEY_ACCOUNT)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must be provided.");
+        }
+        final var account = (Account) args.getSerializable(KEY_ACCOUNT);
+        if (account == null) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must not be null.");
+        }
+        editCardViewModel = new ViewModelProvider(requireActivity()).get(EditCardViewModel.class);
+        commentsViewModel = new SyncViewModel.Provider(this, requireActivity().getApplication(), account).get(CommentsViewModel.class);
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater,
+                             ViewGroup container,
+                             Bundle savedInstanceState) {
+        binding = FragmentCardEditTabCommentsBinding.inflate(inflater, container, false);
+        if (editCardViewModel.getFullCard() == null) {
+            DeckLog.logError(new IllegalStateException("Cannot populate " + CardCommentsFragment.class.getSimpleName() + " because viewModel.getFullCard() is null"));
+            if (requireActivity() instanceof EditActivity) {
+                Toast.makeText(getContext(), R.string.error_edit_activity_killed_by_android, Toast.LENGTH_LONG).show();
+                ((EditActivity) requireActivity()).directFinish();
+            } else {
+                requireActivity().finish();
+            }
+            return binding.getRoot();
+        }
+        adapter = new CardCommentsAdapter(requireContext(), editCardViewModel.getAccount(), requireActivity().getMenuInflater(), this, this, getChildFragmentManager(), this);
+        binding.comments.setAdapter(adapter);
+        binding.replyCommentCancelButton.setOnClickListener((v) -> commentsViewModel.setReplyToComment(null));
+        Glide.with(binding.avatar.getContext())
+                .load(editCardViewModel.getAccount().getAvatarUrl(binding.avatar.getResources().getDimensionPixelSize(R.dimen.icon_size_details)))
+                .apply(RequestOptions.circleCropTransform())
+                .placeholder(R.drawable.ic_person_24dp)
+                .error(R.drawable.ic_person_24dp)
+                .into(binding.avatar);
+        commentsViewModel.getReplyToComment().observe(getViewLifecycleOwner(), (comment) -> {
+            if (comment == null) {
+                binding.replyComment.setVisibility(GONE);
+            } else {
+                binding.replyCommentText.setMarkdownString(comment.getComment().getMessage());
+                binding.replyComment.setVisibility(VISIBLE);
+            }
+        });
+        commentsViewModel.getFullCommentsForLocalCardId(editCardViewModel.getFullCard().getLocalId()).observe(getViewLifecycleOwner(),
+                (comments) -> {
+                    if (comments != null && comments.size() > 0) {
+                        binding.emptyContentView.setVisibility(GONE);
+                        binding.comments.setVisibility(VISIBLE);
+                        adapter.updateComments(comments);
+                    } else {
+                        binding.emptyContentView.setVisibility(VISIBLE);
+                        binding.comments.setVisibility(GONE);
+                    }
+                });
+        if (editCardViewModel.canEdit()) {
+            binding.addCommentLayout.setVisibility(VISIBLE);
+            binding.fab.setOnClickListener(v -> {
+                if (!TextUtils.isEmpty(binding.message.getText().toString().trim())) {
+                    binding.emptyContentView.setVisibility(GONE);
+                    binding.comments.setVisibility(VISIBLE);
+                    final DeckComment comment = new DeckComment(binding.message.getText().toString().trim(), editCardViewModel.getAccount().getUserName(), Instant.now());
+                    final FullDeckComment parent = commentsViewModel.getReplyToComment().getValue();
+                    if (parent != null) {
+                        comment.setParentId(parent.getId());
+                        commentsViewModel.setReplyToComment(null);
+                    }
+                    commentsViewModel.addCommentToCard(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), comment);
+                }
+                binding.message.setText(null);
+            });
+            binding.message.setOnEditorActionListener((v, actionId, event) -> {
+                if ((actionId == EditorInfo.IME_ACTION_SEND) || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_UP)) {
+                    return binding.fab.performClick();
+                }
+                return true;
+            });
+            binding.message.addTextChangedListener(new CardCommentsMentionProposer(getViewLifecycleOwner(), editCardViewModel.getAccount(), editCardViewModel.getBoardId(), binding.message, binding.mentionProposerWrapper, binding.mentionProposer));
+        } else {
+            binding.addCommentLayout.setVisibility(GONE);
+        }
+        return binding.getRoot();
+    }
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        if (editCardViewModel.canEdit()) {
+            KeyboardUtils.showKeyboardForEditText(binding.message);
+        }
+        editCardViewModel.getBoardColor().observe(getViewLifecycleOwner(), this::applyTheme);
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void onCommentEdited(Long id, String comment) {
+        commentsViewModel.updateComment(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), id, comment);
+    }
+    @Override
+    public void onCommentDeleted(Long localId) {
+        commentsViewModel.deleteComment(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), localId, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted comment with localId", localId);
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    requireActivity().runOnUiThread(() -> ExceptionDialogFragment.newInstance(throwable, editCardViewModel.getAccount()).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName()));
+                }
+            }
+        });
+    }
+    @Override
+    public void applyTheme(@ColorInt int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.deck.themeEmptyContentView(binding.emptyContentView);
+        utils.platform.colorViewBackground(binding.addCommentLayout);
+        utils.material.themeFAB(binding.fab);
+        utils.material.colorTextInputLayout(binding.messageWrapper);
+        Stream.of(
+                binding.replyCommentIcon,
+                binding.replyCommentCancelButton,
+                binding.mentionProposerIcon
+        ).forEach(v -> utils.platform.colorImageView(v, ColorRole.SECONDARY));
+        adapter.applyTheme(color);
+    }
+    @Override
+    public void onSelectAsReply(FullDeckComment comment) {
+        commentsViewModel.setReplyToComment(comment);
+    }
+    public static Fragment newInstance(@NonNull Account account) {
+        final var fragment = new CardCommentsFragment();
+        final var args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        fragment.setArguments(args);
+        return fragment;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card.comments;
+import static androidx.lifecycle.Transformations.distinctUntilChanged;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.MutableLiveData;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.List;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.ocs.comment.DeckComment;
+import it.niedermann.nextcloud.deck.model.ocs.comment.full.FullDeckComment;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+@SuppressWarnings("WeakerAccess")
+public class CommentsViewModel extends SyncViewModel {
+    private final MutableLiveData<FullDeckComment> replyToComment = new MutableLiveData<>();
+    public CommentsViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public void setReplyToComment(FullDeckComment replyToComment) {
+        this.replyToComment.postValue(replyToComment);
+    }
+    public LiveData<FullDeckComment> getReplyToComment() {
+        return this.replyToComment;
+    }
+    public LiveData<List<FullDeckComment>> getFullCommentsForLocalCardId(long localCardId) {
+        return distinctUntilChanged(baseRepository.getFullCommentsForLocalCardId(localCardId));
+    }
+    public void addCommentToCard(long accountId, long cardId, @NonNull DeckComment comment) {
+        syncRepository.addCommentToCard(accountId, cardId, comment);
+    }
+    public void updateComment(long accountId, long localCardId, long localCommentId, String comment) {
+        syncRepository.updateComment(accountId, localCardId, localCommentId, comment);
+    }
+    public void deleteComment(long accountId, long localCardId, long localCommentId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteComment(accountId, localCardId, localCommentId, callback);
+    }
+}
+package it.niedermann.nextcloud.deck.model;
+import android.content.Context;
+import android.net.Uri;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.Px;
+import androidx.room.ColumnInfo;
+import androidx.room.Entity;
+import androidx.room.Ignore;
+import androidx.room.Index;
+import androidx.room.PrimaryKey;
+import com.bumptech.glide.Glide;
+import com.nextcloud.android.sso.AccountImporter;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import com.nextcloud.android.sso.model.SingleSignOnAccount;
+import java.io.Serializable;
+import java.util.Objects;
+import java.util.Optional;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.model.ocs.Capabilities;
+import it.niedermann.nextcloud.deck.model.ocs.Version;
+import it.niedermann.nextcloud.sso.glide.SingleSignOnUrl;
+@Entity(indices = {@Index(value = "name", unique = true)})
+public class Account implements Serializable {
+    @Ignore
+    private static final long serialVersionUID = 0;
+    @PrimaryKey(autoGenerate = true)
+    protected Long id;
+    @NonNull
+    private String name;
+    @NonNull
+    private String userName;
+    @Ignore
+    @Nullable
+    private String userDisplayName;
+    @NonNull
+    private String url;
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private Integer color = Capabilities.DEFAULT_COLOR;
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private Integer textColor = Capabilities.DEFAULT_TEXT_COLOR;
+    @NonNull
+    @ColumnInfo(defaultValue = "0.6.4")
+    private String serverDeckVersion = "0.6.4";
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private boolean maintenanceEnabled = false;
+    private String etag;
+    private String boardsEtag;
+    @Ignore
+    public Account(Long id, @NonNull String name, @NonNull String userName, @NonNull String url) {
+        this(name, userName, url);
+        this.id = id;
+    }
+    @Ignore
+    public Account(@NonNull String name, @NonNull String userName, @NonNull String url) {
+        this.name = name;
+        this.userName = userName;
+        this.url = url;
+    }
+    @Ignore
+    public Account(Long id) {
+        this.id = id;
+    }
+    public Account() {
+    }
+    public void applyCapabilities(Capabilities capabilities, String eTag) {
+        if (capabilities == null) {
+            maintenanceEnabled = true;
+            return;
+        }
+        maintenanceEnabled = capabilities.isMaintenanceEnabled();
+        if (!isMaintenanceEnabled()) {
+            try {
+                color = capabilities.getColor();
+                textColor = capabilities.getTextColor();
+            } catch (Exception e) {
+                DeckLog.logError(e);
+                color = Capabilities.DEFAULT_COLOR;
+                textColor = Capabilities.DEFAULT_TEXT_COLOR;
+            }
+            if (capabilities.getDeckVersion() != null) {
+                serverDeckVersion = capabilities.getDeckVersion().getOriginalVersion();
+            }
+            if (eTag != null) {
+                this.etag = eTag;
+            }
+        }
+    }
+    public Long getId() {
+        return id;
+    }
+    public void setId(Long id) {
+        this.id = id;
+    }
+    @NonNull
+    public String getName() {
+        return name;
+    }
+    public void setName(@NonNull String name) {
+        this.name = name;
+    }
+    @NonNull
+    public String getUserName() {
+        return userName;
+    }
+    public void setUserName(@NonNull String userName) {
+        this.userName = userName;
+    }
+    @NonNull
+    public String getUrl() {
+        return url;
+    }
+    public void setUrl(@NonNull String url) {
+        this.url = url;
+    }
+    public static long getSerialVersionUID() {
+        return serialVersionUID;
+    }
+    @ColorInt
+    @NonNull
+    public Integer getColor() {
+        return color;
+    }
+    public void setColor(@NonNull Integer color) {
+        this.color = color;
+    }
+    @NonNull
+    public Integer getTextColor() {
+        return textColor;
+    }
+    @Deprecated
+    public void setTextColor(@NonNull Integer textColor) {
+        this.textColor = textColor;
+    }
+    public Version getServerDeckVersionAsObject() {
+        return Version.of(serverDeckVersion);
+    }
+    @NonNull
+    public String getServerDeckVersion() {
+        return serverDeckVersion;
+    }
+    public void setServerDeckVersion(@NonNull String serverDeckVersion) {
+        this.serverDeckVersion = serverDeckVersion;
+    }
+    public boolean isMaintenanceEnabled() {
+        return maintenanceEnabled;
+    }
+    public void setMaintenanceEnabled(boolean maintenanceEnabled) {
+        this.maintenanceEnabled = maintenanceEnabled;
+    }
+    @Nullable
+    public String getUserDisplayName() {
+        return userDisplayName;
+    }
+    public void setUserDisplayName(@Nullable String userDisplayName) {
+        this.userDisplayName = userDisplayName;
+    }
+    public String getEtag() {
+        return etag;
+    }
+    public void setEtag(String etag) {
+        this.etag = etag;
+    }
+    public String getBoardsEtag() {
+        return boardsEtag;
+    }
+    public void setBoardsEtag(String boardsEtag) {
+        this.boardsEtag = boardsEtag;
+    }
+    public SingleSignOnUrl getAvatarUrl(@Px int size) {
+        return getAvatarUrl(size, getUserName());
+    }
+    public SingleSignOnUrl getAvatarUrl(@Px int size, @NonNull String userName) {
+        return new SingleSignOnUrl(getName(), getUrl() + "/index.php/avatar/" + Uri.encode(userName) + "/" + size);
+    }
+    @NonNull
+    public Optional<SingleSignOnAccount> getSingleSignOnAccount(@NonNull Context context) {
+        try {
+            return Optional.of(AccountImporter.getSingleSignOnAccount(context, getName()));
+        } catch (NextcloudFilesAppAccountNotFoundException e) {
+            return Optional.empty();
+        }
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        Account account = (Account) o;
+        return maintenanceEnabled == account.maintenanceEnabled &&
+                Objects.equals(id, account.id) &&
+                name.equals(account.name) &&
+                userName.equals(account.userName) &&
+                Objects.equals(userDisplayName, account.userDisplayName) &&
+                url.equals(account.url) &&
+                color.equals(account.color) &&
+                textColor.equals(account.textColor) &&
+                serverDeckVersion.equals(account.serverDeckVersion);
+    }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, name, userName, userDisplayName, url, color, textColor, serverDeckVersion, maintenanceEnabled, etag, boardsEtag);
+    }
+    @NonNull
+    @Override
+    public String toString() {
+        return "Account{" +
+                "id=" + id +
+                ", name='" + name + '\'' +
+                ", userName='" + userName + '\'' +
+                ", url='" + url + '\'' +
+                ", color='" + color + '\'' +
+                ", textColor='" + textColor + '\'' +
+                ", serverDeckVersion='" + serverDeckVersion + '\'' +
+                ", maintenanceEnabled=" + maintenanceEnabled +
+                ", eTag='" + etag + '\'' +
+                '}';
+    }
+}
+package it.niedermann.nextcloud.deck.ui.viewmodel;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.ViewModel;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.lifecycle.ViewModelStoreOwner;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.archivedboards.ArchivedBoardsViewModel;
+import it.niedermann.nextcloud.deck.ui.board.accesscontrol.AccessControlViewModel;
+import it.niedermann.nextcloud.deck.ui.board.managelabels.LabelsViewModel;
+import it.niedermann.nextcloud.deck.ui.card.NewCardViewModel;
+import it.niedermann.nextcloud.deck.ui.card.comments.CommentsViewModel;
+import it.niedermann.nextcloud.deck.ui.stack.StackViewModel;
+public abstract class SyncViewModel extends BaseViewModel {
+    protected final Account account;
+    protected final SyncRepository syncRepository;
+    public SyncViewModel(@NonNull Application application,
+                         @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        this(application, account, new SyncRepository(application, account));
+    }
+    public SyncViewModel(@NonNull Application application,
+                         @NonNull Account account,
+                         @NonNull SyncRepository syncRepository) {
+        super(application, syncRepository);
+        this.account = account;
+        this.syncRepository = syncRepository;
+    }
+    public static class Provider extends ViewModelProvider {
+        @NonNull
+        private final Account account;
+        public Provider(@NonNull ViewModelStoreOwner owner, @NonNull Application application, @NonNull Account account) {
+            super(owner, new SyncViewModel.Factory(application, account));
+            this.account = account;
+        }
+        @NonNull
+        @Override
+        public <T extends ViewModel> T get(@NonNull Class<T> modelClass) {
+            return get(modelClass.getCanonicalName() + "@" + account.getName(), modelClass);
+        }
+    }
+    private static class Factory implements ViewModelProvider.Factory {
+        private final Application application;
+        private final Account account;
+        public Factory(@NonNull Application application, @NonNull Account account) {
+            this.application = application;
+            this.account = account;
+        }
+        @SuppressWarnings("unchecked")
+        @NonNull
+        @Override
+        public <T extends ViewModel> T create(@NonNull Class<T> modelClass) {
+            try {
+                if (modelClass == AccessControlViewModel.class) {
+                    return (T) new AccessControlViewModel(application, account);
+                }
+                if (modelClass == ArchivedBoardsViewModel.class) {
+                    return (T) new ArchivedBoardsViewModel(application, account);
+                }
+                if (modelClass == CommentsViewModel.class) {
+                    return (T) new CommentsViewModel(application, account);
+                }
+                if (modelClass == LabelsViewModel.class) {
+                    return (T) new LabelsViewModel(application, account);
+                }
+                if (modelClass == NewCardViewModel.class) {
+                    return (T) new NewCardViewModel(application, account);
+                }
+                if (modelClass == StackViewModel.class) {
+                    return (T) new StackViewModel(application, account);
+                }
+                throw new IllegalArgumentException(getClass().getSimpleName() + " can not instantiate " + modelClass.getSimpleName());
+            } catch (NextcloudFilesAppAccountNotFoundException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+}
+package it.niedermann.nextcloud.deck.ui.board.managelabels;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.LiveData;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+public class LabelsViewModel extends SyncViewModel {
+    public LabelsViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public LiveData<FullBoard> getFullBoardById(Long boardLocalId) {
+        return new ReactiveLiveData<>(baseRepository.getFullBoardById(account.getId(), boardLocalId));
+    }
+    public void updateLabel(@NonNull Label label, @NonNull IResponseCallback<Label> callback) {
+        syncRepository.updateLabel(label, callback);
+    }
+    public void createLabel(@NonNull Label label, long localBoardId, @NonNull IResponseCallback<Label> callback) {
+        syncRepository.createLabel(account.getId(), label, localBoardId, callback);
+    }
+    public void deleteLabel(@NonNull Label label, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteLabel(label, callback);
+    }
+    public void countCardsWithLabel(long localLabelId, @NonNull IResponseCallback<Integer> callback) {
+        baseRepository.countCardsWithLabel(localLabelId, callback);
+    }
+}
+package it.niedermann.nextcloud.deck.repository;
+import static java.net.HttpURLConnection.HTTP_NOT_MODIFIED;
+import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.database.sqlite.SQLiteConstraintException;
+import android.util.Pair;
+import androidx.annotation.AnyThread;
+import androidx.annotation.ColorInt;
+import androidx.annotation.MainThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.VisibleForTesting;
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.MediatorLiveData;
+import androidx.lifecycle.MutableLiveData;
+import com.nextcloud.android.sso.AccountImporter;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import com.nextcloud.android.sso.exceptions.NextcloudHttpRequestFailedException;
+import com.nextcloud.android.sso.model.SingleSignOnAccount;
+import java.io.File;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.database.DataBaseAdapter;
+import it.niedermann.nextcloud.deck.exceptions.DeckException;
+import it.niedermann.nextcloud.deck.exceptions.OfflineException;
+import it.niedermann.nextcloud.deck.model.AccessControl;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Attachment;
+import it.niedermann.nextcloud.deck.model.Board;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.JoinCardWithUser;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.Stack;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.enums.DBStatus;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.full.FullStack;
+import it.niedermann.nextcloud.deck.model.internal.FilterInformation;
+import it.niedermann.nextcloud.deck.model.ocs.Capabilities;
+import it.niedermann.nextcloud.deck.model.ocs.comment.DeckComment;
+import it.niedermann.nextcloud.deck.model.ocs.comment.OcsComment;
+import it.niedermann.nextcloud.deck.model.ocs.user.OcsUserList;
+import it.niedermann.nextcloud.deck.model.ocs.user.UserForAssignment;
+import it.niedermann.nextcloud.deck.remote.adapters.ServerAdapter;
+import it.niedermann.nextcloud.deck.remote.api.GsonConfig;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.remote.api.LastSyncUtil;
+import it.niedermann.nextcloud.deck.remote.api.ResponseCallback;
+import it.niedermann.nextcloud.deck.remote.helpers.DataPropagationHelper;
+import it.niedermann.nextcloud.deck.remote.helpers.SyncHelper;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.AbstractSyncDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.AccessControlDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.ActivityDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.AttachmentDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.BoardDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.CardDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.CardPropagationDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.DeckCommentsDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.LabelDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.StackDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.partial.BoardWithAclDownSyncDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.providers.partial.BoardWithStacksAndLabelsUpSyncDataProvider;
+import it.niedermann.nextcloud.deck.remote.helpers.util.ConnectivityUtil;
+import okhttp3.Headers;
+@SuppressWarnings("WeakerAccess")
+public class SyncRepository extends BaseRepository {
+    @NonNull
+    private final ServerAdapter serverAdapter;
+    @NonNull
+    private final SyncHelper.Factory syncHelperFactory;
+    @AnyThread
+    public SyncRepository(@NonNull Context context, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        this(context, AccountImporter.getSingleSignOnAccount(context, account.getName()), new ConnectivityUtil(context));
+    }
+    private SyncRepository(@NonNull Context context,
+                           @NonNull SingleSignOnAccount ssoAccount,
+                           @NonNull ConnectivityUtil connectivityUtil) {
+        this(context, new ServerAdapter(context.getApplicationContext(), ssoAccount, connectivityUtil), connectivityUtil, SyncHelper::new);
+    }
+    protected SyncRepository(@NonNull Context context,
+                             @NonNull ServerAdapter serverAdapter,
+                             @NonNull ConnectivityUtil connectivityUtil,
+                             @NonNull SyncHelper.Factory syncHelperFactory) {
+        super(context, connectivityUtil);
+        this.serverAdapter = serverAdapter;
+        this.syncHelperFactory = syncHelperFactory;
+        LastSyncUtil.init(context.getApplicationContext());
+    }
+    @VisibleForTesting
+    protected SyncRepository(@NonNull Context context,
+                             @NonNull ServerAdapter serverAdapter,
+                             @NonNull ConnectivityUtil connectivityUtil,
+                             @NonNull SyncHelper.Factory syncHelperFactory,
+                             @NonNull DataBaseAdapter databaseAdapter,
+                             @NonNull ExecutorService executor) {
+        super(context, connectivityUtil, databaseAdapter, executor);
+        this.serverAdapter = serverAdapter;
+        this.syncHelperFactory = syncHelperFactory;
+        LastSyncUtil.init(context.getApplicationContext());
+    }
+    @AnyThread
+    public void fetchBoardsFromServer(@NonNull ResponseCallback<List<FullBoard>> callback) {
+        executor.submit(() -> serverAdapter.getBoards(callback));
+    }
+    @AnyThread
+    public LiveData<Pair<Integer, Integer>> synchronize(@NonNull ResponseCallback<Boolean> responseCallback) {
+        final var progress$ = new MutableLiveData<Pair<Integer, Integer>>();
+        final var callbackAccount = responseCallback.getAccount();
+        final long callbackAccountId = callbackAccount.getId();
+        executor.submit(() -> {
+            refreshCapabilities(new ResponseCallback<>(responseCallback.getAccount()) {
+                @Override
+                public void onResponse(Capabilities response, Headers headers) {
+                    if (response != null && !response.isMaintenanceEnabled()) {
+                        if (response.getDeckVersion().isSupported()) {
+                            final var lastSyncDate = LastSyncUtil.getLastSyncDate(callbackAccountId);
+                            final var syncHelper = syncHelperFactory.create(serverAdapter, dataBaseAdapter, lastSyncDate);
+                            final var callback = new ResponseCallback<Boolean>(callbackAccount) {
+                                @Override
+                                public void onResponse(Boolean response, Headers headers) {
+                                    syncHelper.setResponseCallback(new ResponseCallback<>(account) {
+                                        @Override
+                                        public void onResponse(Boolean response, Headers headers) {
+                                            LastSyncUtil.setLastSyncDate(callbackAccountId, Instant.now());
+                                            responseCallback.onResponse(response, headers);
+                                        }
+                                        @Override
+                                        public void onError(Throwable throwable) {
+                                            super.onError(throwable);
+                                            responseCallback.onResponse(response, headers);
+                                        }
+                                    });
+                                    executor.submit(() -> {
+                                        try {
+                                            syncHelper.doUpSyncFor(new BoardDataProvider(progress$));
+                                        } catch (Throwable e) {
+                                            DeckLog.logError(e);
+                                            responseCallback.onError(e);
+                                        }
+                                    });
+                                }
+                                @Override
+                                public void onError(Throwable throwable) {
+                                    super.onError(throwable);
+                                    responseCallback.onError(throwable);
+                                }
+                            };
+                            syncHelper.setResponseCallback(callback);
+                            try {
+                                syncHelper.doSyncFor(new BoardDataProvider(progress$, false), false);
+                            } catch (Throwable e) {
+                                DeckLog.logError(e);
+                                responseCallback.onError(e);
+                            }
+                        } else {
+                            DeckLog.warn("No sync. Server version not supported:", response.getDeckVersion().getOriginalVersion());
+                            responseCallback.onResponse(Boolean.FALSE, headers);
+                        }
+                    } else {
+                        responseCallback.onResponse(Boolean.FALSE, headers);
+                        if (response != null) {
+                            DeckLog.warn("No sync. Status maintenance mode:", response.isMaintenanceEnabled());
+                        }
+                    }
+                }
+                @SuppressLint("MissingSuperCall")
+                @Override
+                public void onError(Throwable throwable) {
+                    responseCallback.onError(throwable);
+                }
+            });
+        });
+        return progress$;
+    }
+    @AnyThread
+    public void synchronizeBoard(long localBoardId, @NonNull ResponseCallback<Boolean> responseCallback) {
+        executor.submit(() -> {
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(responseCallback.getAccount().getId(), localBoardId);
+            try {
+                syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                        .setResponseCallback(responseCallback)
+                        .doSyncFor(new StackDataProvider(null, board));
+            } catch (OfflineException e) {
+                responseCallback.onError(e);
+            }
+        });
+    }
+    @AnyThread
+    public void synchronizeCard(@NonNull ResponseCallback<Boolean> responseCallback, @NonNull Card card) {
+        executor.submit(() -> {
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(card.getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            try {
+                syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                        .setResponseCallback(responseCallback)
+                        .doSyncFor(new CardDataProvider(null, board, stack));
+            } catch (OfflineException e) {
+                responseCallback.onError(e);
+            }
+        });
+    }
+    @MainThread
+    public LiveData<List<Account>> readAccountsForHostWithReadAccessToBoard(String host, long boardRemoteId) {
+        MediatorLiveData<List<Account>> liveData = new MediatorLiveData<>();
+        liveData.addSource(dataBaseAdapter.readAccountsForHostWithReadAccessToBoard(host, boardRemoteId), accounts -> {
+            liveData.postValue(accounts);
+            executor.submit(() -> {
+                for (Account account : accounts) {
+                    syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                            .setResponseCallback(new ResponseCallback<>(account) {
+                                @Override
+                                public void onResponse(Boolean response, Headers headers) {
+                                    liveData.postValue(dataBaseAdapter.readAccountsForHostWithReadAccessToBoardDirectly(host, boardRemoteId));
+                                }
+                            }).doSyncFor(new BoardWithAclDownSyncDataProvider());
+                }
+            });
+        });
+        return liveData;
+    }
+    @AnyThread
+    public Future<?> refreshCapabilities(@NonNull ResponseCallback<Capabilities> callback) {
+        return executor.submit(() -> {
+            try {
+                Account accountForEtag = dataBaseAdapter.getAccountByIdDirectly(callback.getAccount().getId());
+                serverAdapter.getCapabilities(accountForEtag.getEtag(), new ResponseCallback<>(callback.getAccount()) {
+                    @Override
+                    public void onResponse(Capabilities response, Headers headers) {
+                        Account acc = dataBaseAdapter.getAccountByIdDirectly(account.getId());
+                        acc.applyCapabilities(response, headers.get("ETag"));
+                        dataBaseAdapter.updateAccount(acc);
+                        callback.getAccount().setServerDeckVersion(acc.getServerDeckVersion());
+                        callback.onResponse(response, headers);
+                    }
+                    @SuppressLint("MissingSuperCall")
+                    @Override
+                    public void onError(Throwable throwable) {
+                        if (throwable instanceof NextcloudHttpRequestFailedException requestFailedException) {
+                            DeckLog.verbose("HTTP Status " + requestFailedException.getStatusCode());
+                            if (requestFailedException.getStatusCode() == HTTP_UNAVAILABLE && requestFailedException.getCause() != null) {
+                                final String errorString = requestFailedException.getCause().getMessage();
+                                final Capabilities capabilities = GsonConfig.getGson().fromJson(errorString, Capabilities.class);
+                                if (capabilities.isMaintenanceEnabled()) {
+                                    DeckLog.verbose("Yes, it is in maintenance mode according to the capabilities");
+                                    executor.submit(() -> onResponse(capabilities, IResponseCallback.EMPTY_HEADERS));
+                                } else {
+                                    DeckLog.error("No, it is not in maintenance mode according to the capabilities.");
+                                    callback.onError(throwable);
+                                }
+                            } else if (requestFailedException.getStatusCode() == HTTP_NOT_MODIFIED) {
+                                DeckLog.verbose("HTTP Status", HTTP_NOT_MODIFIED + ": There haven't been any changes on the server side for this request.");
+                                executor.submit(() -> {
+                                    final Account acc = dataBaseAdapter.getAccountByIdDirectly(account.getId());
+                                    if (acc.isMaintenanceEnabled()) {
+                                        acc.setMaintenanceEnabled(false);
+                                        dataBaseAdapter.updateAccount(acc);
+                                    }
+                                    final Capabilities capabilities = new Capabilities();
+                                    capabilities.setMaintenanceEnabled(false);
+                                    capabilities.setDeckVersion(acc.getServerDeckVersionAsObject());
+                                    capabilities.setTextColor(acc.getTextColor());
+                                    capabilities.setColor(acc.getColor());
+                                    callback.onResponse(capabilities, IResponseCallback.EMPTY_HEADERS);
+                                });
+                            } else {
+                                callback.onError(throwable);
+                            }
+                        } else {
+                            callback.onError(throwable);
+                        }
+                    }
+                });
+            } catch (OfflineException e) {
+                callback.onError(e);
+            }
+        });
+    }
+    @AnyThread
+    public void createBoard(@NonNull Account account, @NonNull Board board, @NonNull IResponseCallback<FullBoard> callback) {
+        executor.submit(() -> {
+            final User owner = dataBaseAdapter.getUserByUidDirectly(account.getId(), account.getUserName());
+            if (owner == null) {
+                StringBuilder sb = buildOwnerNullMessage(account);
+                callback.onError(new IllegalStateException(sb.toString()));
+            } else {
+                final FullBoard fullBoard = new FullBoard();
+                board.setOwnerId(owner.getLocalId());
+                fullBoard.setOwner(owner);
+                fullBoard.setBoard(board);
+                board.setAccountId(account.getId());
+                fullBoard.setAccountId(account.getId());
+                new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(new BoardDataProvider(), fullBoard, ResponseCallback.from(account, callback));
+            }
+        });
+    }
+    @NonNull
+    private StringBuilder buildOwnerNullMessage(@NonNull Account account) {
+        StringBuilder sb = new StringBuilder("Owner is null. This can be the case if the Deck app has never before been opened in the webinterface. More:");
+        sb.append("\naccount_id:");
+        sb.append(account.getId());
+        sb.append("\nusername:");
+        sb.append(account.getUserName());
+        sb.append("\nList of available Users:");
+        sb.append(account.getUserName());
+        List<User> allUsers = dataBaseAdapter.getAllUsersDirectly();
+        if (allUsers != null) {
+            for (User u : allUsers) {
+                sb.append("\nuid:");
+                sb.append(u.getUid());
+                sb.append(" | account_id:");
+                sb.append(u.getAccountId());
+            }
+        } else {
+            sb.append("[none]");
+        }
+        return sb;
+    }
+    @AnyThread
+    public void cloneBoard(long originAccountId, long originBoardLocalId, long targetAccountId, @ColorInt int targetBoardColor, boolean cloneCards, @NonNull IResponseCallback<FullBoard> callback) {
+        executor.submit(() -> {
+            Account originAccount = dataBaseAdapter.getAccountByIdDirectly(originAccountId);
+            User newOwner = dataBaseAdapter.getUserByUidDirectly(originAccountId, originAccount.getUserName());
+            if (newOwner == null) {
+                callback.onError(new DeckException(DeckException.Hint.UNKNOWN_ACCOUNT_USER_ID, "User with Account-UID \"" + originAccount.getUserName() + "\" not found."));
+                return;
+            }
+            FullBoard originalBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(originAccountId, originBoardLocalId);
+            String newBoardTitleBaseName = originalBoard.getBoard().getTitle().trim();
+            int newBoardTitleCopyIndex = 0;
+            String regex = " \\(copy [0-9]+\\)$";
+            Pattern pattern = Pattern.compile(regex);
+            Matcher matcher = pattern.matcher(originalBoard.getBoard().getTitle());
+            if (matcher.find()) {
+                String found = matcher.group();
+                newBoardTitleBaseName = newBoardTitleBaseName.substring(0, newBoardTitleBaseName.length() - found.length());
+                Matcher indexMatcher = Pattern.compile("[0-9]+").matcher(found);
+                indexMatcher.find();
+                String oldIndexString = indexMatcher.group();
+                newBoardTitleCopyIndex = Integer.parseInt(oldIndexString);
+            }
+            String newBoardTitle;
+            do {
+                newBoardTitleCopyIndex++;
+                newBoardTitle = newBoardTitleBaseName + " (copy " + newBoardTitleCopyIndex + ")";
+            } while (dataBaseAdapter.getBoardForAccountByNameDirectly(targetAccountId, newBoardTitle) != null);
+            originalBoard.setAccountId(targetAccountId);
+            originalBoard.setId(null);
+            originalBoard.setLocalId(null);
+            originalBoard.getBoard().setTitle(newBoardTitle);
+            originalBoard.getBoard().setColor(String.format("%06X", 0xFFFFFF & targetBoardColor));
+            originalBoard.getBoard().setOwnerId(newOwner.getLocalId());
+            originalBoard.setStatusEnum(DBStatus.LOCAL_EDITED);
+            originalBoard.setOwner(newOwner);
+            long newBoardId = dataBaseAdapter.createBoardDirectly(originAccountId, originalBoard.getBoard());
+            originalBoard.setLocalId(newBoardId);
+            boolean isSameAccount = targetAccountId == originAccountId;
+            if (isSameAccount) {
+                List<AccessControl> aclList = originalBoard.getParticipants();
+                for (AccessControl acl : aclList) {
+                    acl.setLocalId(null);
+                    acl.setId(null);
+                    acl.setBoardId(newBoardId);
+                    dataBaseAdapter.createAccessControl(targetAccountId, acl);
+                }
+            }
+            Map<Long, Long> oldToNewLabelIdsDictionary = new HashMap<>();
+            for (Label label : originalBoard.getLabels()) {
+                Long oldLocalId = label.getLocalId();
+                label.setLocalId(null);
+                label.setId(null);
+                label.setAccountId(targetAccountId);
+                label.setStatusEnum(DBStatus.LOCAL_EDITED);
+                label.setBoardId(newBoardId);
+                long newLocalId = dataBaseAdapter.createLabelDirectly(targetAccountId, label);
+                oldToNewLabelIdsDictionary.put(oldLocalId, newLocalId);
+            }
+            List<Stack> oldStacks = originalBoard.getStacks();
+            for (Stack stack : oldStacks) {
+                Long oldStackId = stack.getLocalId();
+                stack.setLocalId(null);
+                stack.setId(null);
+                stack.setStatusEnum(DBStatus.LOCAL_EDITED);
+                stack.setAccountId(targetAccountId);
+                stack.setBoardId(newBoardId);
+                long createdStackId = dataBaseAdapter.createStack(targetAccountId, stack);
+                if (cloneCards) {
+                    List<FullCard> oldCards = dataBaseAdapter.getFullCardsForStackDirectly(originAccountId, oldStackId, null);
+                    for (FullCard oldCard : oldCards) {
+                        Card newCard = oldCard.getCard();
+                        newCard.setId(null);
+                        newCard.setUserId(newOwner.getLocalId());
+                        newCard.setLocalId(null);
+                        newCard.setStackId(createdStackId);
+                        newCard.setAccountId(targetAccountId);
+                        newCard.setStatusEnum(DBStatus.LOCAL_EDITED);
+                        long createdCardId = dataBaseAdapter.createCardDirectly(targetAccountId, newCard);
+                        if (oldCard.getLabels() != null) {
+                            for (Label oldLabel : oldCard.getLabels()) {
+                                Long newLabelId = oldToNewLabelIdsDictionary.get(oldLabel.getLocalId());
+                                if (newLabelId != null) {
+                                    dataBaseAdapter.createJoinCardWithLabel(newLabelId, createdCardId, DBStatus.LOCAL_EDITED);
+                                } else
+                                    DeckLog.error("ID of created Label is null! Skipping assignment of ", oldLabel.getTitle(), "…");
+                            }
+                        }
+                        if (isSameAccount && oldCard.getAssignedUsers() != null) {
+                            for (User assignedUser : oldCard.getAssignedUsers()) {
+                                dataBaseAdapter.createJoinCardWithUser(assignedUser.getLocalId(), createdCardId, DBStatus.LOCAL_EDITED);
+                            }
+                        }
+                    }
+                }
+            }
+            if (connectivityUtil.hasInternetConnection()) {
+                Account targetAccount = dataBaseAdapter.getAccountByIdDirectly(targetAccountId);
+                final ServerAdapter serverAdapterToUse;
+                if (originAccountId == targetAccountId) {
+                    serverAdapterToUse = this.serverAdapter;
+                } else {
+                    try {
+                        serverAdapterToUse = new ServerAdapter(context, AccountImporter.getSingleSignOnAccount(context, targetAccount.getName()), connectivityUtil);
+                    } catch (NextcloudFilesAppAccountNotFoundException e) {
+                        callback.onError(e);
+                        return;
+                    }
+                }
+                syncHelperFactory.create(serverAdapterToUse, dataBaseAdapter, null)
+                        .setResponseCallback(new ResponseCallback<>(targetAccount) {
+                            @Override
+                            public void onResponse(Boolean response, Headers headers) {
+                                callback.onResponse(dataBaseAdapter.getFullBoardByLocalIdDirectly(targetAccountId, newBoardId), headers);
+                            }
+                            @SuppressLint("MissingSuperCall")
+                            @Override
+                            public void onError(Throwable throwable) {
+                                callback.onError(throwable);
+                            }
+                        }).doUpSyncFor(new BoardWithStacksAndLabelsUpSyncDataProvider(dataBaseAdapter.getFullBoardByLocalIdDirectly(targetAccountId, newBoardId)));
+            } else {
+                callback.onResponse(dataBaseAdapter.getFullBoardByLocalIdDirectly(targetAccountId, newBoardId), IResponseCallback.EMPTY_HEADERS);
+            }
+        });
+    }
+    @AnyThread
+    public LiveData<List<it.niedermann.nextcloud.deck.model.ocs.Activity>> syncActivitiesForCard(@NonNull Card card) {
+        executor.submit(() -> {
+            if (connectivityUtil.hasInternetConnection()) {
+                if (card.getId() != null) {
+                    syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                            .setResponseCallback(new ResponseCallback<>(dataBaseAdapter.getAccountByIdDirectly(card.getAccountId())) {
+                                @Override
+                                public void onResponse(Boolean response, Headers headers) {
+                                }
+                            }).doSyncFor(new ActivityDataProvider(null, card));
+                } else {
+                    DeckLog.log("Can not fetch activities for card ", card.getTitle(), "because this card does not have a remote id yet.");
+                }
+            }
+        });
+        return dataBaseAdapter.getActivitiesForCard(card.getLocalId());
+    }
+    @AnyThread
+    public void addCommentToCard(long accountId, long cardId, @NonNull DeckComment comment) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            Card card = dataBaseAdapter.getCardByLocalIdDirectly(accountId, cardId);
+            OcsComment commentEntity = OcsComment.of(comment);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(new DeckCommentsDataProvider(null, card), commentEntity, new ResponseCallback<>(account) {
+                @Override
+                public void onResponse(OcsComment response, Headers headers) {
+                }
+            });
+        });
+    }
+    @AnyThread
+    public void updateComment(long accountId, long localCardId, long localCommentId, String comment) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            Card card = dataBaseAdapter.getCardByLocalIdDirectly(accountId, localCardId);
+            DeckComment entity = dataBaseAdapter.getCommentByLocalIdDirectly(accountId, localCommentId);
+            entity.setMessage(comment);
+            OcsComment commentEntity = OcsComment.of(entity);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).updateEntity(new DeckCommentsDataProvider(null, card), commentEntity, new ResponseCallback<>(account) {
+                @Override
+                public void onResponse(OcsComment response, Headers headers) {
+                }
+            });
+        });
+    }
+    @AnyThread
+    public void deleteComment(long accountId, long localCardId, long localCommentId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            final Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            final Card card = dataBaseAdapter.getCardByLocalIdDirectly(accountId, localCardId);
+            final DeckComment entity = dataBaseAdapter.getCommentByLocalIdDirectly(accountId, localCommentId);
+            final OcsComment commentEntity = OcsComment.of(entity);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).deleteEntity(new DeckCommentsDataProvider(null, card),
+                    commentEntity, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void deleteBoard(@NonNull Board board, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            long accountId = board.getAccountId();
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            FullBoard fullBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, board.getLocalId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).deleteEntity(new BoardDataProvider(), fullBoard, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void updateBoard(@NonNull FullBoard board, @NonNull IResponseCallback<FullBoard> callback) {
+        executor.submit(() -> {
+            long accountId = board.getAccountId();
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).updateEntity(new BoardDataProvider(), board, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void createAccessControl(long accountId, @NonNull AccessControl entity, @NonNull IResponseCallback<AccessControl> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, entity.getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(
+                    new AccessControlDataProvider(null, board, Collections.singletonList(entity)), entity, ResponseCallback.from(account, callback), ((entity1, response) -> {
+                        response.setBoardId(entity.getBoardId());
+                        response.setUserId(entity.getUser().getLocalId());
+                    })
+            );
+        });
+    }
+    @AnyThread
+    public void updateAccessControl(@NonNull AccessControl entity, @NonNull IResponseCallback<AccessControl> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(entity.getAccountId());
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(entity.getAccountId(), entity.getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).updateEntity(
+                    new AccessControlDataProvider(null, board, Collections.singletonList(entity)), entity, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void deleteAccessControl(@NonNull AccessControl entity, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(entity.getAccountId());
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(entity.getAccountId(), entity.getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).deleteEntity(
+                    new AccessControlDataProvider(null, board, Collections.singletonList(entity)), entity, new ResponseCallback<>(account) {
+                        @Override
+                        public void onResponse(EmptyResponse response, Headers headers) {
+                            if (entity.getAccountId() == entity.getAccountId() && entity.getUser().getUid().equals(account.getUserName())) {
+                                dataBaseAdapter.saveNeighbourOfBoard(board.getAccountId(), board.getLocalId());
+                                dataBaseAdapter.removeCurrentStackId(board.getAccountId(), board.getLocalId());
+                                dataBaseAdapter.deleteBoardPhysically(board.getBoard());
+                            }
+                            callback.onResponse(response, headers);
+                        }
+                        @SuppressLint("MissingSuperCall")
+                        @Override
+                        public void onError(Throwable throwable) {
+                            callback.onError(throwable);
+                        }
+                    });
+        });
+    }
+    @AnyThread
+    public void createStack(long accountId, long boardLocalId, @NonNull String title, @NonNull IResponseCallback<FullStack> callback) {
+        executor.submit(() -> {
+            DeckLog.info("Create Stack in account", accountId, "on board with local ID ", boardLocalId);
+            Stack stack = new Stack(title, boardLocalId);
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, stack.getBoardId());
+            FullStack fullStack = new FullStack();
+            stack.setOrder(dataBaseAdapter.getHighestStackOrderInBoard(stack.getBoardId()) + 1);
+            stack.setAccountId(accountId);
+            stack.setBoardId(board.getLocalId());
+            fullStack.setStack(stack);
+            fullStack.setAccountId(accountId);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(new StackDataProvider(null, board), fullStack, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void deleteStack(long accountId, long boardLocalId, long stackLocalId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            FullStack fullStack = dataBaseAdapter.getFullStackByLocalIdDirectly(stackLocalId);
+            FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, boardLocalId);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).deleteEntity(new StackDataProvider(null, board), fullStack, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void updateStackTitle(long localStackId, @NonNull String newTitle, @NonNull IResponseCallback<FullStack> callback) {
+        executor.submit(() -> {
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(localStackId);
+            FullBoard fullBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(stack.getAccountId(), stack.getStack().getBoardId());
+            Account account = dataBaseAdapter.getAccountByIdDirectly(stack.getAccountId());
+            stack.getStack().setTitle(newTitle);
+            updateStack(account, fullBoard, stack, callback);
+        });
+    }
+    @AnyThread
+    private void updateStack(@NonNull Account account, @NonNull FullBoard board, @NonNull FullStack stack, @NonNull IResponseCallback<FullStack> callback) {
+        executor.submit(() -> new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).updateEntity(new StackDataProvider(null, board), stack, ResponseCallback.from(account, callback)));
+    }
+    @AnyThread
+    public void reorderStack(long accountId, long boardLocalId, long stackLocalId, boolean moveToRight) {
+        executor.submit(() -> {
+            final Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            final FullBoard fullBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, boardLocalId);
+            final List<FullStack> stacks = dataBaseAdapter.getFullStacksForBoardDirectly(accountId, boardLocalId);
+            int lastOrderValue = -1;
+            boolean moveDone = false;
+            for (int i = 0; i < stacks.size(); i++) {
+                FullStack s = stacks.get(i);
+                boolean currentStackChanged = false;
+                if (lastOrderValue >= s.getStack().getOrder()) {
+                    s.getStack().setOrder(lastOrderValue + 1);
+                    currentStackChanged = true;
+                }
+                lastOrderValue = s.getStack().getOrder();
+                if (!moveDone && i < stacks.size() - 1 && (moveToRight ? s : stacks.get(i + 1)).getLocalId() == stackLocalId) {
+                    FullStack rightStack = stacks.get(i + 1);
+                    rightStack.getStack().setOrder(lastOrderValue);
+                    s.getStack().setOrder(lastOrderValue + 1);
+                    updateStack(account, fullBoard, rightStack, IResponseCallback.empty());
+                    currentStackChanged = true;
+                    stacks.set(i, stacks.get(i + 1));
+                    stacks.set(i + 1, s);
+                    moveDone = true;
+                }
+                if (currentStackChanged) {
+                    updateStack(account, fullBoard, s, IResponseCallback.empty());
+                }
+            }
+        });
+    }
+    public LiveData<List<FullCard>> getArchivedFullCardsForBoard(long accountId, long localBoardId) {
+        MutableLiveData<List<FullCard>> dummyData = new MutableLiveData<>();
+        dummyData.postValue(new ArrayList<>());
+        return dummyData;
+    }
+    @AnyThread
+    public void createFullCard(long accountId, long localBoardId, long localStackId, @NonNull FullCard card, @NonNull IResponseCallback<FullCard> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            User owner = dataBaseAdapter.getUserByUidDirectly(accountId, account.getUserName());
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(localStackId);
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(localBoardId);
+            card.getCard().setUserId(owner.getLocalId());
+            card.getCard().setStackId(stack.getLocalId());
+            card.getCard().setAccountId(accountId);
+            card.getCard().setStatusEnum(DBStatus.LOCAL_EDITED);
+            card.getCard().setOrder(dataBaseAdapter.getHighestCardOrderInStack(localStackId) + 1);
+            long localCardId = dataBaseAdapter.createCardDirectly(accountId, card.getCard());
+            card.getCard().setLocalId(localCardId);
+            List<User> assignedUsers = card.getAssignedUsers();
+            if (assignedUsers != null) {
+                for (User assignedUser : assignedUsers) {
+                    dataBaseAdapter.createJoinCardWithUser(assignedUser.getLocalId(), localCardId, DBStatus.LOCAL_EDITED);
+                }
+            }
+            List<Label> labels = card.getLabels();
+            if (labels != null) {
+                for (Label label : labels) {
+                    dataBaseAdapter.createJoinCardWithLabel(label.getLocalId(), localCardId, DBStatus.LOCAL_EDITED);
+                }
+            }
+            if (card.getAttachments() != null) {
+                for (Attachment attachment : card.getAttachments()) {
+                    if (attachment.getLocalId() == null) {
+                        attachment.setCardId(localCardId);
+                        dataBaseAdapter.createAttachment(accountId, attachment);
+                    }
+                }
+            }
+            if (connectivityUtil.hasInternetConnection()) {
+                syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                        .setResponseCallback(new ResponseCallback<>(account) {
+                            @Override
+                            public void onResponse(Boolean response, Headers headers) {
+                                callback.onResponse(card, headers);
+                            }
+                            @SuppressLint("MissingSuperCall")
+                            @Override
+                            public void onError(Throwable throwable) {
+                                if (throwable.getClass() == DeckException.class && ((DeckException) throwable).getHint().equals(DeckException.Hint.DEPENDENCY_NOT_SYNCED_YET)) {
+                                    callback.onResponse(card, IResponseCallback.EMPTY_HEADERS);
+                                } else {
+                                    callback.onError(throwable);
+                                }
+                            }
+                        })
+                        .doUpSyncFor(new CardDataProvider(null, board, stack));
+            } else {
+                callback.onResponse(card, IResponseCallback.EMPTY_HEADERS);
+            }
+        });
+    }
+    @AnyThread
+    public void deleteCard(@NonNull Card card, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            FullCard fullCard = dataBaseAdapter.getFullCardByLocalIdDirectly(card.getAccountId(), card.getLocalId());
+            if (fullCard == null) {
+                throw new IllegalArgumentException("card with id " + card.getLocalId() + " to delete does not exist.");
+            }
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(card.getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).deleteEntity(new CardPropagationDataProvider(null, board, stack), fullCard, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void archiveCard(@NonNull FullCard card, @NonNull IResponseCallback<FullCard> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(card.getCard().getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            card.getCard().setArchived(true);
+            updateCardForArchive(stack, board, card, ResponseCallback.from(account, callback));
+        });
+    }
+    private void updateCardForArchive(FullStack stack, Board board, FullCard card, @NonNull ResponseCallback<FullCard> callback) {
+        new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).updateEntity(new CardDataProvider(null, board, stack), card, callback);
+    }
+    @AnyThread
+    public void dearchiveCard(@NonNull FullCard card, @NonNull IResponseCallback<FullCard> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(card.getCard().getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            card.getCard().setArchived(false);
+            updateCardForArchive(stack, board, card, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void archiveCardsInStack(long accountId, long stackLocalId, @NonNull FilterInformation filterInformation, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(stackLocalId);
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            List<FullCard> cards = dataBaseAdapter.getFullCardsForStackDirectly(accountId, stackLocalId, filterInformation);
+            if (cards.size() <= 0) {
+                callback.onResponse(null, IResponseCallback.EMPTY_HEADERS);
+                return;
+            }
+            final CountDownLatch latch = new CountDownLatch(cards.size());
+            for (FullCard card : cards) {
+                if (card.getCard().isArchived()) {
+                    latch.countDown();
+                    continue;
+                }
+                card.getCard().setArchived(true);
+                updateCardForArchive(stack, board, card, new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(FullCard response, Headers headers) {
+                        latch.countDown();
+                    }
+                    @SuppressLint("MissingSuperCall")
+                    @Override
+                    public void onError(Throwable throwable) {
+                        latch.countDown();
+                        callback.onError(throwable);
+                    }
+                });
+            }
+            try {
+                latch.await();
+                callback.onResponse(null, IResponseCallback.EMPTY_HEADERS);
+            } catch (InterruptedException e) {
+                callback.onError(e);
+            }
+        });
+    }
+    @AnyThread
+    public void archiveBoard(@NonNull Board board, @NonNull IResponseCallback<FullBoard> callback) {
+        executor.submit(() -> {
+            try {
+                final var fullBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(board.getAccountId(), board.getLocalId());
+                fullBoard.getBoard().setArchived(true);
+                updateBoard(fullBoard, new IResponseCallback<>() {
+                    @Override
+                    public void onResponse(FullBoard response, Headers headers) {
+                        dataBaseAdapter.saveNeighbourOfBoard(fullBoard.getAccountId(), fullBoard.getLocalId());
+                        callback.onResponse(response, headers);
+                    }
+                    @SuppressLint("MissingSuperCall")
+                    @Override
+                    public void onError(Throwable throwable) {
+                        callback.onError(throwable);
+                    }
+                });
+            } catch (Throwable e) {
+                callback.onError(e);
+            }
+        });
+    }
+    @AnyThread
+    public void dearchiveBoard(@NonNull Board board, @NonNull IResponseCallback<FullBoard> callback) {
+        executor.submit(() -> {
+            try {
+                FullBoard b = dataBaseAdapter.getFullBoardByLocalIdDirectly(board.getAccountId(), board.getLocalId());
+                b.getBoard().setArchived(false);
+                updateBoard(b, new IResponseCallback<>() {
+                    @Override
+                    public void onResponse(FullBoard response, Headers headers) {
+                        dataBaseAdapter.saveCurrentBoardId(b.getAccountId(), b.getLocalId());
+                        callback.onResponse(response, headers);
+                    }
+                    @SuppressLint("MissingSuperCall")
+                    @Override
+                    public void onError(Throwable throwable) {
+                        callback.onError(throwable);
+                    }
+                });
+            } catch (Throwable e) {
+                callback.onError(e);
+            }
+        });
+    }
+    @AnyThread
+    public void updateCard(@NonNull FullCard card, @NonNull IResponseCallback<FullCard> callback) {
+        executor.submit(() -> {
+            final FullCard fullCardFromDB = dataBaseAdapter.getFullCardByLocalIdDirectly(card.getAccountId(), card.getLocalId());
+            if (fullCardFromDB == null) {
+                throw new IllegalArgumentException("card to update does not exist.");
+            }
+            dataBaseAdapter.filterRelationsForCard(fullCardFromDB);
+            List<User> deletedUsers = AbstractSyncDataProvider.findDelta(card.getAssignedUsers(), fullCardFromDB.getAssignedUsers());
+            List<User> addedUsers = AbstractSyncDataProvider.findDelta(fullCardFromDB.getAssignedUsers(), card.getAssignedUsers());
+            for (User addedUser : addedUsers) {
+                dataBaseAdapter.createJoinCardWithUser(addedUser.getLocalId(), card.getLocalId(), DBStatus.LOCAL_EDITED);
+            }
+            for (User deletedUser : deletedUsers) {
+                dataBaseAdapter.deleteJoinedUserForCard(card.getLocalId(), deletedUser.getLocalId());
+            }
+            List<Label> deletedLabels = AbstractSyncDataProvider.findDelta(card.getLabels(), fullCardFromDB.getLabels());
+            List<Label> addedLabels = AbstractSyncDataProvider.findDelta(fullCardFromDB.getLabels(), card.getLabels());
+            for (Label addedLabel : addedLabels) {
+                dataBaseAdapter.createJoinCardWithLabel(addedLabel.getLocalId(), card.getLocalId(), DBStatus.LOCAL_EDITED);
+            }
+            for (Label deletedLabel : deletedLabels) {
+                dataBaseAdapter.deleteJoinedLabelForCard(card.getLocalId(), deletedLabel.getLocalId());
+            }
+            FullStack stack = dataBaseAdapter.getFullStackByLocalIdDirectly(card.getCard().getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getStack().getBoardId());
+            fullCardFromDB.setCard(card.getCard());
+            card.getCard().setStatus(DBStatus.LOCAL_EDITED.getId());
+            dataBaseAdapter.updateCard(card.getCard(), false);
+            if (connectivityUtil.hasInternetConnection()) {
+                Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+                syncHelperFactory.create(serverAdapter, dataBaseAdapter, null)
+                        .setResponseCallback(new ResponseCallback<>(account) {
+                            @Override
+                            public void onResponse(Boolean response, Headers headers) {
+                                callback.onResponse(dataBaseAdapter.getFullCardByLocalIdDirectly(card.getAccountId(), card.getLocalId()), headers);
+                            }
+                            @SuppressLint("MissingSuperCall")
+                            @Override
+                            public void onError(Throwable throwable) {
+                                callback.onError(throwable);
+                            }
+                        }).doUpSyncFor(new CardPropagationDataProvider(null, board, stack));
+            } else {
+                callback.onResponse(card, IResponseCallback.EMPTY_HEADERS);
+            }
+        });
+    }
+    @SuppressWarnings("JavadocReference")
+    @AnyThread
+    public void moveCard(long originAccountId, long originCardLocalId, long targetAccountId, long targetBoardLocalId, long targetStackLocalId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            final FullCard originalCard = dataBaseAdapter.getFullCardByLocalIdDirectly(originAccountId, originCardLocalId);
+            final int newIndex = dataBaseAdapter.getHighestCardOrderInStack(targetStackLocalId) + 1;
+            final FullBoard originalBoard = dataBaseAdapter.getFullBoardByLocalCardIdDirectly(originCardLocalId);
+            if (targetBoardLocalId == originalBoard.getLocalId()) {
+                reorder(originAccountId, originalCard, targetStackLocalId, newIndex);
+                callback.onResponse(null, IResponseCallback.EMPTY_HEADERS);
+                return;
+            }
+            final Card originalInnerCard = originalCard.getCard();
+            deleteCard(new Card(originalInnerCard), IResponseCallback.empty());
+            originalInnerCard.setAccountId(targetAccountId);
+            originalInnerCard.setId(null);
+            originalInnerCard.setLocalId(null);
+            originalInnerCard.setStatusEnum(DBStatus.LOCAL_EDITED);
+            originalInnerCard.setStackId(targetStackLocalId);
+            originalInnerCard.setOrder(newIndex);
+            originalInnerCard.setArchived(false);
+            originalInnerCard.setAttachmentCount(0);
+            originalInnerCard.setCommentsUnread(0);
+            final FullCard fullCardForServerPropagation = new FullCard();
+            fullCardForServerPropagation.setCard(originalInnerCard);
+            final Account targetAccount = dataBaseAdapter.getAccountByIdDirectly(targetAccountId);
+            final FullBoard targetBoard = dataBaseAdapter.getFullBoardByLocalIdDirectly(targetAccountId, targetBoardLocalId);
+            final FullStack targetFullStack = dataBaseAdapter.getFullStackByLocalIdDirectly(targetStackLocalId);
+            final User userOfTargetAccount = dataBaseAdapter.getUserByUidDirectly(targetAccountId, targetAccount.getUserName());
+            final CountDownLatch latch = new CountDownLatch(1);
+            ServerAdapter serverToUse = serverAdapter;
+            if (originAccountId != targetAccountId) {
+                try {
+                    serverToUse = new ServerAdapter(context, AccountImporter.getSingleSignOnAccount(context, targetAccount.getName()), connectivityUtil);
+                } catch (NextcloudFilesAppAccountNotFoundException e) {
+                    callback.onError(e);
+                    throw new RuntimeException(e);
+                }
+            }
+            new DataPropagationHelper(serverToUse, dataBaseAdapter, executor).createEntity(new CardPropagationDataProvider(null, targetBoard.getBoard(), targetFullStack), fullCardForServerPropagation, new ResponseCallback<>(targetAccount) {
+                @Override
+                public void onResponse(FullCard response, Headers headers) {
+                    originalInnerCard.setId(response.getId());
+                    originalInnerCard.setLocalId(response.getLocalId());
+                    latch.countDown();
+                }
+                @Override
+                @SuppressLint("MissingSuperCall")
+                public void onError(Throwable throwable) {
+                    callback.onError(new RuntimeException("unable to create card in moveCard target", throwable));
+                }
+            }, (FullCard entity, FullCard response) -> {
+                response.getCard().setUserId(userOfTargetAccount.getLocalId());
+                response.getCard().setStackId(targetFullStack.getLocalId());
+                entity.getCard().setUserId(userOfTargetAccount.getLocalId());
+                entity.getCard().setStackId(targetFullStack.getLocalId());
+            });
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                callback.onError(new RuntimeException("error fulfilling countDownLatch", e));
+            }
+            final long newCardId = originalInnerCard.getLocalId();
+            boolean hasManagePermission = targetBoard.getBoard().getOwnerId() == userOfTargetAccount.getLocalId();
+            List<AccessControl> aclOfTargetBoard = dataBaseAdapter.getAccessControlByLocalBoardIdDirectly(targetAccountId, targetBoard.getLocalId());
+            if (!hasManagePermission) {
+                for (AccessControl accessControl : aclOfTargetBoard) {
+                    if (accessControl.getUserId().equals(userOfTargetAccount.getLocalId()) && accessControl.isPermissionManage()) {
+                        hasManagePermission = true;
+                        break;
+                    }
+                }
+            }
+            for (Label originalLabel : originalCard.getLabels()) {
+                Label existingMatch = null;
+                for (Label targetBoardLabel : targetBoard.getLabels()) {
+                    if (originalLabel.getTitle().trim().equalsIgnoreCase(targetBoardLabel.getTitle().trim())) {
+                        existingMatch = targetBoardLabel;
+                        break;
+                    }
+                }
+                if (existingMatch == null) {
+                    if (hasManagePermission) {
+                        originalLabel.setBoardId(targetBoardLocalId);
+                        originalLabel.setId(null);
+                        originalLabel.setLocalId(null);
+                        originalLabel.setStatusEnum(DBStatus.LOCAL_EDITED);
+                        originalLabel.setAccountId(targetBoard.getAccountId());
+                        createAndAssignLabelToCard(targetBoard.getAccountId(), originalLabel, newCardId, serverToUse);
+                    }
+                } else {
+                    assignLabelToCard(existingMatch, originalInnerCard, serverToUse);
+                }
+            }
+            final Account originalAccount = dataBaseAdapter.getAccountByIdDirectly(originAccountId);
+            if (originalAccount.getUrl().equalsIgnoreCase(targetAccount.getUrl())) {
+                for (User assignedUser : originalCard.getAssignedUsers()) {
+                    boolean hasViewPermission = targetBoard.getBoard().getOwnerId() == assignedUser.getLocalId();
+                    if (!hasViewPermission) {
+                        for (AccessControl accessControl : aclOfTargetBoard) {
+                            if (accessControl.getUserId().equals(userOfTargetAccount.getLocalId())) {
+                                hasViewPermission = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hasViewPermission) {
+                        assignUserToCard(assignedUser, originalInnerCard);
+                    }
+                }
+            }
+            callback.onResponse(null, IResponseCallback.EMPTY_HEADERS);
+        });
+    }
+    @AnyThread
+    public void createLabel(long accountId, Label label, long localBoardId, @NonNull IResponseCallback<Label> callback) {
+        executor.submit(() -> {
+            Label existing = dataBaseAdapter.getLabelByBoardIdAndTitleDirectly(label.getBoardId(), label.getTitle());
+            if (existing != null) {
+                callback.onError(new SQLiteConstraintException("label \"" + label.getTitle() + "\" already exists for this board!"));
+                return;
+            }
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(localBoardId);
+            label.setAccountId(accountId);
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(new LabelDataProvider(null, board, null), label, ResponseCallback.from(account, callback), (entity, response) -> response.setBoardId(board.getLocalId()));
+        });
+    }
+    @AnyThread
+    private MutableLiveData<Label> createAndAssignLabelToCard(long accountId, @NonNull Label label, long localCardId, ServerAdapter serverAdapterToUse) {
+        MutableLiveData<Label> liveData = new MutableLiveData<>();
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(accountId);
+            Board board = dataBaseAdapter.getBoardByLocalCardIdDirectly(localCardId);
+            label.setAccountId(accountId);
+            new DataPropagationHelper(serverAdapterToUse, dataBaseAdapter, executor).createEntity(new LabelDataProvider(null, board, null), label, new ResponseCallback<>(account) {
+                @Override
+                public void onResponse(Label response, Headers headers) {
+                    assignLabelToCard(response, dataBaseAdapter.getCardByLocalIdDirectly(accountId, localCardId));
+                    liveData.postValue(response);
+                }
+                @Override
+                public void onError(Throwable throwable) {
+                    super.onError(throwable);
+                    assignLabelToCard(label, dataBaseAdapter.getCardByLocalIdDirectly(accountId, localCardId));
+                }
+            }, (entity, response) -> response.setBoardId(board.getLocalId()));
+        });
+        return liveData;
+    }
+    @AnyThread
+    public void deleteLabel(@NonNull Label label, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(label.getAccountId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(label.getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor)
+                    .deleteEntity(new LabelDataProvider(null, board, Collections.emptyList()), label, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void updateLabel(@NonNull Label label, @NonNull IResponseCallback<Label> callback) {
+        executor.submit(() -> {
+            Account account = dataBaseAdapter.getAccountByIdDirectly(label.getAccountId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(label.getBoardId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor)
+                    .updateEntity(new LabelDataProvider(null, board, Collections.emptyList()), label, ResponseCallback.from(account, callback));
+        });
+    }
+    @AnyThread
+    public void assignUserToCard(@NonNull User user, @NonNull Card card) {
+        executor.submit(() -> {
+            final long localUserId = user.getLocalId();
+            final long localCardId = card.getLocalId();
+            JoinCardWithUser joinCardWithUser = dataBaseAdapter.getJoinCardWithUser(localUserId, localCardId);
+            if (joinCardWithUser != null && joinCardWithUser.getStatus() != DBStatus.LOCAL_DELETED.getId()) {
+                return;
+            }
+            dataBaseAdapter.createJoinCardWithUser(localUserId, localCardId, DBStatus.LOCAL_EDITED);
+            Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            if (connectivityUtil.hasInternetConnection()) {
+                UserForAssignment userForAssignment = dataBaseAdapter.getUserForAssignmentDirectly(user.getLocalId());
+                serverAdapter.assignUserToCard(board.getId(), stack.getId(), card.getId(), userForAssignment, new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(EmptyResponse response, Headers headers) {
+                        dataBaseAdapter.setStatusForJoinCardWithUser(localCardId, localUserId, DBStatus.UP_TO_DATE.getId());
+                    }
+                });
+            }
+        });
+    }
+    @AnyThread
+    public void assignLabelToCard(@NonNull Label label, @NonNull Card card) {
+        assignLabelToCard(label, card, serverAdapter);
+    }
+    @AnyThread
+    public void assignLabelToCard(@NonNull Label label, @NonNull Card card, ServerAdapter serverAdapterToUse) {
+        executor.submit(() -> {
+            final long localLabelId = label.getLocalId();
+            final long localCardId = card.getLocalId();
+            dataBaseAdapter.createJoinCardWithLabel(localLabelId, localCardId, DBStatus.LOCAL_EDITED);
+            if (label.getId() == null || card.getId() == null) {
+                return;
+            }
+            Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            if (connectivityUtil.hasInternetConnection()) {
+                serverAdapterToUse.assignLabelToCard(board.getId(), stack.getId(), card.getId(), label.getId(), new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(EmptyResponse response, Headers headers) {
+                        dataBaseAdapter.setStatusForJoinCardWithLabel(localCardId, localLabelId, DBStatus.UP_TO_DATE.getId());
+                    }
+                });
+            }
+        });
+    }
+    @AnyThread
+    public void unassignLabelFromCard(@NonNull Label label, @NonNull Card card) {
+        executor.submit(() -> {
+            dataBaseAdapter.deleteJoinedLabelForCard(card.getLocalId(), label.getLocalId());
+            Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            if (connectivityUtil.hasInternetConnection()) {
+                serverAdapter.unassignLabelFromCard(board.getId(), stack.getId(), card.getId(), label.getId(), new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(EmptyResponse response, Headers headers) {
+                        dataBaseAdapter.deleteJoinedLabelForCardPhysically(card.getLocalId(), label.getLocalId());
+                    }
+                });
+            }
+        });
+    }
+    @AnyThread
+    public void unassignUserFromCard(@NonNull User user, @NonNull Card card) {
+        executor.submit(() -> {
+            dataBaseAdapter.deleteJoinedUserForCard(card.getLocalId(), user.getLocalId());
+            if (connectivityUtil.hasInternetConnection()) {
+                Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getStackId());
+                Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+                Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+                UserForAssignment userForAssignment = dataBaseAdapter.getUserForAssignmentDirectly(user.getLocalId());
+                serverAdapter.assignUserToCard(board.getId(), stack.getId(), card.getId(), userForAssignment, new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(EmptyResponse response, Headers headers) {
+                        dataBaseAdapter.deleteJoinedUserForCardPhysically(card.getLocalId(), user.getLocalId());
+                    }
+                });
+            }
+        });
+    }
+    public void triggerUserSearch(@NonNull Account account, @NonNull String constraint) {
+        executor.submit(() -> serverAdapter.searchUser(constraint, new ResponseCallback<>(account) {
+            @Override
+            public void onResponse(OcsUserList response, Headers headers) {
+                if (response == null || response.getUsers().isEmpty()) {
+                    return;
+                }
+                for (var user : response.getUsers()) {
+                    final var existingUser = dataBaseAdapter.getUserByUidDirectly(account.getId(), user.getId());
+                    if (existingUser == null) {
+                        User newUser = new User();
+                        newUser.setStatus(DBStatus.UP_TO_DATE.getId());
+                        newUser.setPrimaryKey(user.getId());
+                        newUser.setUid(user.getId());
+                        newUser.setType(User.TYPE_USER);
+                        newUser.setDisplayname(user.getDisplayName());
+                        dataBaseAdapter.createUser(account.getId(), newUser);
+                    }
+                }
+                for (var group : response.getGroups()) {
+                    final var existingGroup = dataBaseAdapter.getUserByUidDirectly(account.getId(), group.getId());
+                    if (existingGroup == null) {
+                        User newGroup = new User();
+                        newGroup.setStatus(DBStatus.UP_TO_DATE.getId());
+                        newGroup.setPrimaryKey(group.getId());
+                        newGroup.setUid(group.getId());
+                        newGroup.setType(User.TYPE_GROUP);
+                        newGroup.setDisplayname(group.getDisplayName());
+                        dataBaseAdapter.createUser(account.getId(), newGroup);
+                    }
+                }
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                super.onError(throwable);
+            }
+        }));
+    }
+    @AnyThread
+    public void reorder(long accountId, @NonNull FullCard movedCard, long newStackId, int newIndex) {
+        executor.submit(() -> {
+            List<FullCard> cardsOfNewStack = dataBaseAdapter.getFullCardsForStackDirectly(accountId, newStackId, null);
+            int newOrder = newIndex;
+            if (cardsOfNewStack.size() > newIndex) {
+                newOrder = cardsOfNewStack.get(newIndex).getCard().getOrder();
+            }
+            boolean orderIsCorrect = true;
+            if (newOrder == movedCard.getCard().getOrder() && newStackId == movedCard.getCard().getStackId()) {
+                int lastOrder = Integer.MIN_VALUE;
+                for (FullCard fullCard : cardsOfNewStack) {
+                    int currentOrder = fullCard.getCard().getOrder();
+                    if (currentOrder > lastOrder) {
+                        lastOrder = currentOrder;
+                    } else {
+                        orderIsCorrect = false;
+                        break;
+                    }
+                }
+                if (orderIsCorrect) {
+                    return;
+                } else {
+                    cardsOfNewStack.remove(movedCard);
+                    cardsOfNewStack.add(newIndex, movedCard);
+                    for (int i = 0; i < cardsOfNewStack.size(); i++) {
+                        Card card = cardsOfNewStack.get(i).getCard();
+                        card.setOrder(i);
+                        dataBaseAdapter.updateCard(card, true);
+                    }
+                }
+            }
+            if (orderIsCorrect) {
+                reorderLocally(cardsOfNewStack, movedCard, newStackId, newOrder);
+            }
+            if (connectivityUtil.hasInternetConnection()) {
+                Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(movedCard.getCard().getStackId());
+                FullBoard board = dataBaseAdapter.getFullBoardByLocalIdDirectly(accountId, stack.getBoardId());
+                Account account = dataBaseAdapter.getAccountByIdDirectly(movedCard.getCard().getAccountId());
+                syncHelperFactory.create(serverAdapter, dataBaseAdapter, Instant.now()).setResponseCallback(new ResponseCallback<>(account) {
+                    @Override
+                    public void onResponse(Boolean response, Headers headers) {
+                    }
+                }).doUpSyncFor(new StackDataProvider(null, board));
+            }
+        });
+    }
+    @AnyThread
+    public void addAttachmentToCard(long accountId, long localCardId, @NonNull String mimeType, @NonNull File file, @NonNull IResponseCallback<Attachment> callback) {
+        executor.submit(() -> {
+            Attachment attachment = populateAttachmentEntityForFile(new Attachment(), localCardId, mimeType, file);
+            final Instant now = Instant.now();
+            attachment.setLastModifiedLocal(now);
+            attachment.setCreatedAt(now);
+            FullCard card = dataBaseAdapter.getFullCardByLocalIdDirectly(accountId, localCardId);
+            Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getCard().getStackId());
+            Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+            Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+            new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor).createEntity(
+                    new AttachmentDataProvider(null, board, stack, card, Collections.singletonList(attachment)),
+                    attachment, ResponseCallback.from(account, callback)
+            );
+        });
+    }
+    @AnyThread
+    public LiveData<Attachment> updateAttachmentForCard(long accountId, @NonNull Attachment existing, @NonNull String mimeType, @NonNull File file) {
+        final var liveData = new MutableLiveData<Attachment>();
+        executor.submit(() -> {
+            Attachment attachment = populateAttachmentEntityForFile(existing, existing.getCardId(), mimeType, file);
+            attachment.setLastModifiedLocal(Instant.now());
+            if (connectivityUtil.hasInternetConnection()) {
+                FullCard card = dataBaseAdapter.getFullCardByLocalIdDirectly(accountId, existing.getCardId());
+                Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getCard().getStackId());
+                Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+                Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+                new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor)
+                        .updateEntity(new AttachmentDataProvider(null, board, stack, card, Collections.singletonList(attachment)), attachment, new ResponseCallback<>(account) {
+                            @Override
+                            public void onResponse(Attachment response, Headers headers) {
+                                liveData.postValue(response);
+                            }
+                            @SuppressLint("MissingSuperCall")
+                            @Override
+                            public void onError(Throwable throwable) {
+                                DeckLog.error(throwable);
+                            }
+                        });
+            }
+        });
+        return liveData;
+    }
+    @AnyThread
+    private static Attachment populateAttachmentEntityForFile(@NonNull Attachment target, long localCardId, @NonNull String mimeType, @NonNull File file) {
+        target.setCardId(localCardId);
+        target.setMimetype(mimeType);
+        target.setData(file.getName());
+        target.setFilename(file.getName());
+        target.setBasename(file.getName());
+        target.setLocalPath(file.getAbsolutePath());
+        target.setFilesize(file.length());
+        return target;
+    }
+    @AnyThread
+    public void deleteAttachmentOfCard(long accountId, long localCardId, long localAttachmentId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        executor.submit(() -> {
+            if (connectivityUtil.hasInternetConnection()) {
+                FullCard card = dataBaseAdapter.getFullCardByLocalIdDirectly(accountId, localCardId);
+                Stack stack = dataBaseAdapter.getStackByLocalIdDirectly(card.getCard().getStackId());
+                Board board = dataBaseAdapter.getBoardByLocalIdDirectly(stack.getBoardId());
+                Attachment attachment = dataBaseAdapter.getAttachmentByLocalIdDirectly(accountId, localAttachmentId);
+                Account account = dataBaseAdapter.getAccountByIdDirectly(card.getAccountId());
+                new DataPropagationHelper(serverAdapter, dataBaseAdapter, executor)
+                        .deleteEntity(new AttachmentDataProvider(null, board, stack, card, Collections.singletonList(attachment)), attachment, ResponseCallback.from(account, callback));
+            }
+        });
+    }
+    public static boolean isNoOnVoidError(Throwable t) {
+        return !(t instanceof NullPointerException) || !"Attempt to invoke interface method 'void io.reactivex.disposables.Disposable.dispose()' on a null object reference".equals(t.getMessage());
+    }
+}
+package it.niedermann.nextcloud.deck.ui.archivedboards;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.LiveData;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.Collections;
+import java.util.List;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Board;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+public class ArchivedBoardsViewModel extends SyncViewModel {
+    public ArchivedBoardsViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public LiveData<List<Board>> getArchivedBoards(long accountId) {
+        return new ReactiveLiveData<>(baseRepository.getBoards(accountId, true))
+                .map(boards -> boards == null ? Collections.<Board>emptyList() : boards);
+    }
+    public void updateBoard(@NonNull FullBoard board, @NonNull IResponseCallback<FullBoard> callback) {
+        syncRepository.updateBoard(board, callback);
+    }
+    public void deleteBoard(@NonNull Board board, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteBoard(board, callback);
+    }
+    public void dearchiveBoard(@NonNull Board board, @NonNull IResponseCallback<FullBoard> callback) {
+        syncRepository.dearchiveBoard(board, callback);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.viewmodel;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.AndroidViewModel;
+import androidx.lifecycle.ViewModel;
+import java.util.concurrent.ExecutorService;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.util.ExecutorServiceProvider;
+public abstract class BaseViewModel extends AndroidViewModel {
+    protected final Application application;
+    protected final BaseRepository baseRepository;
+    protected final ExecutorService executor;
+    public BaseViewModel(@NonNull Application application) {
+        this(application, new BaseRepository(application));
+    }
+    public BaseViewModel(@NonNull Application application,
+                         @NonNull BaseRepository baseRepository) {
+        this(application, baseRepository, ExecutorServiceProvider.getLinkedBlockingQueueExecutor());
+    }
+    public BaseViewModel(@NonNull Application application,
+                         @NonNull BaseRepository baseRepository,
+                         @NonNull ExecutorService executor) {
+        super(application);
+        this.application = application;
+        this.baseRepository = baseRepository;
+        this.executor = executor;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import static androidx.core.content.ContextCompat.getMainExecutor;
+import static androidx.lifecycle.Transformations.distinctUntilChanged;
+import android.app.Dialog;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.DialogFragment;
+import androidx.lifecycle.MutableLiveData;
+import androidx.lifecycle.ViewModelProvider;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.nextcloud.android.common.ui.theme.utils.ColorRole;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.DialogNewCardBinding;
+import it.niedermann.nextcloud.deck.exceptions.OfflineException;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.preparecreate.PrepareCreateViewModel;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.ThemedDialogFragment;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import it.niedermann.nextcloud.deck.util.KeyboardUtils;
+import it.niedermann.nextcloud.deck.util.OnTextChangedWatcher;
+public class NewCardDialog extends ThemedDialogFragment implements DialogInterface.OnClickListener {
+    private NewCardViewModel newCardViewModel;
+    private PrepareCreateViewModel viewModel;
+    private CreateCardListener createCardListener;
+    private DialogNewCardBinding binding;
+    private final MutableLiveData<Boolean> isPending = new MutableLiveData<>(false);
+    private static final String KEY_ACCOUNT = "account";
+    private static final String KEY_BOARD_ID = "board_id";
+    private static final String KEY_STACK_ID = "stack_id";
+    private Account account;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        if (context instanceof CreateCardListener) {
+            this.createCardListener = (CreateCardListener) context;
+        } else {
+            throw new ClassCastException("Caller must implement " + CreateCardListener.class.getCanonicalName());
+        }
+        final var args = getArguments();
+        if (args == null || !args.containsKey(KEY_ACCOUNT)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must be provided");
+        }
+        this.account = (Account) getArguments().getSerializable(KEY_ACCOUNT);
+        newCardViewModel = new SyncViewModel.Provider(requireActivity(), requireActivity().getApplication(), account).get(NewCardViewModel.class);
+        viewModel = new ViewModelProvider(requireActivity()).get(PrepareCreateViewModel.class);
+    }
+    @NonNull
+    @Override
+    public Dialog onCreateDialog(@Nullable Bundle savedInstanceState) {
+        binding = DialogNewCardBinding.inflate(requireActivity().getLayoutInflater());
+        final var dialog = new MaterialAlertDialogBuilder(requireActivity())
+                .setTitle(R.string.add_card)
+                .setView(binding.getRoot())
+                .setPositiveButton(R.string.simple_save, null)
+                .setNegativeButton(R.string.edit, null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            final boolean inputIsValid = inputIsValid(binding.input.getText());
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(inputIsValid);
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(v -> onClick(dialog, DialogInterface.BUTTON_POSITIVE));
+            dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setEnabled(inputIsValid);
+            dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener(v -> onClick(dialog, DialogInterface.BUTTON_NEGATIVE));
+        });
+        binding.input.addTextChangedListener(new OnTextChangedWatcher(s -> {
+            final boolean inputIsValid = inputIsValid(binding.input.getText());
+            if (inputIsValid) {
+                binding.inputWrapper.setError(null);
+            }
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(inputIsValid);
+            dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setEnabled(inputIsValid);
+        }));
+        distinctUntilChanged(isPending).observe(this, isPending -> {
+            if (isPending) {
+                binding.inputWrapper.setVisibility(View.INVISIBLE);
+                binding.progressCircular.setVisibility(View.VISIBLE);
+                dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(false);
+                dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setEnabled(false);
+            } else {
+                binding.inputWrapper.setVisibility(View.VISIBLE);
+                binding.progressCircular.setVisibility(View.GONE);
+                dialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(true);
+                dialog.getButton(DialogInterface.BUTTON_NEGATIVE).setEnabled(true);
+            }
+        });
+        binding.input.setOnEditorActionListener((textView, actionId, event) -> {
+            switch (actionId) {
+                case EditorInfo.IME_ACTION_DONE:
+                    onClick(dialog, DialogInterface.BUTTON_NEGATIVE);
+                    return true;
+            }
+            return false;
+        });
+        return dialog;
+    }
+    @Nullable
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
+        KeyboardUtils.showKeyboardForEditText(binding.input);
+        return super.onCreateView(inflater, container, savedInstanceState);
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void onClick(DialogInterface dialog, int which) {
+        final boolean openOnSuccess;
+        switch (which) {
+            case DialogInterface.BUTTON_POSITIVE -> openOnSuccess = false;
+            case DialogInterface.BUTTON_NEGATIVE -> openOnSuccess = true;
+            default -> {
+                return;
+            }
+        }
+        if (Boolean.FALSE.equals(isPending.getValue())) {
+            isPending.setValue(true);
+            final var currentUserInput = binding.input.getText();
+            if (inputIsValid(currentUserInput)) {
+                final var args = getArguments();
+                assert args != null;
+                newCardViewModel.createFullCard(account.getId(), args.getLong(KEY_BOARD_ID), args.getLong(KEY_STACK_ID), currentUserInput.toString()).whenCompleteAsync((fullCard, throwable) -> {
+                    if (throwable != null) {
+                        isPending.setValue(false);
+                        if (throwable instanceof OfflineException) {
+                            Toast.makeText(requireContext(), ((OfflineException) throwable).getReason().getMessage(), Toast.LENGTH_LONG).show();
+                        } else {
+                            newCardViewModel.getCurrentAccount()
+                                    .thenAcceptAsync(account -> ExceptionDialogFragment
+                                            .newInstance(throwable, account)
+                                            .show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName()), getMainExecutor(requireContext()));
+                        }
+                    } else {
+                        createCardListener.onCardCreated(fullCard);
+                        if (openOnSuccess) {
+                            newCardViewModel
+                                    .createEditIntent(requireContext(), fullCard.getAccountId(), args.getLong(KEY_BOARD_ID), fullCard.getLocalId())
+                                    .thenAcceptAsync(this::startActivity, getMainExecutor(requireContext()));
+                        }
+                        dismiss();
+                    }
+                }, getMainExecutor(requireContext()));
+            } else {
+                binding.inputWrapper.setError(getString(R.string.title_is_mandatory));
+                binding.input.requestFocus();
+                isPending.setValue(false);
+            }
+        }
+    }
+    @Override
+    public void onDismiss(@NonNull DialogInterface dialog) {
+        super.onDismiss(dialog);
+        this.createCardListener.onDismiss(dialog);
+    }
+    private static boolean inputIsValid(@Nullable CharSequence input) {
+        return input != null && !input.toString().trim().isEmpty();
+    }
+    public static DialogFragment newInstance(@NonNull Account account, long boardId, long stackId) {
+        final NewCardDialog dialog = new NewCardDialog();
+        final var args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        args.putLong(KEY_BOARD_ID, boardId);
+        args.putLong(KEY_STACK_ID, stackId);
+        dialog.setArguments(args);
+        return dialog;
+    }
+    @Override
+    public void applyTheme(int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.material.colorTextInputLayout(binding.inputWrapper);
+        utils.platform.colorCircularProgressBar(binding.progressCircular, ColorRole.PRIMARY);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.board.managelabels;
+import android.app.Dialog;
+import android.content.Context;
+import android.database.sqlite.SQLiteConstraintException;
+import android.os.Bundle;
+import android.widget.Toast;
+import androidx.annotation.AnyThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.UiThread;
+import androidx.fragment.app.DialogFragment;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import java.util.Random;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.DialogBoardManageLabelsBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.theme.DeleteAlertDialogBuilder;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.ThemedDialogFragment;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import okhttp3.Headers;
+public class ManageLabelsDialogFragment extends ThemedDialogFragment implements ManageLabelListener, EditLabelListener {
+    private LabelsViewModel labelsViewModel;
+    private DialogBoardManageLabelsBinding binding;
+    private ManageLabelsAdapter adapter;
+    private String[] colors;
+    private static final String KEY_ACCOUNT = "account";
+    private static final String KEY_BOARD_ID = "board_id";
+    private Account account;
+    private long boardId;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        final Bundle args = getArguments();
+        if (args == null || !args.containsKey(KEY_ACCOUNT) || !args.containsKey(KEY_BOARD_ID)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " and " + KEY_BOARD_ID + " must be provided as arguments");
+        }
+        this.account = (Account) args.getSerializable(KEY_ACCOUNT);
+        if (this.account == null) {
+            throw new IllegalStateException(KEY_ACCOUNT + " must not be null");
+        }
+        this.boardId = args.getLong(KEY_BOARD_ID);
+        if (this.boardId <= 0L) {
+            throw new IllegalArgumentException(KEY_BOARD_ID + " must be a valid local id and not be less or equal 0");
+        }
+    }
+    @NonNull
+    @Override
+    public Dialog onCreateDialog(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        labelsViewModel = new SyncViewModel.Provider(requireActivity(), requireActivity().getApplication(), account).get(LabelsViewModel.class);
+        final var dialogBuilder = new MaterialAlertDialogBuilder(requireContext());
+        binding = DialogBoardManageLabelsBinding.inflate(requireActivity().getLayoutInflater());
+        colors = getResources().getStringArray(R.array.board_default_colors);
+        adapter = new ManageLabelsAdapter(this, requireContext());
+        binding.labels.setAdapter(adapter);
+        labelsViewModel.getFullBoardById(boardId).observe(this, fullBoard -> {
+            if (fullBoard == null) {
+                throw new IllegalStateException("FullBoard should not be null");
+            }
+            this.adapter.update(fullBoard.getLabels());
+        });
+        binding.fab.setOnClickListener((v) -> {
+            binding.fab.setEnabled(false);
+            final Label label = new Label();
+            label.setBoardId(boardId);
+            label.setTitle(binding.addLabelTitle.getText().toString());
+            label.setColor(colors[new Random().nextInt(colors.length)]);
+            labelsViewModel.createLabel(label, boardId, new IResponseCallback<>() {
+                @Override
+                public void onResponse(Label response, Headers headers) {
+                    requireActivity().runOnUiThread(() -> {
+                        binding.fab.setEnabled(true);
+                        binding.addLabelTitle.setText(null);
+                    });
+                    toastFromThread(getString(R.string.tag_successfully_added, label.getTitle()));
+                }
+                @Override
+                public void onError(Throwable throwable) {
+                    requireActivity().runOnUiThread(() -> binding.fab.setEnabled(true));
+                    if (throwable instanceof SQLiteConstraintException) {
+                        toastFromThread(getString(R.string.tag_already_exists, label.getTitle()));
+                    } else {
+                        toastFromThread(throwable.getLocalizedMessage());
+                        IResponseCallback.super.onError(throwable);
+                    }
+                }
+            });
+        });
+        binding.addLabelTitle.setOnEditorActionListener((v, actionId, event) -> binding.fab.performClick());
+        return dialogBuilder
+                .setTitle(R.string.manage_tags)
+                .setView(binding.getRoot())
+                .setPositiveButton(R.string.simple_close, null)
+                .create();
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void applyTheme(int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.material.themeFAB(binding.fab);
+        utils.material.colorTextInputLayout(binding.addLabelTitleWrapper);
+    }
+    public static DialogFragment newInstance(@NonNull Account account, long boardLocalId) {
+        final DialogFragment dialog = new ManageLabelsDialogFragment();
+        final Bundle args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        args.putLong(KEY_BOARD_ID, boardLocalId);
+        dialog.setArguments(args);
+        return dialog;
+    }
+    @Override
+    public void requestDelete(@NonNull Label label) {
+        labelsViewModel.countCardsWithLabel(label.getLocalId(), (count, headers) -> requireActivity().runOnUiThread(() -> {
+            if (count > 0) {
+                new DeleteAlertDialogBuilder(requireContext())
+                        .setTitle(getString(R.string.delete_something, label.getTitle()))
+                        .setMessage(getResources().getQuantityString(R.plurals.do_you_want_to_delete_the_label, count, count))
+                        .setPositiveButton(R.string.simple_delete, (dialog, which) -> deleteLabel(label))
+                        .setNeutralButton(android.R.string.cancel, null)
+                        .show();
+            } else {
+                deleteLabel(label);
+            }
+        }));
+    }
+    private void deleteLabel(@NonNull Label label) {
+        labelsViewModel.deleteLabel(label, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted label", label.getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    toastFromThread(throwable.getLocalizedMessage());
+                }
+            }
+        });
+    }
+    @Override
+    public void requestEdit(@NonNull Label label) {
+        EditLabelDialogFragment.newInstance(label).show(getChildFragmentManager(), EditLabelDialogFragment.class.getCanonicalName());
+    }
+    @Override
+    public void onLabelUpdated(@NonNull Label label) {
+        labelsViewModel.updateLabel(label, new IResponseCallback<>() {
+            @Override
+            public void onResponse(Label label, Headers headers) {
+                DeckLog.info("Successfully update label", label.getTitle());
+            }
+            @Override
+            public void onError(Throwable error) {
+                if (error instanceof SQLiteConstraintException) {
+                    toastFromThread(getString(R.string.tag_already_exists, label.getTitle()));
+                } else {
+                    IResponseCallback.super.onError(error);
+                    toastFromThread(error.getLocalizedMessage());
+                }
+            }
+        });
+    }
+    @AnyThread
+    private void toastFromThread(@Nullable String message) {
+        requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show());
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import static java.util.concurrent.CompletableFuture.supplyAsync;
+import android.app.Application;
+import android.content.Context;
+import android.content.Intent;
+import android.text.TextUtils;
+import androidx.annotation.NonNull;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.ocs.Version;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import okhttp3.Headers;
+public class NewCardViewModel extends SyncViewModel {
+    public NewCardViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public CompletableFuture<Account> getCurrentAccount() {
+        return baseRepository.getCurrentAccountId().thenApplyAsync(baseRepository::readAccountDirectly);
+    }
+    public CompletableFuture<FullCard> createFullCard(long accountId, long boardId, long stackId, String content) {
+        final var result = new CompletableFuture<FullCard>();
+        supplyAsync(() -> baseRepository.readAccountDirectly(accountId))
+                .thenAcceptAsync(account -> syncRepository.createFullCard(accountId, boardId, stackId, createFullCard(account.getServerDeckVersionAsObject(), content),
+                        new IResponseCallback<>() {
+                            @Override
+                            public void onResponse(FullCard response, Headers headers) {
+                                result.complete(response);
+                            }
+                            @Override
+                            public void onError(Throwable throwable) {
+                                IResponseCallback.super.onError(throwable);
+                                result.completeExceptionally(throwable);
+                            }
+                        }));
+        return result;
+    }
+    private FullCard createFullCard(@NonNull Version version, @NonNull String content) {
+        if (TextUtils.isEmpty(content)) {
+            throw new IllegalArgumentException("Content must not be empty.");
+        }
+        final var fullCard = new FullCard();
+        final var card = new Card();
+        final int maxLength = version.getCardTitleMaxLength();
+        if (content.length() > maxLength) {
+            card.setTitle(content.substring(0, maxLength).trim());
+            card.setDescription(content.substring(maxLength).trim());
+        } else {
+            card.setTitle(content);
+            card.setDescription(null);
+        }
+        fullCard.setCard(card);
+        return fullCard;
+    }
+    public CompletionStage<Intent> createEditIntent(@NonNull Context context, long accountId, long boardId, long cardId) {
+        return supplyAsync(() -> baseRepository.readAccountDirectly(accountId))
+                .thenApplyAsync(account -> EditActivity.createEditCardIntent(context, account, boardId, cardId));
+    }
+}
+package it.niedermann.nextcloud.deck.ui.archivedboards;
+import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.os.Bundle;
+import androidx.annotation.AnyThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.databinding.ActivityArchivedBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Board;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.board.ArchiveBoardListener;
+import it.niedermann.nextcloud.deck.ui.board.DeleteBoardListener;
+import it.niedermann.nextcloud.deck.ui.board.edit.EditBoardListener;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionHandler;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.Themed;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import okhttp3.Headers;
+public class ArchivedBoardsActivity extends AppCompatActivity implements Themed, DeleteBoardListener, EditBoardListener, ArchiveBoardListener {
+    private static final String KEY_ACCOUNT = "account";
+    private ArchivedBoardsViewModel archivedBoardsViewModel;
+    private ActivityArchivedBinding binding;
+    private ArchivedBoardsAdapter adapter;
+    private Account account;
+    @Override
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Thread.setDefaultUncaughtExceptionHandler(new ExceptionHandler(this));
+        final var args = getIntent().getExtras();
+        if (args == null || !args.containsKey(KEY_ACCOUNT)) {
+            throw new IllegalArgumentException("Provide at least " + KEY_ACCOUNT);
+        }
+        account = (Account) args.getSerializable(KEY_ACCOUNT);
+        binding = ActivityArchivedBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
+        setSupportActionBar(binding.toolbar);
+        applyTheme(account.getColor());
+        archivedBoardsViewModel = new SyncViewModel.Provider(this, getApplication(), account).get(ArchivedBoardsViewModel.class);
+        adapter = new ArchivedBoardsAdapter(account, getSupportFragmentManager(), this::onArchive);
+        binding.recyclerView.setAdapter(adapter);
+        final var archivedBoards$ = new ReactiveLiveData<>(archivedBoardsViewModel.getArchivedBoards(account.getId()));
+        archivedBoards$
+                .filter(boards -> boards.size() == 0)
+                .distinctUntilChanged()
+                .observe(this, this::finish);
+        archivedBoards$
+                .filter(boards -> boards.size() > 0)
+                .distinctUntilChanged()
+                .observe(this, adapter::setBoards);
+    }
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void onBoardDeleted(Board board) {
+        archivedBoardsViewModel.deleteBoard(board, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted board", board.getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    showExceptionDialog(throwable, account);
+                }
+            }
+        });
+    }
+    @Override
+    public void onUpdateBoard(FullBoard fullBoard) {
+        archivedBoardsViewModel.updateBoard(fullBoard, new IResponseCallback<>() {
+            @Override
+            public void onResponse(FullBoard response, Headers headers) {
+                DeckLog.info("Successfully updated board", fullBoard.getBoard().getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                showExceptionDialog(throwable, account);
+            }
+        });
+    }
+    @Override
+    public void onArchive(Board board) {
+        archivedBoardsViewModel.dearchiveBoard(board, new IResponseCallback<>() {
+            @Override
+            public void onResponse(FullBoard response, Headers headers) {
+                DeckLog.info("Successfully dearchived board", response.getBoard().getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                showExceptionDialog(throwable, account);
+            }
+        });
+    }
+    @Override
+    public void onClone(@NonNull Account account, @NonNull Board board) {
+        throw new IllegalStateException("Cloning boards is not available at " + ArchivedBoardsActivity.class.getSimpleName());
+    }
+    @Override
+    public boolean onSupportNavigateUp() {
+        finish(); 
+        return true;
+    }
+    @AnyThread
+    private void showExceptionDialog(@NonNull Throwable throwable, @Nullable Account account) {
+        ExceptionDialogFragment
+                .newInstance(throwable, account)
+                .show(getSupportFragmentManager(), ExceptionDialogFragment.class.getSimpleName());
+    }
+    @Override
+    public void onDismiss(DialogInterface dialog) {
+    }
+    @Override
+    public void applyTheme(int color) {
+        final var utils = ThemeUtils.of(color, this);
+        utils.platform.themeStatusBar(this);
+        utils.material.themeToolbar(binding.toolbar);
+    }
+    @NonNull
+    public static Intent createIntent(@NonNull Context context, @NonNull Account account) {
+        return new Intent(context, ArchivedBoardsActivity.class)
+                .putExtra(KEY_ACCOUNT, account)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.stack;
+import static it.niedermann.nextcloud.deck.util.MimeTypeUtil.TEXT_PLAIN;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.AnyThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
+import androidx.lifecycle.ViewModelProvider;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+import com.nextcloud.android.common.ui.theme.utils.ColorRole;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import it.niedermann.android.crosstabdnd.DragAndDropTab;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.databinding.FragmentStackBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.Stack;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.card.CardActionListener;
+import it.niedermann.nextcloud.deck.ui.card.CardAdapter;
+import it.niedermann.nextcloud.deck.ui.card.SelectCardListener;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.filter.FilterViewModel;
+import it.niedermann.nextcloud.deck.ui.movecard.MoveCardDialogFragment;
+import it.niedermann.nextcloud.deck.ui.movecard.MoveCardListener;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.Themed;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import it.niedermann.nextcloud.deck.util.CardUtil;
+import okhttp3.Headers;
+public class StackFragment extends Fragment implements Themed, DragAndDropTab<CardAdapter>, MoveCardListener, CardActionListener {
+    private static final String KEY_ACCOUNT = "account";
+    private static final String KEY_BOARD_ID = "boardId";
+    private static final String KEY_STACK_ID = "stackId";
+    private FragmentStackBinding binding;
+    private StackViewModel stackViewModel;
+    private FragmentActivity activity;
+    private OnScrollListener onScrollListener;
+    @Nullable
+    private CardAdapter adapter = null;
+    private Account account;
+    private long boardId;
+    private long stackId;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        final var args = requireArguments();
+        if (!args.containsKey(KEY_ACCOUNT)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " is required.");
+        }
+        account = (Account) args.getSerializable(KEY_ACCOUNT);
+        if (!args.containsKey(KEY_BOARD_ID)) {
+            throw new IllegalArgumentException(KEY_BOARD_ID + " is required.");
+        }
+        boardId = args.getLong(KEY_BOARD_ID);
+        if (!args.containsKey(KEY_STACK_ID)) {
+            throw new IllegalArgumentException(KEY_STACK_ID + " is required.");
+        }
+        stackId = args.getLong(KEY_STACK_ID);
+        if (context instanceof OnScrollListener) {
+            this.onScrollListener = (OnScrollListener) context;
+        }
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        activity = requireActivity();
+        binding = FragmentStackBinding.inflate(inflater, container, false);
+        stackViewModel = new SyncViewModel.Provider(requireActivity(), requireActivity().getApplication(), account).get(StackViewModel.class);
+        final var filterViewModel = new ViewModelProvider(activity).get(FilterViewModel.class);
+        if (onScrollListener != null) {
+            binding.recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+                @Override
+                public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+                    if (!recyclerView.canScrollVertically(1)) {
+                        onScrollListener.onBottomReached();
+                    } else if (dy > 0) {
+                        onScrollListener.onScrollDown();
+                    } else if (dy < 0) {
+                        onScrollListener.onScrollUp();
+                    }
+                }
+            });
+        }
+        stackViewModel.currentBoardHasEditPermission(account.getId(), boardId).observe(getViewLifecycleOwner(), hasEditPermission -> {
+            if (hasEditPermission) {
+                binding.emptyContentView.showDescription();
+            } else {
+                binding.emptyContentView.hideDescription();
+            }
+        });
+        @Nullable final var selectCardListener = (activity instanceof SelectCardListener) ? (SelectCardListener) activity : null;
+        adapter = new CardAdapter(activity, this, selectCardListener);
+        binding.recyclerView.setAdapter(adapter);
+        stackViewModel.getBoardColor$(account.getId(), boardId).observe(getViewLifecycleOwner(), this::applyTheme);
+        new ReactiveLiveData<>(stackViewModel.getAccount(account.getId()))
+                .tap(() -> binding.loadingSpinner.show())
+                .tap(account -> adapter.setAccount(account))
+                .flatMap(account -> stackViewModel.getFullBoard(account.getId(), boardId))
+                .tap(fullBoard -> adapter.setFullBoard(fullBoard))
+                .flatMap(filterViewModel::getFilterInformation)
+                .flatMap(filterInformation -> stackViewModel.getFullCardsForStack(account.getId(), stackId, filterInformation))
+                .combineWith(() -> stackViewModel.getBoardColor$(account.getId(), boardId))
+                .observe(getViewLifecycleOwner(), pair -> {
+                    binding.loadingSpinner.hide();
+                    if (pair.first != null && !pair.first.isEmpty()) {
+                        binding.emptyContentView.setVisibility(View.GONE);
+                        assert adapter != null;
+                        adapter.setCardList(pair.first, pair.second);
+                    } else {
+                        binding.emptyContentView.setVisibility(View.VISIBLE);
+                    }
+                });
+        return binding.getRoot();
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Nullable
+    @Override
+    public CardAdapter getAdapter() {
+        return adapter;
+    }
+    @Override
+    public RecyclerView getRecyclerView() {
+        return binding.recyclerView;
+    }
+    @Override
+    public void move(long originAccountId, long originCardLocalId, long targetAccountId, long targetBoardLocalId, long targetStackLocalId) {
+        stackViewModel.moveCard(originAccountId, originCardLocalId, targetAccountId, targetBoardLocalId, targetStackLocalId, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.log("Moved", Card.class.getSimpleName(), originCardLocalId, "to", Stack.class.getSimpleName(), targetStackLocalId);
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    ExceptionDialogFragment.newInstance(throwable, null).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName());
+                }
+            }
+        });
+    }
+    public void scrollToBottom() {
+        activity.runOnUiThread(() -> {
+            if (adapter == null) {
+                DeckLog.warn("Adapter is null");
+                return;
+            }
+            final var layoutManager = (LinearLayoutManager) binding.recyclerView.getLayoutManager();
+            if (layoutManager == null) {
+                DeckLog.warn("LayoutManager is null");
+                return;
+            }
+            int currentItem = layoutManager.findFirstVisibleItemPosition();
+            if (adapter.getItemCount() - currentItem < 40) {
+                binding.recyclerView.smoothScrollToPosition(adapter.getItemCount());
+            } else {
+                binding.recyclerView.scrollToPosition(adapter.getItemCount() - 1);
+            }
+        });
+    }
+    @Override
+    public void onArchive(@NonNull FullCard fullCard) {
+        stackViewModel.archiveCard(fullCard, new IResponseCallback<>() {
+            @Override
+            public void onResponse(FullCard response, Headers headers) {
+                DeckLog.info("Successfully archived", Card.class.getSimpleName(), fullCard.getCard().getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                showExceptionDialog(throwable, fullCard.getAccountId());
+            }
+        });
+    }
+    @Override
+    public void onDelete(@NonNull FullCard fullCard) {
+        stackViewModel.deleteCard(fullCard.getCard(), new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted card", fullCard.getCard().getTitle());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    showExceptionDialog(throwable, fullCard.getAccountId());
+                }
+            }
+        });
+    }
+    @Override
+    public void onAssignCurrentUser(@NonNull FullCard fullCard) {
+        stackViewModel.assignUserToCard(fullCard);
+    }
+    @Override
+    public void onUnassignCurrentUser(@NonNull FullCard fullCard) {
+        stackViewModel.unassignUserFromCard(fullCard);
+    }
+    @Override
+    public void onMove(@NonNull FullBoard fullBoard, @NonNull FullCard fullCard) {
+        DeckLog.verbose("[Move card] Launch move dialog for " + Card.class.getSimpleName() + " \"" + fullCard.getCard().getTitle() + "\" (#" + fullCard.getLocalId() + ") from " + Stack.class.getSimpleName() + " #" + +stackId);
+        MoveCardDialogFragment
+                .newInstance(fullCard.getAccountId(), fullBoard.getBoard().getLocalId(), fullCard.getCard().getTitle(), fullCard.getLocalId(), CardUtil.cardHasCommentsOrAttachments(fullCard))
+                .show(getChildFragmentManager(), MoveCardDialogFragment.class.getSimpleName());
+    }
+    @Override
+    public void onShareLink(@NonNull FullBoard fullBoard, @NonNull FullCard fullCard) {
+        stackViewModel.getAccountFuture(fullCard.getAccountId()).thenAcceptAsync(account -> {
+            final int shareLinkRes = account.getServerDeckVersionAsObject().getShareLinkResource();
+            final var shareIntent = new Intent()
+                    .setAction(Intent.ACTION_SEND)
+                    .setType(TEXT_PLAIN)
+                    .putExtra(Intent.EXTRA_SUBJECT, fullCard.getCard().getTitle())
+                    .putExtra(Intent.EXTRA_TITLE, fullCard.getCard().getTitle())
+                    .putExtra(Intent.EXTRA_TEXT, account.getUrl() + activity.getString(shareLinkRes, fullBoard.getBoard().getId(), fullCard.getCard().getId()));
+            activity.startActivity(Intent.createChooser(shareIntent, fullCard.getCard().getTitle()));
+        }, ContextCompat.getMainExecutor(requireContext()));
+    }
+    @Override
+    public void onShareContent(@NonNull FullCard fullCard) {
+        final var shareIntent = new Intent()
+                .setAction(Intent.ACTION_SEND)
+                .setType(TEXT_PLAIN)
+                .putExtra(Intent.EXTRA_SUBJECT, fullCard.getCard().getTitle())
+                .putExtra(Intent.EXTRA_TITLE, fullCard.getCard().getTitle())
+                .putExtra(Intent.EXTRA_TEXT, CardUtil.getCardContentAsString(activity, fullCard));
+        activity.startActivity(Intent.createChooser(shareIntent, fullCard.getCard().getTitle()));
+    }
+    @AnyThread
+    private void showExceptionDialog(@NonNull Throwable throwable, long accountId) {
+        stackViewModel.getAccountFuture(accountId).thenAcceptAsync(account -> ExceptionDialogFragment
+                        .newInstance(throwable, account)
+                        .show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName()),
+                ContextCompat.getMainExecutor(requireContext()));
+    }
+    @Override
+    public void applyTheme(int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.platform.colorCircularProgressBar(binding.loadingSpinner, ColorRole.PRIMARY);
+        utils.deck.themeEmptyContentView(binding.emptyContentView);
+    }
+    public static Fragment newInstance(@NonNull Account account, long boardId, long stackId) {
+        final var fragment = new StackFragment();
+        final var args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        args.putLong(KEY_BOARD_ID, boardId);
+        args.putLong(KEY_STACK_ID, stackId);
+        fragment.setArguments(args);
+        return fragment;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.board.accesscontrol;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.lifecycle.LiveData;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import it.niedermann.nextcloud.deck.model.AccessControl;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+public class AccessControlViewModel extends SyncViewModel {
+    public AccessControlViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public LiveData<FullBoard> getFullBoardById(long accountId, long localId) {
+        return baseRepository.getFullBoardById(accountId, localId);
+    }
+    public LiveData<List<AccessControl>> getAccessControlByLocalBoardId(long accountId, long id) {
+        return baseRepository.getAccessControlByLocalBoardId(accountId, id);
+    }
+    public CompletableFuture<Integer> getCurrentBoardColor(long accountId, long boardId) {
+        return baseRepository.getCurrentBoardColor(accountId, boardId);
+    }
+    public void createAccessControl(@NonNull Account account, @NonNull AccessControl entity, @NonNull IResponseCallback<AccessControl> callback) {
+        syncRepository.createAccessControl(account.getId(), entity, callback);
+    }
+    public void updateAccessControl(@NonNull AccessControl entity, @NonNull IResponseCallback<AccessControl> callback) {
+        syncRepository.updateAccessControl(entity, callback);
+    }
+    public void deleteAccessControl(@NonNull AccessControl entity, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteAccessControl(entity, callback);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.stack;
+import static java.util.concurrent.CompletableFuture.supplyAsync;
+import android.app.Application;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.lifecycle.LiveData;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.internal.FilterInformation;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+public class StackViewModel extends SyncViewModel {
+    public StackViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public void moveCard(long originAccountId, long originCardLocalId, long targetAccountId, long targetBoardLocalId, long targetStackLocalId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.moveCard(originAccountId, originCardLocalId, targetAccountId, targetBoardLocalId, targetStackLocalId, callback);
+    }
+    public LiveData<Account> getAccount(long accountId) {
+        return new ReactiveLiveData<>(baseRepository.readAccount(accountId))
+                .distinctUntilChanged();
+    }
+    public CompletableFuture<Account> getAccountFuture(long accountId) {
+        return supplyAsync(() -> baseRepository.readAccountDirectly(accountId));
+    }
+    public LiveData<FullBoard> getFullBoard(long accountId, long boardId) {
+        return new ReactiveLiveData<>(baseRepository.getFullBoardById(accountId, boardId))
+                .distinctUntilChanged();
+    }
+    public LiveData<Integer> getBoardColor$(long accountId, long boardId) {
+        return baseRepository.getBoardColor$(accountId, boardId);
+    }
+    public LiveData<List<FullCard>> getFullCardsForStack(long accountId, long localStackId, @Nullable FilterInformation filter) {
+        return new ReactiveLiveData<>(baseRepository.getFullCardsForStack(accountId, localStackId, filter))
+                .distinctUntilChanged();
+    }
+    public LiveData<Boolean> currentBoardHasEditPermission(long accountId, long boardId) {
+        return new ReactiveLiveData<>(baseRepository.readAccount(accountId))
+                .flatMap(account -> account.getServerDeckVersionAsObject().isSupported()
+                        ? new ReactiveLiveData<>(baseRepository.getFullBoardById(accountId, boardId)).map(fullBoard -> fullBoard != null && fullBoard.getBoard().isPermissionEdit())
+                        : new ReactiveLiveData<>(false))
+                .distinctUntilChanged();
+    }
+    public void archiveCard(@NonNull FullCard card, @NonNull IResponseCallback<FullCard> callback) {
+        syncRepository.archiveCard(card, callback);
+    }
+    public void deleteCard(@NonNull Card card, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteCard(card, callback);
+    }
+    public void assignUserToCard(@NonNull FullCard fullCard) {
+        getAccountFuture(fullCard.getAccountId()).thenAcceptAsync(account -> syncRepository.assignUserToCard(getUserByUidDirectly(fullCard.getCard().getAccountId(), account.getUserName()), fullCard.getCard()));
+    }
+    public void unassignUserFromCard(@NonNull FullCard fullCard) {
+        getAccountFuture(fullCard.getAccountId()).thenAcceptAsync(account -> syncRepository.unassignUserFromCard(getUserByUidDirectly(fullCard.getCard().getAccountId(), account.getUserName()), fullCard.getCard()));
+    }
+    private User getUserByUidDirectly(long accountId, String uid) {
+        return baseRepository.getUserByUidDirectly(accountId, uid);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.board.accesscontrol;
+import static it.niedermann.nextcloud.deck.ui.board.accesscontrol.AccessControlAdapter.HEADER_ITEM_LOCAL_ID;
+import android.app.Dialog;
+import android.content.Context;
+import android.os.Bundle;
+import android.view.View;
+import android.widget.AdapterView;
+import android.widget.AdapterView.OnItemClickListener;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
+import androidx.fragment.app.DialogFragment;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.snackbar.Snackbar;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.List;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.DialogBoardShareBinding;
+import it.niedermann.nextcloud.deck.model.AccessControl;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.card.UserAutoCompleteAdapter;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.ThemedSnackbar;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import okhttp3.Headers;
+public class AccessControlDialogFragment extends DialogFragment implements AccessControlChangedListener, OnItemClickListener {
+    private AccessControlViewModel accessControlViewModel;
+    private DialogBoardShareBinding binding;
+    private static final String KEY_ACCOUNT = "account";
+    private static final String KEY_BOARD_ID = "board_id";
+    private Account account;
+    private long boardId;
+    private UserAutoCompleteAdapter userAutoCompleteAdapter;
+    private AccessControlAdapter adapter;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        final Bundle args = getArguments();
+        if (args == null || !args.containsKey(KEY_ACCOUNT) || !args.containsKey(KEY_BOARD_ID)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " and " + KEY_BOARD_ID + " must be provided as arguments");
+        }
+        this.account = (Account) args.getSerializable(KEY_ACCOUNT);
+        if (this.account == null) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must not be null");
+        }
+        this.boardId = args.getLong(KEY_BOARD_ID);
+        if (this.boardId <= 0L) {
+            throw new IllegalArgumentException(KEY_BOARD_ID + " must be a valid local id and not be less or equal 0");
+        }
+    }
+    @NonNull
+    @Override
+    public Dialog onCreateDialog(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        accessControlViewModel = new SyncViewModel.Provider(requireActivity(), requireActivity().getApplication(), account).get(AccessControlViewModel.class);
+        final var dialogBuilder = new MaterialAlertDialogBuilder(requireContext());
+        binding = DialogBoardShareBinding.inflate(requireActivity().getLayoutInflater());
+        adapter = new AccessControlAdapter(account, this, requireContext());
+        binding.peopleList.setAdapter(adapter);
+        accessControlViewModel.getFullBoardById(account.getId(), boardId).observe(this, (FullBoard fullBoard) -> {
+            if (fullBoard != null) {
+                accessControlViewModel.getAccessControlByLocalBoardId(fullBoard.getAccountId(), fullBoard.getLocalId()).observe(this, (List<AccessControl> accessControlList) -> {
+                    final AccessControl ownerControl = new AccessControl();
+                    ownerControl.setLocalId(HEADER_ITEM_LOCAL_ID);
+                    ownerControl.setUser(fullBoard.getOwner());
+                    accessControlList.add(0, ownerControl);
+                    adapter.update(accessControlList, fullBoard.getBoard().isPermissionManage());
+                    try {
+                        userAutoCompleteAdapter = new UserAutoCompleteAdapter(requireActivity(), account, boardId);
+                    } catch (NextcloudFilesAppAccountNotFoundException e) {
+                        ExceptionDialogFragment.newInstance(e, account).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName());
+                    }
+                    binding.people.setAdapter(userAutoCompleteAdapter);
+                    binding.people.setOnItemClickListener(this);
+                });
+                applyTheme(fullBoard.getBoard().getColor());
+            } else {
+                dismiss();
+            }
+        });
+        return dialogBuilder
+                .setTitle(R.string.share_board)
+                .setView(binding.getRoot())
+                .setPositiveButton(R.string.simple_close, null)
+                .create();
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void updateAccessControl(AccessControl accessControl) {
+        accessControlViewModel.updateAccessControl(accessControl, new IResponseCallback<>() {
+            @Override
+            public void onResponse(AccessControl response, Headers headers) {
+                DeckLog.info("Successfully updated", AccessControl.class.getSimpleName(), "for user", accessControl.getUser().getDisplayname());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                ExceptionDialogFragment.newInstance(throwable, account).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName());
+            }
+        });
+    }
+    @Override
+    public void deleteAccessControl(AccessControl ac) {
+        accessControlViewModel.deleteAccessControl(ac, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted access control for user", ac.getUser().getDisplayname());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    accessControlViewModel.getCurrentBoardColor(ac.getAccountId(), ac.getBoardId())
+                            .thenAcceptAsync(color -> ThemedSnackbar.make(requireView(), getString(R.string.error_revoking_ac, ac.getUser().getDisplayname()), Snackbar.LENGTH_LONG, color)
+                                    .setAction(R.string.simple_more, v -> ExceptionDialogFragment.newInstance(throwable, account).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName()))
+                                    .show(), ContextCompat.getMainExecutor(requireContext()));
+                }
+            }
+        });
+        adapter.remove(ac);
+    }
+    @Override
+    public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+        final AccessControl ac = new AccessControl();
+        final User user = userAutoCompleteAdapter.getItem(position);
+        ac.setPermissionEdit(true);
+        ac.setBoardId(boardId);
+        ac.setType(user.getType()); 
+        ac.setUserId(user.getLocalId());
+        ac.setUser(user);
+        accessControlViewModel.createAccessControl(account, ac, new IResponseCallback<>() {
+            @Override
+            public void onResponse(AccessControl response, Headers headers) {
+                DeckLog.info("Successfully created", AccessControl.class.getSimpleName(), "for user", user.getDisplayname());
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                IResponseCallback.super.onError(throwable);
+                ExceptionDialogFragment.newInstance(throwable, account).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName());
+            }
+        });
+        binding.people.setText("");
+        userAutoCompleteAdapter.exclude(user);
+    }
+    public void applyTheme(@ColorInt int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.material.colorTextInputLayout(binding.peopleWrapper);
+        adapter.applyTheme(color);
+    }
+    public static DialogFragment newInstance(@NonNull Account account, long boardLocalId) {
+        final DialogFragment dialog = new AccessControlDialogFragment();
+        final Bundle args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        args.putLong(KEY_BOARD_ID, boardLocalId);
+        dialog.setArguments(args);
+        return dialog;
+    }
+}

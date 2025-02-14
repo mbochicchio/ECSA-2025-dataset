@@ -1,0 +1,3004 @@
+package it.niedermann.nextcloud.deck.ui.card.comments;
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+import android.content.Context;
+import android.os.Bundle;
+import android.text.TextUtils;
+import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Toast;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.request.RequestOptions;
+import com.nextcloud.android.common.ui.theme.utils.ColorRole;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import java.time.Instant;
+import java.util.stream.Stream;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.FragmentCardEditTabCommentsBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.ocs.comment.DeckComment;
+import it.niedermann.nextcloud.deck.model.ocs.comment.full.FullDeckComment;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.card.EditCardViewModel;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.Themed;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import it.niedermann.nextcloud.deck.util.KeyboardUtils;
+import okhttp3.Headers;
+public class CardCommentsFragment extends Fragment implements Themed, CommentEditedListener, CommentDeletedListener, CommentSelectAsReplyListener {
+    private static final String KEY_ACCOUNT = "account";
+    private FragmentCardEditTabCommentsBinding binding;
+    private EditCardViewModel editCardViewModel;
+    private CommentsViewModel commentsViewModel;
+    private CardCommentsAdapter adapter;
+    @Override
+    public void onAttach(@NonNull Context context) {
+        super.onAttach(context);
+        final var args = getArguments();
+        if (args == null || !args.containsKey(KEY_ACCOUNT)) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must be provided.");
+        }
+        final var account = (Account) args.getSerializable(KEY_ACCOUNT);
+        if (account == null) {
+            throw new IllegalArgumentException(KEY_ACCOUNT + " must not be null.");
+        }
+        editCardViewModel = new ViewModelProvider(requireActivity()).get(EditCardViewModel.class);
+        commentsViewModel = new SyncViewModel.Provider(this, requireActivity().getApplication(), account).get(CommentsViewModel.class);
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater,
+                             ViewGroup container,
+                             Bundle savedInstanceState) {
+        binding = FragmentCardEditTabCommentsBinding.inflate(inflater, container, false);
+        if (editCardViewModel.getFullCard() == null) {
+            DeckLog.logError(new IllegalStateException("Cannot populate " + CardCommentsFragment.class.getSimpleName() + " because viewModel.getFullCard() is null"));
+            if (requireActivity() instanceof EditActivity) {
+                Toast.makeText(getContext(), R.string.error_edit_activity_killed_by_android, Toast.LENGTH_LONG).show();
+                ((EditActivity) requireActivity()).directFinish();
+            } else {
+                requireActivity().finish();
+            }
+            return binding.getRoot();
+        }
+        adapter = new CardCommentsAdapter(requireContext(), editCardViewModel.getAccount(), requireActivity().getMenuInflater(), this, this, getChildFragmentManager(), this);
+        binding.comments.setAdapter(adapter);
+        binding.replyCommentCancelButton.setOnClickListener((v) -> commentsViewModel.setReplyToComment(null));
+        Glide.with(binding.avatar.getContext())
+                .load(editCardViewModel.getAccount().getAvatarUrl(binding.avatar.getResources().getDimensionPixelSize(R.dimen.icon_size_details)))
+                .apply(RequestOptions.circleCropTransform())
+                .placeholder(R.drawable.ic_person_24dp)
+                .error(R.drawable.ic_person_24dp)
+                .into(binding.avatar);
+        commentsViewModel.getReplyToComment().observe(getViewLifecycleOwner(), (comment) -> {
+            if (comment == null) {
+                binding.replyComment.setVisibility(GONE);
+            } else {
+                binding.replyCommentText.setMarkdownString(comment.getComment().getMessage());
+                binding.replyComment.setVisibility(VISIBLE);
+            }
+        });
+        commentsViewModel.getFullCommentsForLocalCardId(editCardViewModel.getFullCard().getLocalId()).observe(getViewLifecycleOwner(),
+                (comments) -> {
+                    if (comments != null && comments.size() > 0) {
+                        binding.emptyContentView.setVisibility(GONE);
+                        binding.comments.setVisibility(VISIBLE);
+                        adapter.updateComments(comments);
+                    } else {
+                        binding.emptyContentView.setVisibility(VISIBLE);
+                        binding.comments.setVisibility(GONE);
+                    }
+                });
+        if (editCardViewModel.canEdit()) {
+            binding.addCommentLayout.setVisibility(VISIBLE);
+            binding.fab.setOnClickListener(v -> {
+                if (!TextUtils.isEmpty(binding.message.getText().toString().trim())) {
+                    binding.emptyContentView.setVisibility(GONE);
+                    binding.comments.setVisibility(VISIBLE);
+                    final DeckComment comment = new DeckComment(binding.message.getText().toString().trim(), editCardViewModel.getAccount().getUserName(), Instant.now());
+                    final FullDeckComment parent = commentsViewModel.getReplyToComment().getValue();
+                    if (parent != null) {
+                        comment.setParentId(parent.getId());
+                        commentsViewModel.setReplyToComment(null);
+                    }
+                    commentsViewModel.addCommentToCard(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), comment);
+                }
+                binding.message.setText(null);
+            });
+            binding.message.setOnEditorActionListener((v, actionId, event) -> {
+                if ((actionId == EditorInfo.IME_ACTION_SEND) || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER && event.getAction() == KeyEvent.ACTION_UP)) {
+                    return binding.fab.performClick();
+                }
+                return true;
+            });
+            binding.message.addTextChangedListener(new CardCommentsMentionProposer(getViewLifecycleOwner(), editCardViewModel.getAccount(), editCardViewModel.getBoardId(), binding.message, binding.mentionProposerWrapper, binding.mentionProposer));
+        } else {
+            binding.addCommentLayout.setVisibility(GONE);
+        }
+        return binding.getRoot();
+    }
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        if (editCardViewModel.canEdit()) {
+            KeyboardUtils.showKeyboardForEditText(binding.message);
+        }
+        editCardViewModel.getBoardColor().observe(getViewLifecycleOwner(), this::applyTheme);
+    }
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    @Override
+    public void onCommentEdited(Long id, String comment) {
+        commentsViewModel.updateComment(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), id, comment);
+    }
+    @Override
+    public void onCommentDeleted(Long localId) {
+        commentsViewModel.deleteComment(editCardViewModel.getAccount().getId(), editCardViewModel.getFullCard().getLocalId(), localId, new IResponseCallback<>() {
+            @Override
+            public void onResponse(EmptyResponse response, Headers headers) {
+                DeckLog.info("Successfully deleted comment with localId", localId);
+            }
+            @Override
+            public void onError(Throwable throwable) {
+                if (SyncRepository.isNoOnVoidError(throwable)) {
+                    IResponseCallback.super.onError(throwable);
+                    requireActivity().runOnUiThread(() -> ExceptionDialogFragment.newInstance(throwable, editCardViewModel.getAccount()).show(getChildFragmentManager(), ExceptionDialogFragment.class.getSimpleName()));
+                }
+            }
+        });
+    }
+    @Override
+    public void applyTheme(@ColorInt int color) {
+        final var utils = ThemeUtils.of(color, requireContext());
+        utils.deck.themeEmptyContentView(binding.emptyContentView);
+        utils.platform.colorViewBackground(binding.addCommentLayout);
+        utils.material.themeFAB(binding.fab);
+        utils.material.colorTextInputLayout(binding.messageWrapper);
+        Stream.of(
+                binding.replyCommentIcon,
+                binding.replyCommentCancelButton,
+                binding.mentionProposerIcon
+        ).forEach(v -> utils.platform.colorImageView(v, ColorRole.SECONDARY));
+        adapter.applyTheme(color);
+    }
+    @Override
+    public void onSelectAsReply(FullDeckComment comment) {
+        commentsViewModel.setReplyToComment(comment);
+    }
+    public static Fragment newInstance(@NonNull Account account) {
+        final var fragment = new CardCommentsFragment();
+        final var args = new Bundle();
+        args.putSerializable(KEY_ACCOUNT, account);
+        fragment.setArguments(args);
+        return fragment;
+    }
+}
+package it.niedermann.nextcloud.deck.remote.api;
+import androidx.annotation.CallSuper;
+import it.niedermann.nextcloud.deck.DeckLog;
+import okhttp3.Headers;
+public interface IResponseCallback<T> {
+    Headers EMPTY_HEADERS = Headers.of();
+    void onResponse(T response, Headers headers);
+    @CallSuper
+    default void onError(Throwable throwable) {
+        DeckLog.logError(throwable);
+    }
+    static <T> IResponseCallback<T> empty() {
+        return (response, headers) -> {
+        };
+    }
+}
+package it.niedermann.nextcloud.deck.model;
+import android.content.Context;
+import android.net.Uri;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.Px;
+import androidx.room.ColumnInfo;
+import androidx.room.Entity;
+import androidx.room.Ignore;
+import androidx.room.Index;
+import androidx.room.PrimaryKey;
+import com.bumptech.glide.Glide;
+import com.nextcloud.android.sso.AccountImporter;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import com.nextcloud.android.sso.model.SingleSignOnAccount;
+import java.io.Serializable;
+import java.util.Objects;
+import java.util.Optional;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.model.ocs.Capabilities;
+import it.niedermann.nextcloud.deck.model.ocs.Version;
+import it.niedermann.nextcloud.sso.glide.SingleSignOnUrl;
+@Entity(indices = {@Index(value = "name", unique = true)})
+public class Account implements Serializable {
+    @Ignore
+    private static final long serialVersionUID = 0;
+    @PrimaryKey(autoGenerate = true)
+    protected Long id;
+    @NonNull
+    private String name;
+    @NonNull
+    private String userName;
+    @Ignore
+    @Nullable
+    private String userDisplayName;
+    @NonNull
+    private String url;
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private Integer color = Capabilities.DEFAULT_COLOR;
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private Integer textColor = Capabilities.DEFAULT_TEXT_COLOR;
+    @NonNull
+    @ColumnInfo(defaultValue = "0.6.4")
+    private String serverDeckVersion = "0.6.4";
+    @NonNull
+    @ColumnInfo(defaultValue = "0")
+    private boolean maintenanceEnabled = false;
+    private String etag;
+    private String boardsEtag;
+    @Ignore
+    public Account(Long id, @NonNull String name, @NonNull String userName, @NonNull String url) {
+        this(name, userName, url);
+        this.id = id;
+    }
+    @Ignore
+    public Account(@NonNull String name, @NonNull String userName, @NonNull String url) {
+        this.name = name;
+        this.userName = userName;
+        this.url = url;
+    }
+    @Ignore
+    public Account(Long id) {
+        this.id = id;
+    }
+    public Account() {
+    }
+    public void applyCapabilities(Capabilities capabilities, String eTag) {
+        if (capabilities == null) {
+            maintenanceEnabled = true;
+            return;
+        }
+        maintenanceEnabled = capabilities.isMaintenanceEnabled();
+        if (!isMaintenanceEnabled()) {
+            try {
+                color = capabilities.getColor();
+                textColor = capabilities.getTextColor();
+            } catch (Exception e) {
+                DeckLog.logError(e);
+                color = Capabilities.DEFAULT_COLOR;
+                textColor = Capabilities.DEFAULT_TEXT_COLOR;
+            }
+            if (capabilities.getDeckVersion() != null) {
+                serverDeckVersion = capabilities.getDeckVersion().getOriginalVersion();
+            }
+            if (eTag != null) {
+                this.etag = eTag;
+            }
+        }
+    }
+    public Long getId() {
+        return id;
+    }
+    public void setId(Long id) {
+        this.id = id;
+    }
+    @NonNull
+    public String getName() {
+        return name;
+    }
+    public void setName(@NonNull String name) {
+        this.name = name;
+    }
+    @NonNull
+    public String getUserName() {
+        return userName;
+    }
+    public void setUserName(@NonNull String userName) {
+        this.userName = userName;
+    }
+    @NonNull
+    public String getUrl() {
+        return url;
+    }
+    public void setUrl(@NonNull String url) {
+        this.url = url;
+    }
+    public static long getSerialVersionUID() {
+        return serialVersionUID;
+    }
+    @ColorInt
+    @NonNull
+    public Integer getColor() {
+        return color;
+    }
+    public void setColor(@NonNull Integer color) {
+        this.color = color;
+    }
+    @NonNull
+    public Integer getTextColor() {
+        return textColor;
+    }
+    @Deprecated
+    public void setTextColor(@NonNull Integer textColor) {
+        this.textColor = textColor;
+    }
+    public Version getServerDeckVersionAsObject() {
+        return Version.of(serverDeckVersion);
+    }
+    @NonNull
+    public String getServerDeckVersion() {
+        return serverDeckVersion;
+    }
+    public void setServerDeckVersion(@NonNull String serverDeckVersion) {
+        this.serverDeckVersion = serverDeckVersion;
+    }
+    public boolean isMaintenanceEnabled() {
+        return maintenanceEnabled;
+    }
+    public void setMaintenanceEnabled(boolean maintenanceEnabled) {
+        this.maintenanceEnabled = maintenanceEnabled;
+    }
+    @Nullable
+    public String getUserDisplayName() {
+        return userDisplayName;
+    }
+    public void setUserDisplayName(@Nullable String userDisplayName) {
+        this.userDisplayName = userDisplayName;
+    }
+    public String getEtag() {
+        return etag;
+    }
+    public void setEtag(String etag) {
+        this.etag = etag;
+    }
+    public String getBoardsEtag() {
+        return boardsEtag;
+    }
+    public void setBoardsEtag(String boardsEtag) {
+        this.boardsEtag = boardsEtag;
+    }
+    public SingleSignOnUrl getAvatarUrl(@Px int size) {
+        return getAvatarUrl(size, getUserName());
+    }
+    public SingleSignOnUrl getAvatarUrl(@Px int size, @NonNull String userName) {
+        return new SingleSignOnUrl(getName(), getUrl() + "/index.php/avatar/" + Uri.encode(userName) + "/" + size);
+    }
+    @NonNull
+    public Optional<SingleSignOnAccount> getSingleSignOnAccount(@NonNull Context context) {
+        try {
+            return Optional.of(AccountImporter.getSingleSignOnAccount(context, getName()));
+        } catch (NextcloudFilesAppAccountNotFoundException e) {
+            return Optional.empty();
+        }
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        Account account = (Account) o;
+        return maintenanceEnabled == account.maintenanceEnabled &&
+                Objects.equals(id, account.id) &&
+                name.equals(account.name) &&
+                userName.equals(account.userName) &&
+                Objects.equals(userDisplayName, account.userDisplayName) &&
+                url.equals(account.url) &&
+                color.equals(account.color) &&
+                textColor.equals(account.textColor) &&
+                serverDeckVersion.equals(account.serverDeckVersion);
+    }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, name, userName, userDisplayName, url, color, textColor, serverDeckVersion, maintenanceEnabled, etag, boardsEtag);
+    }
+    @NonNull
+    @Override
+    public String toString() {
+        return "Account{" +
+                "id=" + id +
+                ", name='" + name + '\'' +
+                ", userName='" + userName + '\'' +
+                ", url='" + url + '\'' +
+                ", color='" + color + '\'' +
+                ", textColor='" + textColor + '\'' +
+                ", serverDeckVersion='" + serverDeckVersion + '\'' +
+                ", maintenanceEnabled=" + maintenanceEnabled +
+                ", eTag='" + etag + '\'' +
+                '}';
+    }
+}
+package it.niedermann.nextcloud.deck.ui.theme;
+import static com.nextcloud.android.common.ui.util.PlatformThemeUtil.isDarkMode;
+import android.content.Context;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
+import com.nextcloud.android.common.ui.color.ColorUtil;
+import com.nextcloud.android.common.ui.theme.MaterialSchemes;
+import com.nextcloud.android.common.ui.theme.ViewThemeUtilsBase;
+import com.nextcloud.android.common.ui.theme.utils.AndroidViewThemeUtils;
+import com.nextcloud.android.common.ui.theme.utils.AndroidXViewThemeUtils;
+import com.nextcloud.android.common.ui.theme.utils.DialogViewThemeUtils;
+import com.nextcloud.android.common.ui.theme.utils.MaterialViewThemeUtils;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import it.niedermann.nextcloud.deck.R;
+import scheme.Scheme;
+public class ThemeUtils extends ViewThemeUtilsBase {
+    private static final ConcurrentMap<Integer, ThemeUtils> CACHE = new ConcurrentHashMap<>();
+    public final AndroidViewThemeUtils platform;
+    public final MaterialViewThemeUtils material;
+    public final AndroidXViewThemeUtils androidx;
+    public final DialogViewThemeUtils dialog;
+    public final DeckViewThemeUtils deck;
+    private ThemeUtils(
+            final MaterialSchemes schemes,
+            final ColorUtil colorUtil
+    ) {
+        super(schemes);
+        this.platform = new AndroidViewThemeUtils(schemes, colorUtil);
+        this.material = new MaterialViewThemeUtils(schemes, colorUtil);
+        this.androidx = new AndroidXViewThemeUtils(schemes, this.platform);
+        this.dialog = new DialogViewThemeUtils(schemes);
+        this.deck = new DeckViewThemeUtils(schemes, this.material, this.platform);
+    }
+    public static ThemeUtils of(@ColorInt int color, @NonNull Context context) {
+        return CACHE.computeIfAbsent(color, c -> new ThemeUtils(
+                MaterialSchemes.Companion.fromColor(c),
+                new ColorUtil(context)
+        ));
+    }
+    public static ThemeUtils defaultBrand(@NonNull Context context) {
+        return of(ContextCompat.getColor(context, R.color.defaultBrand), context);
+    }
+    @Deprecated
+    public static Scheme createScheme(@ColorInt int color, @NonNull Context context) {
+        return isDarkMode(context) ? Scheme.dark(color) : Scheme.light(color);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.upcomingcards;
+import static androidx.preference.PreferenceManager.getDefaultSharedPreferences;
+import android.app.Activity;
+import android.view.LayoutInflater;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
+import androidx.fragment.app.FragmentManager;
+import androidx.preference.PreferenceManager;
+import androidx.recyclerview.widget.RecyclerView;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ItemCardCompactBinding;
+import it.niedermann.nextcloud.deck.databinding.ItemCardDefaultBinding;
+import it.niedermann.nextcloud.deck.databinding.ItemCardDefaultOnlyTitleBinding;
+import it.niedermann.nextcloud.deck.databinding.ItemSectionBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.ui.card.AbstractCardViewHolder;
+import it.niedermann.nextcloud.deck.ui.card.CompactCardViewHolder;
+import it.niedermann.nextcloud.deck.ui.card.DefaultCardOnlyTitleViewHolder;
+import it.niedermann.nextcloud.deck.ui.card.DefaultCardViewHolder;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+public class UpcomingCardsAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+    private final boolean compactMode;
+    @NonNull
+    protected final FragmentManager fragmentManager;
+    @NonNull
+    protected final Activity activity;
+    @NonNull
+    protected List<Object> items = new ArrayList<>();
+    @NonNull
+    protected String counterMaxValue;
+    @NonNull
+    protected ThemeUtils utils;
+    @NonNull
+    private final BiConsumer<Account, Card> assignCard;
+    @NonNull
+    private final BiConsumer<Account, Card> unassignCard;
+    @NonNull
+    private final Consumer<FullCard> archiveCard;
+    @NonNull
+    private final Consumer<Card> deleteCard;
+    private final int maxCoverImages;
+    public UpcomingCardsAdapter(@NonNull Activity activity, @NonNull FragmentManager fragmentManager,
+                                @NonNull BiConsumer<Account, Card> assignCard,
+                                @NonNull BiConsumer<Account, Card> unassignCard,
+                                @NonNull Consumer<FullCard> archiveCard,
+                                @NonNull Consumer<Card> deleteCard) {
+        this.activity = activity;
+        this.counterMaxValue = this.activity.getString(R.string.counter_max_value);
+        this.fragmentManager = fragmentManager;
+        this.utils = ThemeUtils.of(ContextCompat.getColor(this.activity, R.color.defaultBrand), this.activity);
+        this.compactMode = getDefaultSharedPreferences(this.activity).getBoolean(this.activity.getString(R.string.pref_key_compact), false);
+        this.assignCard = assignCard;
+        this.unassignCard = unassignCard;
+        this.archiveCard = archiveCard;
+        this.deleteCard = deleteCard;
+        this.maxCoverImages = PreferenceManager.getDefaultSharedPreferences(activity).getBoolean(activity.getString(R.string.pref_key_cover_images), true)
+                ? activity.getResources().getInteger(R.integer.max_cover_images)
+                : 0;
+        setHasStableIds(true);
+    }
+    @Override
+    public long getItemId(int position) {
+        final var item = items.get(position);
+        if (item.getClass() == UpcomingCardsAdapterSectionItem.class || item instanceof UpcomingCardsAdapterSectionItem) {
+            return items
+                    .stream()
+                    .filter(i -> (i.getClass() == UpcomingCardsAdapterSectionItem.class || i instanceof UpcomingCardsAdapterSectionItem))
+                    .collect(Collectors.toList())
+                    .indexOf(item) * -1;
+        } else if (item.getClass() == UpcomingCardsAdapterItem.class || item instanceof UpcomingCardsAdapterItem) {
+            return ((UpcomingCardsAdapterItem) item).getFullCard().getLocalId();
+        } else {
+            throw new IllegalStateException(item.getClass().getSimpleName() + " must be a " + UpcomingCardsAdapterSectionItem.class.getSimpleName() + " or " + UpcomingCardsAdapterItem.class.getSimpleName());
+        }
+    }
+    @NonNull
+    @Override
+    public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup viewGroup, int viewType) {
+        if (viewType == R.layout.item_section) {
+            return new UpcomingCardsSectionViewHolder(ItemSectionBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false));
+        } else if (viewType == R.layout.item_card_compact) {
+            return new CompactCardViewHolder(ItemCardCompactBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false), this.maxCoverImages);
+        } else if (viewType == R.layout.item_card_default_only_title) {
+            return new DefaultCardOnlyTitleViewHolder(ItemCardDefaultOnlyTitleBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false));
+        }
+        return new DefaultCardViewHolder(ItemCardDefaultBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false), this.maxCoverImages);
+    }
+    @Override
+    public int getItemViewType(int position) {
+        final var item = items.get(position);
+        if (item.getClass() == UpcomingCardsAdapterSectionItem.class || item instanceof UpcomingCardsAdapterSectionItem) {
+            return R.layout.item_section;
+        } else if (item.getClass() == UpcomingCardsAdapterItem.class || item instanceof UpcomingCardsAdapterItem) {
+            if (compactMode) {
+                return R.layout.item_card_compact;
+            } else {
+                final var fullCard = ((UpcomingCardsAdapterItem) item).getFullCard();
+                if (fullCard.getAttachments().size() == 0
+                        && fullCard.getAssignedUsers().size() == 0
+                        && fullCard.getLabels().size() == 0
+                        && fullCard.getCommentCount() == 0
+                        && fullCard.getCard().getTaskStatus().taskCount == 0) {
+                    return R.layout.item_card_default_only_title;
+                }
+                return R.layout.item_card_default;
+            }
+        } else {
+            throw new IllegalStateException(item.getClass().getSimpleName() + " must be a " + UpcomingCardsAdapterSectionItem.class.getSimpleName() + " or " + UpcomingCardsAdapterItem.class.getSimpleName());
+        }
+    }
+    @Override
+    public void onBindViewHolder(@NonNull RecyclerView.ViewHolder viewHolder, int position) {
+        final Object item = items.get(position);
+        if (item.getClass() == UpcomingCardsAdapterSectionItem.class || item instanceof UpcomingCardsAdapterSectionItem) {
+            if (viewHolder.getClass() == UpcomingCardsSectionViewHolder.class || viewHolder instanceof UpcomingCardsSectionViewHolder) {
+                final var cardItem = (UpcomingCardsAdapterSectionItem) item;
+                ((UpcomingCardsSectionViewHolder) viewHolder).bind(cardItem.getTitle());
+            } else {
+                throw new IllegalStateException("Item at position " + position + " is a " + item.getClass().getSimpleName() + " but viewHolder is no " + UpcomingCardsSectionViewHolder.class.getSimpleName());
+            }
+        } else if (item.getClass() == UpcomingCardsAdapterItem.class || item instanceof UpcomingCardsAdapterItem) {
+            if (viewHolder instanceof AbstractCardViewHolder cardViewHolder) {
+                final var cardItem = (UpcomingCardsAdapterItem) item;
+                cardViewHolder.bind(cardItem.getFullCard(), cardItem.getAccount(), cardItem.getCurrentBoardRemoteId(), cardItem.currentBoardHasEditPermission(), R.menu.card_menu,
+                        new UpcomingCardsOptionsItemSelectedListener(
+                                cardItem.getAccount(),
+                                activity,
+                                fragmentManager,
+                                cardItem.getCurrentBoardRemoteId(),
+                                cardItem.getCurrentBoardLocalId(),
+                                assignCard,
+                                unassignCard,
+                                archiveCard,
+                                deleteCard
+                        ), counterMaxValue, utils);
+                cardViewHolder.bindCardClickListener((v) -> activity.startActivity(EditActivity.createEditCardIntent(activity, cardItem.getAccount(), cardItem.getCurrentBoardLocalId(), cardItem.getFullCard().getLocalId())));
+            } else {
+                throw new IllegalStateException("Item at position " + position + " is a " + item.getClass().getSimpleName() + " but viewHolder is no " + AbstractCardViewHolder.class.getSimpleName());
+            }
+        } else {
+            throw new IllegalStateException(item.getClass().getSimpleName() + " must be a " + UpcomingCardsAdapterSectionItem.class.getSimpleName() + " or " + UpcomingCardsAdapterItem.class.getSimpleName());
+        }
+    }
+    @Override
+    public int getItemCount() {
+        return items.size();
+    }
+    public void setItems(@NonNull List<UpcomingCardsAdapterItem> items) {
+        this.items.clear();
+        this.items.addAll(UpcomingCardsUtil.addDueDateSeparators(activity, items));
+        notifyDataSetChanged();
+    }
+}
+package it.niedermann.nextcloud.deck.model.full;
+import androidx.annotation.NonNull;
+import androidx.room.Embedded;
+import androidx.room.Ignore;
+import androidx.room.Junction;
+import androidx.room.Relation;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import it.niedermann.android.crosstabdnd.DragAndDropModel;
+import it.niedermann.nextcloud.deck.model.Attachment;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.JoinCardWithLabel;
+import it.niedermann.nextcloud.deck.model.JoinCardWithUser;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.interfaces.IRemoteEntity;
+import it.niedermann.nextcloud.deck.model.ocs.comment.DeckComment;
+public class FullCard implements IRemoteEntity, DragAndDropModel {
+    @Ignore
+    protected transient boolean isAttachmentsSorted = false;
+    @Embedded
+    public Card card;
+    @Relation(entity = Label.class, parentColumn = "localId", entityColumn = "localId",
+            associateBy = @Junction(value = JoinCardWithLabel.class, parentColumn = "cardId", entityColumn = "labelId"))
+    public List<Label> labels = new ArrayList<>();
+    @Relation(entity = User.class, parentColumn = "localId", entityColumn = "localId",
+            associateBy = @Junction(value = JoinCardWithUser.class, parentColumn = "cardId", entityColumn = "userId"))
+    public List<User> assignedUsers = new ArrayList<>();
+    @Relation(parentColumn = "userId", entityColumn = "localId")
+    public List<User> owner;
+    @Relation(parentColumn = "localId", entityColumn = "cardId")
+    public List<Attachment> attachments;
+    @Relation(entity = DeckComment.class, parentColumn = "localId", entityColumn = "objectId", projection = "localId")
+    public List<Long> commentIDs;
+    public FullCard() {
+        super();
+    }
+    public FullCard(FullCard fullCard) {
+        this.card = new Card(fullCard.getCard());
+        this.labels = copyList(fullCard.getLabels());
+        this.assignedUsers = copyList(fullCard.getAssignedUsers());
+        this.owner = copyList(fullCard.getOwner());
+        this.attachments = copyList(fullCard.getAttachments());
+        this.commentIDs = copyList(fullCard.getCommentIDs());
+    }
+    public Card getCard() {
+        return card;
+    }
+    public void setCard(Card card) {
+        this.card = card;
+    }
+    public List<Label> getLabels() {
+        return labels;
+    }
+    public void setLabels(List<Label> labels) {
+        this.labels = labels;
+    }
+    public List<User> getAssignedUsers() {
+        return assignedUsers;
+    }
+    public void setAssignedUsers(List<User> assignedUsers) {
+        this.assignedUsers = assignedUsers;
+    }
+    public void setCommentIDs(List<Long> commentIDs) {
+        this.commentIDs = commentIDs;
+    }
+    public List<Long> getCommentIDs() {
+        return commentIDs;
+    }
+    public int getCommentCount() {
+        return commentIDs == null ? 0 : commentIDs.size();
+    }
+    public List<User> getOwner() {
+        return owner;
+    }
+    public void setOwner(User owner) {
+        List<User> user = new ArrayList<>();
+        user.add(owner);
+        this.owner = user;
+    }
+    public void setOwner(List<User> owner) {
+        this.owner = owner;
+    }
+    public List<Attachment> getAttachments() {
+        if (!isAttachmentsSorted && attachments != null) {
+            Collections.sort(attachments);
+            isAttachmentsSorted = true;
+        }
+        return attachments;
+    }
+    public void setAttachments(List<Attachment> attachments) {
+        this.attachments = attachments;
+    }
+    @Ignore
+    @Override
+    public Card getEntity() {
+        return card;
+    }
+    @NonNull
+    @Override
+    public String toString() {
+        return "FullCard{" +
+                "card=" + card +
+                ", labels=" + labels +
+                ", assignedUsers=" + assignedUsers +
+                ", owner=" + owner +
+                ", attachments=" + attachments +
+                '}';
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        FullCard fullCard = (FullCard) o;
+        if (!Objects.equals(card, fullCard.card)) return false;
+        if (!Objects.equals(labels, fullCard.labels))
+            return false;
+        if (!Objects.equals(assignedUsers, fullCard.assignedUsers))
+            return false;
+        if (!Objects.equals(owner, fullCard.owner)) return false;
+        if (!Objects.equals(attachments, fullCard.attachments))
+            return false;
+        return Objects.equals(commentIDs, fullCard.commentIDs);
+    }
+    @Override
+    public int hashCode() {
+        int result = (isAttachmentsSorted ? 1 : 0);
+        result = 31 * result + (card != null ? card.hashCode() : 0);
+        result = 31 * result + (labels != null ? labels.hashCode() : 0);
+        result = 31 * result + (assignedUsers != null ? assignedUsers.hashCode() : 0);
+        result = 31 * result + (owner != null ? owner.hashCode() : 0);
+        result = 31 * result + (attachments != null ? attachments.hashCode() : 0);
+        result = 31 * result + (commentIDs != null ? commentIDs.hashCode() : 0);
+        return result;
+    }
+    @NonNull
+    @Override
+    public Long getComparableId() {
+        return getLocalId();
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import static androidx.lifecycle.Transformations.distinctUntilChanged;
+import android.app.Application;
+import android.content.SharedPreferences;
+import android.text.TextUtils;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.MutableLiveData;
+import androidx.preference.PreferenceManager;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.io.File;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.android.sharedpreferences.SharedPreferenceBooleanLiveData;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Attachment;
+import it.niedermann.nextcloud.deck.model.Board;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.full.FullCardWithProjects;
+import it.niedermann.nextcloud.deck.model.ocs.Activity;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.SyncRepository;
+import it.niedermann.nextcloud.deck.ui.card.details.CardDetailsFragment;
+import it.niedermann.nextcloud.deck.ui.viewmodel.BaseViewModel;
+@SuppressWarnings("WeakerAccess")
+public class EditCardViewModel extends BaseViewModel {
+    private SyncRepository syncRepository;
+    private Account account;
+    private long boardId;
+    private FullCardWithProjects originalCard;
+    private FullCardWithProjects fullCard;
+    private boolean isSupportedVersion = false;
+    private boolean hasCommentsAbility = false;
+    private boolean pendingSaveOperation = false;
+    private boolean canEdit = false;
+    private final MutableLiveData<String> descriptionChangedFromExternal$ = new MutableLiveData<>();
+    private final MutableLiveData<Integer> boardColor$ = new MutableLiveData<>();
+    private final SharedPreferences sharedPreferences;
+    private final MutableLiveData<Boolean> descriptionIsPreview = new MutableLiveData<>(false);
+    private boolean attachmentsBackPressedCallbackStatus = false;
+    public EditCardViewModel(@NonNull Application application) {
+        super(application);
+        this.boardColor$.setValue(ContextCompat.getColor(application, R.color.primary));
+        sharedPreferences = PreferenceManager.getDefaultSharedPreferences(application);
+    }
+    public LiveData<Boolean> getDescriptionMode() {
+        return new ReactiveLiveData<>(new SharedPreferenceBooleanLiveData(sharedPreferences, getApplication().getString(R.string.shared_preference_description_preview), false))
+                .distinctUntilChanged()
+                .flatMap(isPreview -> {
+                    final var fullCard = getFullCard();
+                    if (fullCard == null) {
+                        throw new IllegalStateException("Description mode must be queried after initializing " + EditCardViewModel.class.getSimpleName() + " with a card.");
+                    }
+                    if (isPreview && TextUtils.isEmpty(fullCard.getCard().getDescription())) {
+                        descriptionIsPreview.setValue(false);
+                    } else {
+                        descriptionIsPreview.setValue(isPreview);
+                    }
+                    return descriptionIsPreview;
+                })
+                .distinctUntilChanged();
+    }
+    public void changeDescriptionFromExternal(@Nullable String description) {
+        getFullCard().getCard().setDescription(description);
+        this.descriptionChangedFromExternal$.postValue(description);
+    }
+    public LiveData<String> descriptionChangedFromExternal() {
+        return new ReactiveLiveData<>(this.descriptionChangedFromExternal$)
+                .distinctUntilChanged();
+    }
+    public void toggleDescriptionPreviewMode() {
+        final boolean newValue = Boolean.FALSE.equals(descriptionIsPreview.getValue());
+        descriptionIsPreview.setValue(newValue);
+        sharedPreferences
+                .edit()
+                .putBoolean(getApplication().getString(R.string.shared_preference_description_preview), newValue)
+                .apply();
+    }
+    public LiveData<Integer> getBoardColor() {
+        return distinctUntilChanged(this.boardColor$);
+    }
+    public void setBoardColor(@ColorInt int color) {
+        this.boardColor$.setValue(color);
+    }
+    public void initializeExistingCard(long boardId, @NonNull FullCardWithProjects fullCard, boolean isSupportedVersion) {
+        this.boardId = boardId;
+        this.fullCard = fullCard;
+        this.originalCard = new FullCardWithProjects(this.fullCard);
+        this.isSupportedVersion = isSupportedVersion;
+    }
+    public void setAccount(@NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        this.account = account;
+        this.syncRepository = new SyncRepository(getApplication(), account);
+        hasCommentsAbility = account.getServerDeckVersionAsObject().supportsComments();
+    }
+    public CompletableFuture<Integer> getCurrentBoardColor(long accountId, long boardId) {
+        return baseRepository.getCurrentBoardColor(accountId, boardId);
+    }
+    public boolean hasChanges() {
+        if (fullCard == null) {
+            DeckLog.info("Can not check for changes because fullCard is null → assuming no changes have been made yet.");
+            return false;
+        }
+        return fullCard.equals(originalCard);
+    }
+    public boolean hasCommentsAbility() {
+        return hasCommentsAbility;
+    }
+    public Account getAccount() {
+        return account;
+    }
+    public FullCardWithProjects getFullCard() {
+        return fullCard;
+    }
+    public boolean isPendingSaveOperation() {
+        return pendingSaveOperation;
+    }
+    public void setPendingSaveOperation(boolean pendingSaveOperation) {
+        this.pendingSaveOperation = pendingSaveOperation;
+    }
+    public boolean canEdit() {
+        return canEdit && isSupportedVersion;
+    }
+    public void setCanEdit(boolean canEdit) {
+        this.canEdit = canEdit;
+    }
+    public long getBoardId() {
+        return boardId;
+    }
+    public LiveData<FullBoard> getFullBoardById(Long accountId, Long localId) {
+        return baseRepository.getFullBoardById(accountId, localId);
+    }
+    public void createLabel(long accountId, Label label, long localBoardId, @NonNull IResponseCallback<Label> callback) {
+        syncRepository.createLabel(accountId, label, localBoardId, callback);
+    }
+    public LiveData<FullCardWithProjects> getFullCardWithProjectsByLocalId(long accountId, long cardLocalId) {
+        return baseRepository.getFullCardWithProjectsByLocalId(accountId, cardLocalId);
+    }
+    public void saveCard(@NonNull IResponseCallback<FullCard> callback) {
+        syncRepository.updateCard(getFullCard(), callback);
+    }
+    public LiveData<List<Activity>> syncActivitiesForCard(@NonNull Card card) {
+        return syncRepository.syncActivitiesForCard(card);
+    }
+    public void addAttachmentToCard(long accountId, long localCardId, @NonNull String mimeType, @NonNull File file, @NonNull IResponseCallback<Attachment> callback) {
+        syncRepository.addAttachmentToCard(accountId, localCardId, mimeType, file, callback);
+    }
+    public void deleteAttachmentOfCard(long accountId, long localCardId, long localAttachmentId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        syncRepository.deleteAttachmentOfCard(accountId, localCardId, localAttachmentId, callback);
+    }
+    public LiveData<Card> getCardByRemoteID(long accountId, long remoteId) {
+        return baseRepository.getCardByRemoteID(accountId, remoteId);
+    }
+    public LiveData<Board> getBoardByRemoteId(long accountId, long remoteId) {
+        return baseRepository.getBoardByRemoteId(accountId, remoteId);
+    }
+    public void setAttachmentsBackPressedCallbackStatus(boolean enabled) {
+        this.attachmentsBackPressedCallbackStatus = enabled;
+    }
+    public boolean getAttachmentsBackPressedCallbackStatus() {
+        return this.attachmentsBackPressedCallbackStatus;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.widget.stack;
+import static android.appwidget.AppWidgetManager.ACTION_APPWIDGET_UPDATE;
+import static it.niedermann.nextcloud.deck.util.WidgetUtil.pendingIntentFlagCompat;
+import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.widget.RemoteViews;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Stack;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.main.MainActivity;
+public class StackWidget extends AppWidgetProvider {
+    private static final int PENDING_INTENT_OPEN_APP_RQ = 0;
+    private static final int PENDING_INTENT_EDIT_CARD_RQ = 1;
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    @Override
+    public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
+        super.onUpdate(context, appWidgetManager, appWidgetIds);
+        updateAppWidget(executor, context, appWidgetManager, appWidgetIds);
+    }
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        final AppWidgetManager awm = AppWidgetManager.getInstance(context);
+        if (ACTION_APPWIDGET_UPDATE.equals(intent.getAction())) {
+            if (intent.hasExtra(AppWidgetManager.EXTRA_APPWIDGET_ID)) {
+                final int appWidgetId = intent.getExtras().getInt(AppWidgetManager.EXTRA_APPWIDGET_ID, -1);
+                DeckLog.verbose(ACTION_APPWIDGET_UPDATE, "for", StackWidget.class.getSimpleName(), "with id", appWidgetId, "→ perform update.");
+                updateAppWidget(executor, context, awm, new int[]{appWidgetId});
+            } else {
+                DeckLog.verbose(ACTION_APPWIDGET_UPDATE, "→ Triggering update for all widgets of type", StackWidget.class.getSimpleName());
+                updateAppWidget(executor, context, awm, awm.getAppWidgetIds(new ComponentName(context, StackWidget.class)));
+            }
+        }
+    }
+    @Override
+    public void onDeleted(Context context, int[] appWidgetIds) {
+        super.onDeleted(context, appWidgetIds);
+        final var baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            DeckLog.info("Delete", StackWidget.class.getSimpleName(), "with id", appWidgetId);
+            baseRepository.deleteFilterWidget(appWidgetId, (response, headers) -> DeckLog.verbose("Successfully deleted " + StackWidget.class.getSimpleName() + " with id " + appWidgetId));
+        }
+    }
+    private static void updateAppWidget(@NonNull ExecutorService executor, @NonNull Context context, AppWidgetManager awm, int[] appWidgetIds) {
+        final var baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            executor.submit(() -> {
+                if (baseRepository.filterWidgetExists(appWidgetId)) {
+                    final RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_stack);
+                    final Intent serviceIntent = new Intent(context, StackWidgetService.class);
+                    serviceIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+                    serviceIntent.setData(Uri.parse(serviceIntent.toUri(Intent.URI_INTENT_SCHEME)));
+                    final Intent intent = new Intent(Intent.ACTION_MAIN).setComponent(new ComponentName(context.getPackageName(), MainActivity.class.getName()));
+                    final PendingIntent pendingIntent = PendingIntent.getActivity(context, PENDING_INTENT_OPEN_APP_RQ,
+                            intent, pendingIntentFlagCompat(PendingIntent.FLAG_UPDATE_CURRENT));
+                    final PendingIntent templatePI = PendingIntent.getActivity(context, PENDING_INTENT_EDIT_CARD_RQ,
+                            new Intent(context, EditActivity.class), pendingIntentFlagCompat(PendingIntent.FLAG_UPDATE_CURRENT));
+                    views.setOnClickPendingIntent(R.id.widget_stack_header_rl, pendingIntent);
+                    views.setPendingIntentTemplate(R.id.stack_widget_lv, templatePI);
+                    views.setRemoteAdapter(R.id.stack_widget_lv, serviceIntent);
+                    views.setEmptyView(R.id.stack_widget_lv, R.id.widget_stack_placeholder_iv);
+                    baseRepository.getFilterWidget(appWidgetId, (response, headers) -> {
+                        final Stack stack = baseRepository.getStackDirectly(response.getAccounts().get(0).getBoards().get(0).getStacks().get(0).getStackId());
+                        @ColorInt final Integer boardColor = baseRepository.getBoardColorDirectly(response.getAccounts().get(0).getAccountId(), response.getAccounts().get(0).getBoards().get(0).getBoardId());
+                        views.setTextViewText(R.id.widget_stack_title_tv, stack.getTitle());
+                        views.setInt(R.id.widget_stack_header_icon, "setColorFilter", boardColor);
+                        awm.notifyAppWidgetViewDataChanged(appWidgetId, R.id.stack_widget_lv);
+                        awm.updateAppWidget(appWidgetId, views);
+                    });
+                } else {
+                    DeckLog.warn("Does not yet exist");
+                }
+            });
+        }
+    }
+}
+package it.niedermann.nextcloud.deck.ui;
+import android.annotation.SuppressLint;
+import android.content.Intent;
+import android.net.Uri;
+import android.view.View;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.lifecycle.ViewModelProvider;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Stream;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ActivityPushNotificationBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionDialogFragment;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionHandler;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.ui.theme.Themed;
+import okhttp3.Headers;
+public class PushNotificationActivity extends AppCompatActivity implements Themed {
+    private ActivityPushNotificationBinding binding;
+    private PushNotificationViewModel viewModel;
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private Intent intent;
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Thread.currentThread().setUncaughtExceptionHandler(new ExceptionHandler(this));
+        intent = getIntent();
+        if (intent == null) {
+            throw new IllegalArgumentException("Could not retrieve intent");
+        }
+        binding = ActivityPushNotificationBinding.inflate(getLayoutInflater());
+        viewModel = new ViewModelProvider(this).get(PushNotificationViewModel.class);
+        setContentView(binding.getRoot());
+        setSupportActionBar(binding.toolbar);
+        binding.progress.setIndeterminate(true);
+        viewModel.getAccount().observe(this, this::applyTheme);
+        executor.submit(() -> viewModel.getCardInformation(intent.getExtras(), new PushNotificationViewModel.PushNotificationCallback() {
+            @Override
+            public void onResponse(@NonNull PushNotificationViewModel.CardInformation cardInformation, Headers headers) {
+                runOnUiThread(() -> openCardOnSubmit(cardInformation.account, cardInformation.localBoardId, cardInformation.localCardId));
+            }
+            @Override
+            public void fallbackToBrowser(@NonNull Uri uri) {
+                runOnUiThread(() -> PushNotificationActivity.this.fallbackToBrowser(uri));
+            }
+            @Override
+            @SuppressLint("MissingSuperCall")
+            public void onError(Throwable throwable) {
+                runOnUiThread(() -> displayError(throwable));
+            }
+        }));
+    }
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    private void openCardOnSubmit(@NonNull Account account, long boardLocalId, long cardLocalId) {
+        DeckLog.info("Starting", EditActivity.class.getSimpleName(), "with [" + account + ", " + boardLocalId + ", " + cardLocalId + "]");
+        startActivity(EditActivity.createEditCardIntent(this, account, boardLocalId, cardLocalId));
+        finish();
+    }
+    private void fallbackToBrowser(@NonNull Uri uri) {
+        DeckLog.warn("Falling back to browser as push notification handler:", uri);
+        binding.submit.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW, uri)));
+        viewModel.extractSubject(intent.getExtras()).ifPresent(binding.subject::setText);
+        viewModel.extractMessage(intent.getExtras()).ifPresent(message -> {
+            binding.message.setText(message);
+            binding.message.setVisibility(View.VISIBLE);
+        });
+        binding.progressWrapper.setVisibility(View.GONE);
+        binding.browserFallback.setVisibility(View.VISIBLE);
+        binding.errorWrapper.setVisibility(View.GONE);
+    }
+    private void displayError(Throwable throwable) {
+        DeckLog.error(throwable);
+        binding.errorExplanation.setText(getString(R.string.push_notification_link_empty, getString(R.string.push_notification_link_empty_link)));
+        binding.showError.setOnClickListener((v) -> ExceptionDialogFragment.newInstance(throwable, null)
+                .show(getSupportFragmentManager(), ExceptionDialogFragment.class.getSimpleName()));
+        binding.progressWrapper.setVisibility(View.GONE);
+        binding.browserFallback.setVisibility(View.GONE);
+        binding.errorWrapper.setVisibility(View.VISIBLE);
+    }
+    @Override
+    public boolean onSupportNavigateUp() {
+        finish(); 
+        return true;
+    }
+    @Override
+    public void applyTheme(int color) {
+        final var utils = ThemeUtils.of(color, this);
+        utils.material.themeToolbar(binding.toolbar);
+        utils.deck.themeStatusBar(this, binding.appBarLayout);
+        utils.platform.themeHorizontalProgressBar(binding.progress);
+        Stream.of(binding.submit, binding.showError)
+                .forEach(utils.material::colorMaterialButtonPrimaryFilled);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.exception;
+import android.app.Activity;
+import androidx.annotation.NonNull;
+import it.niedermann.nextcloud.deck.DeckLog;
+public class ExceptionHandler implements Thread.UncaughtExceptionHandler {
+    @NonNull
+    private final Activity activity;
+    public ExceptionHandler(@NonNull Activity activity) {
+        this.activity = activity;
+    }
+    @Override
+    public void uncaughtException(@NonNull Thread t, @NonNull Throwable e) {
+        DeckLog.logError(e);
+        activity.getApplicationContext().startActivity(ExceptionActivity.createIntent(activity, e));
+        activity.finish();
+        Runtime.getRuntime().exit(0);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Bundle;
+import android.text.InputFilter;
+import android.view.Menu;
+import android.view.MenuItem;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.DrawableCompat;
+import androidx.lifecycle.ViewModelProvider;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.tabs.TabLayout;
+import com.google.android.material.tabs.TabLayoutMediator;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import it.niedermann.android.reactivelivedata.ReactiveLiveData;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ActivityEditBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.ocs.Version;
+import it.niedermann.nextcloud.deck.ui.exception.ExceptionHandler;
+import it.niedermann.nextcloud.deck.ui.main.MainActivity;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.util.CardUtil;
+import it.niedermann.nextcloud.deck.util.OnTextChangedWatcher;
+public class EditActivity extends AppCompatActivity {
+    private static final String BUNDLE_KEY_ACCOUNT = "account";
+    private static final String BUNDLE_KEY_BOARD_LOCAL_ID = "boardLocalId";
+    private static final String BUNDLE_KEY_CARD_LOCAL_ID = "cardLocalId";
+    private ActivityEditBinding binding;
+    private EditCardViewModel viewModel;
+    @Deprecated
+    private static final int[] tabTitles = new int[]{
+            R.string.card_edit_details,
+            R.string.card_edit_attachments,
+            R.string.card_edit_activity
+    };
+    private static final int[] tabTitlesWithComments = new int[]{
+            R.string.card_edit_details,
+            R.string.card_edit_attachments,
+            R.string.card_edit_comments,
+            R.string.card_edit_activity
+    };
+    @Deprecated
+    private static final int[] tabIcons = new int[]{
+            R.drawable.ic_home_24dp,
+            R.drawable.ic_attach_file_24dp,
+            R.drawable.ic_activity_72dp
+    };
+    private static final int[] tabIconsWithComments = new int[]{
+            R.drawable.ic_home_24dp,
+            R.drawable.ic_attach_file_24dp,
+            R.drawable.type_comment_36dp,
+            R.drawable.ic_activity_72dp
+    };
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Thread.currentThread().setUncaughtExceptionHandler(new ExceptionHandler(this));
+        binding = ActivityEditBinding.inflate(getLayoutInflater());
+        viewModel = new ViewModelProvider(this).get(EditCardViewModel.class);
+        setContentView(binding.getRoot());
+        setSupportActionBar(binding.toolbar);
+        viewModel.getBoardColor().observe(this, this::applyTheme);
+        loadDataFromIntent();
+    }
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        viewModel.setBoardColor(ContextCompat.getColor(this, R.color.primary));
+        setIntent(intent);
+        loadDataFromIntent();
+    }
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        this.binding = null;
+    }
+    private void loadDataFromIntent() {
+        final var args = getIntent().getExtras();
+        if (args == null || !args.containsKey(BUNDLE_KEY_ACCOUNT) || !args.containsKey(BUNDLE_KEY_BOARD_LOCAL_ID) || !args.containsKey(BUNDLE_KEY_CARD_LOCAL_ID)) {
+            throw new IllegalArgumentException("Provide at least " + BUNDLE_KEY_ACCOUNT + " and " + BUNDLE_KEY_BOARD_LOCAL_ID + " and " + BUNDLE_KEY_CARD_LOCAL_ID + " of the card that should be edited.");
+        }
+        final var account = (Account) args.getSerializable(BUNDLE_KEY_ACCOUNT);
+        if (account == null) {
+            throw new IllegalArgumentException(BUNDLE_KEY_ACCOUNT + " must not be null.");
+        }
+        try {
+            viewModel.setAccount(account);
+        } catch (NextcloudFilesAppAccountNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+        final long cardLocalId = args.getLong(BUNDLE_KEY_CARD_LOCAL_ID);
+        if (cardLocalId <= 0L) {
+            throw new IllegalArgumentException(BUNDLE_KEY_CARD_LOCAL_ID + " must be a positive long but was " + cardLocalId);
+        }
+        final long boardLocalId = args.getLong(BUNDLE_KEY_BOARD_LOCAL_ID);
+        if (boardLocalId <= 0L) {
+            throw new IllegalArgumentException(BUNDLE_KEY_BOARD_LOCAL_ID + " must be a positive integer but was " + boardLocalId);
+        }
+        new ReactiveLiveData<>(viewModel.getFullBoardById(account.getId(), boardLocalId))
+                .observeOnce(EditActivity.this, fullBoard -> {
+                    viewModel.setBoardColor(fullBoard.getBoard().getColor());
+                    viewModel.setCanEdit(fullBoard.getBoard().isPermissionEdit());
+                    invalidateOptionsMenu();
+                    new ReactiveLiveData<>(viewModel.getFullCardWithProjectsByLocalId(account.getId(), cardLocalId))
+                            .observeOnce(EditActivity.this, fullCard -> {
+                                if (fullCard == null) {
+                                    new MaterialAlertDialogBuilder(this)
+                                            .setTitle(R.string.card_not_found)
+                                            .setMessage(R.string.card_not_found_message)
+                                            .setPositiveButton(R.string.simple_close, (a, b) -> super.finish())
+                                            .show();
+                                } else {
+                                    viewModel.initializeExistingCard(boardLocalId, fullCard, account.getServerDeckVersionAsObject().isSupported());
+                                    invalidateOptionsMenu();
+                                    setupViewPager(account);
+                                    setupTitle();
+                                }
+                            });
+                });
+        DeckLog.verbose("Finished loading intent data: { accountId =", viewModel.getAccount().getId(), "cardId =", cardLocalId, "}");
+    }
+    @Override
+    public boolean onCreateOptionsMenu(@NonNull Menu menu) {
+        if (viewModel.canEdit()) {
+            getMenuInflater().inflate(R.menu.card_edit_menu, menu);
+            @ColorInt final int color = ContextCompat.getColor(this, R.color.onSurface);
+            final var utils = ThemeUtils.of(color, this);
+            for (int i = 0; i < menu.size(); i++) {
+                utils.platform.colorToolbarMenuIcon(this, menu.getItem(i));
+            }
+        } else {
+            menu.clear();
+        }
+        return super.onCreateOptionsMenu(menu);
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == R.id.action_card_save) {
+            saveAndFinish();
+        }
+        return super.onOptionsItemSelected(item);
+    }
+    @Override
+    public boolean onSupportNavigateUp() {
+        if (isTaskRoot()) {
+            Intent intent = new Intent(EditActivity.this, MainActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(intent);
+        } else {
+            finish();
+        }
+        return true;
+    }
+    private void saveAndFinish() {
+        if (!viewModel.isPendingSaveOperation()) {
+            viewModel.setPendingSaveOperation(true);
+            final String title = viewModel.getFullCard().getCard().getTitle();
+            if (title == null || title.trim().isEmpty()) {
+                viewModel.getFullCard().getCard().setTitle(CardUtil.generateTitleFromDescription(viewModel.getFullCard().getCard().getDescription()));
+            }
+            viewModel.getFullCard().getCard().setTitle(viewModel.getFullCard().getCard().getTitle().trim());
+            binding.title.setText(viewModel.getFullCard().getCard().getTitle());
+            if (viewModel.getFullCard().getCard().getTitle().isEmpty()) {
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.title_is_mandatory)
+                        .setMessage(R.string.provide_at_least_a_title_or_description)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .setOnDismissListener(dialog -> viewModel.setPendingSaveOperation(false))
+                        .show();
+            } else {
+                viewModel.saveCard((response, headers) -> DeckLog.info("Successfully saved card", response.getCard().getTitle()));
+                super.finish();
+            }
+        }
+    }
+    private void setupViewPager(@NonNull Account account) {
+        binding.tabLayout.removeAllTabs();
+        binding.tabLayout.setTabGravity(TabLayout.GRAVITY_FILL);
+        final var adapter = new CardTabAdapter(this, account);
+        final var mediator = new TabLayoutMediator(binding.tabLayout, binding.pager, (tab, position) -> {
+            tab.setIcon(viewModel.hasCommentsAbility()
+                    ? tabIconsWithComments[position]
+                    : tabIcons[position]
+            );
+            tab.setContentDescription(viewModel.hasCommentsAbility()
+                    ? tabTitlesWithComments[position]
+                    : tabTitles[position]
+            );
+        });
+        binding.pager.setAdapter(adapter);
+        if (viewModel.hasCommentsAbility()) {
+            adapter.enableComments();
+            binding.pager.setOffscreenPageLimit(3);
+        } else {
+            binding.pager.setOffscreenPageLimit(2);
+        }
+        mediator.attach();
+    }
+    private void setupTitle() {
+        binding.title.setText(viewModel.getFullCard().getCard().getTitle());
+        binding.title.setFilters(new InputFilter[]{new InputFilter.LengthFilter(viewModel.getAccount().getServerDeckVersionAsObject().getCardTitleMaxLength())});
+        if (viewModel.canEdit()) {
+            binding.title.setHint(R.string.edit);
+            binding.title.addTextChangedListener(new OnTextChangedWatcher(s -> viewModel.getFullCard().getCard().setTitle(binding.title.getText().toString())));
+        } else {
+            binding.title.setEnabled(false);
+        }
+    }
+    @Override
+    public void finish() {
+        if (!viewModel.hasChanges() && viewModel.canEdit()) {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.simple_save)
+                    .setMessage(R.string.do_you_want_to_save_your_changes)
+                    .setPositiveButton(R.string.simple_save, (dialog, whichButton) -> saveAndFinish())
+                    .setNegativeButton(R.string.simple_discard, (dialog, whichButton) -> super.finish()).show();
+        } else {
+            super.finish();
+        }
+    }
+    public void directFinish() {
+        super.finish();
+    }
+    private void applyTheme(int color) {
+        final var navigationIcon = binding.toolbar.getNavigationIcon();
+        if (navigationIcon == null) {
+            DeckLog.error("Expected navigationIcon to be present.");
+        } else {
+            DrawableCompat.setTint(binding.toolbar.getNavigationIcon(), ContextCompat.getColor(this, R.color.onSurface));
+        }
+        final var utils = ThemeUtils.of(color, this);
+        utils.material.themeToolbar(binding.toolbar);
+        utils.deck.themeStatusBar(this, binding.appBarLayout);
+        utils.material.colorTextInputLayout(binding.titleWrapper);
+        utils.material.themeTabLayoutOnSurface(binding.tabLayout);
+    }
+    @NonNull
+    public static Intent createEditCardIntent(@NonNull Context context, @NonNull Account account, long boardLocalId, long cardLocalId) {
+        return new Intent(context, EditActivity.class)
+                .putExtra(BUNDLE_KEY_ACCOUNT, account)
+                .putExtra(BUNDLE_KEY_BOARD_LOCAL_ID, boardLocalId)
+                .putExtra(BUNDLE_KEY_CARD_LOCAL_ID, cardLocalId)
+                .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+}
+package it.niedermann.nextcloud.deck;
+import android.content.Context;
+import android.content.Intent;
+import android.text.TextUtils;
+import android.util.Log;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.content.FileProvider;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import it.niedermann.nextcloud.deck.util.MimeTypeUtil;
+public class DeckLog {
+    private DeckLog() {
+        throw new UnsupportedOperationException("This class must not get instantiated");
+    }
+    private static final StringBuffer DEBUG_LOG = new StringBuffer();
+    private static boolean PERSIST_LOGS = false;
+    private static final String TAG = DeckLog.class.getSimpleName();
+    private static final DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    public static void enablePersistentLogs(boolean persistLogs) {
+        PERSIST_LOGS = persistLogs;
+        if (!persistLogs) {
+            clearDebugLog();
+        }
+    }
+    public static String getStacktraceAsString(Throwable e) {
+        final var sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        return sw.toString();
+    }
+    public enum Severity {
+        VERBOSE, DEBUG, LOG, INFO, WARN, ERROR, WTF
+    }
+    public static void verbose(Object... message) {
+        log(Severity.VERBOSE, 4, message);
+    }
+    public static void log(Object... message) {
+        log(Severity.DEBUG, 4, message);
+    }
+    public static void info(Object... message) {
+        log(Severity.INFO, 4, message);
+    }
+    public static void warn(Object... message) {
+        log(Severity.WARN, 4, message);
+    }
+    public static void error(Object... message) {
+        log(Severity.ERROR, 4, message);
+    }
+    public static void wtf(Object... message) {
+        log(Severity.WTF, 4, message);
+    }
+    public static void log(@NonNull Severity severity, Object... message) {
+        log(severity, 3, message);
+    }
+    private static void log(@NonNull Severity severity, int stackTracePosition, Object... messages) {
+        if (!(PERSIST_LOGS || BuildConfig.DEBUG)) {
+            return;
+        }
+        final StackTraceElement caller = Thread.currentThread().getStackTrace()[stackTracePosition];
+        final String print = "(" + caller.getFileName() + ":" + caller.getLineNumber() + ") " + caller.getMethodName() + "() → " + TextUtils.join(" ", messages);
+        if (PERSIST_LOGS) {
+            DEBUG_LOG
+                    .append(dtf.format(Instant.now().atZone(ZoneId.systemDefault())))
+                    .append(" ")
+                    .append(severity.name())
+                    .append(" ")
+                    .append(print)
+                    .append("\n");
+        }
+        switch (severity) {
+            case DEBUG -> Log.d(TAG, print);
+            case INFO -> Log.i(TAG, print);
+            case WARN -> Log.w(TAG, print);
+            case ERROR -> Log.e(TAG, print);
+            case WTF -> Log.wtf(TAG, print);
+            default -> Log.v(TAG, print);
+        }
+    }
+    public static void logError(@Nullable Throwable e) {
+        if (!(PERSIST_LOGS || BuildConfig.DEBUG)) {
+            return;
+        }
+        if (e == null) {
+            error("Could not log error because given error was null");
+            return;
+        }
+        final StringWriter sw = new StringWriter();
+        e.printStackTrace(new PrintWriter(sw));
+        final String stacktrace = sw.toString();
+        final StackTraceElement caller = Thread.currentThread().getStackTrace()[3];
+        final String print = "(" + caller.getFileName() + ":" + caller.getLineNumber() + ") " + caller.getMethodName() + "() → " + stacktrace;
+        if (PERSIST_LOGS) {
+            DEBUG_LOG.append(print).append("\n");
+        }
+        Log.e(TAG, print);
+    }
+    @NonNull
+    public static String getDebugLog() {
+        return DEBUG_LOG.toString();
+    }
+    public static void clearDebugLog() {
+        DEBUG_LOG.setLength(0);
+    }
+    public static void shareLogAsFile(@NonNull Context context) throws IOException {
+        Toast.makeText(context, R.string.copying_logs_to_file, Toast.LENGTH_LONG).show();
+        final File logFile = new File(context.getCacheDir().getAbsolutePath() + "/log.txt");
+        final FileWriter writer = new FileWriter(logFile);
+        writer.write(DeckLog.getDebugLog());
+        writer.close();
+        context.startActivity(new Intent(Intent.ACTION_SEND)
+                .putExtra(Intent.EXTRA_TITLE, context.getString(R.string.log_file))
+                .putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(context, BuildConfig.APPLICATION_ID + ".provider", logFile))
+                .setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .setType(MimeTypeUtil.TEXT_PLAIN));
+    }
+}
+package it.niedermann.nextcloud.deck.model;
+import androidx.annotation.NonNull;
+import androidx.room.Entity;
+import androidx.room.ForeignKey;
+import androidx.room.Ignore;
+import androidx.room.Index;
+import com.google.gson.annotations.SerializedName;
+import java.time.Instant;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import it.niedermann.nextcloud.deck.model.enums.DBStatus;
+import it.niedermann.nextcloud.deck.model.interfaces.AbstractRemoteEntity;
+@Entity(inheritSuperIndices = true,
+        indices = {
+                @Index(value = "accountId", name = "card_accID"),
+                @Index("stackId")
+        },
+        foreignKeys = {
+                @ForeignKey(
+                        entity = Stack.class,
+                        parentColumns = "localId",
+                        childColumns = "stackId", onDelete = ForeignKey.CASCADE
+                ),
+                @ForeignKey(
+                        entity = Account.class,
+                        parentColumns = "id",
+                        childColumns = "accountId", onDelete = ForeignKey.CASCADE
+                )
+        }
+)
+public class Card extends AbstractRemoteEntity {
+    private static Pattern PATTERN_MD_TASK = Pattern.compile("\\[([xX ])]");
+    public static class TaskStatus {
+        public int taskCount;
+        public int doneCount;
+        public TaskStatus(int taskCount, int doneCount) {
+            this.taskCount = taskCount;
+            this.doneCount = doneCount;
+        }
+    }
+    @Ignore
+    private TaskStatus taskStatus = null;
+    private String title;
+    private String description;
+    @NonNull
+    private Long stackId;
+    private String type;
+    private Instant createdAt;
+    private Instant deletedAt;
+    private Instant done;
+    private int attachmentCount;
+    private Long userId;
+    private int order;
+    private boolean archived;
+    @SerializedName("duedate")
+    private Instant dueDate;
+    private boolean notified;
+    private int overdue;
+    private int commentsUnread;
+    public Card() {
+    }
+    @Ignore
+    public Card(String title, String description, long stackId) {
+        this.title = title;
+        this.description = description;
+        this.stackId = stackId;
+    }
+    public Card(Card card) {
+        super(card);
+        this.title = card.getTitle();
+        this.description = card.getDescription();
+        this.stackId = card.getStackId();
+        this.type = card.getType();
+        this.createdAt = card.getCreatedAt();
+        this.deletedAt = card.getDeletedAt();
+        this.attachmentCount = card.getAttachmentCount();
+        this.userId = card.getUserId();
+        this.order = card.getOrder();
+        this.archived = card.isArchived();
+        this.dueDate = card.getDueDate();
+        this.done = card.getDone();
+        this.notified = card.isNotified();
+        this.overdue = card.getOverdue();
+        this.commentsUnread = card.getCommentsUnread();
+    }
+    @NonNull
+    public TaskStatus getTaskStatus() {
+        if (taskStatus == null) {
+            int count = 0, done = 0;
+            if (description != null) {
+                final Matcher matcher = PATTERN_MD_TASK.matcher(description);
+                while (matcher.find()) {
+                    count++;
+                    char c = matcher.group().charAt(1);
+                    if (c == 'x' || c == 'X') {
+                        done++;
+                    }
+                }
+            }
+            taskStatus = new TaskStatus(count, done);
+        }
+        return taskStatus;
+    }
+    public boolean isNotified() {
+        return notified;
+    }
+    public void setNotified(boolean notified) {
+        this.notified = notified;
+    }
+    public Long getId() {
+        return id;
+    }
+    public void setId(Long id) {
+        this.id = id;
+    }
+    public DBStatus getStatusEnum() {
+        return DBStatus.findById(status);
+    }
+    public void setStatusEnum(DBStatus status) {
+        this.status = status.getId();
+    }
+    public String getTitle() {
+        return title;
+    }
+    public void setTitle(String title) {
+        this.title = title;
+    }
+    public String getDescription() {
+        return description;
+    }
+    public void setDescription(String description) {
+        this.description = description;
+        this.taskStatus = null;
+    }
+    public Long getStackId() {
+        return stackId;
+    }
+    public void setStackId(Long stackId) {
+        this.stackId = stackId;
+    }
+    public String getType() {
+        return type;
+    }
+    public void setType(String type) {
+        this.type = type;
+    }
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+    public void setCreatedAt(Instant createdAt) {
+        this.createdAt = createdAt;
+    }
+    public Instant getDeletedAt() {
+        return deletedAt;
+    }
+    public void setDeletedAt(Instant deletedAt) {
+        this.deletedAt = deletedAt;
+    }
+    public int getAttachmentCount() {
+        return attachmentCount;
+    }
+    public void setAttachmentCount(int attachmentCount) {
+        this.attachmentCount = attachmentCount;
+    }
+    public void setOrder(int order) {
+        this.order = order;
+    }
+    public boolean isArchived() {
+        return archived;
+    }
+    public void setArchived(boolean archived) {
+        this.archived = archived;
+    }
+    public Instant getDueDate() {
+        return dueDate;
+    }
+    public void setDueDate(Instant dateTime) {
+        this.dueDate = dateTime;
+    }
+    public int getOverdue() {
+        return overdue;
+    }
+    public void setOverdue(int overdue) {
+        this.overdue = overdue;
+    }
+    public int getCommentsUnread() {
+        return commentsUnread;
+    }
+    public void setCommentsUnread(int commentsUnread) {
+        this.commentsUnread = commentsUnread;
+    }
+    public void setStatus(int status) {
+        this.status = status;
+    }
+    public int getStatus() {
+        return this.status;
+    }
+    public Long getUserId() {
+        return this.userId;
+    }
+    public void setUserId(Long userId) {
+        this.userId = userId;
+    }
+    public int getOrder() {
+        return this.order;
+    }
+    public Instant getDone() {
+        return done;
+    }
+    public void setDone(Instant done) {
+        this.done = done;
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        if (!super.equals(o)) return false;
+        Card card = (Card) o;
+        if (stackId != card.stackId) return false;
+        if (attachmentCount != card.attachmentCount) return false;
+        if (order != card.order) return false;
+        if (archived != card.archived) return false;
+        if (notified != card.notified) return false;
+        if (overdue != card.overdue) return false;
+        if (commentsUnread != card.commentsUnread) return false;
+        if (!Objects.equals(title, card.title)) return false;
+        if (!Objects.equals(description, card.description))
+            return false;
+        if (!Objects.equals(type, card.type)) return false;
+        if (!Objects.equals(createdAt, card.createdAt))
+            return false;
+        if (!Objects.equals(deletedAt, card.deletedAt))
+            return false;
+        if (!Objects.equals(done, card.done))
+            return false;
+        if (!Objects.equals(userId, card.userId)) return false;
+        return Objects.equals(dueDate, card.dueDate);
+    }
+    @Override
+    public int hashCode() {
+        int result = title != null ? title.hashCode() : 0;
+        result = 31 * result + (description != null ? description.hashCode() : 0);
+        result = 31 * result + (int) (stackId ^ (stackId >>> 32));
+        result = 31 * result + (type != null ? type.hashCode() : 0);
+        result = 31 * result + (createdAt != null ? createdAt.hashCode() : 0);
+        result = 31 * result + (deletedAt != null ? deletedAt.hashCode() : 0);
+        result = 31 * result + (done != null ? done.hashCode() : 0);
+        result = 31 * result + attachmentCount;
+        result = 31 * result + (userId != null ? userId.hashCode() : 0);
+        result = 31 * result + order;
+        result = 31 * result + (archived ? 1 : 0);
+        result = 31 * result + (dueDate != null ? dueDate.hashCode() : 0);
+        result = 31 * result + (notified ? 1 : 0);
+        result = 31 * result + overdue;
+        result = 31 * result + commentsUnread;
+        return result;
+    }
+    @Override
+    public String toString() {
+        return "Card{" +
+                "title='" + title + '\'' +
+                ", description='" + description + '\'' +
+                ", stackId=" + stackId +
+                ", type='" + type + '\'' +
+                ", createdAt=" + createdAt +
+                ", deletedAt=" + deletedAt +
+                ", done=" + done +
+                ", attachmentCount=" + attachmentCount +
+                ", userId=" + userId +
+                ", order=" + order +
+                ", archived=" + archived +
+                ", dueDate=" + dueDate +
+                ", notified=" + notified +
+                ", overdue=" + overdue +
+                ", commentsUnread=" + commentsUnread +
+                ", localId=" + localId +
+                ", accountId=" + accountId +
+                ", id=" + id +
+                ", status=" + status +
+                ", lastModified=" + lastModified +
+                ", lastModifiedLocal=" + lastModifiedLocal +
+                '}';
+    }
+}
+package it.niedermann.nextcloud.deck.util;
+import android.content.Context;
+import android.text.TextUtils;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
+import java.util.stream.Collectors;
+import it.niedermann.android.markdown.MarkdownUtil;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+public class CardUtil {
+    private CardUtil() {
+        throw new UnsupportedOperationException("This class must not get instantiated");
+    }
+    @NonNull
+    public static String getCardContentAsString(@NonNull Context context, @NonNull FullCard fullCard) {
+        final var card = fullCard.getCard();
+        final var text = new StringBuilder(card.getDescription());
+        if(card.getDueDate() != null) {
+            if(!TextUtils.isEmpty(text)) {
+                text.append("\n");
+            }
+            text.append(context.getString(R.string.share_content_duedate, card.getDueDate().atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM))));
+        }
+        if(fullCard.getLabels() != null && !fullCard.getLabels().isEmpty()) {
+            if(!TextUtils.isEmpty(text)) {
+                text.append("\n");
+            }
+            text.append(context.getString(R.string.share_content_labels, fullCard.getLabels().stream().map(Label::getTitle).collect(Collectors.joining(", "))));
+        }
+        return text.toString();
+    }
+    public static boolean cardHasCommentsOrAttachments(@NonNull FullCard fullCard) {
+        return fullCard.getCommentCount() > 0 || (fullCard.getAttachments() != null && !fullCard.getAttachments().isEmpty());
+    }
+    @NonNull
+    public static String generateTitleFromDescription(@Nullable String description) {
+        if(description == null) return "";
+        return getLineWithoutMarkDown(description, 0);
+    }
+    @NonNull
+    private static String getLineWithoutMarkDown(@NonNull String content, @SuppressWarnings("SameParameterValue") int lineNumber) {
+        if (content.contains("\n")) {
+            final var lines = content.split("\n");
+            int currentLine = lineNumber;
+            while (currentLine < lines.length && isEmptyLine(lines[currentLine])) {
+                currentLine++;
+            }
+            if (currentLine < lines.length) {
+                return MarkdownUtil.removeMarkdown(lines[currentLine]);
+            }
+        } else {
+            return content;
+        }
+        return "";
+    }
+    private static boolean isEmptyLine(@NonNull String line) {
+        return MarkdownUtil.removeMarkdown(line).trim().length() == 0;
+    }
+}
+package it.niedermann.nextcloud.deck.model.full;
+import androidx.annotation.NonNull;
+import androidx.room.Embedded;
+import androidx.room.Ignore;
+import androidx.room.Relation;
+import java.util.List;
+import java.util.Objects;
+import it.niedermann.nextcloud.deck.model.AccessControl;
+import it.niedermann.nextcloud.deck.model.Board;
+import it.niedermann.nextcloud.deck.model.Label;
+import it.niedermann.nextcloud.deck.model.Stack;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.interfaces.IRemoteEntity;
+public class FullBoard implements IRemoteEntity {
+    @Embedded
+    public Board board;
+    @Relation(entity = Label.class, parentColumn = "localId", entityColumn = "boardId")
+    public List<Label> labels;
+    @Relation(parentColumn = "ownerId", entityColumn = "localId")
+    public User owner;
+    @Relation(entity = AccessControl.class, parentColumn = "localId", entityColumn = "boardId")
+    public List<AccessControl> participants;
+    @Relation(entity = Stack.class, parentColumn = "localId", entityColumn = "boardId")
+    public List<Stack> stacks;
+    @Ignore
+    public List<User> users;
+    public User getOwner() {
+        return owner;
+    }
+    public void setOwner(User owner) {
+        this.owner = owner;
+    }
+    public Board getBoard() {
+        return board;
+    }
+    public void setBoard(Board board) {
+        this.board = board;
+    }
+    public List<Label> getLabels() {
+        return labels;
+    }
+    public void setLabels(List<Label> labels) {
+        this.labels = labels;
+    }
+    public List<User> getUsers() {
+        return users;
+    }
+    public void setUsers(List<User> users) {
+        this.users = users;
+    }
+    @Ignore
+    @Override
+    public Board getEntity() {
+        return board;
+    }
+    public List<AccessControl> getParticipants() {
+        return participants;
+    }
+    public void setParticipants(List<AccessControl> participants) {
+        this.participants = participants;
+    }
+    public List<Stack> getStacks() {
+        return stacks;
+    }
+    public void setStacks(List<Stack> stacks) {
+        this.stacks = stacks;
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        FullBoard fullBoard = (FullBoard) o;
+        if (!Objects.equals(board, fullBoard.board)) return false;
+        if (!Objects.equals(labels, fullBoard.labels))
+            return false;
+        if (!Objects.equals(owner, fullBoard.owner)) return false;
+        if (!Objects.equals(participants, fullBoard.participants))
+            return false;
+        return Objects.equals(stacks, fullBoard.stacks);
+    }
+    @Override
+    public int hashCode() {
+        int result = board != null ? board.hashCode() : 0;
+        result = 31 * result + (labels != null ? labels.hashCode() : 0);
+        result = 31 * result + (owner != null ? owner.hashCode() : 0);
+        result = 31 * result + (participants != null ? participants.hashCode() : 0);
+        result = 31 * result + (stacks != null ? stacks.hashCode() : 0);
+        return result;
+    }
+    @NonNull
+    @Override
+    public String toString() {
+        return "FullBoard{" +
+                "board=" + board +
+                ", labels=" + labels +
+                ", owner=" + owner +
+                ", participants=" + participants +
+                ", stacks=" + stacks +
+                '}';
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import androidx.annotation.NonNull;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentActivity;
+import androidx.viewpager2.adapter.FragmentStateAdapter;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.ui.card.activities.CardActivityFragment;
+import it.niedermann.nextcloud.deck.ui.card.attachments.CardAttachmentsFragment;
+import it.niedermann.nextcloud.deck.ui.card.comments.CardCommentsFragment;
+import it.niedermann.nextcloud.deck.ui.card.details.CardDetailsFragment;
+public class CardTabAdapter extends FragmentStateAdapter {
+    private final Account account;
+    private boolean hasCommentsAbility = false;
+    public CardTabAdapter(
+            @NonNull final FragmentActivity fa,
+            @NonNull final Account account
+    ) {
+        super(fa);
+        this.account = account;
+    }
+    @NonNull
+    @Override
+    public Fragment createFragment(int position) {
+        switch (position) {
+            case 0:
+                return CardDetailsFragment.newInstance(account);
+            case 1:
+                return CardAttachmentsFragment.newInstance();
+            case 2:
+                return hasCommentsAbility
+                        ? CardCommentsFragment.newInstance(account)
+                        : CardActivityFragment.newInstance();
+            case 3:
+                if (hasCommentsAbility) {
+                    return CardActivityFragment.newInstance();
+                }
+            default:
+                throw new IllegalArgumentException("position " + position + " is not available");
+        }
+    }
+    @SuppressWarnings("WeakerAccess")
+    public void enableComments() {
+        this.hasCommentsAbility = true;
+        notifyItemInserted(2);
+    }
+    @Override
+    public long getItemId(int position) {
+        if (!this.hasCommentsAbility) {
+            return position;
+        } else {
+            return switch (position) {
+                case 0, 1 -> position;
+                case 2 -> 3; 
+                default -> 2;
+            };
+        }
+    }
+    @Override
+    public int getItemCount() {
+        return hasCommentsAbility ? 4 : 3;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.widget.singlecard;
+import android.appwidget.AppWidgetManager;
+import android.content.Context;
+import android.content.Intent;
+import android.text.TextUtils;
+import android.widget.RemoteViews;
+import android.widget.RemoteViewsService;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import java.util.NoSuchElementException;
+import it.niedermann.android.markdown.MarkdownUtil;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.full.FullSingleCardWidgetModel;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+public class SingleCardWidgetFactory implements RemoteViewsService.RemoteViewsFactory {
+    private final Context context;
+    private final int appWidgetId;
+    private final BaseRepository baseRepository;
+    private FullSingleCardWidgetModel model;
+    public SingleCardWidgetFactory(@NonNull Context context, @NonNull Intent intent) {
+        this.context = context;
+        this.appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID);
+        this.baseRepository = new BaseRepository(context);
+    }
+    @Override
+    public void onCreate() {
+    }
+    @Override
+    public void onDataSetChanged() {
+        try {
+            this.model = baseRepository.getSingleCardWidgetModelDirectly(appWidgetId);
+        } catch (NoSuchElementException e) {
+            this.model = null;
+        }
+    }
+    @Override
+    public void onDestroy() {
+    }
+    @Override
+    public int getCount() {
+        return getDescriptionOrNull(model) == null ? 0 : 1;
+    }
+    @Override
+    public RemoteViews getViewAt(int position) {
+        final String description = getDescriptionOrNull(model);
+        if (description == null) {
+            return null;
+        }
+        final RemoteViews widget_entry = new RemoteViews(context.getPackageName(), R.layout.widget_single_card_content);
+        widget_entry.setTextViewText(R.id.description, MarkdownUtil.renderForRemoteView(context, description));
+        final Intent intent = EditActivity.createEditCardIntent(context, model.getAccount(), model.getModel().getBoardId(), model.getFullCard().getCard().getLocalId());
+        widget_entry.setOnClickFillInIntent(R.id.description, intent);
+        return widget_entry;
+    }
+    @Override
+    public RemoteViews getLoadingView() {
+        return null;
+    }
+    @Override
+    public int getViewTypeCount() {
+        return 1;
+    }
+    @Override
+    public long getItemId(int position) {
+        return position;
+    }
+    @Override
+    public boolean hasStableIds() {
+        return true;
+    }
+    @Nullable
+    public static String getDescriptionOrNull(@Nullable FullSingleCardWidgetModel model) {
+        if (model == null || model.getFullCard() == null || model.getFullCard().getCard() == null || TextUtils.isEmpty(model.getFullCard().getCard().getDescription())) {
+            return null;
+        }
+        return model.getFullCard().getCard().getDescription();
+    }
+}
+package it.niedermann.nextcloud.deck.ui.widget.stack;
+import android.appwidget.AppWidgetManager;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.widget.RemoteViews;
+import android.widget.RemoteViewsService;
+import androidx.annotation.NonNull;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.widget.filter.dto.FilterWidgetCard;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+public class StackWidgetFactory implements RemoteViewsService.RemoteViewsFactory {
+    private final Context context;
+    private final int appWidgetId;
+    private final BaseRepository baseRepository;
+    @NonNull
+    private final List<FilterWidgetCard> data = new ArrayList<>();
+    StackWidgetFactory(Context context, Intent intent) {
+        this.context = context;
+        appWidgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID,
+                AppWidgetManager.INVALID_APPWIDGET_ID);
+        this.baseRepository = new BaseRepository(context);
+    }
+    @Override
+    public void onCreate() {
+    }
+    @Override
+    public void onDataSetChanged() {
+        try {
+            final List<FilterWidgetCard> response = baseRepository.getCardsForFilterWidget(appWidgetId);
+            DeckLog.verbose(StackWidget.class.getSimpleName(), "with id", appWidgetId, "fetched", response.size(), "cards from the database.");
+            data.clear();
+            Collections.sort(response, Comparator.comparingLong(value -> value.getCard().getCard().getOrder()));
+            data.addAll(response);
+        } catch (NoSuchElementException e) {
+            DeckLog.error("No", StackWidget.class.getSimpleName(), "for appWidgetId", appWidgetId, "found.");
+            DeckLog.logError(e);
+        }
+    }
+    @Override
+    public void onDestroy() {
+    }
+    @Override
+    public int getCount() {
+        return data.size();
+    }
+    @Override
+    public RemoteViews getViewAt(int i) {
+        if (i > (data.size() - 1) || data.get(i) == null) {
+            DeckLog.error("No card or separator not found at position", i);
+            return null;
+        }
+        final RemoteViews widget_entry;
+        final FilterWidgetCard filterWidgetCard = data.get(i);
+        widget_entry = new RemoteViews(context.getPackageName(), R.layout.widget_stack_entry);
+        widget_entry.setTextViewText(R.id.widget_entry_content_tv, filterWidgetCard.getCard().getCard().getTitle());
+        final Intent intent = EditActivity.createEditCardIntent(context,  baseRepository.readAccountDirectly(filterWidgetCard.getCard().getAccountId()), filterWidgetCard.getStack().getBoardId(), filterWidgetCard.getCard().getLocalId());
+        intent.setData(Uri.parse(intent.toUri(Intent.URI_INTENT_SCHEME)));
+        widget_entry.setOnClickFillInIntent(R.id.widget_stack_entry, intent);
+        return widget_entry;
+    }
+    @Override
+    public RemoteViews getLoadingView() {
+        return null;
+    }
+    @Override
+    public int getViewTypeCount() {
+        return 1;
+    }
+    @Override
+    public long getItemId(int i) {
+        return i;
+    }
+    @Override
+    public boolean hasStableIds() {
+        return true;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import static androidx.preference.PreferenceManager.getDefaultSharedPreferences;
+import android.app.Activity;
+import android.content.ClipData;
+import android.view.LayoutInflater;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.ColorInt;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.preference.PreferenceManager;
+import androidx.recyclerview.widget.RecyclerView;
+import java.util.ArrayList;
+import java.util.List;
+import it.niedermann.android.crosstabdnd.DragAndDropAdapter;
+import it.niedermann.android.crosstabdnd.DraggedItemLocalState;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ItemCardCompactBinding;
+import it.niedermann.nextcloud.deck.databinding.ItemCardDefaultBinding;
+import it.niedermann.nextcloud.deck.databinding.ItemCardDefaultOnlyTitleBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.full.FullBoard;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+public class CardAdapter extends RecyclerView.Adapter<AbstractCardViewHolder> implements DragAndDropAdapter<FullCard>, CardOptionsItemSelectedListener {
+    private final boolean compactMode;
+    @Nullable
+    private Account account;
+    @Nullable
+    private FullBoard fullBoard;
+    @NonNull
+    private final Activity activity;
+    @Nullable
+    private final SelectCardListener selectCardListener;
+    @NonNull
+    private final CardActionListener cardActionListener;
+    @NonNull
+    private final List<FullCard> cardList = new ArrayList<>();
+    @NonNull
+    private final String counterMaxValue;
+    @Nullable
+    private ThemeUtils utils;
+    private final int maxCoverImages;
+    public CardAdapter(
+            @NonNull Activity activity,
+            @NonNull CardActionListener cardActionListener,
+            @Nullable SelectCardListener selectCardListener
+    ) {
+        this.activity = activity;
+        this.counterMaxValue = this.activity.getString(R.string.counter_max_value);
+        this.cardActionListener = cardActionListener;
+        this.selectCardListener = selectCardListener;
+        this.compactMode = getDefaultSharedPreferences(this.activity).getBoolean(this.activity.getString(R.string.pref_key_compact), false);
+        this.maxCoverImages = PreferenceManager.getDefaultSharedPreferences(activity).getBoolean(activity.getString(R.string.pref_key_cover_images), true) ? activity.getResources().getInteger(R.integer.max_cover_images) : 0;
+        setHasStableIds(true);
+    }
+    @Override
+    public long getItemId(int position) {
+        return cardList.get(position).getLocalId();
+    }
+    @NonNull
+    @Override
+    public AbstractCardViewHolder onCreateViewHolder(@NonNull ViewGroup viewGroup, int viewType) {
+        if (viewType == R.layout.item_card_compact) {
+            return new CompactCardViewHolder(ItemCardCompactBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false), this.maxCoverImages);
+        } else if (viewType == R.layout.item_card_default_only_title) {
+            return new DefaultCardOnlyTitleViewHolder(ItemCardDefaultOnlyTitleBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false));
+        }
+        return new DefaultCardViewHolder(ItemCardDefaultBinding.inflate(LayoutInflater.from(viewGroup.getContext()), viewGroup, false), this.maxCoverImages);
+    }
+    @Override
+    public int getItemViewType(int position) {
+        if (compactMode) {
+            return R.layout.item_card_compact;
+        } else {
+            final var fullCard = cardList.get(position);
+            if (fullCard.getAttachments().isEmpty()
+                    && fullCard.getAssignedUsers().isEmpty()
+                    && fullCard.getLabels().isEmpty()
+                    && fullCard.getCommentCount() == 0
+                    && fullCard.getCard().getTaskStatus().taskCount == 0) {
+                return R.layout.item_card_default_only_title;
+            }
+            return R.layout.item_card_default;
+        }
+    }
+    @Override
+    public void onBindViewHolder(@NonNull AbstractCardViewHolder viewHolder, int position) {
+        if (account == null) {
+            throw new IllegalStateException("Tried to bind viewholder while account is still null");
+        }
+        if (fullBoard == null) {
+            throw new IllegalStateException("Tried to bind viewholder while fullBoard is still null");
+        }
+        @NonNull final var fullCard = cardList.get(position);
+        viewHolder.bind(fullCard, account, fullBoard.getBoard().getId(), fullBoard.board.isPermissionEdit(), R.menu.card_menu, this, counterMaxValue, utils);
+        viewHolder.bindCardClickListener((v) -> {
+            if (selectCardListener == null) {
+                activity.startActivity(EditActivity.createEditCardIntent(activity, account, fullBoard.getBoard().getLocalId(), fullCard.getLocalId()));
+            } else {
+                selectCardListener.onCardSelected(fullCard, fullBoard.getLocalId());
+            }
+        });
+        if (selectCardListener == null) {
+            viewHolder.bindCardLongClickListener((v) -> {
+                DeckLog.log("Starting drag and drop");
+                v.startDragAndDrop(ClipData.newPlainText("cardid", String.valueOf(fullCard.getLocalId())),
+                        new View.DragShadowBuilder(v),
+                        new DraggedItemLocalState<>(fullCard, viewHolder.getDraggable(), this, position),
+                        0
+                );
+                return true;
+            });
+        }
+    }
+    @Override
+    public int getItemCount() {
+        return cardList.size();
+    }
+    public void insertItem(FullCard fullCard, int position) {
+        cardList.add(position, fullCard);
+        notifyItemInserted(position);
+    }
+    @NonNull
+    @Override
+    public List<FullCard> getItemList() {
+        return this.cardList;
+    }
+    @Override
+    public void moveItem(int fromPosition, int toPosition) {
+        cardList.add(toPosition, cardList.remove(fromPosition));
+        notifyItemMoved(fromPosition, toPosition);
+    }
+    @Override
+    public void removeItem(int position) {
+        cardList.remove(position);
+        notifyItemRemoved(position);
+    }
+    public void setAccount(@NonNull Account account) {
+        this.account = account;
+    }
+    public void setFullBoard(@NonNull FullBoard fullBoard) {
+        this.fullBoard = fullBoard;
+    }
+    public void setCardList(@NonNull List<FullCard> cardList, @ColorInt int color) {
+        this.utils = ThemeUtils.of(color, activity);
+        this.cardList.clear();
+        this.cardList.addAll(cardList);
+        notifyDataSetChanged();
+    }
+    @Override
+    public boolean onCardOptionsItemSelected(@NonNull MenuItem menuItem, @NonNull FullCard fullCard) {
+        final int itemId = menuItem.getItemId();
+        if (itemId == R.id.share_link) {
+            if (fullBoard == null) {
+                DeckLog.warn("Can not share link to card", fullCard.getCard().getTitle(), "because fullBoard is null");
+                return false;
+            }
+            cardActionListener.onShareLink(fullBoard, fullCard);
+            return true;
+        } else if (itemId == R.id.share_content) {
+            cardActionListener.onShareContent(fullCard);
+        } else if (itemId == R.id.action_card_assign) {
+            cardActionListener.onAssignCurrentUser(fullCard);
+            return true;
+        } else if (itemId == R.id.action_card_unassign) {
+            cardActionListener.onUnassignCurrentUser(fullCard);
+            return true;
+        } else if (itemId == R.id.action_card_move) {
+            if (fullBoard == null) {
+                DeckLog.warn("Can not move card", fullCard.getCard().getTitle(), "because fullBoard is null");
+                return false;
+            }
+            cardActionListener.onMove(fullBoard, fullCard);
+            return true;
+        } else if (itemId == R.id.action_card_archive) {
+            cardActionListener.onArchive(fullCard);
+            return true;
+        } else if (itemId == R.id.action_card_delete) {
+            cardActionListener.onDelete(fullCard);
+            return true;
+        }
+        return true;
+    }
+}
+package it.niedermann.nextcloud.deck.ui.widget.singlecard;
+import static it.niedermann.nextcloud.deck.util.WidgetUtil.pendingIntentFlagCompat;
+import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.text.TextUtils;
+import android.view.View;
+import android.widget.RemoteViews;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.IdRes;
+import androidx.annotation.NonNull;
+import java.time.Instant;
+import java.util.NoSuchElementException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.full.FullSingleCardWidgetModel;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.util.DateUtil;
+public class SingleCardWidget extends AppWidgetProvider {
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    void updateAppWidget(Context context, AppWidgetManager awm, int[] appWidgetIds) {
+        final var baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            executor.submit(() -> {
+                try {
+                    final FullSingleCardWidgetModel fullModel = baseRepository.getSingleCardWidgetModelDirectly(appWidgetId);
+                    final Intent intent = EditActivity.createEditCardIntent(context, fullModel.getAccount(), fullModel.getModel().getBoardId(), fullModel.getFullCard().getLocalId());
+                    final PendingIntent pendingIntent = PendingIntent.getActivity(context, appWidgetId, intent, pendingIntentFlagCompat(PendingIntent.FLAG_UPDATE_CURRENT));
+                    final RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_single_card);
+                    final Intent serviceIntent = new Intent(context, SingleCardWidgetService.class);
+                    serviceIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+                    serviceIntent.setData(Uri.parse(intent.toUri(Intent.URI_INTENT_SCHEME)));
+                    if (TextUtils.isEmpty(SingleCardWidgetFactory.getDescriptionOrNull(fullModel))) {
+                        views.setViewVisibility(R.id.description_lv, View.GONE);
+                    } else {
+                        views.setViewVisibility(R.id.description_lv, View.VISIBLE);
+                    }
+                    final var card = fullModel.getFullCard().getCard();
+                    views.setOnClickPendingIntent(R.id.widget_card, pendingIntent);
+                    views.setPendingIntentTemplate(R.id.description_lv, pendingIntent);
+                    views.setTextViewText(R.id.title, card.getTitle());
+                    views.setRemoteAdapter(R.id.description_lv, serviceIntent);
+                    if (card.getDone() != null) {
+                        views.setTextViewText(R.id.card_due_date, DateUtil.getRelativeDateTimeString(context, card.getDone().toEpochMilli()));
+                        views.setViewVisibility(R.id.card_due_date, View.VISIBLE);
+                        views.setViewVisibility(R.id.card_due_date_image, View.VISIBLE);
+                        views.setImageViewResource(R.id.card_due_date_image, R.drawable.ic_check_circle_24);
+                    } else if (card.getDueDate() != null) {
+                        views.setTextViewText(R.id.card_due_date, DateUtil.getRelativeDateTimeString(context, card.getDueDate().toEpochMilli()));
+                        views.setViewVisibility(R.id.card_due_date, View.VISIBLE);
+                        views.setViewVisibility(R.id.card_due_date_image, View.VISIBLE);
+                        @DrawableRes final var dueDateImage = card.getDueDate().isBefore(Instant.now())
+                                ? R.drawable.ic_time_filled_24
+                                : R.drawable.ic_time_24;
+                        views.setImageViewResource(R.id.card_due_date_image, dueDateImage);
+                    } else {
+                        views.setViewVisibility(R.id.card_due_date, View.GONE);
+                        views.setViewVisibility(R.id.card_due_date_image, View.GONE);
+                    }
+                    final String counterMaxValue = context.getString(R.string.counter_max_value);
+                    final int attachmentsCount = fullModel.getFullCard().getAttachments().size();
+                    if (attachmentsCount == 0) {
+                        views.setViewVisibility(R.id.card_count_attachments, View.GONE);
+                        views.setViewVisibility(R.id.card_count_attachments_image, View.GONE);
+                    } else {
+                        views.setViewVisibility(R.id.card_count_attachments, View.VISIBLE);
+                        views.setViewVisibility(R.id.card_count_attachments_image, View.VISIBLE);
+                        views.setImageViewResource(R.id.card_count_attachments_image, R.drawable.ic_attach_file_24dp);
+                        setupCounter(views, R.id.card_count_attachments, attachmentsCount, counterMaxValue);
+                    }
+                    final int commentsCount = fullModel.getFullCard().getCommentCount();
+                    if (commentsCount == 0) {
+                        views.setViewVisibility(R.id.card_count_comments, View.GONE);
+                        views.setViewVisibility(R.id.card_count_comments_image, View.GONE);
+                    } else {
+                        views.setViewVisibility(R.id.card_count_comments, View.VISIBLE);
+                        views.setViewVisibility(R.id.card_count_comments_image, View.VISIBLE);
+                        views.setImageViewResource(R.id.card_count_comments_image, R.drawable.ic_comment_24dp);
+                        setupCounter(views, R.id.card_count_comments, commentsCount, counterMaxValue);
+                    }
+                    final Card.TaskStatus taskStatus = fullModel.getFullCard().getCard().getTaskStatus();
+                    if (taskStatus.taskCount > 0) {
+                        views.setViewVisibility(R.id.card_count_tasks, View.VISIBLE);
+                        views.setViewVisibility(R.id.card_count_tasks_image, View.VISIBLE);
+                        views.setTextViewText(R.id.card_count_tasks, context.getResources().getString(R.string.task_count, String.valueOf(taskStatus.doneCount), String.valueOf(taskStatus.taskCount)));
+                        views.setImageViewResource(R.id.card_count_tasks_image, R.drawable.ic_check_24dp);
+                    } else {
+                        views.setViewVisibility(R.id.card_count_tasks, View.GONE);
+                        views.setViewVisibility(R.id.card_count_tasks_image, View.GONE);
+                    }
+                    awm.updateAppWidget(appWidgetId, views);
+                    awm.notifyAppWidgetViewDataChanged(appWidgetId, R.id.description_lv);
+                } catch (NoSuchElementException e) {
+                }
+            });
+        }
+    }
+    private static void setupCounter(@NonNull RemoteViews views, @IdRes int textViewId, int count, String counterMaxValue) {
+        if (count > 99) {
+            views.setTextViewText(textViewId, counterMaxValue);
+        } else if (count > 1) {
+            views.setTextViewText(textViewId, String.valueOf(count));
+        } else if (count == 1) {
+            views.setTextViewText(textViewId, "");
+        }
+    }
+    @Override
+    public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
+        super.onUpdate(context, appWidgetManager, appWidgetIds);
+        updateAppWidget(context, appWidgetManager, appWidgetIds);
+    }
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        final AppWidgetManager awm = AppWidgetManager.getInstance(context);
+        updateAppWidget(context, AppWidgetManager.getInstance(context), (awm.getAppWidgetIds(new ComponentName(context, SingleCardWidget.class))));
+    }
+    @Override
+    public void onDeleted(Context context, int[] appWidgetIds) {
+        final var baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            baseRepository.deleteSingleCardWidgetModel(appWidgetId);
+        }
+        super.onDeleted(context, appWidgetIds);
+    }
+    public static void notifyDatasetChanged(Context context) {
+        context.sendBroadcast(new Intent(context, SingleCardWidget.class).setAction(AppWidgetManager.ACTION_APPWIDGET_UPDATE));
+    }
+}
+package it.niedermann.nextcloud.deck.ui.main.search;
+import android.net.Uri;
+import android.text.TextUtils;
+import android.view.View;
+import androidx.annotation.MenuRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.widget.PopupMenu;
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.load.resource.bitmap.CenterCrop;
+import com.bumptech.glide.load.resource.bitmap.RoundedCorners;
+import com.bumptech.glide.request.RequestOptions;
+import com.nextcloud.android.common.ui.theme.utils.ColorRole;
+import org.jetbrains.annotations.Contract;
+import java.util.List;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ItemSearchCardBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.User;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.ui.card.CardOptionsItemSelectedListener;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.theme.ThemeUtils;
+import it.niedermann.nextcloud.deck.util.AttachmentUtil;
+import it.niedermann.nextcloud.deck.util.MimeTypeUtil;
+import it.niedermann.nextcloud.sso.glide.SingleSignOnUrl;
+public class SearchCardViewHolder extends SearchViewHolder {
+    private final ItemSearchCardBinding binding;
+    public SearchCardViewHolder(@NonNull ItemSearchCardBinding binding) {
+        super(binding.getRoot());
+        this.binding = binding;
+    }
+    public void bind(@NonNull Account account, long localBoardId, @NonNull FullCard fullCard, @Nullable Long boardRemoteId, @MenuRes int optionsMenu, @NonNull CardOptionsItemSelectedListener optionsItemsSelectedListener) {
+        final var context = binding.getRoot().getContext();
+        binding.getRoot().setOnClickListener(v -> context.startActivity(EditActivity.createEditCardIntent(context, account, localBoardId, fullCard.getLocalId())));
+        binding.title.setText(fullCard.getCard().getTitle());
+        if (TextUtils.isEmpty(fullCard.getCard().getDescription())) {
+            binding.description.setVisibility(View.GONE);
+        } else {
+            binding.description.setVisibility(View.VISIBLE);
+            binding.description.setText(fullCard.getCard().getDescription());
+        }
+        final var coverImages = fullCard.getAttachments()
+                .stream()
+                .filter(attachment -> MimeTypeUtil.isImage(attachment.getMimetype()))
+                .findFirst();
+        if (coverImages.isPresent()) {
+            binding.coverImages.setVisibility(View.VISIBLE);
+            binding.coverImages.post(() -> {
+                final var requestManager = Glide.with(binding.coverImages);
+                AttachmentUtil.getThumbnailUrl(account, fullCard.getId(), coverImages.get(), binding.coverImages.getWidth())
+                        .map(Uri::toString)
+                        .map(uri -> requestManager.load(new SingleSignOnUrl(account.getName(), uri)))
+                        .orElseGet(() -> requestManager.load(R.drawable.ic_image_24dp))
+                        .apply(new RequestOptions().transform(
+                                new CenterCrop(),
+                                new RoundedCorners(context.getResources().getDimensionPixelSize(R.dimen.spacer_1x))
+                        ))
+                        .placeholder(R.drawable.ic_image_24dp)
+                        .error(R.drawable.ic_image_24dp)
+                        .into(binding.coverImages);
+            });
+        } else {
+            binding.coverImages.setVisibility(View.GONE);
+        }
+        binding.cardMenu.setOnClickListener(view -> {
+            final var popup = new PopupMenu(context, view);
+            popup.inflate(optionsMenu);
+            final var menu = popup.getMenu();
+            if (containsUser(fullCard.getAssignedUsers(), account.getUserName())) {
+                menu.removeItem(menu.findItem(R.id.action_card_assign).getItemId());
+            } else {
+                menu.removeItem(menu.findItem(R.id.action_card_unassign).getItemId());
+            }
+            if (boardRemoteId == null || fullCard.getCard().getId() == null) {
+                menu.removeItem(R.id.share_link);
+            }
+            popup.setOnMenuItemClickListener(item -> optionsItemsSelectedListener.onCardOptionsItemSelected(item, fullCard));
+            popup.show();
+        });
+    }
+    @Contract("null, _ -> false")
+    private static boolean containsUser(List<User> userList, String username) {
+        if (userList != null) {
+            for (final var user : userList) {
+                if (user.getPrimaryKey().equals(username)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    public void applyTheme(int color, String term) {
+        final var utils = ThemeUtils.of(color, binding.getRoot().getContext());
+        utils.platform.colorTextView(binding.title, ColorRole.ON_SURFACE);
+        utils.platform.highlightText(binding.title, binding.title.getText().toString(), term);
+        utils.platform.highlightText(binding.description, binding.description.getText().toString(), term);
+        utils.platform.colorImageView(binding.cardMenu, ColorRole.ON_SURFACE_VARIANT);
+    }
+}
+package it.niedermann.nextcloud.deck.ui.preparecreate;
+import android.annotation.SuppressLint;
+import android.content.Intent;
+import android.os.Bundle;
+import android.text.TextUtils;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.lifecycle.ViewModelProvider;
+import com.nextcloud.android.sso.api.EmptyResponse;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.PickStackActivity;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import okhttp3.Headers;
+public class PrepareCreateActivity extends PickStackActivity {
+    private PrepareCreateViewModel viewModel;
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        final var actionBar = getSupportActionBar();
+        if (actionBar != null) {
+            actionBar.setTitle(R.string.add_card);
+        }
+        viewModel = new ViewModelProvider(this).get(PrepareCreateViewModel.class);
+    }
+    @Override
+    protected void onSubmit(Account account, long boardId, long stackId, @NonNull IResponseCallback<EmptyResponse> callback) {
+        Toast.makeText(this, R.string.saving_new_card, Toast.LENGTH_SHORT).show();
+        final FullCard fullCard;
+        if (requireContent()) {
+            fullCard = viewModel.createFullCard(account.getServerDeckVersionAsObject(), getContent());
+        } else {
+            final var intent = getIntent();
+            if (intent == null) {
+                throw new IllegalStateException("Intent should not be null because title is required.");
+            }
+            fullCard = viewModel.createFullCard(
+                    account.getServerDeckVersionAsObject(),
+                    intent.getStringExtra(Intent.EXTRA_SUBJECT),
+                    intent.getStringExtra(Intent.EXTRA_TITLE),
+                    intent.getStringExtra(Intent.EXTRA_TEXT)
+            );
+        }
+        viewModel.saveCard(account, boardId, stackId, fullCard, new IResponseCallback<>() {
+            @Override
+            public void onResponse(FullCard response, Headers headers) {
+                viewModel.saveCurrentAccount(account);
+                viewModel.saveCurrentBoardId(account.getId(), boardId);
+                viewModel.saveCurrentStackId(account.getId(), boardId, stackId);
+                callback.onResponse(null, headers);
+                startActivity(EditActivity.createEditCardIntent(PrepareCreateActivity.this, account, boardId, response.getLocalId()));
+                finish();
+            }
+            @Override
+            @SuppressLint("MissingSuperCall")
+            public void onError(Throwable throwable) {
+                callback.onError(throwable);
+            }
+        });
+    }
+    @Override
+    protected boolean showBoardsWithoutEditPermission() {
+        return false;
+    }
+    @Override
+    protected boolean requireContent() {
+        final var intent = getIntent();
+        return intent == null || (TextUtils.isEmpty(intent.getStringExtra(Intent.EXTRA_SUBJECT)) &&
+                TextUtils.isEmpty(intent.getStringExtra(Intent.EXTRA_TITLE)) &&
+                TextUtils.isEmpty(intent.getStringExtra(Intent.EXTRA_TEXT)));
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card.projectresources;
+import static android.view.View.GONE;
+import static android.view.View.VISIBLE;
+import static it.niedermann.nextcloud.deck.util.ProjectUtil.getResourceUri;
+import android.content.Intent;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.lifecycle.LifecycleOwner;
+import androidx.recyclerview.widget.RecyclerView;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.databinding.ItemProjectResourceBinding;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.ocs.projects.OcsProjectResource;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import it.niedermann.nextcloud.deck.ui.card.EditCardViewModel;
+import it.niedermann.nextcloud.deck.util.ProjectUtil;
+public class CardProjectResourceViewHolder extends RecyclerView.ViewHolder {
+    @NonNull
+    private final ItemProjectResourceBinding binding;
+    public CardProjectResourceViewHolder(@NonNull ItemProjectResourceBinding binding) {
+        super(binding.getRoot());
+        this.binding = binding;
+    }
+    public void bind(@NonNull EditCardViewModel viewModel, @NonNull OcsProjectResource resource, @NonNull LifecycleOwner owner) {
+        final var account = viewModel.getAccount();
+        final var resources = itemView.getResources();
+        binding.name.setText(resource.getName());
+        final @Nullable String link = resource.getLink();
+        binding.type.setVisibility(VISIBLE);
+        if (resource.getType() != null) {
+            switch (resource.getType()) {
+                case "deck": {
+                    linkifyViewHolder(account, link);
+                    binding.type.setText(resources.getString(R.string.project_type_deck_board));
+                    binding.image.setImageResource(R.drawable.project_deck_36dp);
+                    break;
+                }
+                case "deck-card": {
+                    try {
+                        final long[] ids = ProjectUtil.extractBoardIdAndCardIdFromUrl(link);
+                        if (ids.length == 2) {
+                            viewModel.getCardByRemoteID(account.getId(), ids[1]).observe(owner, (fullCard) -> {
+                                if (fullCard != null) {
+                                    viewModel.getBoardByRemoteId(account.getId(), ids[0]).observe(owner, (board) -> {
+                                        if (board != null) {
+                                            binding.getRoot().setOnClickListener((v) -> itemView.getContext().startActivity(EditActivity.createEditCardIntent(itemView.getContext(), account, board.getLocalId(), fullCard.getLocalId())));
+                                        } else {
+                                            linkifyViewHolder(account, link);
+                                        }
+                                    });
+                                } else {
+                                    linkifyViewHolder(account, link);
+                                }
+                            });
+                        } else {
+                            linkifyViewHolder(account, link);
+                        }
+                    } catch (IllegalArgumentException e) {
+                        DeckLog.logError(e);
+                        linkifyViewHolder(account, link);
+                    }
+                    binding.type.setText(resources.getString(R.string.project_type_deck_card));
+                    binding.image.setImageResource(R.drawable.project_deck_36dp);
+                    break;
+                }
+                case "file": {
+                    binding.type.setText(resources.getString(R.string.project_type_file));
+                    linkifyViewHolder(account, link);
+                    binding.image.setImageResource(R.drawable.project_file_36dp);
+                    break;
+                }
+                case "room": {
+                    binding.type.setText(resources.getString(R.string.project_type_room));
+                    linkifyViewHolder(account, link);
+                    binding.image.setImageResource(R.drawable.project_talk_36dp);
+                    break;
+                }
+                default: {
+                    DeckLog.info("Unknown resource type for", resource.getName() + ":", resource.getType());
+                    binding.type.setVisibility(GONE);
+                    linkifyViewHolder(account, link);
+                    break;
+                }
+            }
+        } else {
+            DeckLog.warn("Resource type for", resource.getName(), "is null");
+            binding.type.setVisibility(GONE);
+        }
+    }
+    private void linkifyViewHolder(@NonNull Account account, @Nullable String link) {
+        if (link != null) {
+            try {
+                binding.getRoot().setOnClickListener((v) -> itemView.getContext().startActivity(new Intent(Intent.ACTION_VIEW).setData(getResourceUri(account, link))));
+            } catch (IllegalArgumentException e) {
+                DeckLog.logError(e);
+            }
+        }
+    }
+}
+package it.niedermann.nextcloud.deck.ui.card;
+import static java.util.concurrent.CompletableFuture.supplyAsync;
+import android.app.Application;
+import android.content.Context;
+import android.content.Intent;
+import android.text.TextUtils;
+import androidx.annotation.NonNull;
+import com.nextcloud.android.sso.exceptions.NextcloudFilesAppAccountNotFoundException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.Card;
+import it.niedermann.nextcloud.deck.model.full.FullCard;
+import it.niedermann.nextcloud.deck.model.ocs.Version;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.ui.viewmodel.SyncViewModel;
+import okhttp3.Headers;
+public class NewCardViewModel extends SyncViewModel {
+    public NewCardViewModel(@NonNull Application application, @NonNull Account account) throws NextcloudFilesAppAccountNotFoundException {
+        super(application, account);
+    }
+    public CompletableFuture<Account> getCurrentAccount() {
+        return baseRepository.getCurrentAccountId().thenApplyAsync(baseRepository::readAccountDirectly);
+    }
+    public CompletableFuture<FullCard> createFullCard(long accountId, long boardId, long stackId, String content) {
+        final var result = new CompletableFuture<FullCard>();
+        supplyAsync(() -> baseRepository.readAccountDirectly(accountId))
+                .thenAcceptAsync(account -> syncRepository.createFullCard(accountId, boardId, stackId, createFullCard(account.getServerDeckVersionAsObject(), content),
+                        new IResponseCallback<>() {
+                            @Override
+                            public void onResponse(FullCard response, Headers headers) {
+                                result.complete(response);
+                            }
+                            @Override
+                            public void onError(Throwable throwable) {
+                                IResponseCallback.super.onError(throwable);
+                                result.completeExceptionally(throwable);
+                            }
+                        }));
+        return result;
+    }
+    private FullCard createFullCard(@NonNull Version version, @NonNull String content) {
+        if (TextUtils.isEmpty(content)) {
+            throw new IllegalArgumentException("Content must not be empty.");
+        }
+        final var fullCard = new FullCard();
+        final var card = new Card();
+        final int maxLength = version.getCardTitleMaxLength();
+        if (content.length() > maxLength) {
+            card.setTitle(content.substring(0, maxLength).trim());
+            card.setDescription(content.substring(maxLength).trim());
+        } else {
+            card.setTitle(content);
+            card.setDescription(null);
+        }
+        fullCard.setCard(card);
+        return fullCard;
+    }
+    public CompletionStage<Intent> createEditIntent(@NonNull Context context, long accountId, long boardId, long cardId) {
+        return supplyAsync(() -> baseRepository.readAccountDirectly(accountId))
+                .thenApplyAsync(account -> EditActivity.createEditCardIntent(context, account, boardId, cardId));
+    }
+}
+package it.niedermann.nextcloud.deck.ui.widget.upcoming;
+import static android.appwidget.AppWidgetManager.ACTION_APPWIDGET_UPDATE;
+import static it.niedermann.nextcloud.deck.util.WidgetUtil.pendingIntentFlagCompat;
+import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.widget.RemoteViews;
+import androidx.annotation.NonNull;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+import it.niedermann.nextcloud.deck.BuildConfig;
+import it.niedermann.nextcloud.deck.DeckLog;
+import it.niedermann.nextcloud.deck.R;
+import it.niedermann.nextcloud.deck.model.Account;
+import it.niedermann.nextcloud.deck.model.enums.ESortCriteria;
+import it.niedermann.nextcloud.deck.model.widget.filter.EWidgetType;
+import it.niedermann.nextcloud.deck.model.widget.filter.FilterWidget;
+import it.niedermann.nextcloud.deck.model.widget.filter.FilterWidgetAccount;
+import it.niedermann.nextcloud.deck.model.widget.filter.FilterWidgetSort;
+import it.niedermann.nextcloud.deck.model.widget.filter.FilterWidgetUser;
+import it.niedermann.nextcloud.deck.remote.api.IResponseCallback;
+import it.niedermann.nextcloud.deck.repository.BaseRepository;
+import it.niedermann.nextcloud.deck.ui.card.EditActivity;
+import okhttp3.Headers;
+public class UpcomingWidget extends AppWidgetProvider {
+    private static final String PENDING_INTENT_ACTION_EDIT = "edit";
+    private static final String PENDING_INTENT_ACTION_OPEN = "open";
+    private static final String PENDING_INTENT_PARAM_LOCAL_CARD_ID = "localCardId";
+    private static final String PENDING_INTENT_PARAM_ACCOUNT_ID = "accountId";
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    @Override
+    public void onUpdate(Context context, AppWidgetManager appWidgetManager, int[] appWidgetIds) {
+        super.onUpdate(context, appWidgetManager, appWidgetIds);
+        final BaseRepository baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            executor.submit(() -> {
+                if (baseRepository.filterWidgetExists(appWidgetId)) {
+                    DeckLog.warn(UpcomingWidget.class.getSimpleName(), "with id", appWidgetId, "already exists, perform update instead.");
+                    updateAppWidget(executor, context, appWidgetManager, appWidgetIds);
+                } else {
+                    final List<Account> accountsList = baseRepository.readAccountsDirectly();
+                    final FilterWidget config = new FilterWidget(appWidgetId, EWidgetType.UPCOMING_WIDGET);
+                    config.setSorts(new FilterWidgetSort(ESortCriteria.DUE_DATE, true));
+                    config.setAccounts(accountsList.stream().map(account -> {
+                        final FilterWidgetAccount fwa = new FilterWidgetAccount(account.getId(), false);
+                        fwa.setUsers(new FilterWidgetUser(baseRepository.getUserByUidDirectly(account.getId(), account.getUserName()).getLocalId()));
+                        return fwa;
+                    }).collect(Collectors.toList()));
+                    baseRepository.createFilterWidget(config, new IResponseCallback<>() {
+                        @Override
+                        public void onResponse(Integer response, Headers headers) {
+                            DeckLog.verbose("Successfully created", UpcomingWidget.class.getSimpleName(), "with id", appWidgetId);
+                            updateAppWidget(executor, context, appWidgetManager, appWidgetIds);
+                        }
+                        @Override
+                        public void onError(Throwable throwable) {
+                            DeckLog.error("Error while creating", UpcomingWidget.class.getSimpleName(), "with id", appWidgetId);
+                            IResponseCallback.super.onError(throwable);
+                            onDeleted(context, appWidgetIds);
+                        }
+                    });
+                }
+            });
+        }
+    }
+    @Override
+    public void onReceive(Context context, Intent intent) {
+        super.onReceive(context, intent);
+        final AppWidgetManager awm = AppWidgetManager.getInstance(context);
+        if (ACTION_APPWIDGET_UPDATE.equals(intent.getAction())) {
+            if (intent.hasExtra(AppWidgetManager.EXTRA_APPWIDGET_ID)) {
+                final int appWidgetId = intent.getExtras().getInt(AppWidgetManager.EXTRA_APPWIDGET_ID, -1);
+                DeckLog.verbose(ACTION_APPWIDGET_UPDATE, "for", UpcomingWidget.class.getSimpleName(), "with id", appWidgetId, "→ perform update.");
+                updateAppWidget(executor, context, awm, new int[]{appWidgetId});
+            } else {
+                DeckLog.verbose(ACTION_APPWIDGET_UPDATE, "→ Triggering update for all widgets of type", UpcomingWidget.class.getSimpleName());
+                updateAppWidget(executor, context, awm, awm.getAppWidgetIds(new ComponentName(context, UpcomingWidget.class)));
+            }
+        } else if (PENDING_INTENT_ACTION_EDIT.equals(intent.getAction())) {
+            if (intent.hasExtra(PENDING_INTENT_PARAM_ACCOUNT_ID) && intent.hasExtra(PENDING_INTENT_PARAM_LOCAL_CARD_ID)) {
+                executor.submit(() -> {
+                    final var baseRepository = new BaseRepository(context);
+                    context.startActivity(EditActivity.createEditCardIntent(context, baseRepository.readAccountDirectly(intent.getLongExtra(PENDING_INTENT_PARAM_ACCOUNT_ID, -1)), baseRepository.getBoardLocalIdByLocalCardIdDirectly(intent.getLongExtra(PENDING_INTENT_PARAM_LOCAL_CARD_ID, -1)), intent.getLongExtra(PENDING_INTENT_PARAM_LOCAL_CARD_ID, -1)));
+                });
+            } else {
+                DeckLog.error(PENDING_INTENT_PARAM_ACCOUNT_ID, "and", PENDING_INTENT_PARAM_LOCAL_CARD_ID, "must be provided for action", PENDING_INTENT_ACTION_EDIT);
+            }
+        } else if (PENDING_INTENT_ACTION_OPEN.equals(intent.getAction())) {
+            context.startActivity(context.getPackageManager().getLaunchIntentForPackage(BuildConfig.APPLICATION_ID));
+        }
+    }
+    @Override
+    public void onDeleted(Context context, int[] appWidgetIds) {
+        super.onDeleted(context, appWidgetIds);
+        final var baseRepository = new BaseRepository(context);
+        for (int appWidgetId : appWidgetIds) {
+            DeckLog.info("Delete", UpcomingWidget.class.getSimpleName(), "with id", appWidgetId);
+            baseRepository.deleteFilterWidget(appWidgetId, (response, headers) -> DeckLog.verbose("Successfully deleted " + UpcomingWidget.class.getSimpleName() + " with id " + appWidgetId));
+        }
+    }
+    private static void updateAppWidget(@NonNull ExecutorService executor, @NonNull Context context, @NonNull AppWidgetManager awm, int[] appWidgetIds) {
+        for (int appWidgetId : appWidgetIds) {
+            executor.submit(() -> {
+                final RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.widget_upcoming);
+                final Intent serviceIntent = new Intent(context, UpcomingWidgetService.class);
+                serviceIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId);
+                serviceIntent.setData(Uri.parse(serviceIntent.toUri(Intent.URI_INTENT_SCHEME)));
+                final PendingIntent templatePI = PendingIntent.getBroadcast(context, appWidgetId, new Intent(context, UpcomingWidget.class), pendingIntentFlagCompat(PendingIntent.FLAG_UPDATE_CURRENT));
+                views.setPendingIntentTemplate(R.id.upcoming_widget_lv, templatePI);
+                views.setRemoteAdapter(R.id.upcoming_widget_lv, serviceIntent);
+                views.setEmptyView(R.id.upcoming_widget_lv, R.id.widget_upcoming_placeholder_iv);
+                awm.notifyAppWidgetViewDataChanged(appWidgetId, R.id.upcoming_widget_lv);
+                awm.updateAppWidget(appWidgetId, views);
+            });
+        }
+    }
+    static Intent fillEditPendingIntent(long accountId, long localCardId) {
+        return new Intent()
+                .setAction(PENDING_INTENT_ACTION_EDIT)
+                .putExtra(PENDING_INTENT_PARAM_ACCOUNT_ID, accountId)
+                .putExtra(PENDING_INTENT_PARAM_LOCAL_CARD_ID, localCardId);
+    }
+    static Intent fillOpenPendingIntent() {
+        return new Intent()
+                .setAction(PENDING_INTENT_ACTION_OPEN);
+    }
+}

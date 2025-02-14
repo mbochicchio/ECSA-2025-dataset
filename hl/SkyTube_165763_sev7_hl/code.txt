@@ -1,0 +1,2825 @@
+/*
+ * SkyTube
+ * Copyright (C) 2015  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.activities;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.Drawable;
+import android.os.Build;
+import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.widget.AutoCompleteTextView;
+import android.widget.FrameLayout;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.content.res.AppCompatResources;
+import androidx.appcompat.widget.SearchView;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.DrawableCompat;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentTransaction;
+import com.mikepenz.actionitembadge.library.ActionItemBadge;
+import com.mikepenz.actionitembadge.library.utils.BadgeStyle;
+import java.io.Serializable;
+import java.util.ArrayList;
+import free.rm.skytube.BuildConfig;
+import free.rm.skytube.R;
+import free.rm.skytube.app.EventBus;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.Logger;
+import free.rm.skytube.businessobjects.TLSSocketFactory;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubeChannel;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubePlaylist;
+import free.rm.skytube.businessobjects.YouTube.VideoBlocker;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.businessobjects.db.DownloadedVideosDb;
+import free.rm.skytube.businessobjects.db.SearchHistoryDb;
+import free.rm.skytube.businessobjects.db.SearchHistoryTable;
+import free.rm.skytube.databinding.DialogEnterVideoUrlBinding;
+import free.rm.skytube.gui.businessobjects.BlockedVideosDialog;
+import free.rm.skytube.gui.businessobjects.CleanerDialog;
+import free.rm.skytube.gui.businessobjects.adapters.SearchHistoryCursorAdapter;
+import free.rm.skytube.gui.businessobjects.fragments.FragmentEx;
+import free.rm.skytube.gui.businessobjects.updates.UpdatesCheckerTask;
+import free.rm.skytube.gui.fragments.ChannelBrowserFragment;
+import free.rm.skytube.gui.fragments.MainFragment;
+import free.rm.skytube.gui.fragments.PlaylistVideosFragment;
+import free.rm.skytube.gui.fragments.SearchVideoGridFragment;
+/**
+ * Main activity (launcher).  This activity holds {@link free.rm.skytube.gui.fragments.VideosGridFragment}.
+ * Do NOT change this activity's superclass, as it needs to be {@link free.rm.skytube.gui.activities.BaseActivity} in order
+ * for Chromecast support to work (on the Extra variant - OSS variant's BaseActivity just has empty no-op methods for
+ * the Chromecast specific functionality)
+ */
+public class MainActivity extends BaseActivity {
+	/** Fragment that shows Videos from a specific Playlist */
+	private VideoBlockerPlugin      videoBlockerPlugin;
+	/** Set to true of the UpdatesCheckerTask has run; false otherwise. */
+	private static boolean updatesCheckerTaskRan = false;
+	public static final String ACTION_VIEW_CHANNEL = "MainActivity.ViewChannel";
+	public static final String ACTION_VIEW_FEED = "MainActivity.ViewFeed";
+	public static final String ACTION_VIEW_PLAYLIST = "MainActivity.ViewPlaylist";
+	private static final String MAIN_FRAGMENT   = "MainActivity.MainFragment";
+	private static final String SEARCH_FRAGMENT = "MainActivity.SearchFragment";
+	private static final String CHANNEL_BROWSER_FRAGMENT = "MainActivity.ChannelBrowserFragment";
+	private static final String PLAYLIST_VIDEOS_FRAGMENT = "MainActivity.PlaylistVideosFragment";
+	private static final String VIDEO_BLOCKER_PLUGIN = "MainActivity.VideoBlockerPlugin";
+	private static final String MAIN_FRAGMENT_TAG = MAIN_FRAGMENT + ".Tag";
+	private static final String CHANNEL_BROWSER_FRAGMENT_TAG = CHANNEL_BROWSER_FRAGMENT + ".Tag";
+	private static final String PLAYLIST_VIDEOS_FRAGMENT_TAG = PLAYLIST_VIDEOS_FRAGMENT + ".Tag";
+	private static final String SEARCH_FRAGMENT_TAG = SEARCH_FRAGMENT + ".Tag";
+	private static final String[] FRAGMENTS = {MAIN_FRAGMENT, SEARCH_FRAGMENT, CHANNEL_BROWSER_FRAGMENT, PLAYLIST_VIDEOS_FRAGMENT};
+	@Override
+	protected void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		Logger.i(this, "AppID: %s - flavor: %s buildType: %s version: %s (%s)", BuildConfig.APPLICATION_ID, BuildConfig.FLAVOR, BuildConfig.BUILD_TYPE, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE);
+		// To enable downloading with https on pre-kitkat devices.
+		if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.KITKAT) {
+			TLSSocketFactory.setAsDefault();
+		}
+		// check for updates (one time only)
+		if (!updatesCheckerTaskRan) {
+			new UpdatesCheckerTask(this, false).executeInParallel();
+			updatesCheckerTaskRan = true;
+		}
+		EventBus.getInstance().registerMainActivityListener(this);
+		SkyTubeApp.setFeedUpdateInterval(SkyTubeApp.getSettings().getFeedUpdaterInterval());
+		// Delete any missing downloaded videos
+		new DownloadedVideosDb.RemoveMissingVideosTask().executeInParallel();
+		setContentView(binding.getRoot());
+		// The Extra variant needs to initialize some Fragments that are used for Chromecast control. This is done in onLayoutSet of BaseActivity.
+		// The OSS variant has a no-op version of this method, since it doesn't need to do anything else here.
+		onLayoutSet();
+		if(binding.fragmentContainer != null) {
+			handleIntent(getIntent());
+		}
+		if (savedInstanceState != null) {
+			// restore the video blocker plugin
+			this.videoBlockerPlugin = (VideoBlockerPlugin) savedInstanceState.getSerializable(VIDEO_BLOCKER_PLUGIN);
+			this.videoBlockerPlugin.setActivity(this);
+		} else {
+			this.videoBlockerPlugin = new VideoBlockerPlugin(this);
+		}
+	}
+	@Override
+	protected void onNewIntent(Intent intent) {
+		super.onNewIntent(intent);
+		Logger.i(MainActivity.this, "onNewIntent "+ intent +" old "+getIntent());
+		setIntent(intent);
+		Logger.i(MainActivity.this, "---> "+getIntent());
+		handleIntent(intent);
+	}
+	@Override
+	protected void onResumeFragments() {
+		super.onResumeFragments();
+		Logger.i(MainActivity.this, "onResumeFragments "+getIntent());
+	}
+	private void handleIntent(Intent intent) {
+		// If this Activity was called to view a particular channel, display that channel via ChannelBrowserFragment, instead of MainFragment
+		String action = intent.getAction();
+		Logger.i(MainActivity.this, "Action is : " + action);
+		initMainFragment(action);
+		if(ACTION_VIEW_CHANNEL.equals(action)) {
+			YouTubeChannel channel = (YouTubeChannel) intent.getSerializableExtra(ChannelBrowserFragment.CHANNEL_OBJ);
+			Logger.i(MainActivity.this, "Channel found: " + channel);
+			onChannelClick(channel, false);
+		} else if(ACTION_VIEW_PLAYLIST.equals(action)) {
+			YouTubePlaylist playlist = (YouTubePlaylist) intent.getSerializableExtra(PlaylistVideosFragment.PLAYLIST_OBJ);
+			Logger.i(MainActivity.this, "playlist found: " + playlist);
+			onPlaylistClick(playlist, false);
+		}
+	}
+	private void initMainFragment(String action) {
+		MainFragment mainFragment = getMainFragment();
+		if(mainFragment == null) {
+			Logger.i(MainActivity.this,"initMainFragment called "+action);
+			mainFragment = new MainFragment();
+			// If we're coming here via a click on the Notification that new videos for subscribed channels have been found, make sure to
+			// select the Feed tab.
+			if(action != null && action.equals(ACTION_VIEW_FEED)) {
+				Bundle args = new Bundle();
+				args.putBoolean(MainFragment.SHOULD_SELECTED_FEED_TAB, true);
+				mainFragment.setArguments(args);
+			}
+			getSupportFragmentManager().beginTransaction().add(R.id.fragment_container, mainFragment, MAIN_FRAGMENT_TAG).commit();
+		} else {
+			Logger.i(MainActivity.this, "mainFragment already exists, action:"+action+ " fragment:"
+					+mainFragment +", manager:"+mainFragment.getParentFragmentManager() +", support="+getSupportFragmentManager());
+		}
+	}
+	@Override
+	protected void onSaveInstanceState(Bundle outState) {
+		super.onSaveInstanceState(outState);
+		final FragmentManager supportFragmentManager = getSupportFragmentManager();
+		for (String fragmentName : FRAGMENTS) {
+			Fragment fragment = supportFragmentManager.findFragmentByTag(fragmentName + ".Tag");
+			if (fragment != null && fragment.isVisible()) {
+				putFragment(supportFragmentManager, outState, fragmentName, fragment);
+			}
+		}
+		// save the video blocker plugin
+		outState.putSerializable(VIDEO_BLOCKER_PLUGIN, videoBlockerPlugin);
+	}
+	private void putFragment(FragmentManager fragmentManager,  Bundle bundle, @NonNull String key,
+						@NonNull Fragment fragment) {
+		if (fragment.getParentFragmentManager() != fragmentManager) {
+			Logger.e(MainActivity.this, "Error fragment has a different FragmentManager than expected: Fragment=" + fragment + ", manager=" + fragmentManager + ", Fragment.manager=" + fragment.getParentFragmentManager() + " for key=" + key);
+		} else {
+			fragmentManager.putFragment(bundle, key, fragment);
+		}
+	}
+	@Override
+	protected void onResume() {
+		super.onResume();
+		// Activity may be destroyed when the devices is rotated, so we need to make sure that the
+		// channel play list is holding a reference to the activity being currently in use...
+		ChannelBrowserFragment channelBrowserFragment = getChannelBrowserFragment();
+		if (channelBrowserFragment != null) {
+			channelBrowserFragment.getChannelPlaylistsFragment().setMainActivityListener(this);
+		}
+	}
+	private ChannelBrowserFragment getChannelBrowserFragment() {
+		Fragment fragment = getSupportFragmentManager().findFragmentByTag(CHANNEL_BROWSER_FRAGMENT_TAG);
+		if (fragment != null) {
+			if (fragment instanceof ChannelBrowserFragment) {
+				return (ChannelBrowserFragment) fragment;
+			} else {
+				Logger.e(MainActivity.this, "Unexpected fragment: "+fragment);
+			}
+		}
+		return null;
+	}
+	private MainFragment getMainFragment() {
+		Fragment fragment = getSupportFragmentManager().findFragmentByTag(MAIN_FRAGMENT_TAG);
+		if (fragment != null) {
+			if (fragment instanceof MainFragment) {
+				return (MainFragment) fragment;
+			} else {
+				Logger.e(MainActivity.this, "Unexpected fragment: "+fragment);
+			}
+		}
+		return null;
+	}
+	@Override
+	public boolean onCreateOptionsMenu(final Menu menu) {
+		super.onCreateOptionsMenu(menu);
+		getMenuInflater().inflate(R.menu.main_activity_menu, menu);
+		// setup the video blocker notification icon which will be displayed in the tool bar
+		videoBlockerPlugin.setupIconForToolBar(menu);
+		onOptionsMenuCreated(menu);
+		// setup the SearchView (actionbar)
+		final MenuItem searchItem = menu.findItem(R.id.menu_search);
+		final SearchView searchView = (SearchView) searchItem.getActionView();
+		searchView.setQueryHint(getString(R.string.search_videos));
+		AutoCompleteTextView autoCompleteTextView = searchView.findViewById(androidx.appcompat.R.id.search_src_text);
+		autoCompleteTextView.setThreshold(0);
+		// ... and change/init the cursor... but not clear the search area, so the user can modify the previous one.
+		getSearchHistoryAdapter(searchView);
+		// set the query hints to be equal to the previously searched text
+		searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+			@Override
+			public boolean onQueryTextChange(final String newText) {
+				if (newText == null) {
+					return false;
+				}
+				return true;
+			}
+			@Override
+			public boolean onQueryTextSubmit(String query) {
+				if(!SkyTubeApp.getSettings().isDisableSearchHistory()) {
+					// Save this search string into the Search History Database (for Suggestions)
+					SearchHistoryDb.getSearchHistoryDb().insertSearchText(query).subscribe();
+				}
+				displaySearchResults(query, searchView);
+				return true;
+			}
+		});
+		return true;
+	}
+    private synchronized SearchHistoryCursorAdapter getSearchHistoryAdapter(final SearchView searchView) {
+        SearchHistoryCursorAdapter searchHistoryCursorAdapter = (SearchHistoryCursorAdapter) searchView.getSuggestionsAdapter();
+        if (searchHistoryCursorAdapter == null) {
+            searchHistoryCursorAdapter = new SearchHistoryCursorAdapter(getBaseContext(),
+                    R.layout.search_hint,
+                    new String[]{SearchHistoryTable.COL_SEARCH_TEXT},
+                    new int[]{android.R.id.text1},
+                    0);
+            searchHistoryCursorAdapter.setSearchHistoryClickListener(query -> displaySearchResults(query, searchView));
+            searchView.setSuggestionsAdapter(searchHistoryCursorAdapter);
+        }
+        return searchHistoryCursorAdapter;
+    }
+	@Override
+	public boolean onOptionsItemSelected(MenuItem item) {
+		switch (item.getItemId()) {
+			case R.id.menu_blocker:
+				videoBlockerPlugin.onMenuBlockerIconClicked();
+				return true;
+			case R.id.menu_preferences:
+				Intent i = new Intent(this, PreferencesActivity.class);
+				startActivity(i);
+				return true;
+			case R.id.menu_enter_video_url:
+				displayEnterVideoUrlDialog();
+				return true;
+			case R.id.menu_clean_downloads:
+				new CleanerDialog(this).show();
+				return true;
+			case android.R.id.home:
+				Fragment mainFragment = getMainFragment();
+				if(mainFragment == null || !mainFragment.isVisible()) {
+					onBackPressed();
+					return true;
+				}
+		}
+		return super.onOptionsItemSelected(item);
+	}
+	/**
+	 * Display the Enter Video URL dialog.
+	 */
+	private void displayEnterVideoUrlDialog() {
+		final DialogEnterVideoUrlBinding dialogBinding
+				= DialogEnterVideoUrlBinding.inflate(getLayoutInflater());
+		new AlertDialog.Builder(this)
+				.setView(dialogBinding.getRoot())
+				.setTitle(R.string.enter_video_url)
+				.setPositiveButton(R.string.play, (dialog, which) -> {
+					// get the inputted URL string
+					final String videoUrl = dialogBinding.dialogUrlEdittext.getText().toString();
+					// play the video
+					SkyTubeApp.openUrl(MainActivity.this, videoUrl, true);
+				})
+				.setNegativeButton(R.string.cancel, null)
+				.show();
+		// paste whatever there is in the clipboard (hopefully it is a video url)
+		CharSequence charSequence = getClipboardItem();
+		if (charSequence != null) {
+			dialogBinding.dialogUrlEdittext.setText(charSequence.toString());
+		}
+		// clear URL edittext button
+		dialogBinding.dialogUrlClearButton.setOnClickListener(v ->
+				dialogBinding.dialogUrlEdittext.setText(""));
+	}
+	/**
+	 * Return the last item stored in the clipboard.
+	 *
+	 * @return	{@link CharSequence}
+	 */
+	private CharSequence getClipboardItem() {
+		CharSequence clipboardText = null;
+		ClipboardManager clipboardManager = ContextCompat.getSystemService(this, ClipboardManager.class);
+		// if the clipboard contain data ...
+		if (clipboardManager != null  &&  clipboardManager.hasPrimaryClip()) {
+			ClipData.Item item = clipboardManager.getPrimaryClip().getItemAt(0);
+			// gets the clipboard as text.
+			clipboardText = item.coerceToText(this);
+		}
+		return clipboardText;
+	}
+	/**
+	 * For the extra variant, if the Chromecast Controller is visible and expanded, we want to collapse it. So, we must
+	 * intercept onBackPressed to make sure it doesn't return us to the homescreen. shouldMinimizeOnBack will take care
+	 * of this - on the Extra variant, if the Chromecast Controller is visible and expanded, it will collapse it, and
+	 * return false, thus the app will not exit nor will it return to the homescreen. If it's collapsed, or not visible,
+	 * it will return true, which then will check if the mainFragment is visible (as opposed to searchFragment). If it is,
+	 * it will return to the home screen without exiting, otherwise it will do super.onBackPressed (so in searchFragment,
+	 * it will exit from that and return to mainFragment).
+	 *
+	 * On the OSS variant, shouldMinimizeOnBack will always return true, and the normal checks for mainFragment being visible
+	 * will be done.
+	 */
+	@Override
+	public void onBackPressed() {
+		if(shouldMinimizeOnBack()) {
+			MainFragment mainFragment = getMainFragment();
+			if (mainFragment != null && mainFragment.isVisible()) {
+				// If the Subscriptions Drawer is open, close it instead of minimizing the app.
+				if (mainFragment.isDrawerOpen()) {
+					mainFragment.closeDrawer();
+				} else {
+					// On Android, when the user presses back button, the Activity is destroyed and will be
+					// recreated when the user relaunches the app.
+					// We do not want that behaviour, instead then the back button is pressed, the app will
+					// be **minimized**.
+					Intent startMain = new Intent(Intent.ACTION_MAIN);
+					startMain.addCategory(Intent.CATEGORY_HOME);
+					startMain.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+					startActivity(startMain);
+				}
+			} else {
+				super.onBackPressed();
+			}
+		}
+	}
+	private void switchToFragment(FragmentEx fragment, boolean addToBackStack, String tag) {
+		FragmentManager manager = getSupportFragmentManager();
+		if (manager.isDestroyed()) {
+			Logger.e(this,"FragmentManager is destroyed, unable to add "+fragment);
+			return;
+		}
+		FragmentTransaction transaction = manager.beginTransaction();
+		transaction.replace(R.id.fragment_container, fragment, tag);
+		if(addToBackStack) {
+			transaction.addToBackStack(null);
+		}
+		transaction.commit();
+	}
+	public void onChannelClick(YouTubeChannel channel, boolean addToBackStack) {
+		Bundle args = new Bundle();
+		args.putSerializable(ChannelBrowserFragment.CHANNEL_OBJ, channel);
+		switchToChannelBrowserFragment(args, addToBackStack);
+	}
+	@Override
+	public void onChannelClick(ChannelId channelId) {
+		Bundle args = new Bundle();
+		args.putString(ChannelBrowserFragment.CHANNEL_ID, channelId.getRawId());
+		switchToChannelBrowserFragment(args, true);
+	}
+	private void switchToChannelBrowserFragment(Bundle args, boolean addToBackStack) {
+		ChannelBrowserFragment channelBrowserFragment = new ChannelBrowserFragment();
+		channelBrowserFragment.getChannelPlaylistsFragment().setMainActivityListener(this);
+		channelBrowserFragment.setArguments(args);
+		switchToFragment(channelBrowserFragment, addToBackStack, CHANNEL_BROWSER_FRAGMENT_TAG);
+	}
+	@Override
+	public void onPlaylistClick(YouTubePlaylist playlist) {
+		onPlaylistClick(playlist, true);
+	}
+	private void onPlaylistClick(YouTubePlaylist playlist, boolean addToBackStack) {
+		PlaylistVideosFragment playlistVideosFragment = new PlaylistVideosFragment();
+		Bundle args = new Bundle();
+		args.putSerializable(PlaylistVideosFragment.PLAYLIST_OBJ, playlist);
+		playlistVideosFragment.setArguments(args);
+		switchToFragment(playlistVideosFragment, addToBackStack, PLAYLIST_VIDEOS_FRAGMENT_TAG);
+	}
+	/**
+	 * Hide the virtual keyboard and then switch to the Search Video Grid Fragment with the selected
+	 * query to search for videos.
+	 *
+	 * @param query Query text submitted by the user.
+	 */
+	private void displaySearchResults(String query, @NonNull final View searchView) {
+		// hide the keyboard
+		searchView.clearFocus();
+		// open SearchVideoGridFragment and display the results
+		SearchVideoGridFragment searchVideoGridFragment = new SearchVideoGridFragment();
+		Bundle bundle = new Bundle();
+		bundle.putString(SearchVideoGridFragment.QUERY, query);
+		searchVideoGridFragment.setArguments(bundle);
+		switchToFragment(searchVideoGridFragment, true, SEARCH_FRAGMENT_TAG);
+	}
+	//////////////////////////////////////////////////////////////////////////////////////////
+	/**
+	 * A module/"plugin"/icon that displays the total number of blocked videos.
+	 */
+	private static class VideoBlockerPlugin implements VideoBlocker.VideoBlockerListener,
+			BlockedVideosDialog.BlockedVideosDialogListener,
+			Serializable {
+		private ArrayList<VideoBlocker.BlockedVideo> blockedVideos = new ArrayList<>();
+		private transient AppCompatActivity activity = null;
+		VideoBlockerPlugin(AppCompatActivity activity) {
+			// notify this class whenever a video is blocked...
+			VideoBlocker.setVideoBlockerListener(this);
+			this.activity = activity;
+		}
+		public void setActivity(AppCompatActivity activity) {
+			this.activity = activity;
+		}
+		@Override
+		public void onVideoBlocked(VideoBlocker.BlockedVideo blockedVideo) {
+			blockedVideos.add(blockedVideo);
+			activity.invalidateOptionsMenu();
+		}
+		/**
+		 * Setup the video blocker notification icon which will be displayed in the tool bar.
+ 		 */
+		void setupIconForToolBar(final Menu menu) {
+			final Drawable blocker = AppCompatResources.getDrawable(activity, R.drawable.ic_blocker)
+					.mutate();
+			DrawableCompat.setTint(blocker, Color.WHITE);
+			if (getTotalBlockedVideos() > 0) {
+				// display a red bubble containing the number of blocked videos
+				ActionItemBadge.update(activity, menu.findItem(R.id.menu_blocker), blocker,
+						ActionItemBadge.BadgeStyles.RED, getTotalBlockedVideos());
+			} else {
+				// Else, set the bubble to transparent.  This is required so that when the user
+				// clicks on the icon, the app will be able to detect such click and displays the
+				// BlockedVideosDialog (otherwise, the ActionItemBadge would just ignore such clicks.
+				ActionItemBadge.update(activity,
+						menu.findItem(R.id.menu_blocker), blocker,
+						new BadgeStyle(BadgeStyle.Style.DEFAULT,
+								com.mikepenz.actionitembadge.library.R.layout.menu_action_item_badge,
+								Color.TRANSPARENT, Color.TRANSPARENT, Color.WHITE),
+						"");
+			}
+		}
+		void onMenuBlockerIconClicked() {
+			new BlockedVideosDialog(activity, this, blockedVideos).show();
+		}
+		@Override
+		public void onClearBlockedVideos() {
+			blockedVideos.clear();
+			activity.invalidateOptionsMenu();
+		}
+		/**
+		 * @return Total number of blocked videos.
+		 */
+		private int getTotalBlockedVideos() {
+			return blockedVideos.size();
+		}
+	}
+	/**
+	 * This will tell the SubscriptionsFeedFragment (which lives in MainFragment) that it should refresh its video grid.
+	 * This happens when a channel is subscribed to/unsubscribed from. This is called from {@link free.rm.skytube.gui.fragments.ChromecastMiniControllerFragment}.
+	 */
+	@Override
+	public void refreshSubscriptionsFeedVideos() {
+		SkyTubeApp.getSettings().setRefreshSubsFeedFromCache(false);
+		MainFragment mainFragment = getMainFragment();
+		if (mainFragment != null) {
+			mainFragment.refreshSubscriptionsFeedVideos();
+		}
+	}
+}
+/*
+ * SkyTube
+ * Copyright (C) 2016  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import free.rm.skytube.R;
+import free.rm.skytube.app.EventBus;
+import free.rm.skytube.app.FeedUpdateTask;
+import free.rm.skytube.app.Settings;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.FeedUpdaterService;
+import free.rm.skytube.businessobjects.Logger;
+import free.rm.skytube.businessobjects.VideoCategory;
+import free.rm.skytube.businessobjects.YouTube.Tasks.GetSubscriptionVideosTaskListener;
+import free.rm.skytube.databinding.FragmentSubsFeedBinding;
+import free.rm.skytube.gui.businessobjects.SubscriptionsBackupsManager;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+/**
+ * Fragment that displays subscriptions videos feed from all channels the user is subscribed to.
+ */
+public class SubscriptionsFeedFragment extends VideosGridFragment implements GetSubscriptionVideosTaskListener {
+    private SubscriptionsBackupsManager subscriptionsBackupsManager;
+    /**
+     * BroadcastReceiver that will receive a message that new subscription videos have been found by the
+     * {@link FeedUpdaterService}. The video grid will be updated when this happens.
+     */
+    private BroadcastReceiver feedUpdaterReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            refreshFeedFromCache();
+        }
+    };
+    private FragmentSubsFeedBinding binding;
+    private final CompositeDisposable compositeDisposable = new CompositeDisposable();
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        subscriptionsBackupsManager = new SubscriptionsBackupsManager(getActivity(), SubscriptionsFeedFragment.this);
+        EventBus.getInstance().registerSubscriptionListener(this);
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        init(container.getContext(), FragmentSubsFeedBinding.inflate(inflater, container, false));
+        return binding.getRoot();
+    }
+    private void init(Context context, FragmentSubsFeedBinding bindingParam) {
+        this.binding = bindingParam;
+        initVideos(context, videoGridAdapter, binding.videosGridview);
+        binding.importSubscriptionsButton.setOnClickListener(v -> subscriptionsBackupsManager
+                .displayImportSubscriptionsFromYouTubeDialog());
+        binding.importBackupButton.setOnClickListener(v -> subscriptionsBackupsManager.displayFilePicker());
+        videoGridAdapter.setVideoGridUpdated(this::setupUiAccordingToNumOfSubbedChannels);
+        // get the previously published videos currently cached in the database
+        videoGridAdapter.setVideoCategory(VideoCategory.SUBSCRIPTIONS_FEED_VIDEOS);
+    }
+    @Override
+    public void onResume() {
+        requireActivity().registerReceiver(feedUpdaterReceiver, new IntentFilter(FeedUpdaterService.NEW_SUBSCRIPTION_VIDEOS_FOUND));
+        super.onResume();
+        // setup the UI and refresh the feed (if applicable)
+        Settings settings = SkyTubeApp.getSettings();
+        if (settings.isFullRefreshTimely() || settings.isRefreshSubsFeedFull()) {
+            startRefreshTask();
+        }
+        refreshFeedFromCache();
+    }
+    @Override
+    public synchronized void onPause() {
+        super.onPause();
+        requireActivity().unregisterReceiver(feedUpdaterReceiver);
+    }
+    @Override
+    public void onDestroy() {
+        subscriptionsBackupsManager.clearBackgroundTasks();
+        compositeDisposable.clear();
+        subscriptionsBackupsManager = null;
+        EventBus.getInstance().unregisterSubscriptionListener(this);
+        super.onDestroy();
+    }
+    @Override
+    public void onDestroyView() {
+        binding = null;
+        super.onDestroyView();
+    }
+    @Override
+    public void onRefresh() {
+        startRefreshTask();
+    }
+    private synchronized void startRefreshTask() {
+        FeedUpdateTask.getInstance().start(requireContext());
+    }
+    @Override
+    public void onSubscriptionRefreshStarted() {
+        if (gridviewBinding != null && gridviewBinding.swipeRefreshLayout != null) {
+            gridviewBinding.swipeRefreshLayout.setRefreshing(true);
+        }
+    }
+    @Override
+    public void onChannelsFound(boolean hasChannels) {
+        setupUiAccordingToNumOfSubbedChannels(hasChannels);
+    }
+    @Override
+    public void onSubscriptionRefreshFinished() {
+        // Remove the progress bar(s)
+        if (gridviewBinding != null && gridviewBinding.swipeRefreshLayout != null) {
+            gridviewBinding.swipeRefreshLayout.setRefreshing(false);
+        }
+    }
+    @Override
+    public void onChannelVideoFetchFinish(boolean changes) {
+        // refresh the subs feed by reading from the cache (i.e. local DB)
+        if (changes) {
+            refreshFeedFromCache();
+        }
+    }
+    @Override
+    protected VideoCategory getVideoCategory() {
+        return VideoCategory.SUBSCRIPTIONS_FEED_VIDEOS;
+    }
+    @Override
+    public String getFragmentName() {
+        return SkyTubeApp.getStr(R.string.feed);
+    }
+    @Override
+    public int getPriority() {
+        return 2;
+    }
+    @Override
+    public String getBundleKey() {
+        return MainFragment.SUBSCRIPTIONS_FEED_FRAGMENT;
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        subscriptionsBackupsManager.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    }
+    /**
+     * Set up the UI depending to the total number of channel the user is subscribed to.
+     *
+     * @param hasChannels   If the user has already subscribed to at least one channel.
+     */
+    private void setupUiAccordingToNumOfSubbedChannels(boolean hasChannels) {
+        final SwipeRefreshLayout swipeRefreshLayout = gridviewBinding.swipeRefreshLayout;
+        if (hasChannels) {
+            if (swipeRefreshLayout.getVisibility() != View.VISIBLE) {
+                swipeRefreshLayout.setVisibility(View.VISIBLE);
+                binding.noSubscriptionsText.setVisibility(View.GONE);
+            }
+        } else {
+            swipeRefreshLayout.setVisibility(View.GONE);
+            binding.noSubscriptionsText.setVisibility(View.VISIBLE);
+        }
+    }
+    public void refreshFeedFromCache() {
+        if (videoGridAdapter != null) {
+            videoGridAdapter.refresh(true);
+        }
+    }
+}/*
+ * SkyTube
+ * Copyright (C) 2019 Zsombor Gegesy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.app;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Environment;
+import androidx.annotation.StringRes;
+import androidx.preference.PreferenceManager;
+import java.io.File;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import free.rm.skytube.R;
+import free.rm.skytube.app.enums.Policy;
+import free.rm.skytube.businessobjects.Logger;
+import free.rm.skytube.businessobjects.YouTube.VideoStream.VideoQuality;
+import free.rm.skytube.businessobjects.YouTube.VideoStream.VideoResolution;
+import free.rm.skytube.gui.fragments.MainFragment;
+import free.rm.skytube.gui.fragments.SubscriptionsFeedFragment;
+/**
+ * Type safe wrapper to access the various preferences.
+ */
+public class Settings {
+    private final SkyTubeApp app;
+    private static final String TUTORIAL_COMPLETED = "YouTubePlayerActivity.TutorialCompleted";
+    private static final String LATEST_RELEASE_NOTES_DISPLAYED = "Settings.LATEST_RELEASE_NOTES_DISPLAYED";
+    private static final String FLAG_REFRESH_FEED_FROM_CACHE = "SubscriptionsFeedFragment.FLAG_REFRESH_FEED_FROM_CACHE";
+    private static final String FLAG_REFRESH_FEED_FULL = "SubscriptionsFeedFragment.FLAG_REFRESH_FEED_FULL";
+    /** Refresh the feed (by querying the YT servers) after 3 hours since the last check. */
+    private static final int    REFRESH_TIME_HOURS = 3;
+    private static final long   REFRESH_TIME_IN_MS = REFRESH_TIME_HOURS * (1000L*3600L);
+    Settings(SkyTubeApp app) {
+        this.app = app;
+    }
+    void migrate() {
+        SharedPreferences sharedPreferences = getSharedPreferences();
+        migrate(sharedPreferences, "pref_preferred_resolution", R.string.pref_key_maximum_res);
+        migrate(sharedPreferences, "pref_preferred_resolution_mobile", R.string.pref_key_maximum_res_mobile);
+        migrate(sharedPreferences, "pref_key_video_preferred_resolution", R.string.pref_key_video_download_maximum_resolution);
+        setDefault(sharedPreferences, R.string.pref_key_video_quality, VideoQuality.BEST_QUALITY.name());
+        setDefault(sharedPreferences, R.string.pref_key_video_quality_for_downloads, VideoQuality.BEST_QUALITY.name());
+        setDefault(sharedPreferences, R.string.pref_key_video_quality_on_mobile, VideoQuality.LEAST_BANDWITH.name());
+        setDefault(sharedPreferences, R.string.pref_key_use_newer_formats, Build.VERSION.SDK_INT > 16);
+        setDefault(sharedPreferences, R.string.pref_key_playback_speed, "1.0");
+        Set<String> defaultTabs = new HashSet<>();
+        defaultTabs.add(MainFragment.FEATURED_VIDEOS_FRAGMENT);
+        setDefault(sharedPreferences, R.string.pref_key_hide_tabs, defaultTabs);
+        setDefault(sharedPreferences, R.string.pref_key_default_tab_name, MainFragment.MOST_POPULAR_VIDEOS_FRAGMENT);
+    }
+    private void migrate(SharedPreferences sharedPreferences, String oldKey, @StringRes int newKey) {
+        String oldValue = sharedPreferences.getString(oldKey, null);
+        if (oldValue != null) {
+            String newKeyStr = app.getString(newKey);
+            Logger.i(this, "Migrate %s : %s into %s", oldKey, oldValue, newKeyStr);
+            final SharedPreferences.Editor editor = sharedPreferences.edit();
+            editor.putString(newKeyStr, oldValue);
+            editor.remove(oldKey);
+            editor.commit();
+        }
+    }
+    private void setDefault(SharedPreferences sharedPreferences, @StringRes int key, Object defaultValue) {
+        String keyStr = app.getString(key);
+        if (!sharedPreferences.contains(keyStr)) {
+            final SharedPreferences.Editor editor = sharedPreferences.edit();
+            Logger.i(this, "Set default %s to %s", keyStr, defaultValue);
+            if (defaultValue instanceof String) {
+                editor.putString(keyStr, (String) defaultValue);
+            } else if (defaultValue instanceof Boolean) {
+                editor.putBoolean(keyStr, (Boolean) defaultValue);
+            } else if (defaultValue instanceof Set) {
+                editor.putStringSet(keyStr, (Set<String>) defaultValue);
+            } else {
+                throw new IllegalArgumentException("Default value is " + defaultValue + " for " + keyStr);
+            }
+            editor.commit();
+        }
+    }
+    /**
+     * Returns a localised string.
+     *
+     * @param stringResId String resource ID (e.g. R.string.my_string)
+     * @return Localised string, from the strings XML file.
+     */
+    public String getStr(int stringResId) {
+        return app.getString(stringResId);
+    }
+    public Set<String> getSponsorblockCategories() {
+        String[] defaultFilterList = SkyTubeApp.getStringArray(R.array.sponsorblock_filtering_list_default_values);
+        Set<String> filterList = SkyTubeApp.getPreferenceManager().getStringSet("pref_key_sponsorblock_category_list", new HashSet<String>(Arrays.asList(defaultFilterList)));
+        return filterList;
+    }
+    public boolean isSponsorblockEnabled() {
+        return SkyTubeApp.getPreferenceManager().getBoolean("pref_key_enable_sponsorblock", false);
+    }
+    public boolean isUseDislikeApi() {
+        return getPreference(R.string.pref_key_use_dislike_api, false);
+    }
+    public boolean isDownloadToSeparateFolders() {
+        return getPreference(R.string.pref_key_download_to_separate_directories,false);
+    }
+    public Set<String> getHiddenTabs() {
+        return getPreference(R.string.pref_key_hide_tabs, Collections.emptySet());
+    }
+    public Policy getWarningMeteredPolicy() {
+        String currentValue = getSharedPreferences().getString(getStr(R.string.pref_key_mobile_network_usage_policy),
+                getStr(R.string.pref_metered_network_usage_value_ask));
+        return Policy.valueOf(currentValue.toUpperCase());
+    }
+    public String getPreferredContentCountry() {
+        String defaultCountryCode = Locale.getDefault().getCountry();
+        String code = getPreference(R.string.pref_key_default_content_country, "");
+        Logger.i(this, "Default country code is %s - app selection: %s", defaultCountryCode, code);
+        return (code != null && !code.isEmpty()) ? code : defaultCountryCode;
+    }
+    public boolean isPlaybackStatusEnabled() {
+        return !getPreference(R.string.pref_key_disable_playback_status, false);
+    }
+    /**
+     * Gets the policy which defines the desired video resolution by the user in the app preferences.
+     *
+     * @return Desired {@link StreamSelectionPolicy}.
+     */
+    public StreamSelectionPolicy getDesiredVideoResolution(boolean forDownload, boolean onMetered) {
+        SharedPreferences prefs = getSharedPreferences();
+        String maxKey = SkyTubeApp.getStr(forDownload ? R.string.pref_key_video_download_maximum_resolution : R.string.pref_key_maximum_res);
+        String maxResIdValue = prefs.getString(maxKey, Integer.toString(VideoResolution.DEFAULT_VIDEO_RES_ID));
+        String minKey = SkyTubeApp.getStr(forDownload ? R.string.pref_key_video_download_minimum_resolution : R.string.pref_key_minimum_res);
+        String minResIdValue = prefs.getString(minKey, null);
+        String qualityKey = SkyTubeApp.getStr(forDownload ? R.string.pref_key_video_quality_for_downloads : R.string.pref_key_video_quality);
+        String qualityValue = prefs.getString(qualityKey, null);
+        // if on metered network, use the preferred resolution under metered network if defined
+        if (onMetered) {
+            // default res for mobile network = that of wifi
+            maxResIdValue = prefs.getString(SkyTubeApp.getStr(R.string.pref_key_maximum_res_mobile), maxResIdValue);
+            minResIdValue = prefs.getString(SkyTubeApp.getStr(R.string.pref_key_minimum_res_mobile), minResIdValue);
+            qualityValue = prefs.getString(SkyTubeApp.getStr(R.string.pref_key_video_quality_on_mobile), qualityValue);
+        }
+        VideoResolution maxResolution = VideoResolution.videoResIdToVideoResolution(maxResIdValue);
+        VideoResolution minResolution = VideoResolution.videoResIdToVideoResolution(minResIdValue);
+        VideoQuality quality = VideoQuality.valueOf(qualityValue);
+        boolean useNewFormats = prefs.getBoolean(SkyTubeApp.getStr(R.string.pref_key_use_newer_formats), false);
+        return new StreamSelectionPolicy(!forDownload && useNewFormats, maxResolution, minResolution, quality);
+    }
+    public StreamSelectionPolicy getDesiredVideoResolution(boolean forDownload) {
+        return getDesiredVideoResolution(forDownload, SkyTubeApp.isActiveNetworkMetered());
+    }
+    public boolean isDisableSearchHistory() {
+        return getSharedPreferences().getBoolean(SkyTubeApp.getStr(R.string.pref_key_disable_search_history), false);
+    }
+    public int getFeedUpdaterInterval() {
+        return Integer.parseInt(getPreference(R.string.pref_key_feed_notification, "0"));
+    }
+    public void setWarningMobilePolicy(Policy warnPolicy) {
+        setPreference(R.string.pref_key_mobile_network_usage_policy, warnPolicy.name().toLowerCase());
+    }
+    public boolean isDisableGestures() {
+        return getPreference(R.string.pref_key_disable_screen_gestures, false);
+    }
+    public boolean isEnableVideoBlocker() {
+        return getPreference(R.string.pref_key_enable_video_blocker, true);
+    }
+    /**
+     * @return True if channel deny list is enabled;  false if channel allow list is enabled.
+     */
+    public boolean isChannelDenyListEnabled() {
+        final String defValue = getStr(R.string.channel_blacklisting_filtering);
+        final String channelFilter = getPreference(R.string.pref_key_channel_filter_method, defValue);
+        return channelFilter.equals(defValue);
+    }
+    public void setDisableGestures(boolean disableGestures) {
+        setPreference(R.string.pref_key_disable_screen_gestures, disableGestures);
+    }
+    public boolean isSwitchVolumeAndBrightness() {
+        return getPreference(R.string.pref_key_switch_volume_and_brightness, false);
+    }
+    /**
+     * Instruct the {@link SubscriptionsFeedFragment} to refresh the subscriptions feed.
+     *
+     * This might occur due to user subscribing/unsubscribing to a channel.
+     */
+    public void setRefreshSubsFeedFromCache(boolean flag) {
+        setPreference(FLAG_REFRESH_FEED_FROM_CACHE, flag);
+    }
+    public boolean isRefreshSubsFeedFromCache() {
+        return getPreference(FLAG_REFRESH_FEED_FROM_CACHE, false);
+    }
+    /**
+     * Instruct the {@link SubscriptionsFeedFragment} to refresh the subscriptions feed by retrieving
+     * any newly published videos from the YT servers.
+     *
+     * This might occur due to user just imported the subbed channels from YouTube (XML file).
+     */
+    public void setRefreshSubsFeedFull(boolean flag) {
+        setPreference(FLAG_REFRESH_FEED_FULL, flag);
+    }
+    public boolean isRefreshSubsFeedFull() {
+        return getPreference(FLAG_REFRESH_FEED_FULL, false);
+    }
+    public boolean isFullRefreshTimely() {
+        // Only do an automatic refresh of subscriptions if it's been more than three hours since the last one was done.
+        Long subscriptionsLastUpdated = getFeedsLastUpdateTime();
+        if (subscriptionsLastUpdated == null) {
+            return true;
+        }
+        long threeHoursAgo = System.currentTimeMillis() - REFRESH_TIME_IN_MS;
+        return subscriptionsLastUpdated <= threeHoursAgo;
+    }
+    /**
+     * Will check whether the video player tutorial was completed before.  If no, it will return
+     * false and will save the value accordingly.
+     *
+     * @return True if the tutorial was completed in the past.
+     */
+    public boolean wasTutorialDisplayedBefore() {
+        boolean wasTutorialDisplayedBefore = getPreference(TUTORIAL_COMPLETED, false);
+        setPreference(TUTORIAL_COMPLETED, true);
+        return wasTutorialDisplayedBefore;
+    }
+    public void showTutorialAgain() {
+        setPreference(TUTORIAL_COMPLETED, false);
+    }
+    /**
+     * @return The last time we updated the subscriptions videos feed.  Will return null if the
+     * last refresh time is set to -1.
+     */
+    public Long getFeedsLastUpdateTime() {
+        long l = getSharedPreferences().getLong(SkyTubeApp.KEY_SUBSCRIPTIONS_LAST_UPDATED, -1);
+        return (l != -1)  ?  l  :  null;
+    }
+    /**
+     * Update the feeds' last update time to the current time.
+     */
+    public void updateFeedsLastUpdateTime() {
+        updateFeedsLastUpdateTime(System.currentTimeMillis());
+    }
+    /**
+     * Update the feed's last update time to dateTime.
+     *
+     * @param dateTimeInMs  The feed's last update time.  If it is set to null, then -1 will be stored
+     *                  to indicate that the app needs to force refresh the feeds...
+     */
+    public void updateFeedsLastUpdateTime(Long dateTimeInMs) {
+        setPreference(SkyTubeApp.KEY_SUBSCRIPTIONS_LAST_UPDATED, dateTimeInMs != null ? dateTimeInMs : -1);
+    }
+    public void setDownloadFolder(String dir) {
+        setPreference(R.string.pref_key_video_download_folder, dir);
+    }
+    public String getDownloadFolder(String defaultValue) {
+        return getPreference(R.string.pref_key_video_download_folder, defaultValue);
+    }
+    public File getDownloadParentFolder() {
+        String parentDirectory = getDownloadFolder(null);
+        return parentDirectory != null ? new File(parentDirectory) : Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+    }
+    private void setPreference(@StringRes int resId, boolean value) {
+        setPreference(getStr(resId), value);
+    }
+    private void setPreference(String key, boolean value) {
+        final SharedPreferences.Editor editor = getSharedPreferences().edit();
+        editor.putBoolean(key, value);
+        editor.apply();
+    }
+    private void setPreference(String preferenceName, Long value) {
+        final SharedPreferences.Editor editor = getSharedPreferences().edit();
+        editor.putLong(preferenceName, value);
+        editor.apply();
+    }
+    private void setPreference(String preferenceName, String value) {
+        final SharedPreferences.Editor editor = getSharedPreferences().edit();
+        editor.putString(preferenceName, value);
+        editor.apply();
+    }
+    private void setPreference(@StringRes int resId, String value) {
+        setPreference(getStr(resId), value);
+    }
+    private String getPreference(@StringRes int resId, String defaultValue) {
+        return getSharedPreferences().getString(SkyTubeApp.getStr(resId), defaultValue);
+    }
+    private boolean getPreference(@StringRes int resId, boolean defaultValue) {
+        return getSharedPreferences().getBoolean(SkyTubeApp.getStr(resId), defaultValue);
+    }
+    private boolean getPreference(String preference, boolean defaultValue) {
+        return getSharedPreferences().getBoolean(preference, defaultValue);
+    }
+    private Set<String> getPreference(@StringRes int resId, Set<String> defaultValue) {
+        return getSharedPreferences().getStringSet(SkyTubeApp.getStr(resId), defaultValue);
+    }
+    private SharedPreferences getSharedPreferences() {
+        return PreferenceManager.getDefaultSharedPreferences(app) ;
+    }
+    public String getDisplayedReleaseNoteTag() {
+        return getSharedPreferences().getString(LATEST_RELEASE_NOTES_DISPLAYED, "");
+    }
+    public void setDisplayedReleaseNoteTag(String newValue) {
+        setPreference(LATEST_RELEASE_NOTES_DISPLAYED, newValue);
+    }
+    /**
+     * @return true, if NewPipe is the preferred backend API
+     */
+    public boolean isUseNewPipe() {
+        return getPreference(R.string.pref_use_default_newpipe_backend, true);
+    }
+    public float getDefaultPlaybackSpeed() {
+        try {
+            return Float.parseFloat(getPreference(R.string.pref_key_playback_speed, "1.0"));
+        } catch (NumberFormatException nfe) {
+            return 1.0F;
+        }
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2015  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import android.content.Context;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.GridView;
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.GridLayoutManager;
+import com.bumptech.glide.Glide;
+import free.rm.skytube.R;
+import free.rm.skytube.businessobjects.VideoCategory;
+import free.rm.skytube.databinding.VideosGridviewBinding;
+import free.rm.skytube.gui.businessobjects.MainActivityListener;
+import free.rm.skytube.gui.businessobjects.adapters.VideoGridAdapter;
+import free.rm.skytube.gui.businessobjects.fragments.BaseVideosGridFragment;
+/**
+ * A fragment that will hold a {@link GridView} full of YouTube videos.
+ */
+public abstract class VideosGridFragment extends BaseVideosGridFragment {
+    protected VideosGridviewBinding gridviewBinding;
+    public VideosGridFragment() {
+    }
+    @Override
+    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+        // inflate the layout for this fragment, and initialize
+        initVideos(container.getContext(), videoGridAdapter, VideosGridviewBinding.inflate(inflater, container, false));
+        return gridviewBinding.getRoot();
+    }
+    protected void initVideos(@NonNull Context context, VideoGridAdapter videoGridAdapterParam, @NonNull VideosGridviewBinding gridviewBindingParam) {
+        initBase(context, videoGridAdapterParam);
+        this.gridviewBinding = gridviewBindingParam;
+        // setup the video grid view
+        videoGridAdapter.setSwipeRefreshLayout(gridviewBindingParam.swipeRefreshLayout);
+        VideoCategory category = getVideoCategory();
+        if (category != null) {
+            videoGridAdapter.setVideoCategory(category, getSearchString());
+        }
+        videoGridAdapter.setListener((MainActivityListener)getActivity());
+        gridviewBinding.gridView.setHasFixedSize(true);
+        gridviewBinding.gridView.setLayoutManager(new GridLayoutManager(getActivity(),
+                getResources().getInteger(R.integer.video_grid_num_columns)));
+        gridviewBinding.gridView.setAdapter(videoGridAdapter);
+        gridviewBinding.swipeRefreshLayout.setOnRefreshListener(this);
+    }
+    @Override
+    public void onDestroyView() {
+        gridviewBinding.gridView.setAdapter(null);
+        gridviewBinding = null;
+        super.onDestroyView();
+        Glide.get(requireContext()).clearMemory();
+    }
+    void scrollToTop() {
+        gridviewBinding.gridView.smoothScrollToPosition(0);
+    }
+    /**
+     * @return Returns the category of videos being displayed by this fragment.
+     */
+    protected abstract VideoCategory getVideoCategory();
+    /**
+     * @return Returns the search string used when setting the video category.  (Can be used to
+     * set the channel ID in case of VideoCategory.CHANNEL_VIDEOS).
+     */
+    protected String getSearchString() {
+        return null;
+    }
+    /**
+     * @return The fragment/tab name/title.
+     */
+    public abstract String getFragmentName();
+    public abstract int getPriority();
+    public String getBundleKey() {
+        return null;
+    }
+}
+package free.rm.skytube.gui.fragments;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.AutoCompleteTextView;
+import android.widget.ImageView;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.widget.SearchView;
+import androidx.core.content.ContextCompat;
+import androidx.core.view.GravityCompat;
+import androidx.fragment.app.Fragment;
+import androidx.fragment.app.FragmentManager;
+import androidx.fragment.app.FragmentPagerAdapter;
+import androidx.preference.PreferenceManager;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import com.google.android.material.tabs.TabLayout;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import free.rm.skytube.R;
+import free.rm.skytube.app.EventBus;
+import free.rm.skytube.app.FeedUpdateTask;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.app.utils.WeaklyReferencedMap;
+import free.rm.skytube.businessobjects.Logger;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.databinding.FragmentMainBinding;
+import free.rm.skytube.databinding.SubsDrawerBinding;
+import free.rm.skytube.gui.activities.BaseActivity;
+import free.rm.skytube.gui.businessobjects.adapters.SubsAdapter;
+import free.rm.skytube.gui.businessobjects.fragments.FragmentEx;
+public class MainFragment extends FragmentEx {
+	// Constants for saving the state of this Fragment's child Fragments
+	public static final String FEATURED_VIDEOS_FRAGMENT = "MainFragment.featuredVideosFragment";
+	public static final String MOST_POPULAR_VIDEOS_FRAGMENT = "MainFragment.mostPopularVideosFragment";
+	public static final String SUBSCRIPTIONS_FEED_FRAGMENT = "MainFragment.subscriptionsFeedFragment";
+	public static final String BOOKMARKS_FRAGMENT = "MainFragment.bookmarksFragment";
+	public static final String DOWNLOADED_VIDEOS_FRAGMENT = "MainFragment.downloadedVideosFragment";
+	public static final String SHOULD_SELECTED_FEED_TAB = "MainFragment.SHOULD_SELECTED_FEED_TAB";
+	private static final int TOP_LIST_INDEX = 0;
+	private FragmentMainBinding fragmentBinding;
+	private SubsDrawerBinding subsDrawerBinding;
+	private SubsAdapter subsAdapter = null;
+	private ActionBarDrawerToggle subsDrawerToggle;
+	private SimplePagerAdapter videosPagerAdapter = null;
+	@Nullable
+	@Override
+	public View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container,
+							 @Nullable Bundle savedInstanceState) {
+		fragmentBinding = FragmentMainBinding.inflate(inflater, container, false);
+		subsDrawerBinding = fragmentBinding.subsDrawer;
+		// For the non-oss version, when using a Chromecast, returning to this fragment from another fragment that uses
+		// CoordinatorLayout results in the SlidingUpPanel to be positioned improperly. We need to redraw the panel
+		// to fix this. The oss version just has a no-op method.
+		((BaseActivity) getActivity()).redrawPanel();
+		// setup the toolbar / actionbar
+		setSupportActionBar(fragmentBinding.toolbar);
+		getSupportActionBar().setDisplayHomeAsUpEnabled(false);
+		// indicate that this fragment has an action bar menu
+		setHasOptionsMenu(true);
+		subsDrawerToggle = new ActionBarDrawerToggle(
+				getActivity(),
+				fragmentBinding.subsDrawerLayout,
+				R.string.app_name,
+				R.string.app_name
+		);
+		subsDrawerToggle.setDrawerIndicatorEnabled(true);
+		final ActionBar actionBar = getSupportActionBar();
+		if (actionBar != null) {
+			actionBar.setDisplayHomeAsUpEnabled(true);
+			actionBar.setHomeButtonEnabled(true);
+		}
+		SearchView subSearchView = subsDrawerBinding.subsSearchView;
+		AutoCompleteTextView autoCompleteTextView = subSearchView
+				.findViewById(androidx.appcompat.R.id.search_src_text);
+		int fontColor = ContextCompat.getColor(requireContext(), R.color.subs_text);
+		autoCompleteTextView.setTextColor(fontColor);
+		autoCompleteTextView.setHintTextColor(fontColor);
+		final ImageView searchIcon = subsDrawerBinding.subsSearchView
+				.findViewById(androidx.appcompat.R.id.search_mag_icon);
+		searchIcon.setColorFilter(fontColor);
+		if (subsAdapter == null) {
+			subsAdapter = new SubsAdapter(getActivity(), subsDrawerBinding.subsDrawerProgressBar);
+		}
+		subsDrawerBinding.subsDrawerRecyclerView.setLayoutManager(new LinearLayoutManager(getActivity()));
+		subsDrawerBinding.subsDrawerRecyclerView.setAdapter(subsAdapter);
+		subsDrawerBinding.subsSearchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
+			@Override
+			public boolean onQueryTextSubmit(String s) {
+				return true;
+			}
+			@Override
+			public boolean onQueryTextChange(String s) {
+				subsAdapter.filterSubSearch(s);
+				return true;
+			}
+		});
+		subsDrawerBinding.subsSearchView.setOnCloseListener(new SearchView.OnCloseListener() {
+			@Override
+			public boolean onClose() {
+				Logger.i(this, "closed search");
+				return false;
+			}
+		});
+		videosPagerAdapter = new SimplePagerAdapter(getChildFragmentManager());
+		final int tabCount = videosPagerAdapter.getCount();
+		fragmentBinding.pager.setOffscreenPageLimit(tabCount > 3 ? tabCount - 1 : tabCount);
+		fragmentBinding.pager.setAdapter(videosPagerAdapter);
+		fragmentBinding.tabLayout.setupWithViewPager(fragmentBinding.pager);
+		fragmentBinding.tabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
+			@Override
+			public void onTabSelected(TabLayout.Tab tab) {
+				fragmentBinding.pager.setCurrentItem(tab.getPosition());
+			}
+			@Override
+			public void onTabUnselected(TabLayout.Tab tab) {
+			}
+			@Override
+			public void onTabReselected(TabLayout.Tab tab) {
+				//When current tab reselected scroll to the top of the video list
+				VideosGridFragment fragment = videosPagerAdapter.getFragmentFrom(tab, true);
+				if (fragment != null && fragment.gridviewBinding != null) {
+					fragment.gridviewBinding.gridView.smoothScrollToPosition(TOP_LIST_INDEX);
+				} else {
+					Logger.i(MainFragment.this, "onTabReselected: %s - %s failed fragment is %s", tab.getPosition(), tab.getText(), fragment);
+				}
+			}
+		});
+		// select the default tab:  the default tab is defined by the user through the Preferences
+		SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(getActivity());
+		// If the app is being opened via the Notification that new videos from Subscribed channels have been found, select the Subscriptions Feed Fragment
+		Bundle args = getArguments();
+		if (args != null && args.getBoolean(SHOULD_SELECTED_FEED_TAB, false)) {
+			fragmentBinding.pager.setCurrentItem(videosPagerAdapter.getIndexOf(SUBSCRIPTIONS_FEED_FRAGMENT));
+		} else {
+			String defaultTab = sp.getString(getString(R.string.pref_key_default_tab_name), null);
+			String[] tabListValues = getTabListValues();
+			if (defaultTab == null) {
+				int defaultTabNum = Integer.parseInt(sp.getString(getString(R.string.pref_key_default_tab), "0"));
+				defaultTab = tabListValues[defaultTabNum];
+				sp.edit().putString(getString(R.string.pref_key_default_tab_name), defaultTab).apply();
+			}
+			// Create a list of non-hidden fragments in order to default to the proper tab
+			Set<String> hiddenFragments = SkyTubeApp.getSettings().getHiddenTabs();
+			List<String> shownFragmentList = new ArrayList<>();
+			for (final String tabListValue : tabListValues) {
+				if (!hiddenFragments.contains(tabListValue))
+					shownFragmentList.add(tabListValue);
+			}
+			fragmentBinding.pager.setCurrentItem(shownFragmentList.indexOf(defaultTab));
+		}
+		// Set the current viewpager fragment as selected, as when the Activity is recreated, the Fragment
+		// won't know that it's selected. When the Feeds fragment is the default tab, this will prevent the
+		// refresh dialog from showing when an automatic refresh happens.
+		videosPagerAdapter.selectTabAtPosition(fragmentBinding.pager.getCurrentItem());
+		EventBus.getInstance().registerMainFragment(this);
+		return fragmentBinding.getRoot();
+	}
+	private static String[] getTabListValues() {
+		return SkyTubeApp.getStringArray(R.array.tab_list_values);
+	}
+	@Override
+	public void onDestroyView() {
+		videosPagerAdapter = null;
+		subsDrawerBinding.subsDrawerRecyclerView.setAdapter(null); // cleanup the reference from the SubsAdapter back to the view
+		subsDrawerToggle = null;
+		fragmentBinding = null;
+		subsDrawerBinding = null;
+		super.onDestroyView();
+	}
+	@Override
+	public void onDestroy() {
+		// this should happen after onSaveInstanceState
+		super.onDestroy();
+	}
+	@Override
+	public void onActivityCreated(Bundle savedInstanceState) {
+		super.onActivityCreated(savedInstanceState);
+		subsDrawerToggle.syncState();
+	}
+	@Override
+	public void onResume() {
+		super.onResume();
+		// when the MainFragment is resumed (e.g. after Preferences is minimized), inform the
+		// current fragment that it is selected.
+		if (videosPagerAdapter != null && fragmentBinding != null) {
+			Logger.d(this, "MAINFRAGMENT RESUMED " + fragmentBinding.tabLayout.getSelectedTabPosition());
+			videosPagerAdapter.selectTabAtPosition(fragmentBinding.tabLayout.getSelectedTabPosition());
+		}
+		// If the selectedFragment is not the subscriptionsFeedFragment, try out refreshing the subs in the background
+		if (SkyTubeApp.getSettings().isFullRefreshTimely()) {
+			FeedUpdateTask.getInstance().start(this.getContext());
+		}
+	}
+	@Override
+	public void onPause() {
+		super.onPause();
+//		subsAdapter.setContext(null);
+	}
+	@Override
+	public boolean onOptionsItemSelected(MenuItem item) {
+		// Pass the event to ActionBarDrawerToggle, if it returns true, then it has handled the app
+		// icon touch event
+		if (subsDrawerToggle.onOptionsItemSelected(item)) {
+			return true;
+		}
+		// Handle your other action bar items...
+		return super.onOptionsItemSelected(item);
+	}
+	public void refreshTabs(EventBus.SettingChange settingChange) {
+		Logger.i(this, "refreshTabs called");
+		switch (settingChange) {
+			case HIDE_TABS: {
+				videosPagerAdapter.updateVisibleTabs(fragmentBinding.tabLayout);
+				break;
+			}
+			case CONTENT_COUNTRY: {
+				videosPagerAdapter.notifyDataSetChanged();
+				break;
+			}
+			case SUBSCRIPTION_LIST_CHANGED: {
+				subsAdapter.refreshSubsList();
+				break;
+			}
+			default:
+				break;
+		}
+	}
+	public void notifyChangeChannelNewVideosStatus(ChannelId channelId, boolean newVideos) {
+		subsAdapter.changeChannelNewVideosStatus(channelId, newVideos);
+	}
+	public void notifyChannelRemoved(ChannelId channelId) {
+		subsAdapter.removeChannel(channelId);
+	}
+	public class SimplePagerAdapter extends FragmentPagerAdapter {
+		private final WeaklyReferencedMap<String, VideosGridFragment> instantiatedFragments = new WeaklyReferencedMap<>();
+		private final List<String> visibleTabs = new ArrayList<>();
+		private VideosGridFragment primaryItem;
+		public SimplePagerAdapter(FragmentManager fm) {
+			// TODO: Investigate, if we need this
+			super(fm, BEHAVIOR_RESUME_ONLY_CURRENT_FRAGMENT);
+			setupVisibleTabs();
+		}
+		synchronized void setupVisibleTabs() {
+			visibleTabs.clear();
+			Set<String> hiddenTabs = SkyTubeApp.getSettings().getHiddenTabs();
+			for (String key : getTabListValues()) {
+				if (hiddenTabs.contains(key)) {
+					instantiatedFragments.remove(key);
+				} else {
+					visibleTabs.add(key);
+				}
+			}
+		}
+		synchronized void updateVisibleTabs(TabLayout pager) {
+			final int currentItem = pager.getSelectedTabPosition();
+			String oldSelection = getTabKey(currentItem);
+			setupVisibleTabs();
+			notifyDataSetChanged();
+			if (oldSelection != null && !isVisible(oldSelection)) {
+				int newSelection = Math.min(visibleTabs.size() - 1, currentItem);
+				if (newSelection>=0) {
+					TabLayout.Tab tab = pager.getTabAt(newSelection);
+					pager.selectTab(tab);
+				}
+			}
+		}
+		@Override
+		public void setPrimaryItem(@NonNull ViewGroup container, int position, @NonNull Object object) {
+			super.setPrimaryItem(container, position, object);
+			if (object != primaryItem) {
+				if (primaryItem != null) {
+					primaryItem.onFragmentUnselected();
+					primaryItem = null;
+				}
+				if (object instanceof VideosGridFragment) {
+					primaryItem = (VideosGridFragment) object;
+					primaryItem.onFragmentSelected();
+				}
+			}
+		}
+		@Override
+		public int getItemPosition(@NonNull Object object) {
+			VideosGridFragment fragment = (VideosGridFragment) object;
+			String key = fragment.getBundleKey();
+			int currPos = visibleTabs.indexOf(key);
+			return currPos < 0 ? POSITION_NONE : currPos;
+		}
+		@Override
+		public synchronized Fragment getItem(int position) {
+			String key = getTabKey(position);
+			if (key != null) {
+				return createOrGetFromCache(key, true);
+			}
+			return null;
+		}
+		private VideosGridFragment createOrGetFromCache(String key, boolean create) {
+			VideosGridFragment fragment = instantiatedFragments.get(key);
+			if (fragment == null && create){
+				fragment = create(key);
+				instantiatedFragments.put(key, fragment);
+			}
+			return fragment;
+		}
+		private VideosGridFragment create(String key) {
+			// add fragments to list:  do NOT forget to ***UPDATE*** @string/tab_list and @string/tab_list_values
+			if (MOST_POPULAR_VIDEOS_FRAGMENT.equals(key)) {
+				return new MostPopularVideosFragment();
+			}
+			if (FEATURED_VIDEOS_FRAGMENT.equals(key)) {
+				return new FeaturedVideosFragment();
+			}
+			if (SUBSCRIPTIONS_FEED_FRAGMENT.equals(key)) {
+				return new SubscriptionsFeedFragment();
+			}
+			if (BOOKMARKS_FRAGMENT.equals(key)) {
+				return new BookmarksFragment();
+			}
+			if (DOWNLOADED_VIDEOS_FRAGMENT.equals(key)) {
+				return new DownloadedVideosFragment();
+			}
+			return null;
+		}
+		@Override
+		public synchronized int getCount() {
+			return visibleTabs.size();
+		}
+		@Override
+		public synchronized void destroyItem(final ViewGroup container, final int position, final Object object) {
+			super.destroyItem(container, position, object);
+			instantiatedFragments.remove(getTabKey(position));
+		}
+		private String getTabKey(int position) {
+			if (0 <= position && position < visibleTabs.size()) {
+				return visibleTabs.get(position);
+			}
+			return null;
+		}
+		private int getIndexOf(String fragmentName) {
+			return visibleTabs.indexOf(fragmentName);
+		}
+		private synchronized VideosGridFragment getFragmentFrom(int position, boolean createIfNotFound) {
+			String key = getTabKey(position);
+			return createOrGetFromCache(key, createIfNotFound);
+		}
+		private synchronized VideosGridFragment getFragmentFrom(TabLayout.Tab tab, boolean createIfNotFound) {
+			return getFragmentFrom(tab.getPosition(), createIfNotFound);
+		}
+		public synchronized VideosGridFragment selectTabAtPosition(int position) {
+			VideosGridFragment fragment = getFragmentFrom(position, true);
+			if (fragment != null) {
+				fragment.onFragmentSelected();
+			}
+			return fragment;
+		}
+		@Override
+		public synchronized CharSequence getPageTitle(int position) {
+			String tabKey = getTabKey(position);
+			if (tabKey != null) {
+				return SkyTubeApp.getFragmentNames().getName(tabKey);
+			}
+			return "Unknown";
+		}
+		private boolean isVisible(String key) {
+			return getIndexOf(key) >= 0;
+		}
+	}
+	@Override
+	public void onSaveInstanceState(Bundle outState) {
+//		videosPagerAdapter.onSaveInstanceState(outState);
+		super.onSaveInstanceState(outState);
+	}
+	/**
+	 * Returns true if the subscriptions drawer is opened.
+	 */
+	public boolean isDrawerOpen() {
+		if (fragmentBinding != null) {
+			return fragmentBinding.subsDrawerLayout.isDrawerOpen(GravityCompat.START);
+		} else {
+			Logger.e(this, "subsDrawerLayout is null for isDrawerOpen");
+			Thread.dumpStack();
+			return false;
+		}
+	}
+	/**
+	 * Close the subscriptions drawer.
+	 */
+	public void closeDrawer() {
+		if (fragmentBinding != null) {
+			fragmentBinding.subsDrawerLayout.closeDrawer(GravityCompat.START);
+		} else {
+			Logger.e(this, "subsDrawerLayout is null for closeDrawer");
+			Thread.dumpStack();
+		}
+	}
+	/**
+	 * Refresh the SubscriptionsFeedFragment's feed.
+	 */
+	public void refreshSubscriptionsFeedVideos() {
+		SubscriptionsFeedFragment subscriptionsFeedFragment = (SubscriptionsFeedFragment) videosPagerAdapter.createOrGetFromCache(SUBSCRIPTIONS_FEED_FRAGMENT, false);
+		if (subscriptionsFeedFragment != null) {
+			subscriptionsFeedFragment.refreshFeedFromCache();
+		}
+	}
+}
+/*
+ * SkyTube
+ * Copyright (C) 2021 Zsombor Gegesy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.app;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import android.util.Log;
+import android.widget.Toast;
+import androidx.core.app.NotificationChannelCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import java.util.List;
+import free.rm.skytube.R;
+import free.rm.skytube.businessobjects.YouTube.YouTubeTasks;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+public class FeedUpdateTask {
+    private static final String NOTIFICATION_CHANNEL_NAME = "SkyTube";
+    private static final String TAG = "SkyTubeApp";
+    private static final String NOTIFICATION_CHANNEL_ID = "subscriptionChecking";
+    private static final int NOTIFICATION_ID = 1;
+    private static FeedUpdateTask instance;
+    public synchronized static FeedUpdateTask getInstance() {
+        if (instance == null) {
+            instance = new FeedUpdateTask();
+        }
+        return instance;
+    }
+    private final CompositeDisposable compositeDisposable = new CompositeDisposable();
+    private int numVideosFetched = 0;
+    private int numChannelsFetched = 0;
+    private int numChannelsSubscribed = 0;
+    private boolean refreshInProgress = false;
+    public boolean isRefreshInProgress() {
+        return refreshInProgress;
+    }
+    public synchronized boolean start(Context context) {
+        if (refreshInProgress) {
+            return false;
+        }
+        if (!SkyTubeApp.isConnected(context)) {
+            return false;
+        }
+        createNotificationChannel(context);
+        SkyTubeApp.getSettings().setRefreshSubsFeedFull(false);
+        refreshInProgress = true;
+        compositeDisposable.add(YouTubeTasks.refreshAllSubscriptions(context, this::processChannelIds,
+                newVideosFound -> {
+                    numChannelsFetched++;
+                    numVideosFetched += newVideosFound;
+                    showNotification();
+                })
+                .observeOn(AndroidSchedulers.mainThread())
+                .doOnSuccess(newVideos -> {
+                    SkyTubeApp.uiThread();
+                    Log.i(TAG, "Found new videos: " + newVideos);
+                    EventBus.getInstance().notifyChannelVideoFetchingFinished(newVideos > 0);
+                    if (newVideos > 0) {
+                        Toast.makeText(context,
+                                String.format(SkyTubeApp.getStr(R.string.notification_new_videos_found),
+                                        numVideosFetched), Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(context, R.string.no_new_videos_found, Toast.LENGTH_LONG).show();
+                    }
+                })
+                .doOnTerminate(() -> {
+                    refreshInProgress = false;
+                    NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID);
+                    EventBus.getInstance().notifySubscriptionRefreshFinished();
+                }).subscribe());
+        return true;
+    }
+    private synchronized void processChannelIds(List<ChannelId> channelIds) {
+        SkyTubeApp.uiThread();
+        numVideosFetched      = 0;
+        numChannelsFetched    = 0;
+        numChannelsSubscribed = channelIds.size();
+        boolean hasChannels = numChannelsSubscribed > 0;
+        EventBus.getInstance().notifyChannelsFound(hasChannels);
+        if (hasChannels) {
+            showNotification();
+        } else {
+            refreshInProgress = false;
+        }
+    }
+    private void createNotificationChannel(Context context) {
+        // Create the NotificationChannel, but only on API 26+ because
+        // the NotificationChannel class is not in the Support Library.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Log.i(TAG, "Create notification channel: "+NOTIFICATION_CHANNEL_ID);
+            final NotificationManagerCompat notificationManager = NotificationManagerCompat.from(context);
+            final NotificationChannelCompat channel = new NotificationChannelCompat.Builder(NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_DEFAULT)
+                    .setName(NOTIFICATION_CHANNEL_NAME)
+                    .setSound(null, null)
+                    .build();
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+    private void showNotification() {
+        final Context context = SkyTubeApp.getContext();
+        final NotificationManagerCompat notificationManager = NotificationManagerCompat.from(context);
+        final NotificationCompat.Builder builder = new NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification_icon)
+                .setContentTitle(context.getString(R.string.fetching_subscription_videos))
+                .setContentText(String.format(context.getString(R.string.fetched_videos_from_channels),
+                        numVideosFetched, numChannelsFetched, numChannelsSubscribed));
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Log.e(TAG, "Pending intent call?");
+            PendingIntent pendingIntent = PendingIntent.getActivity(context,
+                    1, new Intent(), PendingIntent.FLAG_UPDATE_CURRENT);
+            builder.setPriority(NotificationCompat.FLAG_ONGOING_EVENT)
+                    .setContentIntent(pendingIntent);
+        }
+        // Issue the notification.
+        notificationManager.notify(NOTIFICATION_ID, builder.build());
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2015  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.app;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Looper;
+import android.os.StrictMode;
+import android.os.SystemClock;
+import android.util.Log;
+import android.widget.Toast;
+import androidx.annotation.ArrayRes;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
+import androidx.core.app.NotificationChannelCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.content.res.ResourcesCompat;
+import androidx.core.graphics.ColorUtils;
+import androidx.core.net.ConnectivityManagerCompat;
+import androidx.multidex.MultiDexApplication;
+import androidx.preference.PreferenceManager;
+import com.google.api.client.googleapis.json.GoogleJsonError;
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
+import org.ocpsoft.prettytime.PrettyTime;
+import org.schabi.newpipe.extractor.exceptions.ReCaptchaException;
+import java.io.IOException;
+import java.net.SocketException;
+import java.time.LocalDate;
+import java.util.Arrays;
+import java.util.List;
+import free.rm.skytube.BuildConfig;
+import free.rm.skytube.R;
+import free.rm.skytube.businessobjects.FeedUpdaterReceiver;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubeChannel;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubePlaylist;
+import free.rm.skytube.businessobjects.YouTube.YouTubeTasks;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ContentId;
+import free.rm.skytube.businessobjects.YouTube.newpipe.NewPipeService;
+import free.rm.skytube.businessobjects.db.DatabaseTasks;
+import free.rm.skytube.gui.activities.MainActivity;
+import free.rm.skytube.gui.businessobjects.YouTubePlayer;
+import free.rm.skytube.gui.fragments.ChannelBrowserFragment;
+import free.rm.skytube.gui.fragments.FragmentNames;
+import free.rm.skytube.gui.fragments.PlaylistVideosFragment;
+import io.reactivex.rxjava3.core.Completable;
+import io.reactivex.rxjava3.exceptions.UndeliverableException;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
+import io.reactivex.rxjava3.schedulers.Schedulers;
+/**
+ * SkyTube application.
+ */
+public class SkyTubeApp extends MultiDexApplication {
+	/** SkyTube Application databaseInstance. */
+	private static SkyTubeApp skyTubeApp = null;
+	private Settings settings;
+	private FragmentNames names;
+	private static final String TAG = "SkyTubeApp";
+	public static final String KEY_SUBSCRIPTIONS_LAST_UPDATED = "SkyTubeApp.KEY_SUBSCRIPTIONS_LAST_UPDATED";
+	public static final String NEW_VIDEOS_NOTIFICATION_CHANNEL = "free.rm.skytube.NEW_VIDEOS_NOTIFICATION_CHANNEL";
+	public static final int NEW_VIDEOS_NOTIFICATION_CHANNEL_ID = 1;
+	@Override
+	public void onCreate() {
+		super.onCreate();
+		this.settings = new Settings(this);
+		this.settings.migrate();
+		this.names = new FragmentNames(this);
+		skyTubeApp = this;
+		setupRxJava();
+		preloadPrettyTime();
+		if (BuildConfig.DEBUG) {
+			StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder()
+					.detectDiskReads()
+					.detectDiskWrites()
+					.detectCustomSlowCalls()
+					.detectNetwork()   // or .detectAll() for all detectable problems
+					.penaltyLog()
+					.build());
+			StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder()
+					.detectLeakedSqlLiteObjects()
+					.detectLeakedClosableObjects()
+					.penaltyLog()
+					//.penaltyDeath()
+					.build());
+		}
+		initChannels();
+	}
+	private void setupRxJava() {
+		RxJavaPlugins.setErrorHandler(e -> {
+			if (e instanceof UndeliverableException) {
+				e = e.getCause();
+			}
+			if ((e instanceof IOException) || (e instanceof SocketException)) {
+				// fine, irrelevant network problem or API that throws on cancellation
+				return;
+			}
+			if (e instanceof InterruptedException) {
+				// fine, some blocking code was interrupted by a dispose call
+				return;
+			}
+			if ((e instanceof NullPointerException) || (e instanceof IllegalArgumentException)) {
+				// that's likely a bug in the application
+				Thread.currentThread().getUncaughtExceptionHandler()
+						.uncaughtException(Thread.currentThread(), e);
+				return;
+			}
+			if (e instanceof IllegalStateException) {
+				// that's a bug in RxJava or in a custom operator
+				Thread.currentThread().getUncaughtExceptionHandler()
+						.uncaughtException(Thread.currentThread(), e);
+				return;
+			}
+			Log.e(TAG, "Undeliverable exception received, not sure what to do" + e.getMessage(), e);
+		});
+	}
+	private static void preloadPrettyTime() {
+		Completable.fromAction(() -> new PrettyTime().format(LocalDate.of(2021, 2, 23)))
+				.subscribeOn(Schedulers.io())
+				.onErrorReturn(exc -> {
+					Log.e(TAG, "Unable to initialize PrettyTime, because: " + exc.getMessage(), exc);
+					return "";
+				})
+				.subscribe();
+	}
+	@RequiresApi(api = Build.VERSION_CODES.M)
+	private static void uiThreadImpl() {
+		if (!Looper.getMainLooper().isCurrentThread()) {
+			throw new RuntimeException("Expected to be executing in UI!");
+		}
+	}
+	public static void uiThread() {
+		if (BuildConfig.DEBUG) {
+			if (Build.VERSION.SDK_INT >= 29) {
+				uiThreadImpl();
+			} else {
+				Log.i(TAG, "Expected to be UI thread : " + Thread.currentThread().getName() + " [" + Build.VERSION.SDK_INT + ']');
+			}
+		}
+	}
+	@RequiresApi(api = Build.VERSION_CODES.M)
+	private static void nonUiThreadImpl() {
+		if (Looper.getMainLooper().isCurrentThread()) {
+			throw new RuntimeException("Expected to be NOT blocking the UI!");
+		}
+	}
+	public static void nonUiThread() {
+		if (BuildConfig.DEBUG) {
+			if (Build.VERSION.SDK_INT >= 29) {
+				nonUiThreadImpl();
+			} else {
+				Log.i(TAG, "Expected to be non-UI thread : " + Thread.currentThread().getName() + " [" + Build.VERSION.SDK_INT + ']');
+			}
+		}
+	}
+	/**
+	 * Returns a localised string.
+	 *
+	 * @param  stringResId	String resource ID (e.g. R.string.my_string)
+	 * @return Localised string, from the strings XML file.
+	 */
+	public static String getStr(int stringResId) {
+		return skyTubeApp.getString(stringResId);
+	}
+	/**
+	 * Given a string array resource ID, it returns an array of strings.
+	 *
+	 * @param stringArrayResId String array resource ID (e.g. R.string.my_array_string)
+	 * @return Array of String.
+	 */
+	public static String[] getStringArray(@ArrayRes int stringArrayResId) {
+		return skyTubeApp.getStrArray(stringArrayResId);
+	}
+	/**
+	 * Given a string array resource ID, it returns an array of strings.
+	 *
+	 * @param stringArrayResId String array resource ID (e.g. R.string.my_array_string)
+	 * @return Array of String.
+	 */
+	public String[] getStrArray(@ArrayRes int stringArrayResId) {
+		return getResources().getStringArray(stringArrayResId);
+	}
+	/**
+	 * Given a string array resource ID, it returns an list of strings.
+	 *
+	 * @param stringArrayResId String array resource ID (e.g. R.string.my_array_string)
+	 * @return List of String.
+	 */
+	public static List<String> getStringArrayAsList(@ArrayRes int stringArrayResId) {
+		return Arrays.asList(getStringArray(stringArrayResId));
+	}
+	/**
+	 * Returns the App's {@link SharedPreferences}.
+	 *
+	 * @return {@link SharedPreferences}
+	 */
+	public static SharedPreferences getPreferenceManager() {
+		return PreferenceManager.getDefaultSharedPreferences(skyTubeApp);
+	}
+	/**
+	 * Returns the dimension value that is specified in R.dimens.*.  This value is NOT converted into
+	 * pixels, but rather it is kept as it was originally written (e.g. dp).
+	 *
+	 * @return The dimension value.
+	 */
+	public static float getDimension(int dimensionId) {
+		return skyTubeApp.getResources().getDimension(dimensionId);
+	}
+	/**
+	 * @param colorId   Color resource ID (e.g. R.color.green).
+	 *
+	 * @return The color for the given color resource id.
+	 */
+	public static int getColorEx(int colorId) {
+		return ResourcesCompat.getColor(skyTubeApp.getResources(), colorId, null);
+	}
+	/**
+	 * @return {@link Context}.
+	 */
+	public static Context getContext() {
+		return skyTubeApp.getBaseContext();
+	}
+	public static FragmentNames getFragmentNames() {
+		return skyTubeApp.names;
+	}
+	/**
+	 * Restart the app.
+	 */
+	public static void restartApp() {
+		Context context = getContext();
+		PackageManager packageManager = context.getPackageManager();
+		Intent intent = packageManager.getLaunchIntentForPackage(context.getPackageName());
+		ComponentName componentName = intent.getComponent();
+		Intent mainIntent = Intent.makeRestartActivityTask(componentName);
+		context.startActivity(mainIntent);
+		System.exit(0);
+	}
+	/**
+	 * @return  True if the device is a tablet; false otherwise.
+	 */
+	public static boolean isTablet() {
+		return getContext().getResources().getBoolean(R.bool.is_tablet);
+	}
+	/**
+	 * @return True if the device is connected to a metered network.
+	 */
+	public static boolean isActiveNetworkMetered() {
+		return ConnectivityManagerCompat.isActiveNetworkMetered(ContextCompat.getSystemService(skyTubeApp,
+				ConnectivityManager.class));
+	}
+	/**
+	 * Get the network info
+	 * @param context
+	 * @return
+	 */
+	public static NetworkInfo getNetworkInfo(@NonNull Context context){
+		return ContextCompat.getSystemService(context, ConnectivityManager.class).getActiveNetworkInfo();
+	}
+	/**
+	 * Check if there is any connectivity
+	 * @param context
+	 * @return
+	 */
+	public static boolean isConnected(@NonNull Context context){
+		NetworkInfo info = getNetworkInfo(context);
+		return (info != null && info.isConnected());
+	}
+	/*
+	 * Initialize Notification Channels (for Android OREO)
+	 */
+	private void initChannels() {
+		final NotificationManagerCompat notificationManager = NotificationManagerCompat.from(this);
+		final NotificationChannelCompat notificationChannel = new NotificationChannelCompat
+				.Builder(NEW_VIDEOS_NOTIFICATION_CHANNEL, NotificationManagerCompat.IMPORTANCE_LOW)
+				.setName(getString(R.string.notification_channel_feed_title))
+				.setLightsEnabled(true)
+				.setLightColor(ColorUtils.compositeColors(0xFFFF0000, 0xFFFF0000))
+				.setVibrationEnabled(true)
+				.build();
+		notificationManager.createNotificationChannel(notificationChannel);
+	}
+	/**
+	 * Setup the Feed Updater Service. First, cancel the Alarm that will trigger the next fetch (if there is one), then set the
+	 * Alarm with the passed interval, if it's greater than 0.
+	 * @param interval The number of milliseconds between each time new videos for subscribed channels should be fetched.
+	 */
+	public static void setFeedUpdateInterval(int interval) {
+		Intent alarm = new Intent(getContext(), FeedUpdaterReceiver.class);
+		PendingIntent pendingIntent = PendingIntent.getBroadcast(getContext(), 0, alarm, PendingIntent.FLAG_CANCEL_CURRENT);
+		AlarmManager alarmManager = ContextCompat.getSystemService(getContext(), AlarmManager.class);
+		// Feed Auto Updater has been cancelled. If the selected interval is greater than 0, set the new alarm to call FeedUpdaterService
+		if(interval > 0) {
+			alarmManager.setRepeating(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime()+interval, interval, pendingIntent);
+		}
+	}
+	public static Settings getSettings() {
+		return skyTubeApp.settings;
+	}
+	public Settings getAppSettings() {
+		return settings;
+	}
+	public static void notifyUserOnError(@NonNull Context ctx, @Nullable Throwable throwable) {
+		if (throwable == null) {
+			return;
+		}
+        if (throwable instanceof ReCaptchaException) {
+            handleRecaptchaException(ctx, (ReCaptchaException) throwable);
+            return;
+        }
+		final String message;
+		if (throwable instanceof GoogleJsonResponseException) {
+			GoogleJsonResponseException exception = (GoogleJsonResponseException) throwable;
+			List<GoogleJsonError.ErrorInfo> errors = exception.getDetails().getErrors();
+			if (errors != null && !errors.isEmpty()) {
+				message =  "Server error:" + errors.get(0).getMessage()+ ", reason: "+ errors.get(0).getReason();
+			} else {
+				message = exception.getDetails().getMessage();
+			}
+		} else {
+			message = throwable.getMessage();
+		}
+		if (message != null) {
+			Log.e(TAG, "Error: "+message);
+			String toastText = message;
+			if(message.contains("resolve host")) {
+				toastText = "No internet connection available";
+			}
+			if(message.contains("JavaScript player")) {
+				return; // Error from Player when watching downloaded videos offline
+			}
+			Toast.makeText(ctx, toastText, Toast.LENGTH_LONG).show();
+		}
+	}
+    private static void handleRecaptchaException(Context context, ReCaptchaException reCaptchaException) {
+        // remove "pbj=1" parameter from YouYube urls, as it makes the page JSON and not HTML
+        String url = reCaptchaException.getUrl().replace("&pbj=1", "").replace("pbj=1&", "").replace("?pbj=1", "");
+        Log.e(TAG, "Error: " + reCaptchaException.getMessage() + " url: " + url, reCaptchaException);
+        Toast.makeText(context, R.string.recaptcha_challenge_requested, Toast.LENGTH_LONG).show();
+        viewInBrowser(url, context);
+        return;
+    }
+	public static void shareUrl(@NonNull Context context, String url) {
+		Intent intent = new Intent(android.content.Intent.ACTION_SEND);
+		intent.setType("text/plain");
+		intent.putExtra(android.content.Intent.EXTRA_TEXT, url);
+		context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_via)));
+	}
+	public static void copyUrl(@NonNull Context context, String text, String url) {
+		ClipData clip = ClipData.newPlainText(text, url);
+		ContextCompat.getSystemService(context, ClipboardManager.class).setPrimaryClip(clip);
+		Toast.makeText(context, R.string.url_copied_to_clipboard, Toast.LENGTH_SHORT).show();
+	}
+	/**
+	 * The video URL is passed to SkyTube via another Android app (i.e. via an intent).
+	 *
+	 * @return The URL of the YouTube video the user wants to play.
+	 */
+	public static ContentId getUrlFromIntent(@NonNull final Context ctx, final Intent intent) {
+		if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+			return parseUrl(ctx, intent.getData().toString(), true);
+		}
+		return null;
+	}
+	public static ContentId parseUrl(@NonNull Context context, String url, boolean showErrorIfNotValid) {
+		try {
+			ContentId id = NewPipeService.get().getContentId(url);
+			if (id == null && showErrorIfNotValid) {
+				showInvalidUrlToast(context, url);
+			}
+			return id;
+		} catch (RuntimeException e) {
+			SkyTubeApp.notifyUserOnError(context, e);
+			return null;
+		}
+	}
+	private static void showInvalidUrlToast(@NonNull Context context, String url) {
+		String message = String.format(context.getString(R.string.error_invalid_url), url);
+		Toast.makeText(context, message, Toast.LENGTH_LONG).show();
+	}
+	/**
+	 * Open the url - internally, or externally if useExternalBrowser is switched on.
+	 * @param ctx
+	 * @param url
+	 * @param useExternalBrowser
+	 */
+	public static void openUrl(Context ctx, String url, boolean useExternalBrowser) {
+		// Show error message only if we don't want to use external browser, so we expect that the URL
+		// can be handled internally, and if the URL is invalid, it's an error.
+		ContentId content = parseUrl(ctx, url, !useExternalBrowser);
+		if (openContent(ctx, content)) {
+			return;
+		} else {
+			if (useExternalBrowser) {
+				viewInBrowser(url, ctx);
+			}
+		}
+	}
+	/**
+	 * Open the content in the appropriate viewer Activity, return true if it found one.
+	 * @param ctx
+	 * @param content
+	 * @return
+	 */
+	public static boolean openContent(Context ctx, ContentId content) {
+		if (content == null) {
+			return false;
+		}
+		switch (content.getType()) {
+			case STREAM: {
+				YouTubePlayer.launch(content, ctx);
+				break;
+			}
+			case CHANNEL: {
+				SkyTubeApp.launchChannel(new ChannelId(content.getId()), ctx);
+				break;
+			}
+			case PLAYLIST: {
+				YouTubeTasks.getPlaylist(ctx, content.getId())
+						.subscribe(playlist -> launchPlaylist(playlist, ctx));
+				break;
+			}
+			default:
+				return false;
+		}
+		return true;
+	}
+	/**
+	 * Launches the channel view, so the user can see all the videos from a channel.
+	 *
+	 * @param channelId the channel to be displayed.
+	 */
+	public static void launchChannel(ChannelId channelId, Context context) {
+		if (channelId != null) {
+			DatabaseTasks.getChannelInfo(context, channelId, true)
+					.subscribe(youTubeChannel -> launchChannel(youTubeChannel.channel(), context));
+		}
+	}
+	/**
+	 * Launches the channel view, so the user can see all the videos from a channel.
+	 *
+	 * @param youTubeChannel the channel to be displayed.
+	 */
+	public static void launchChannel(YouTubeChannel youTubeChannel, Context context) {
+		Intent i = new Intent(context, MainActivity.class);
+		i.setAction(MainActivity.ACTION_VIEW_CHANNEL);
+		i.putExtra(ChannelBrowserFragment.CHANNEL_OBJ, youTubeChannel);
+		context.startActivity(i);
+	}
+	/**
+	 * Launch the {@link PlaylistVideosFragment}
+	 * @param playlist the playlist to display
+	 */
+	public static void launchPlaylist(final YouTubePlaylist playlist, final Context context) {
+		Intent playlistIntent = new Intent(context, MainActivity.class);
+		playlistIntent.setAction(MainActivity.ACTION_VIEW_PLAYLIST);
+		playlistIntent.putExtra(PlaylistVideosFragment.PLAYLIST_OBJ, playlist);
+		context.startActivity(playlistIntent);
+	}
+	/**
+	 * Launch an external activity to actually open the given URL
+	 * @param url
+	 */
+	public static void viewInBrowser(String url, final Context context) {
+		Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+		browserIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+		try {
+			context.startActivity(browserIntent);
+		} catch (ActivityNotFoundException e) {
+			showInvalidUrlToast(context, url);
+			Log.e(TAG, "Activity not found for " + url + ", error:" + e.getMessage(), e);
+		}
+	}
+}
+/*
+ * SkyTube
+ * Copyright (C) 2021  Zsombor Gegesy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.app;
+import java.util.function.Consumer;
+import free.rm.skytube.app.utils.WeakList;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubeVideo;
+import free.rm.skytube.businessobjects.YouTube.Tasks.GetSubscriptionVideosTaskListener;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.gui.businessobjects.MainActivityListener;
+import free.rm.skytube.gui.fragments.MainFragment;
+public class EventBus {
+    public enum SettingChange {
+        HIDE_TABS,
+        CONTENT_COUNTRY,
+        SUBSCRIPTION_LIST_CHANGED
+    }
+    private static EventBus instance;
+    private WeakList<MainFragment> mainFragments = new WeakList<>();
+    private WeakList<MainActivityListener> mainActivityListeners = new WeakList<>();
+    private WeakList<GetSubscriptionVideosTaskListener> subscriptionListeners = new WeakList<GetSubscriptionVideosTaskListener>();
+    private WeakList<Consumer<YouTubeVideo>> videoDetailListeners = new WeakList<>();
+    public static synchronized EventBus getInstance() {
+        if (instance == null) {
+            instance = new EventBus();
+        }
+        return instance;
+    }
+    public void registerMainFragment(MainFragment mainFragment) {
+        this.mainFragments.add(mainFragment);
+    }
+    public void notifyMainTabChanged(SettingChange settingChange) {
+        this.mainFragments.forEach(main -> main.refreshTabs(settingChange));
+    }
+    public void notifyChannelNewVideosStatus(ChannelId channelId, boolean newVideos) {
+        this.mainFragments.forEach(main -> main.notifyChangeChannelNewVideosStatus(channelId, newVideos));
+    }
+    public void notifyChannelNewVideos(ChannelId channelId, int newVideos) {
+        if (newVideos > 0) {
+            this.mainFragments.forEach(main -> main.notifyChangeChannelNewVideosStatus(channelId, true));
+        }
+    }
+    public void notifyVideoDetailFetched(YouTubeVideo video) {
+        this.videoDetailListeners.forEach(listener -> listener.accept(video));
+    }
+    public void registerVideoDetailFetcher(Consumer<YouTubeVideo> videoListener) {
+        this.videoDetailListeners.add(videoListener);
+    }
+    public void notifyChannelRemoved(ChannelId channelId) {
+        this.mainFragments.forEach(main -> main.notifyChannelRemoved(channelId));
+    }
+    public void registerMainActivityListener(MainActivityListener listener) {
+        this.mainActivityListeners.add(listener);
+    }
+    public void notifyMainActivities(Consumer<MainActivityListener> function) {
+        this.mainActivityListeners.forEach(function);
+    }
+    public void registerSubscriptionListener(GetSubscriptionVideosTaskListener listener) {
+        this.subscriptionListeners.add(listener);
+    }
+    public void unregisterSubscriptionListener(GetSubscriptionVideosTaskListener listener) {
+        this.subscriptionListeners.remove(listener);
+    }
+    public void notifyChannelVideoFetchingFinished(boolean changes) {
+        this.subscriptionListeners.forEach(listener -> listener.onChannelVideoFetchFinish(changes));
+    }
+    public void notifySubscriptionRefreshFinished() {
+        this.subscriptionListeners.forEach(listener -> listener.onSubscriptionRefreshFinished());
+    }
+    public void notifyChannelsFound(boolean hasSubscriptions) {
+        this.subscriptionListeners.forEach(listener -> listener.onChannelsFound(hasSubscriptions));
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2017  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import free.rm.skytube.R;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.VideoCategory;
+/**
+ * A fragment that holds featured videos.
+ */
+public class FeaturedVideosFragment extends VideosGridFragment {
+	@Override
+	protected VideoCategory getVideoCategory() {
+		return VideoCategory.FEATURED;
+	}
+	@Override
+	public String getFragmentName() {
+		return SkyTubeApp.getStr(R.string.featured);
+	}
+	@Override
+	public int getPriority() {
+		return 0;
+	}
+	@Override
+	public String getBundleKey() {
+		return MainFragment.FEATURED_VIDEOS_FRAGMENT;
+	}
+}
+/*
+ * SkyTube
+ * Copyright (C) 2015  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.activities;
+import android.view.Menu;
+import android.os.Bundle;
+import androidx.appcompat.app.AppCompatActivity;
+import free.rm.skytube.businessobjects.YouTube.POJOs.YouTubeChannel;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.databinding.ActivityMainBinding;
+import free.rm.skytube.gui.businessobjects.MainActivityListener;
+/**
+ * Base Activity that any Activity that needs to support Chromecast functionality must extend. This OSS version just
+ * contains a bunch of mostly no-op methods.
+ */
+public abstract class BaseActivity extends AppCompatActivity implements MainActivityListener {
+	protected ActivityMainBinding binding;
+	// No-op methods that aren't necessarily needed by all classes that extend this one
+	protected void onOptionsMenuCreated(Menu menu) {}
+	public void onLayoutSet() {}
+	@Override
+	public void onChannelClick(ChannelId channelId) {}
+	public void redrawPanel() {}
+	protected boolean isLocalPlayer() {
+		return false;
+	}
+	protected void returnToMainAndResume() {}
+	/**
+	 * The extra variant needs to collapse the Chromecast Controller if it is visible and expanded,
+	 * so its BaseActivity will check for that in its version of this method (and not do anything else).
+	 * For the OSS variant, we simply return true, which will allow MainActivity.onBackPressed to check
+	 * if mainFragment is visible, so it can return to the homescreen without exiting.
+	 * @return true
+	 */
+	public boolean shouldMinimizeOnBack() {
+		return true;
+	}
+	public void onSessionStarting() {}
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        binding = ActivityMainBinding.inflate(getLayoutInflater());
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2023  Zsombor Gegesy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.businessobjects.YouTube.newpipe;
+import java.util.Objects;
+import free.rm.skytube.app.Utils;
+public class ChannelId {
+    private final String id;
+    public ChannelId(String id) {
+        this.id = Utils.removeChannelIdPrefix(Objects.requireNonNull(id, "rawId is null"));
+    }
+    public String getRawId() {
+        return id;
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        ChannelId channelId = (ChannelId) o;
+        return Objects.equals(id, channelId.id);
+    }
+    @Override
+    public int hashCode() {
+        return Objects.hash(id);
+    }
+    @Override
+    public String toString() {
+        return "ChannelId{'" + id + '\'' + '}';
+    }
+    public String toURL() {
+        return String.format("https://www.youtube.com/channel/%s", id);
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2020  Zsombor Gegesy
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import free.rm.skytube.R;
+import free.rm.skytube.app.SkyTubeApp;
+import static free.rm.skytube.gui.fragments.MainFragment.*;
+public class FragmentNames {
+    private final SkyTubeApp app;
+    public FragmentNames(SkyTubeApp app) {
+        this.app = app;
+    }
+    public String getName(String key) {
+        if (MOST_POPULAR_VIDEOS_FRAGMENT.equals(key)) {
+            return app.getString(R.string.trending_in, app.getAppSettings().getPreferredContentCountry());
+        }
+        if (FEATURED_VIDEOS_FRAGMENT.equals(key)) {
+            return app.getString(R.string.featured);
+        }
+        if (SUBSCRIPTIONS_FEED_FRAGMENT.equals(key)) {
+            return app.getString(R.string.feed);
+        }
+        if (BOOKMARKS_FRAGMENT.equals(key)) {
+            return app.getString(R.string.bookmarks);
+        }
+        if (DOWNLOADED_VIDEOS_FRAGMENT.equals(key)) {
+            return app.getString(R.string.downloads);
+        }
+        return null;
+    }
+    public String[] getAllNames(String[] tabListValues) {
+        String[] result = new String[tabListValues.length];
+        for (int i = 0; i < tabListValues.length; i++) {
+            result[i] = getName(tabListValues[i]);
+        }
+        return result;
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2017  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.VideoCategory;
+/**
+ * A fragment that holds today's most popular videos.
+ */
+public class MostPopularVideosFragment extends VideosGridFragment {
+	@Override
+	protected VideoCategory getVideoCategory() {
+		return VideoCategory.MOST_POPULAR;
+	}
+	@Override
+	public String getFragmentName() {
+		return SkyTubeApp.getFragmentNames().getName(getBundleKey());
+	}
+	@Override
+	public int getPriority() {
+		return 1;
+	}
+	@Override
+	public String getBundleKey() {
+		return MainFragment.MOST_POPULAR_VIDEOS_FRAGMENT;
+	}
+}
+/*
+ * SkyTube
+ * Copyright (C) 2016  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.fragments;
+import android.content.Context;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import free.rm.skytube.R;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.VideoCategory;
+import free.rm.skytube.businessobjects.YouTube.POJOs.CardData;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ContentId;
+import free.rm.skytube.businessobjects.db.BookmarksDb;
+import free.rm.skytube.businessobjects.interfaces.CardListener;
+import free.rm.skytube.databinding.FragmentBookmarksBinding;
+import free.rm.skytube.gui.businessobjects.adapters.OrderableVideoGridAdapter;
+import free.rm.skytube.gui.businessobjects.fragments.OrderableVideosGridFragment;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+/**
+ * Fragment that displays bookmarked videos.
+ */
+public class BookmarksFragment extends OrderableVideosGridFragment implements CardListener {
+    private FragmentBookmarksBinding binding;
+    public BookmarksFragment() {
+    }
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container, @Nullable Bundle savedInstanceState) {
+        initBookmarks(container.getContext(), new OrderableVideoGridAdapter(BookmarksDb.getBookmarksDb()), FragmentBookmarksBinding.inflate(inflater, container, false));
+        return binding.getRoot();
+    }
+    private void initBookmarks(@NonNull Context context, @NonNull OrderableVideoGridAdapter videoGridAdapterParam, @NonNull FragmentBookmarksBinding bindingParam) {
+        this.binding = bindingParam;
+        initOrderableVideos(context, videoGridAdapterParam, bindingParam.videosGridview);
+        BookmarksDb.getBookmarksDb().registerListener(this);
+        setListVisible(false);
+        populateList();
+    }
+    private void populateList() {
+        BookmarksDb.getBookmarksDb().getTotalBookmarkCount()
+                .observeOn(AndroidSchedulers.mainThread())
+                .doOnSuccess(numberOfBookmarks -> {
+                    if (numberOfBookmarks > 0 && gridviewBinding.swipeRefreshLayout != null) {
+                        setListVisible(true);
+                        // swipeRefreshLayout.setRefreshing(true);
+                    }
+                }).subscribe();
+    }
+    @Override
+    public void onCardAdded(final CardData card) {
+        videoGridAdapter.onCardAdded(card);
+        setListVisible(true);
+    }
+    @Override
+    public void onCardDeleted(final ContentId contentId) {
+        videoGridAdapter.onCardDeleted(contentId);
+        if (videoGridAdapter.getItemCount() == 0) {
+            setListVisible(false);
+        }
+    }
+	@Override
+	protected VideoCategory getVideoCategory() {
+		return VideoCategory.BOOKMARKS_VIDEOS;
+	}
+	
+	@Override
+	public String getFragmentName() {
+		return SkyTubeApp.getStr(R.string.bookmarks);
+	}
+	@Override
+	public int getPriority() {
+		return 3;
+	}
+	@Override
+	public String getBundleKey() {
+		return MainFragment.BOOKMARKS_FRAGMENT;
+	}
+    @Override
+    public void onDestroyView() {
+        BookmarksDb.getBookmarksDb().unregisterListener(this);
+        binding = null;
+        super.onDestroyView();
+    }
+    private void setListVisible(boolean visible) {
+        if (visible) {
+            gridviewBinding.swipeRefreshLayout.setVisibility(View.VISIBLE);
+            binding.noBookmarkedVideosText.setVisibility(View.GONE);
+        } else {
+            gridviewBinding.swipeRefreshLayout.setVisibility(View.GONE);
+            binding.noBookmarkedVideosText.setVisibility(View.VISIBLE);
+        }
+    }
+}
+/*
+ * SkyTube
+ * Copyright (C) 2018  Ramon Mifsud
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation (version 3 of the License).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+package free.rm.skytube.gui.businessobjects.adapters;
+import android.content.Context;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.recyclerview.widget.RecyclerView;
+import com.bumptech.glide.Glide;
+import com.bumptech.glide.request.RequestOptions;
+import java.util.Iterator;
+import free.rm.skytube.R;
+import free.rm.skytube.app.EventBus;
+import free.rm.skytube.businessobjects.YouTube.POJOs.ChannelView;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ChannelId;
+import free.rm.skytube.businessobjects.db.DatabaseTasks;
+import free.rm.skytube.databinding.SubChannelBinding;
+import io.reactivex.rxjava3.disposables.CompositeDisposable;
+/**
+ * Channel subscriptions adapter: Contains a list of channels (that the user subscribed to) together
+ * with a notification whether the channel has new videos since last visit to the channel or not.
+ */
+public class SubsAdapter extends RecyclerViewAdapterEx<ChannelView, SubsAdapter.SubChannelViewHolder> {
+	private static final String TAG = SubsAdapter.class.getSimpleName();
+	private String searchText;
+	private final CompositeDisposable compositeDisposable = new CompositeDisposable();
+	public SubsAdapter(Context context, View progressBar) {
+		super(context);
+		// populate this adapter with user's subscribed channels
+		executeQuery(null, progressBar);
+	}
+	/**
+	 * Remove channel from this adapter.
+	 *
+	 * @param channelId Channel to remove.
+	 */
+	public void removeChannel(ChannelId channelId) {
+		int size = getItemCount();
+		for (int i = 0; i < size; i++) {
+			if (get(i).getId().equals(channelId)) {
+				remove(i);
+				return;
+			}
+		}
+		Log.e(TAG, "Channel not removed from adapter:  id=" + channelId);
+	}
+	/**
+	 * Changes the channel's 'new videos' status.  The channel's view is then refreshed.
+	 *
+	 * @param channelId Channel ID.
+	 * @param newVideos 'New videos' status (true = new videos have been added since user's last
+	 *                  visit;  false = no new videos)
+	 * @return True if the operations have been successful; false otherwise.
+	 */
+	public boolean changeChannelNewVideosStatus(ChannelId channelId, boolean newVideos) {
+		ChannelView channel;
+		int position = 0;
+		for (Iterator<ChannelView> i = getIterator(); i.hasNext(); position++) {
+			channel = i.next();
+			if (channel.getId() != null && channel.getId().equals(channelId)) {
+				// change the 'new videos' status
+				channel.setNewVideosSinceLastVisit(newVideos);
+				// we now need to notify the SubsAdapter to remove the new videos notification (near the channel name)
+				updateView(position);
+				return true;
+			}
+		}
+		return false;
+	}
+	/**
+	 * Update the contents of a view (i.e. refreshes the given view).
+	 *
+	 * @param viewPosition The position of the view that we want to update.
+	 */
+	private void updateView(int viewPosition) {
+		notifyItemChanged(viewPosition);
+	}
+	@Override
+	@NonNull
+	public SubChannelViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+		SubChannelBinding binding = SubChannelBinding.inflate(LayoutInflater.from(parent.getContext()),
+				parent, false);
+		return new SubChannelViewHolder(binding);
+	}
+	@Override
+	public void onBindViewHolder(SubChannelViewHolder viewHolder, int position) {
+		viewHolder.updateInfo(get(position));
+	}
+	/**
+	 * This should be called only from MainFragment
+	 */
+	public void refreshSubsList() {
+		clearList();
+		executeQuery(searchText, null);
+	}
+	private void refreshFilteredSubsList(String searchText) {
+		clearList();
+		executeQuery(searchText, null);
+	}
+	private void executeQuery(String searchText, View progressBar) {
+		compositeDisposable.add(DatabaseTasks.getSubscribedChannelView(getContext(), progressBar, searchText)
+				.subscribe(this::appendList));
+	}
+	public void filterSubSearch(String searchText){
+		this.searchText = searchText;
+		refreshFilteredSubsList(searchText);
+	}
+	////////////////////////////////////////////////////////////////////////////////////////////////
+	class SubChannelViewHolder extends RecyclerView.ViewHolder {
+		private final SubChannelBinding binding;
+		private ChannelView channel;
+		SubChannelViewHolder(SubChannelBinding binding) {
+			super(binding.getRoot());
+			this.binding = binding;
+			binding.getRoot().setOnClickListener(v -> {
+				ChannelId channelId = channel.getId();
+				EventBus.getInstance().notifyMainActivities(listener -> {
+					listener.onChannelClick(channelId);
+				});
+			});
+		}
+		void updateInfo(ChannelView channel) {
+			Glide.with(itemView.getContext().getApplicationContext())
+					.load(channel.getThumbnailUrl())
+					.apply(new RequestOptions().placeholder(R.drawable.channel_thumbnail_default))
+					.into(binding.subChannelThumbnailImageView);
+            final String prefix;
+            switch (channel.status()) {
+                case ACCOUNT_TERMINATED: {
+                    prefix = itemView.getContext().getString(R.string.status_account_terminated);
+                    break;
+                }
+                case NOT_EXISTS: {
+                    prefix = itemView.getContext().getString(R.string.status_not_exists);
+                    break;
+                }
+                default: {
+                    prefix = "";
+                    break;
+                }
+            }
+			binding.subChannelNameTextView.setText(prefix + channel.getTitle());
+			binding.subChannelNewVideosNotification.setVisibility(channel.isNewVideosSinceLastVisit() ? View.VISIBLE : View.INVISIBLE);
+			this.channel = channel;
+		}
+	}
+}
+package free.rm.skytube.gui.fragments;
+import android.content.Context;
+import android.os.Bundle;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import free.rm.skytube.R;
+import free.rm.skytube.app.SkyTubeApp;
+import free.rm.skytube.businessobjects.VideoCategory;
+import free.rm.skytube.businessobjects.YouTube.POJOs.CardData;
+import free.rm.skytube.businessobjects.YouTube.newpipe.ContentId;
+import free.rm.skytube.businessobjects.db.DownloadedVideosDb;
+import free.rm.skytube.businessobjects.interfaces.CardListener;
+import free.rm.skytube.databinding.FragmentDownloadsBinding;
+import free.rm.skytube.gui.businessobjects.adapters.OrderableVideoGridAdapter;
+import free.rm.skytube.gui.businessobjects.fragments.OrderableVideosGridFragment;
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
+/**
+ * A fragment that holds videos downloaded by the user.
+ */
+public class DownloadedVideosFragment extends OrderableVideosGridFragment implements CardListener {
+    private FragmentDownloadsBinding binding;
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container, @Nullable Bundle savedInstanceState) {
+        initDownloads(container.getContext(), new OrderableVideoGridAdapter(DownloadedVideosDb.getVideoDownloadsDb()), FragmentDownloadsBinding.inflate(inflater, container, false));
+        return binding.getRoot();
+    }
+    private void initDownloads(final Context context, final OrderableVideoGridAdapter videoGridAdapterParam, final FragmentDownloadsBinding bindingParam) {
+        this.binding = bindingParam;
+        initOrderableVideos(context, videoGridAdapterParam, bindingParam.videosGridview);
+        DownloadedVideosDb.getVideoDownloadsDb().registerListener(this);
+        setListVisible(false);
+        populateList();
+    }
+    @Override
+    public void onDestroyView() {
+        DownloadedVideosDb.getVideoDownloadsDb().unregisterListener(this);
+        binding = null;
+        super.onDestroyView();
+    }
+	@Override
+	protected VideoCategory getVideoCategory() {
+		return VideoCategory.DOWNLOADED_VIDEOS;
+	}
+	@Override
+	public String getFragmentName() {
+		return SkyTubeApp.getStr(R.string.downloads);
+	}
+	@Override
+	public int getPriority() {
+		return 4;
+	}
+	@Override
+	public String getBundleKey() {
+		return MainFragment.DOWNLOADED_VIDEOS_FRAGMENT;
+	}
+    @Override
+    public void onCardAdded(final CardData card) {
+        videoGridAdapter.onCardAdded(card);
+        setListVisible(true);
+    }
+    @Override
+    public void onCardDeleted(final ContentId card) {
+        videoGridAdapter.onCardDeleted(card);
+        if (videoGridAdapter.getItemCount() == 0) {
+            setListVisible(false);
+        }
+    }
+    private void populateList() {
+        DownloadedVideosDb.getVideoDownloadsDb().getTotalCount()
+                .observeOn(AndroidSchedulers.mainThread())
+                .doOnSuccess(numberOfBookmarks -> {
+                    if (numberOfBookmarks > 0 && gridviewBinding.swipeRefreshLayout != null) {
+                        setListVisible(true);
+                        // swipeRefreshLayout.setRefreshing(true);
+                    }
+                }).subscribe();
+    }
+    private void setListVisible(boolean visible) {
+        if (visible) {
+            gridviewBinding.swipeRefreshLayout.setVisibility(View.VISIBLE);
+            binding.noDownloadedVideosText.setVisibility(View.GONE);
+        } else {
+            gridviewBinding.swipeRefreshLayout.setVisibility(View.GONE);
+            binding.noDownloadedVideosText.setVisibility(View.VISIBLE);
+        }
+    }
+}

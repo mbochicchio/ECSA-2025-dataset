@@ -1,0 +1,2150 @@
+package org.pdfsam.tools.backpages;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.selection.single.TaskParametersBuilderSingleSelectionPane;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.output.FileOrDirectoryTaskOutput;
+import java.io.File;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.backpages.AddBackpagesTool.TOOL_ID;
+public class AddBackpagesToolPanel extends BaseToolPanel {
+    private final TaskParametersBuilderSingleSelectionPane selectionPane;
+    private final BrowsablePdfOutputField destinationFileField;
+    private final PdfDestinationPane destinationPane;
+    private final AddBackpagesPane addBackpagesOptions;
+    @Inject
+    public AddBackpagesToolPanel(@Named(TOOL_ID + "field") BrowsablePdfOutputField destinationFileField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer) {
+        super(TOOL_ID, footer);
+        this.destinationFileField = destinationFileField;
+        this.destinationPane = destinationPane;
+        this.addBackpagesOptions = new AddBackpagesPane(TOOL_ID);
+        this.selectionPane = new TaskParametersBuilderSingleSelectionPane(id());
+        this.selectionPane.setPromptText(i18n().tr("Select or drag and drop the PDF you want to insert pages to"));
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        addBackpagesOptions.saveStateTo(data);
+        destinationFileField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        addBackpagesOptions.restoreStateFrom(data);
+        destinationFileField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+    }
+    @Override
+    protected AddBackpagesParametersBuilder getBuilder(Consumer<String> onError) {
+        var builder = new AddBackpagesParametersBuilder();
+        selectionPane.apply(builder, onError);
+        addBackpagesOptions.apply(builder, onError);
+        var destinationField = destinationFileField.getTextField();
+        destinationField.validate();
+        if (destinationField.getValidationState() == FXValidationSupport.ValidationState.VALID) {
+            builder.output(FileOrDirectoryTaskOutput.file(new File(destinationField.getText())));
+        } else {
+            onError.accept(i18n().tr("A .pdf destination file extension is required"));
+        }
+        destinationPane.apply(builder, onError);
+        return builder;
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        pane.getChildren()
+                .addAll(selectionPane, Views.titledPane(i18n().tr("Insert and Repeat settings"), addBackpagesOptions),
+                        Views.titledPane(i18n().tr("Destination file"), destinationPane));
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            addBackpagesOptions.resetView();
+            destinationPane.resetView();
+        }
+    }
+}
+package org.pdfsam.ui.components.support;
+import javafx.scene.Node;
+import javafx.scene.control.TitledPane;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.Region;
+import javafx.scene.text.Text;
+import javafx.util.Duration;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import static org.pdfsam.ui.components.support.Style.TITLED_PANE;
+public final class Views {
+    private Views() {
+    }
+    public static TitledPane titledPane(String titleString, Node node) {
+        return titledPane(titleString, node, TITLED_PANE.css());
+    }
+    public static TitledPane titledPane(String titleString, Node node, String... styleClass) {
+        var pane = new TitledPane(titleString, node);
+        pane.getStyleClass().addAll(styleClass);
+        pane.setMinHeight(Region.USE_PREF_SIZE);
+        return pane;
+    }
+    public static Text helpIcon(String text) {
+        var tooltip = new Tooltip(text);
+        var icon = FontIcon.of(UniconsLine.QUESTION_CIRCLE);
+        icon.getStyleClass().add("help-icon");
+        tooltip.setHideDelay(Duration.millis(100));
+        tooltip.setShowDelay(Duration.millis(0));
+        tooltip.setShowDuration(Duration.seconds(10));
+        Tooltip.install(icon, tooltip);
+        return icon;
+    }
+}
+package org.pdfsam.tools.split;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.VBox;
+import org.apache.commons.lang3.builder.Builder;
+import org.pdfsam.core.support.params.SinglePdfSourceMultipleOutputParametersBuilder;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.selection.single.TaskParametersBuilderSingleSelectionPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.parameter.AbstractSplitByPageParameters;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.split.SplitTool.TOOL_ID;
+public class SplitToolPanel extends BaseToolPanel {
+    private final TaskParametersBuilderSingleSelectionPane selectionPane;
+    private final BrowsableOutputDirectoryField destinationDirectoryField;
+    private final PdfDestinationPane destinationPane;
+    private final SplitOptionsPane splitOptions = new SplitOptionsPane();
+    private final PrefixPane prefix;
+    @Inject
+    public SplitToolPanel(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField destinationDirectoryField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer,
+            @Named(TOOL_ID + "prefix") PrefixPane prefix) {
+        super(TOOL_ID, footer);
+        this.destinationDirectoryField = destinationDirectoryField;
+        this.destinationPane = destinationPane;
+        this.selectionPane = new TaskParametersBuilderSingleSelectionPane(id());
+        this.selectionPane.setPromptText(i18n().tr("Select or drag and drop the PDF you want to split"));
+        this.selectionPane.addOnLoaded(d -> splitOptions.setMaxPages(d.pages().getValue()));
+        this.prefix = prefix;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        splitOptions.saveStateTo(data);
+        destinationDirectoryField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+        prefix.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        splitOptions.restoreStateFrom(data);
+        destinationDirectoryField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+        prefix.restoreStateFrom(data);
+    }
+    @Override
+    protected Builder<? extends AbstractSplitByPageParameters> getBuilder(Consumer<String> onError) {
+        Optional<SinglePdfSourceMultipleOutputParametersBuilder<? extends AbstractSplitByPageParameters>> builder = Optional.ofNullable(
+                splitOptions.getBuilder(onError));
+        builder.ifPresent(b -> {
+            selectionPane.apply(b, onError);
+            destinationDirectoryField.apply(b, onError);
+            destinationPane.apply(b, onError);
+            prefix.apply(b, onError);
+        });
+        return builder.orElse(null);
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        TitledPane prefixTitled = Views.titledPane(i18n().tr("File names settings"), prefix);
+        prefix.addMenuItemFor(Prefix.CURRENTPAGE);
+        prefix.addMenuItemFor(Prefix.FILENUMBER);
+        prefix.addMenuItemFor("[TOTAL_FILESNUMBER]");
+        pane.getChildren().addAll(selectionPane, Views.titledPane(i18n().tr("Split settings"), splitOptions),
+                Views.titledPane(i18n().tr("Output settings"), destinationPane), prefixTitled);
+        return pane;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            splitOptions.resetView();
+            prefix.resetView();
+            destinationPane.resetView();
+        }
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+}
+package org.pdfsam.i18n;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ObservableValue;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.text.MessageFormat;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.ResourceBundle;
+import java.util.Set;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.empty;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+public final class I18nContext {
+    private static final Logger LOG = LoggerFactory.getLogger(I18nContext.class);
+    private final Set<Locale> supported = Set.of(Locale.of("af"), Locale.of("bs"), Locale.of("bg"), Locale.of("el"),
+            Locale.of("eu"), Locale.of("pt", "BR"), Locale.SIMPLIFIED_CHINESE, Locale.TRADITIONAL_CHINESE,
+            Locale.of("co"), Locale.of("ca"), Locale.of("hr"), Locale.of("cs"), Locale.of("da"), Locale.of("nl"),
+            Locale.UK, Locale.FRENCH, Locale.GERMAN, Locale.of("he"), Locale.of("hi"), Locale.of("hu"), Locale.JAPANESE,
+            Locale.ITALIAN, Locale.of("pl"), Locale.of("pt"), Locale.of("ro"), Locale.of("ru"), Locale.of("sk"),
+            Locale.of("sl"), Locale.of("sr"), Locale.of("sv"), Locale.of("es"), Locale.of("tr"), Locale.of("uk"),
+            Locale.of("fi"), Locale.of("ko"), Locale.of("oc"));
+    private final SimpleObjectProperty<Locale> locale = new SimpleObjectProperty<>();
+    private Optional<ResourceBundle> bundle = empty();
+    I18nContext() {
+        eventStudio().addAnnotatedListeners(this);
+        locale.subscribe(this::loadBundles);
+    }
+    @EventListener
+    public void setLocale(SetLocaleRequest e) {
+        if (nonNull(e.languageTag()) && !e.languageTag().isBlank()) {
+            LOG.trace("Setting locale to {}", e.languageTag());
+            ofNullable(Locale.forLanguageTag(e.languageTag())).filter(supported::contains).ifPresent(locale::set);
+        }
+    }
+    private void loadBundles(Locale l) {
+        if (nonNull(l)) {
+            Locale.setDefault(l);
+            LOG.trace("Loading i18n bundle for {}", Locale.getDefault());
+            try {
+                this.bundle = ofNullable(ResourceBundle.getBundle("org.pdfsam.i18n.Messages", Locale.getDefault(),
+                        I18nContext.class.getModule()));
+                LOG.debug("Locale set to {}", Locale.getDefault());
+            } catch (Exception e) {
+                LOG.error("Unable to load translations bundle", e);
+            }
+        }
+    }
+    Locale getBestLocale() {
+        if (supported.contains(Locale.getDefault())) {
+            LOG.trace("Using best matching locale: {}", Locale.getDefault());
+            return Locale.getDefault();
+        }
+        var onlyLanguage = Locale.of(Locale.getDefault().getLanguage());
+        if (supported.contains(onlyLanguage)) {
+            LOG.trace("Using supported locale closest to default {}", onlyLanguage);
+            return onlyLanguage;
+        }
+        LOG.trace("Using fallback locale");
+        return Locale.ENGLISH;
+    }
+    public static I18nContext i18n() {
+        return I18nContextHolder.CONTEXT;
+    }
+    public ObservableValue<Locale> locale() {
+        return this.locale;
+    }
+    public String tr(String text) {
+        initBundleIfRequired();
+        return bundle.filter(r -> r.containsKey(text)).map(r -> r.getString(text)).orElse(text);
+    }
+    public String tr(String text, String... replace) {
+        initBundleIfRequired();
+        return MessageFormat.format(tr(text), (Object[]) replace);
+    }
+    private void initBundleIfRequired() {
+        if (bundle.isEmpty()) {
+            locale.set(getBestLocale());
+        }
+    }
+    public Set<Locale> getSupported() {
+        return supported;
+    }
+    private static final class I18nContextHolder {
+        private I18nContextHolder() {
+        }
+        static final I18nContext CONTEXT = new I18nContext();
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import org.pdfsam.core.context.BooleanPersistentProperty;
+import org.pdfsam.core.support.params.AbstractPdfOutputParametersBuilder;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.SetDestinationRequest;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.support.Style;
+import org.pdfsam.ui.components.support.Views;
+import org.sejda.model.output.ExistingOutputPolicy;
+import org.sejda.model.parameter.base.AbstractPdfOutputParameters;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static java.util.Arrays.asList;
+import static java.util.Optional.empty;
+import static java.util.Optional.ofNullable;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+public class PdfDestinationPane extends DestinationPane implements ToolBound, RestorableView, ResettableView,
+        TaskParametersBuildStep<AbstractPdfOutputParametersBuilder<? extends AbstractPdfOutputParameters>> {
+    private final PdfVersionCombo version;
+    private final PdfVersionConstrainedCheckBox compress;
+    private Optional<CheckBox> discardBookmarks = empty();
+    private final String toolBinding;
+    public PdfDestinationPane(BrowsableField destination, String toolBinding,
+            DestinationPanelFields... optionalFields) {
+        this(destination, toolBinding, false, optionalFields);
+    }
+    public PdfDestinationPane(BrowsableField destination, String toolBinding, boolean expandAdvanced,
+            DestinationPanelFields... optionalFields) {
+        super(destination);
+        destination.setId(toolBinding + ".destination");
+        overwrite().setSelected(app().persistentSettings().get(BooleanPersistentProperty.OVERWRITE_OUTPUT));
+        this.toolBinding = defaultString(toolBinding);
+        VBox advancedPanel = new VBox();
+        advancedPanel.getStyleClass().addAll(Style.CONTAINER.css());
+        version = new PdfVersionCombo(toolBinding);
+        compress = new PdfVersionConstrainedCheckBox(PdfVersion.VERSION_1_5, toolBinding);
+        compress.setText(i18n().tr("Compress output file/files"));
+        compress.setSelected(app().persistentSettings().get(BooleanPersistentProperty.PDF_COMPRESSION_ENABLED));
+        compress.setId("compressField");
+        compress.getStyleClass().addAll(Style.VITEM.css());
+        if (asList(optionalFields).contains(DestinationPanelFields.DISCARD_BOOKMARKS)) {
+            CheckBox discardBookmarksField = new CheckBox(i18n().tr("Discard bookmarks"));
+            discardBookmarksField.setGraphic(helpIcon(
+                    i18n().tr("Tick the box if you don't want to retain any bookmark from the original PDF document")));
+            discardBookmarksField.getStyleClass().addAll(Style.WITH_HELP.css());
+            discardBookmarksField.getStyleClass().addAll(Style.VITEM.css());
+            discardBookmarksField.setId("discardBookmarksField");
+            discardBookmarksField.setSelected(
+                    app().persistentSettings().get(BooleanPersistentProperty.DISCARD_BOOKMARKS));
+            discardBookmarks = Optional.of(discardBookmarksField);
+        }
+        HBox versionPane = new HBox(new Label(i18n().tr("Output PDF version:")), version);
+        versionPane.getStyleClass().addAll(Style.VITEM.css());
+        versionPane.getStyleClass().addAll(Style.HCONTAINER.css());
+        advancedPanel.getChildren().add(compress);
+        discardBookmarks.ifPresent(advancedPanel.getChildren()::add);
+        advancedPanel.getChildren().add(versionPane);
+        TitledPane titledAdvanced = Views.titledPane(i18n().tr("Show advanced settings"), advancedPanel,
+                "advanced-destination-pane");
+        titledAdvanced.setExpanded(expandAdvanced);
+        titledAdvanced.expandedProperty().addListener((o, oldval, newVal) -> {
+            if (newVal) {
+                titledAdvanced.setText(i18n().tr("Hide advanced settings"));
+            } else {
+                titledAdvanced.setText(i18n().tr("Show advanced settings"));
+            }
+        });
+        getChildren().add(titledAdvanced);
+        eventStudio().addAnnotatedListeners(this);
+    }
+    public void enableSameAsSourceItem() {
+        version.enableSameAsSourceItem();
+    }
+    @Override
+    @EventStation
+    public String toolBinding() {
+        return toolBinding;
+    }
+    @EventListener
+    public void setDestination(SetDestinationRequest event) {
+        if (!event.fallback() || (isBlank(destination().getTextField().getText()) && app().persistentSettings()
+                .get(BooleanPersistentProperty.SMART_OUTPUT))) {
+            destination().setTextFromFile(event.footprint());
+        }
+    }
+    @Override
+    public void resetView() {
+        super.resetView();
+        version.resetView();
+        compress.setSelected(false);
+        compress.setSelected(app().persistentSettings().get(BooleanPersistentProperty.PDF_COMPRESSION_ENABLED));
+        overwrite().setSelected(app().persistentSettings().get(BooleanPersistentProperty.OVERWRITE_OUTPUT));
+        discardBookmarks.ifPresent(
+                c -> c.setSelected(app().persistentSettings().get(BooleanPersistentProperty.DISCARD_BOOKMARKS)));
+    }
+    @Override
+    public void apply(AbstractPdfOutputParametersBuilder<? extends AbstractPdfOutputParameters> builder,
+            Consumer<String> onError) {
+        builder.compress(compress.isSelected());
+        if (overwrite().isSelected()) {
+            builder.existingOutput(ExistingOutputPolicy.OVERWRITE);
+        }
+        builder.version(version.getSelectionModel().getSelectedItem().getVersion());
+        discardBookmarks.ifPresent(d -> builder.discardBookmarks(d.isSelected()));
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put("compress", Boolean.toString(compress.isSelected()));
+        data.put("overwrite", Boolean.toString(overwrite().isSelected()));
+        discardBookmarks.ifPresent(d -> data.put("discardBookmarks", Boolean.toString(d.isSelected())));
+        data.put("version", version.getSelectionModel().getSelectedItem().getVersion().toString());
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        version.resetView();
+        compress.setSelected(Boolean.parseBoolean(data.get("compress")));
+        overwrite().setSelected(Boolean.parseBoolean(data.get("overwrite")));
+        discardBookmarks.ifPresent(d -> d.setSelected(Boolean.parseBoolean(data.get("discardBookmarks"))));
+        ofNullable(data.get("version")).map(PdfVersion::valueOf).map(DefaultPdfVersionComboItem::new)
+                .ifPresent(v -> this.version.getSelectionModel().select(v));
+    }
+    PdfVersionCombo getVersion() {
+        return version;
+    }
+    PdfVersionConstrainedCheckBox getCompress() {
+        return compress;
+    }
+    public enum DestinationPanelFields {
+        DISCARD_BOOKMARKS
+    }
+}
+package org.pdfsam.tools.splitbysize;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.VBox;
+import org.apache.commons.lang3.builder.Builder;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.selection.single.TaskParametersBuilderSingleSelectionPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.parameter.SplitBySizeParameters;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.splitbysize.SplitBySizeTool.TOOL_ID;
+public class SplitBySizeToolPanel extends BaseToolPanel {
+    private final TaskParametersBuilderSingleSelectionPane selectionPane;
+    private final BrowsableOutputDirectoryField destinationDirectoryField;
+    private final PdfDestinationPane destinationPane;
+    private final SplitOptionsPane splitOptions = new SplitOptionsPane();
+    private final PrefixPane prefix;
+    @Inject
+    public SplitBySizeToolPanel(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField destinationDirectoryField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer,
+            @Named(TOOL_ID + "prefix") PrefixPane prefix) {
+        super(TOOL_ID, footer);
+        this.destinationDirectoryField = destinationDirectoryField;
+        this.destinationPane = destinationPane;
+        this.selectionPane = new TaskParametersBuilderSingleSelectionPane(id());
+        this.selectionPane.setPromptText(i18n().tr("Select or drag and drop the PDF you want to split"));
+        this.prefix = prefix;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        splitOptions.saveStateTo(data);
+        destinationDirectoryField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+        prefix.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        splitOptions.restoreStateFrom(data);
+        destinationDirectoryField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+        prefix.restoreStateFrom(data);
+    }
+    @Override
+    protected Builder<SplitBySizeParameters> getBuilder(Consumer<String> onError) {
+        SplitBySizeParametersBuilder builder = new SplitBySizeParametersBuilder();
+        splitOptions.apply(builder, onError);
+        selectionPane.apply(builder, onError);
+        destinationDirectoryField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        prefix.apply(builder, onError);
+        return builder;
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        TitledPane prefixTitled = Views.titledPane(i18n().tr("File names settings"), prefix);
+        prefix.addMenuItemFor(Prefix.CURRENTPAGE);
+        prefix.addMenuItemFor(Prefix.FILENUMBER);
+        prefix.addMenuItemFor("[TOTAL_FILESNUMBER]");
+        pane.getChildren().addAll(selectionPane, Views.titledPane(i18n().tr("Split settings"), splitOptions),
+                Views.titledPane(i18n().tr("Output settings"), destinationPane), prefixTitled);
+        return pane;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            splitOptions.resetView();
+            prefix.resetView();
+            destinationPane.resetView();
+        }
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+}
+package org.pdfsam.tools.splitbysize;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+@Auto
+public class SplitBySizeTool implements Tool {
+    static final String TOOL_ID = "split.bysize";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split by size"))
+            .description(i18n().tr("Split a PDF document in files of the given size (roughly)."))
+            .priority(ToolPriority.LOW.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitBySizeToolPanel.class);
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ARROWS_RESIZE_H);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            BrowsableOutputDirectoryField field = new BrowsableOutputDirectoryField();
+            field.setId(TOOL_ID + "field");
+            return field;
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.scene.control.CheckBox;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.AddPdfVersionConstraintEvent;
+import org.pdfsam.model.ui.RemovePdfVersionConstraintEvent;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.pdf.PdfVersion;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+class PdfVersionConstrainedCheckBox extends CheckBox implements ToolBound {
+    private final PdfVersion constraint;
+    private String toolBinding = StringUtils.EMPTY;
+    public PdfVersionConstrainedCheckBox(PdfVersion constraint, String toolBinding) {
+        requireNotNullArg(constraint, "PdfVersion cannot be null");
+        this.toolBinding = defaultString(toolBinding);
+        this.constraint = constraint;
+        this.setGraphic(helpIcon(i18n().tr("PDF version required: {0}", this.constraint.getVersionString())));
+        this.getStyleClass().addAll(Style.WITH_HELP.css());
+        selectedProperty().addListener((o, oldVal, newVal) -> {
+            if (newVal) {
+                eventStudio().broadcast(new AddPdfVersionConstraintEvent(constraint), toolBinding);
+            } else {
+                eventStudio().broadcast(new RemovePdfVersionConstraintEvent(constraint), toolBinding);
+            }
+        });
+    }
+    @Override
+    public String toolBinding() {
+        return toolBinding;
+    }
+}
+package org.pdfsam.tools.split;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+@Auto
+public class SplitTool implements Tool {
+    static final String TOOL_ID = "split.simple";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split"))
+            .description(i18n().tr("Split a PDF document at the given page numbers."))
+            .priority(ToolPriority.HIGH.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.IMAGE_BROKEN);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.css.PseudoClass;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.input.Clipboard;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.commons.ValidableTextField;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.pdfsam.ui.components.support.Style;
+import java.io.File;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.i18n.I18nContext.i18n;
+abstract class BrowsableField extends HBox implements RestorableView {
+    private static final PseudoClass SELECTED_PSEUDOCLASS_STATE = PseudoClass.getPseudoClass("selected");
+    private final Button browseButton;
+    private final ValidableTextField textField = new ValidableTextField() {
+        @Override
+        public void paste() {
+            Clipboard clipboard = Clipboard.getSystemClipboard();
+            if (clipboard.hasString()) {
+                String text = clipboard.getString();
+                if (text.length() > 2 && text.charAt(0) == '"' && text.charAt(text.length() - 1) == '"') {
+                    replaceSelection(text.substring(1, text.length() - 1));
+                } else {
+                    super.paste();
+                }
+            }
+        }
+    };
+    private final HBox validableContainer;
+    private String browseWindowTitle = i18n().tr("Select");
+    public BrowsableField() {
+        this(new Button(i18n().tr("Browse")));
+        browseButton.getStyleClass().addAll(Style.BROWSE_BUTTON.css());
+        browseButton.prefHeightProperty().bind(textField.heightProperty());
+        browseButton.setMaxHeight(USE_PREF_SIZE);
+        browseButton.setMinHeight(USE_PREF_SIZE);
+        getChildren().add(browseButton);
+    }
+    public BrowsableField(Button browseButton) {
+        this.browseButton = browseButton;
+        HBox.setHgrow(textField, Priority.ALWAYS);
+        this.getStyleClass().add("browsable-field");
+        validableContainer = new HBox(textField);
+        validableContainer.getStyleClass().add("validable-container");
+        textField.getStyleClass().add("validable-container-field");
+        HBox.setHgrow(validableContainer, Priority.ALWAYS);
+        textField.validProperty().addListener((o, oldValue, newValue) -> {
+            if (newValue == FXValidationSupport.ValidationState.INVALID) {
+                validableContainer.getStyleClass().addAll(Style.INVALID.css());
+            } else {
+                validableContainer.getStyleClass().removeAll(Style.INVALID.css());
+            }
+        });
+        textField.focusedProperty().addListener(
+                (o, oldVal, newVal) -> validableContainer.pseudoClassStateChanged(SELECTED_PSEUDOCLASS_STATE, newVal));
+        getChildren().add(validableContainer);
+    }
+    public ValidableTextField getTextField() {
+        return textField;
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put(defaultString(getId()) + "browsableField", defaultString(textField.getText()));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        textField.setText(Optional.ofNullable(data.get(defaultString(getId()) + "browsableField")).orElse(EMPTY));
+    }
+    public final void setGraphic(Node value) {
+        validableContainer.getChildren().clear();
+        if (value != null) {
+            validableContainer.getChildren().add(value);
+        }
+        validableContainer.getChildren().add(textField);
+    }
+    Button getBrowseButton() {
+        return browseButton;
+    }
+    String getBrowseWindowTitle() {
+        return browseWindowTitle;
+    }
+    public void setBrowseWindowTitle(String browseWindowTitle) {
+        this.browseWindowTitle = browseWindowTitle;
+    }
+    abstract void setTextFromFile(File inputFile);
+    public void setTextFromFile(Path inputFile) {
+        if (Objects.nonNull(inputFile)) {
+            this.setTextFromFile(inputFile.toFile());
+        }
+    }
+}
+package org.pdfsam.core.context;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ObservableValue;
+import org.pdfsam.persistence.PersistenceException;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Arrays;
+import java.util.Optional;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.empty;
+import static java.util.Optional.of;
+import static java.util.Optional.ofNullable;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+public class ApplicationPersistentSettings {
+    private static final Logger LOG = LoggerFactory.getLogger(ApplicationPersistentSettings.class);
+    private final PreferencesRepository repo;
+    private final SimpleObjectProperty<PersistentPropertyChange<String>> stringSettingsChanges = new SimpleObjectProperty<>();
+    private final SimpleObjectProperty<PersistentPropertyChange<Integer>> intSettingsChanges = new SimpleObjectProperty<>();
+    private final SimpleObjectProperty<PersistentPropertyChange<Boolean>> boolSettingsChanges = new SimpleObjectProperty<>();
+    ApplicationPersistentSettings(PreferencesRepository repo) {
+        this.repo = repo;
+    }
+    public Optional<String> get(StringPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return ofNullable(this.repo.getString(prop.key(), prop.defaultSupplier()));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return ofNullable(prop.defaultSupplier().get());
+    }
+    public int get(IntegerPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return this.repo.getInt(prop.key(), prop.defaultSupplier());
+        } catch (PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return prop.defaultSupplier().get();
+    }
+    public boolean get(BooleanPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return this.repo.getBoolean(prop.key(), prop.defaultSupplier());
+        } catch (NumberFormatException | PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return prop.defaultSupplier().get();
+    }
+    public void set(StringPersistentProperty prop, String value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveString(prop.key(), value);
+            stringSettingsChanges.set(new PersistentPropertyChange<>(prop, ofNullable(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public void set(IntegerPersistentProperty prop, int value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveInt(prop.key(), value);
+            intSettingsChanges.set(new PersistentPropertyChange<>(prop, of(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public void set(BooleanPersistentProperty prop, boolean value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveBoolean(prop.key(), value);
+            boolSettingsChanges.set(new PersistentPropertyChange<>(prop, of(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public boolean hasValueFor(PersistentProperty<?> property) {
+        if (nonNull(property)) {
+            return Arrays.stream(this.repo.keys()).anyMatch(k -> k.equals(property.key()));
+        }
+        return false;
+    }
+    public void delete(PersistentProperty<?> property) {
+        if (nonNull(property)) {
+            this.repo.delete(property.key());
+        }
+    }
+    public ObservableValue<Optional<String>> settingsChanges(StringPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<String>>(empty());
+        stringSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public ObservableValue<Optional<Integer>> settingsChanges(IntegerPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<Integer>>(empty());
+        intSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public ObservableValue<Optional<Boolean>> settingsChanges(BooleanPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<Boolean>>(empty());
+        boolSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public void clean() {
+        try {
+            this.repo.clean();
+            LOG.info("Persistent application settings deleted");
+        } catch (PersistenceException e) {
+            LOG.error("Unable to clear application settings", e);
+        }
+    }
+}
+package org.pdfsam.core.context;
+import java.util.function.Supplier;
+import static org.pdfsam.core.ConfigurableSystemProperty.CHECK_FOR_NEWS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.CHECK_FOR_UPDATES_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.DISCARD_BOOKMARKS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.DONATE_NOTIFICATION_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.FETCH_PREMIUM_MODULES_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.OVERWRITE_OUTPUT_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PDF_COMPRESSION_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PLAY_SOUNDS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.SMART_OUTPUT_PROP;
+public enum BooleanPersistentProperty implements PersistentProperty<Boolean> {
+    PLAY_SOUNDS(() -> Boolean.parseBoolean(System.getProperty(PLAY_SOUNDS_PROP, Boolean.TRUE.toString()))),
+    DONATION_NOTIFICATION(
+            () -> Boolean.parseBoolean(System.getProperty(DONATE_NOTIFICATION_PROP, Boolean.TRUE.toString()))),
+    PREMIUM_MODULES(
+            () -> Boolean.parseBoolean(System.getProperty(FETCH_PREMIUM_MODULES_PROP, Boolean.TRUE.toString()))),
+    SMART_OUTPUT(() -> Boolean.parseBoolean(System.getProperty(SMART_OUTPUT_PROP, Boolean.TRUE.toString()))),
+    CHECK_UPDATES(() -> Boolean.parseBoolean(System.getProperty(CHECK_FOR_UPDATES_PROP, Boolean.TRUE.toString()))),
+    CHECK_FOR_NEWS(() -> Boolean.parseBoolean(System.getProperty(CHECK_FOR_NEWS_PROP, Boolean.TRUE.toString()))),
+    OVERWRITE_OUTPUT(() -> Boolean.parseBoolean(System.getProperty(OVERWRITE_OUTPUT_PROP, Boolean.FALSE.toString()))),
+    PDF_COMPRESSION_ENABLED(
+            () -> Boolean.parseBoolean(System.getProperty(PDF_COMPRESSION_PROP, Boolean.TRUE.toString()))),
+    CLEAR_CONFIRMATION(() -> Boolean.TRUE),
+    SAVE_WORKSPACE_ON_EXIT(() -> Boolean.FALSE),
+    SAVE_PWD_IN_WORKSPACE(() -> Boolean.FALSE),
+    SIDEBAR_EXPANDED_STATE(() -> Boolean.TRUE),
+    DISCARD_BOOKMARKS(() -> Boolean.parseBoolean(System.getProperty(DISCARD_BOOKMARKS_PROP, Boolean.FALSE.toString())));
+    private final Supplier<Boolean> defaultSupplier;
+    BooleanPersistentProperty(Supplier<Boolean> supplier) {
+        this.defaultSupplier = supplier;
+    }
+    @Override
+    public String key() {
+        return this.name().toLowerCase();
+    }
+    @Override
+    public Supplier<Boolean> defaultSupplier() {
+        return defaultSupplier;
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.scene.control.ComboBox;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.AddPdfVersionConstraintEvent;
+import org.pdfsam.model.ui.ChangedSelectedPdfVersionEvent;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.model.ui.PdfVersionComboItem;
+import org.pdfsam.model.ui.RemovePdfVersionConstraintEvent;
+import org.pdfsam.model.ui.ResettableView;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Arrays;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+class PdfVersionCombo extends ComboBox<PdfVersionComboItem> implements ToolBound, ResettableView {
+    private final String toolBinding;
+    private final ObservableList<PdfVersionComboItem> unfilteredItems = FXCollections.observableArrayList();
+    private final PdfVersionFilter versionsFilter = new PdfVersionFilter();
+    private final SameAsSourceComboItem sameAsSource = new SameAsSourceComboItem();
+    public PdfVersionCombo(String toolBinding) {
+        this.toolBinding = toolBinding;
+        Arrays.stream(PdfVersion.values()).filter(v -> v.getVersion() > PdfVersion.VERSION_1_2.getVersion())
+                .map(DefaultPdfVersionComboItem::new).forEach(unfilteredItems::add);
+        versionsFilter.requiredProperty().addListener((observable, oldVal, newVal) -> setFilteredItems(newVal));
+        resetView();
+        eventStudio().addAnnotatedListeners(this);
+    }
+    private void setFilteredItems(PdfVersion required) {
+        if (nonNull(required)) {
+            PdfVersionComboItem selected = getSelectionModel().getSelectedItem();
+            setItems(unfilteredItems.filtered(t -> t.isHigherOrEqual(required)));
+            int selectedIndex = getItems().indexOf(selected);
+            if (selectedIndex != -1) {
+                getSelectionModel().select(selectedIndex);
+            } else {
+                getSelectionModel().selectFirst();
+            }
+        }
+    }
+    @EventListener
+    public void onAddPdfVersionConstraint(final AddPdfVersionConstraintEvent event) {
+        versionsFilter.addFilter(event.pdfVersion());
+    }
+    @EventListener
+    public void onRemovePdfVersionConstraint(final RemovePdfVersionConstraintEvent event) {
+        versionsFilter.removeFilter(event.pdfVersion());
+    }
+    @EventListener
+    public void onChangedSelectedPdfVersion(final ChangedSelectedPdfVersionEvent event) {
+        sameAsSource.setVersion(event.pdfVersion());
+        setFilteredItems(versionsFilter.requiredProperty().get());
+    }
+    @Override
+    @EventStation
+    public String toolBinding() {
+        return this.toolBinding;
+    }
+    @Override
+    public void resetView() {
+        versionsFilter.reset();
+        versionsFilter.addFilter(PdfVersion.VERSION_1_2);
+        app().persistentSettings().get(StringPersistentProperty.PDF_VERSION).map(PdfVersion::valueOf)
+                .flatMap(v -> getItems().stream().filter(i -> i.getVersion() == v).findFirst())
+                .ifPresent(i -> getSelectionModel().select(i));
+    }
+    public void enableSameAsSourceItem() {
+        unfilteredItems.add(0, sameAsSource);
+        if (!app().persistentSettings().hasValueFor(StringPersistentProperty.PDF_VERSION)) {
+            getSelectionModel().selectFirst();
+        }
+    }
+    private static class SameAsSourceComboItem implements PdfVersionComboItem {
+        private PdfVersion version = PdfVersion.VERSION_1_5;
+        void setVersion(PdfVersion version) {
+            this.version = ofNullable(version).orElse(PdfVersion.VERSION_1_5);
+        }
+        @Override
+        public PdfVersion getVersion() {
+            return version;
+        }
+        @Override
+        public boolean isHigherOrEqual(PdfVersion other) {
+            return this.version.getVersion() >= other.getVersion();
+        }
+        @Override
+        public String toString() {
+            return i18n().tr("Same as the input document");
+        }
+    }
+}
+package org.pdfsam.model.ui;
+import org.sejda.model.pdf.PdfVersion;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+public class DefaultPdfVersionComboItem extends ComboItem<PdfVersion> implements PdfVersionComboItem {
+    public DefaultPdfVersionComboItem(PdfVersion version) {
+        super(version, i18n().tr("Version {0}", version.getVersionString()));
+        requireNotNullArg(version, "PDF version cannot be null");
+    }
+    @Override
+    public PdfVersion getVersion() {
+        return this.key();
+    }
+    @Override
+    public boolean isHigherOrEqual(PdfVersion version) {
+        return this.key().getVersion() >= version.getVersion();
+    }
+}
+package org.pdfsam.tools.backpages;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+public class AddBackpagesTool implements Tool {
+    static final String TOOL_ID = "addbackpages";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Insert pages multiple times")).description(
+                    i18n().tr(
+                            "Insert the pages of a PDF document A into another document B, repeating it after a certain number of pages, resulting in B1 A B2 A B3 A etc."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(AddBackpagesToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ALIGN_LETTER_RIGHT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}
+package org.pdfsam.tools.rotate;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+@Auto
+public class RotateTool implements Tool {
+    static final String TOOL_ID = "rotate";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.OTHER)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF, ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Rotate"))
+            .description(i18n().tr("Rotate the pages of multiple PDF documents."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(RotateToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.ROTATE_360);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+package org.pdfsam.tools.merge;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+@Auto
+public class MergeTool implements Tool {
+    static final String TOOL_ID = "merge";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF).name(i18n().tr("Merge"))
+            .description(i18n().tr("Merge multiple PDF documents or subsections of them."))
+            .priority(ToolPriority.HIGH.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(MergeToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILES_LANDSCAPES_ALT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}
+package org.pdfsam.tools.merge;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.merge.MergeTool.TOOL_ID;
+import static org.pdfsam.ui.components.support.Views.titledPane;
+public class MergeToolPanel extends BaseToolPanel {
+    private final MergeSelectionPane selectionPane = new MergeSelectionPane(TOOL_ID);
+    private final MergeOptionsPane mergeOptions = new MergeOptionsPane();
+    private final BrowsablePdfOutputField destinationFileField;
+    private final PdfDestinationPane destinationPane;
+    @Inject
+    public MergeToolPanel(@Named(TOOL_ID + "field") BrowsablePdfOutputField destinationFileField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer) {
+        super(TOOL_ID, footer);
+        this.destinationFileField = destinationFileField;
+        this.destinationPane = destinationPane;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        mergeOptions.saveStateTo(data);
+        destinationFileField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        mergeOptions.restoreStateFrom(data);
+        destinationFileField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+    }
+    @Override
+    protected MergeParametersBuilder getBuilder(Consumer<String> onError) {
+        MergeParametersBuilder builder = new MergeParametersBuilder();
+        selectionPane.apply(builder, onError);
+        mergeOptions.apply(builder, onError);
+        destinationFileField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        return builder;
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        VBox.setVgrow(selectionPane, Priority.ALWAYS);
+        pane.getChildren().addAll(selectionPane, titledPane(i18n().tr("Merge settings"), mergeOptions),
+                titledPane(i18n().tr("Destination file"), destinationPane));
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            mergeOptions.resetView();
+            destinationPane.resetView();
+        }
+    }
+}
+package org.pdfsam.core.context;
+import javafx.application.ConditionalFeature;
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.injector.Injector;
+import org.pdfsam.injector.Key;
+import org.pdfsam.persistence.PreferencesRepository;
+import java.io.Closeable;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Objects;
+import java.util.Optional;
+import static java.util.function.Predicate.not;
+import static org.pdfsam.core.context.StringPersistentProperty.FONT_SIZE;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+public class ApplicationContext implements Closeable {
+    private static final ApplicationContext CONTEXT = new ApplicationContext();
+    private final ApplicationPersistentSettings persistentSettings;
+    private ApplicationRuntimeState runtimeState;
+    private Optional<Injector> injector = Optional.empty();
+    private ApplicationContext() {
+        this(new ApplicationPersistentSettings(new PreferencesRepository("/org/pdfsam/user/conf")), null);
+    }
+    @Deprecated
+    ApplicationContext(ApplicationPersistentSettings persistentSettings, ApplicationRuntimeState runtimeState) {
+        this.persistentSettings = persistentSettings;
+        this.runtimeState = runtimeState;
+    }
+    public static ApplicationContext app() {
+        return CONTEXT;
+    }
+    public ApplicationPersistentSettings persistentSettings() {
+        return this.persistentSettings;
+    }
+    public ApplicationRuntimeState runtimeState() {
+        synchronized (this) {
+            if (Objects.isNull(this.runtimeState)) {
+                this.runtimeState = new ApplicationRuntimeState();
+                this.persistentSettings().settingsChanges(WORKING_PATH).subscribe(path -> {
+                    this.runtimeState.defaultWorkingPath(
+                            path.filter(StringUtils::isNotBlank).map(Paths::get).filter(Files::isDirectory)
+                                    .orElse(null));
+                });
+                var workingPath = persistentSettings().get(WORKING_PATH).filter(StringUtils::isNotBlank).map(Paths::get)
+                        .filter(Files::isDirectory).orElse(null);
+                this.runtimeState.defaultWorkingPath(workingPath);
+            }
+        }
+        return this.runtimeState;
+    }
+    public void registerScene(Scene scene) {
+        this.runtimeState().theme().subscribe(t -> {
+            if (Objects.nonNull(t)) {
+                Platform.runLater(() -> {
+                    scene.getStylesheets().setAll(t.stylesheets());
+                    if (!Platform.isSupported(ConditionalFeature.TRANSPARENT_WINDOW)) {
+                        scene.getStylesheets().addAll(t.transparentIncapableStylesheets());
+                    }
+                });
+            }
+        });
+        this.persistentSettings().settingsChanges(FONT_SIZE).subscribe(size -> {
+            size.filter(StringUtils::isNotBlank).map(s -> String.format("-fx-font-size: %s;", s))
+                    .ifPresentOrElse(scene.getRoot()::setStyle, () -> scene.getRoot().setStyle(""));
+        });
+        this.persistentSettings().get(FONT_SIZE).filter(not(String::isBlank))
+                .ifPresent(size -> scene.getRoot().setStyle(String.format("-fx-font-size: %s;", size)));
+    }
+    public void injector(Injector injector) {
+        this.injector = Optional.ofNullable(injector);
+    }
+    public <T> T instance(Class<T> type) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(type);
+    }
+    public <T> T instance(Key<T> key) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(key);
+    }
+    public void clean() {
+        persistentSettings.clean();
+    }
+    @Override
+    public void close() {
+        injector.ifPresent(Injector::close);
+    }
+}
+package org.pdfsam.tools.extract;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+@Auto
+public class ExtractTool implements Tool {
+    static final String TOOL_ID = "extract";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF, ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Extract"))
+            .description(i18n().tr("Extract pages from PDF documents.")).priority(ToolPriority.DEFAULT.getPriority())
+            .supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(ExtractToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILE_EXPORT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+package org.pdfsam.tools.extract;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.extract.ExtractTool.TOOL_ID;
+import static org.pdfsam.ui.components.support.Views.titledPane;
+public class ExtractToolPanel extends BaseToolPanel {
+    private final ExtractSelectionPane selectionPane = new ExtractSelectionPane(TOOL_ID);
+    private final ExtractOptionsPane extractOptions = new ExtractOptionsPane();
+    private final BrowsableOutputDirectoryField destinationDirectoryField;
+    private final PdfDestinationPane destinationPane;
+    private final PrefixPane prefix;
+    @Inject
+    public ExtractToolPanel(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField destinationDirectoryField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer,
+            @Named(TOOL_ID + "prefix") PrefixPane prefix) {
+        super(TOOL_ID, footer);
+        this.destinationDirectoryField = destinationDirectoryField;
+        this.destinationPane = destinationPane;
+        this.prefix = prefix;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    protected ExtractParametersBuilder getBuilder(Consumer<String> onError) {
+        ExtractParametersBuilder builder = new ExtractParametersBuilder();
+        extractOptions.apply(builder, onError);
+        selectionPane.apply(builder, onError);
+        destinationDirectoryField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        prefix.apply(builder, onError);
+        return builder;
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        extractOptions.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+        destinationDirectoryField.saveStateTo(data);
+        prefix.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        if (data.containsKey("input")) {
+            data.put("input.0", data.get("input"));
+            data.put("input.password.0", data.get("input.password"));
+            data.put("input.size", "1");
+        }
+        selectionPane.restoreStateFrom(data);
+        extractOptions.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+        destinationDirectoryField.restoreStateFrom(data);
+        prefix.restoreStateFrom(data);
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        VBox.setVgrow(selectionPane, Priority.ALWAYS);
+        TitledPane prefixTitled = Views.titledPane(i18n().tr("File names settings"), prefix);
+        prefix.addMenuItemFor(Prefix.FILENUMBER);
+        prefix.addMenuItemFor("[TOTAL_FILESNUMBER]");
+        pane.getChildren().addAll(selectionPane, titledPane(i18n().tr("Extract settings"), extractOptions),
+                titledPane(i18n().tr("Output settings"), destinationPane), prefixTitled);
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            extractOptions.resetView();
+            prefix.resetView();
+            destinationPane.resetView();
+        }
+    }
+}
+package org.pdfsam.tools.rotate;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.rotate.RotateTool.TOOL_ID;
+public class RotateToolPanel extends BaseToolPanel {
+    private final RotateSelectionPane selectionPane = new RotateSelectionPane(TOOL_ID);
+    private final RotateOptionsPane rotateOptions = new RotateOptionsPane();
+    private final BrowsableOutputDirectoryField destinationDirectoryField;
+    private final PdfDestinationPane destinationPane;
+    private final PrefixPane prefix;
+    @Inject
+    public RotateToolPanel(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField destinationDirectoryField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer,
+            @Named(TOOL_ID + "prefix") PrefixPane prefix) {
+        super(TOOL_ID, footer);
+        this.destinationDirectoryField = destinationDirectoryField;
+        this.destinationPane = destinationPane;
+        this.prefix = prefix;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    protected RotateParametersBuilder getBuilder(Consumer<String> onError) {
+        RotateParametersBuilder builder = new RotateParametersBuilder();
+        rotateOptions.apply(builder, onError);
+        selectionPane.apply(builder, onError);
+        destinationDirectoryField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        prefix.apply(builder, onError);
+        return builder;
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        rotateOptions.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+        destinationDirectoryField.saveStateTo(data);
+        prefix.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        rotateOptions.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+        destinationDirectoryField.restoreStateFrom(data);
+        prefix.restoreStateFrom(data);
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        VBox.setVgrow(selectionPane, Priority.ALWAYS);
+        TitledPane prefixTitled = Views.titledPane(i18n().tr("File names settings"), prefix);
+        prefix.addMenuItemFor(Prefix.FILENUMBER);
+        prefix.addMenuItemFor("[TOTAL_FILESNUMBER]");
+        TitledPane options = Views.titledPane(i18n().tr("Rotate settings"), rotateOptions);
+        pane.getChildren()
+                .addAll(selectionPane, options, Views.titledPane(i18n().tr("Output settings"), destinationPane),
+                        prefixTitled);
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            rotateOptions.resetView();
+            prefix.resetView();
+            destinationPane.resetView();
+        }
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.scene.control.CheckBox;
+import javafx.scene.layout.VBox;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.ui.components.support.Style;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+class DestinationPane extends VBox implements ResettableView {
+    private final CheckBox overwrite = new CheckBox(i18n().tr("Overwrite if already exists"));
+    private final BrowsableField destination;
+    public DestinationPane(BrowsableField destination) {
+        super(Style.DEFAULT_SPACING);
+        requireNotNullArg(destination, "Destination field cannot be null");
+        this.destination = destination;
+        overwrite.setSelected(false);
+        overwrite.setGraphic(
+                helpIcon(i18n().tr("Tick the box if you want to overwrite the output files if they already exist.")));
+        overwrite.getStyleClass().addAll(Style.WITH_HELP.css());
+        getChildren().addAll(destination, overwrite);
+        getStyleClass().addAll(Style.CONTAINER.css());
+        getStyleClass().addAll(Style.VCONTAINER.css());
+    }
+    protected CheckBox overwrite() {
+        return overwrite;
+    }
+    protected BrowsableField destination() {
+        return destination;
+    }
+    @Override
+    public void resetView() {
+        overwrite.setSelected(false);
+        destination.getTextField().setText("");
+    }
+}
+package org.pdfsam.core.support.params;
+import org.sejda.model.parameter.base.AbstractPdfOutputParameters;
+import org.sejda.model.pdf.PdfVersion;
+public abstract class AbstractPdfOutputParametersBuilder<P extends AbstractPdfOutputParameters>
+        extends AbstractParametersBuilder<P> {
+    private boolean compress;
+    private boolean discardBookmarks = false;
+    private PdfVersion version;
+    public void compress(boolean compress) {
+        this.compress = compress;
+    }
+    protected boolean isCompress() {
+        return compress;
+    }
+    public void version(PdfVersion version) {
+        this.version = version;
+    }
+    protected PdfVersion getVersion() {
+        return version;
+    }
+    public void discardBookmarks(boolean discardBookmarks) {
+        this.discardBookmarks = discardBookmarks;
+    }
+    protected boolean isDiscardBookmarks() {
+        return discardBookmarks;
+    }
+}
+package org.pdfsam.tools.splitbybookmarks;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.RequiredPdfData;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+import static org.pdfsam.ui.components.io.PdfDestinationPane.DestinationPanelFields.DISCARD_BOOKMARKS;
+@Auto
+public class SplitByBookmarksTool implements Tool {
+    static final String TOOL_ID = "split.bybookmarks";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.SPLIT)
+            .inputTypes(ToolInputOutputType.SINGLE_PDF).name(i18n().tr("Split by bookmarks"))
+            .description(i18n().tr("Split a PDF document at bookmarked pages by specifying a bookmark level."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(SplitByBookmarksToolPanel.class);
+    }
+    @Override
+    public RequiredPdfData[] requires() {
+        return new RequiredPdfData[] { RequiredPdfData.DEFAULT, RequiredPdfData.BOOMARKS };
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.FILE_BOOKMARK_ALT);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsableOutputDirectoryField destinationDirectoryField() {
+            return new BrowsableOutputDirectoryField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField outputField) {
+            PdfDestinationPane panel = new PdfDestinationPane(outputField, TOOL_ID, DISCARD_BOOKMARKS);
+            panel.enableSameAsSourceItem();
+            return panel;
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.MULTIPLE_PDF);
+        }
+        @Provides
+        @Named(TOOL_ID + "prefix")
+        public PrefixPane prefixPane() {
+            return new PrefixPane(TOOL_ID, new PreferencesRepository("/org/pdfsam/user/conf/" + TOOL_ID));
+        }
+    }
+}
+package org.pdfsam.tools.splitbybookmarks;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.VBox;
+import org.apache.commons.lang3.builder.Builder;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsableOutputDirectoryField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.prefix.PrefixPane;
+import org.pdfsam.ui.components.selection.single.TaskParametersBuilderSingleSelectionPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import org.sejda.model.parameter.SplitByOutlineLevelParameters;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.splitbybookmarks.SplitByBookmarksTool.TOOL_ID;
+public class SplitByBookmarksToolPanel extends BaseToolPanel {
+    private final TaskParametersBuilderSingleSelectionPane selectionPane;
+    private final BrowsableOutputDirectoryField destinationDirectoryField;
+    private final PdfDestinationPane destinationPane;
+    private final SplitOptionsPane splitOptions = new SplitOptionsPane();
+    private final PrefixPane prefix;
+    @Inject
+    public SplitByBookmarksToolPanel(@Named(TOOL_ID + "field") BrowsableOutputDirectoryField destinationDirectoryField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer,
+            @Named(TOOL_ID + "prefix") PrefixPane prefix) {
+        super(TOOL_ID, footer);
+        this.destinationDirectoryField = destinationDirectoryField;
+        this.destinationPane = destinationPane;
+        this.selectionPane = new TaskParametersBuilderSingleSelectionPane(id());
+        this.selectionPane.setPromptText(i18n().tr("Select or drag and drop the PDF you want to split"));
+        this.selectionPane.addOnLoaded(d -> splitOptions.setValidBookmarkLevels(d.getValidBookmarksLevels()));
+        this.prefix = prefix;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        splitOptions.saveStateTo(data);
+        destinationDirectoryField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+        prefix.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        selectionPane.restoreStateFrom(data);
+        splitOptions.restoreStateFrom(data);
+        destinationDirectoryField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+        prefix.restoreStateFrom(data);
+    }
+    @Override
+    protected Builder<SplitByOutlineLevelParameters> getBuilder(Consumer<String> onError) {
+        SplitByOutlineLevelParametersBuilder builder = new SplitByOutlineLevelParametersBuilder();
+        splitOptions.apply(builder, onError);
+        selectionPane.apply(builder, onError);
+        destinationDirectoryField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        prefix.apply(builder, onError);
+        return builder;
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        TitledPane prefixTitled = Views.titledPane(i18n().tr("File names settings"), prefix);
+        prefix.addMenuItemFor(Prefix.CURRENTPAGE);
+        prefix.addMenuItemFor(Prefix.FILENUMBER);
+        prefix.addMenuItemFor(Prefix.BOOKMARK);
+        prefix.addMenuItemFor(Prefix.BOOKMARK_STRICT);
+        prefix.addMenuItemFor("[TOTAL_FILESNUMBER]");
+        pane.getChildren().addAll(selectionPane, Views.titledPane(i18n().tr("Split settings"), splitOptions),
+                Views.titledPane(i18n().tr("Output settings"), destinationPane), prefixTitled);
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            splitOptions.resetView();
+            prefix.resetView();
+            destinationPane.resetView();
+        }
+    }
+}
+package org.pdfsam.tools.alternatemix;
+import jakarta.inject.Named;
+import javafx.scene.Node;
+import javafx.scene.layout.Pane;
+import org.kordamp.ikonli.javafx.FontIcon;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.tool.Tool;
+import org.pdfsam.model.tool.ToolCategory;
+import org.pdfsam.model.tool.ToolDescriptor;
+import org.pdfsam.model.tool.ToolInputOutputType;
+import org.pdfsam.model.tool.ToolPriority;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.tool.Footer;
+import org.pdfsam.ui.components.tool.OpenButton;
+import org.pdfsam.ui.components.tool.RunButton;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.tool.ToolDescriptorBuilder.builder;
+public class AlternateMixTool implements Tool {
+    static final String TOOL_ID = "alternatemix";
+    private final ToolDescriptor descriptor = builder().category(ToolCategory.MERGE)
+            .inputTypes(ToolInputOutputType.MULTIPLE_PDF).name(i18n().tr("Alternate Mix")).description(
+                    i18n().tr("Merge two or more PDF documents taking pages alternately in natural or reverse order."))
+            .priority(ToolPriority.DEFAULT.getPriority()).supportURL("https:
+            .build();
+    @Override
+    public ToolDescriptor descriptor() {
+        return descriptor;
+    }
+    @Override
+    public Pane panel() {
+        return app().instance(AlternateMixToolPanel.class);
+    }
+    @Override
+    public String id() {
+        return TOOL_ID;
+    }
+    @Override
+    public Node graphic() {
+        var icon = new FontIcon(UniconsLine.COPY_LANDSCAPE);
+        icon.getStyleClass().addAll(this.descriptor().category().styleClass(), "tool-icon");
+        return icon;
+    }
+    public static class ModuleConfig {
+        @Provides
+        @Named(TOOL_ID + "field")
+        public BrowsablePdfOutputField destinationFileField() {
+            return new BrowsablePdfOutputField();
+        }
+        @Provides
+        @Named(TOOL_ID + "pane")
+        public PdfDestinationPane destinationPane(@Named(TOOL_ID + "field") BrowsablePdfOutputField outputField) {
+            return new PdfDestinationPane(outputField, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "footer")
+        public Footer footer(RunButton runButton, @Named(TOOL_ID + "openButton") OpenButton openButton) {
+            return new Footer(runButton, openButton, TOOL_ID);
+        }
+        @Provides
+        @Named(TOOL_ID + "openButton")
+        public OpenButton openButton() {
+            return new OpenButton(TOOL_ID, ToolInputOutputType.SINGLE_PDF);
+        }
+    }
+}
+package org.pdfsam.tools.alternatemix;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import javafx.geometry.Pos;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.VBox;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ClearToolRequest;
+import org.pdfsam.ui.components.io.BrowsablePdfOutputField;
+import org.pdfsam.ui.components.io.PdfDestinationPane;
+import org.pdfsam.ui.components.support.Views;
+import org.pdfsam.ui.components.tool.BaseToolPanel;
+import org.pdfsam.ui.components.tool.Footer;
+import java.util.Map;
+import java.util.function.Consumer;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.tools.alternatemix.AlternateMixTool.TOOL_ID;
+public class AlternateMixToolPanel extends BaseToolPanel {
+    private final AlternateMixSelectionPane selectionPane = new AlternateMixSelectionPane(TOOL_ID);
+    private final BrowsablePdfOutputField destinationFileField;
+    private final PdfDestinationPane destinationPane;
+    @Inject
+    public AlternateMixToolPanel(@Named(TOOL_ID + "field") BrowsablePdfOutputField destinationFileField,
+            @Named(TOOL_ID + "pane") PdfDestinationPane destinationPane, @Named(TOOL_ID + "footer") Footer footer) {
+        super(TOOL_ID, footer);
+        this.destinationFileField = destinationFileField;
+        this.destinationPane = destinationPane;
+        initModuleSettingsPanel(settingPanel());
+    }
+    @Override
+    public void onSaveWorkspace(Map<String, String> data) {
+        selectionPane.saveStateTo(data);
+        destinationFileField.saveStateTo(data);
+        destinationPane.saveStateTo(data);
+    }
+    @Override
+    public void onLoadWorkspace(Map<String, String> data) {
+        if (data.containsKey("firstDocumentMixinput")) {
+            data.put("input.0", data.get("firstDocumentMixinput"));
+            data.put("input.password.0", data.get("firstDocumentMixinputinput.password"));
+            data.put("input.step.0", data.get("firstStep"));
+            data.put("input.reverse.0", data.get("reverseFirst"));
+            data.put("input.size", "1");
+            if (data.containsKey("secondDocumentMixinput")) {
+                data.put("input.1", data.get("secondDocumentMixinput"));
+                data.put("input.password.1", data.get("secondDocumentMixinput.password"));
+                data.put("input.step.1", data.get("secondStep"));
+                data.put("input.reverse.1", data.get("reverseSecond"));
+                data.put("input.size", "2");
+            }
+        }
+        selectionPane.restoreStateFrom(data);
+        destinationFileField.restoreStateFrom(data);
+        destinationPane.restoreStateFrom(data);
+    }
+    @Override
+    protected AlternateMixParametersBuilder getBuilder(Consumer<String> onError) {
+        AlternateMixParametersBuilder builder = new AlternateMixParametersBuilder();
+        selectionPane.apply(builder, onError);
+        destinationFileField.apply(builder, onError);
+        destinationPane.apply(builder, onError);
+        return builder;
+    }
+    private VBox settingPanel() {
+        VBox pane = new VBox();
+        pane.setAlignment(Pos.TOP_CENTER);
+        VBox.setVgrow(selectionPane, Priority.ALWAYS);
+        pane.getChildren().addAll(selectionPane, Views.titledPane(i18n().tr("Destination file"), destinationPane));
+        return pane;
+    }
+    @EventStation
+    public String id() {
+        return TOOL_ID;
+    }
+    @EventListener
+    public void onClearModule(ClearToolRequest e) {
+        if (e.clearEverything()) {
+            destinationPane.resetView();
+        }
+    }
+}

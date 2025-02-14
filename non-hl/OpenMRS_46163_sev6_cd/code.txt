@@ -1,0 +1,3374 @@
+package org.openmrs.api;
+import org.openmrs.api.context.Context;
+public class APIException extends RuntimeException {
+	public static final long serialVersionUID = 12121212L;
+	public APIException() {
+	}
+	public APIException(String message) {
+		super(message);
+	}
+	public APIException(String message, Throwable cause) {
+		super(message, cause);
+	}
+	public APIException(Throwable cause) {
+		super(cause);
+	}
+	public APIException(String messageKey, Object[] parameters) {
+		super(Context.getMessageSourceService().getMessage(messageKey, parameters, Context.getLocale()));
+	}
+	public APIException(String messageKey, Object[] parameters, Throwable cause) {
+		super(Context.getMessageSourceService().getMessage(messageKey, parameters, Context.getLocale()), cause);
+	}
+}
+_____
+package org.openmrs.api.handler;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+import org.openmrs.Encounter;
+import org.openmrs.Location;
+import org.openmrs.Patient;
+import org.openmrs.Visit;
+import org.openmrs.annotation.Handler;
+import org.openmrs.api.context.Context;
+@Handler
+public class ExistingVisitAssignmentHandler extends BaseEncounterVisitHandler {
+	@Override
+	public String getDisplayName(Locale locale) {
+		return Context.getMessageSourceService().getMessage("visit.assignmentHandler.assignToExistingVisitOnly", null,
+		    locale);
+	}
+	@Override
+	public void beforeCreateEncounter(Encounter encounter) {
+		if (encounter.getVisit() != null) {
+			return;
+		}
+		List<Patient> patients = new ArrayList<>();
+		patients.add(encounter.getPatient());
+		List<Visit> visits = Context.getVisitService().getVisits(null, patients, null, null, null,
+		    encounter.getEncounterDatetime(), null, null, null, true, false);
+		if (visits == null) {
+			return;
+		}
+		Date encounterDate = encounter.getEncounterDatetime();
+		for (Visit visit : visits) {
+			if (visit.getStartDatetime().after(encounterDate)) {
+				continue;
+			}
+			if (visit.getStopDatetime() != null && visit.getStopDatetime().before(encounterDate)) {
+				continue;
+			}
+			if (visit.getLocation() == null || Location.isInHierarchy(encounter.getLocation(), visit.getLocation())) {
+				encounter.setVisit(visit);
+				return;
+			}
+		}
+	}
+}
+_____
+package org.openmrs;
+import java.util.Date;
+import org.codehaus.jackson.annotate.JsonIgnore;
+import org.hibernate.envers.Audited;
+import org.openmrs.customdatatype.CustomDatatype;
+import org.openmrs.customdatatype.CustomDatatypeUtil;
+import org.openmrs.customdatatype.CustomValueDescriptor;
+import org.openmrs.customdatatype.SingleCustomValue;
+@Audited
+public class GlobalProperty extends BaseOpenmrsObject implements CustomValueDescriptor, SingleCustomValue<GlobalProperty> {
+	private static final long serialVersionUID = 1L;
+	private String property = "";
+	private String propertyValue = "";
+	private transient Object typedValue;
+	private boolean dirty = false;
+	private String description = "";
+	private String datatypeClassname;
+	private String datatypeConfig;
+	private String preferredHandlerClassname;
+	private String handlerConfig;
+	private User changedBy;
+	private Date dateChanged;
+	private Privilege viewPrivilege;
+	private Privilege editPrivilege;
+	private Privilege deletePrivilege;
+	public GlobalProperty() {
+	}
+	public GlobalProperty(String property) {
+		this.property = property;
+	}
+	public GlobalProperty(String property, String value) {
+		this(property);
+		this.propertyValue = value;
+	}
+	public GlobalProperty(String property, String value, String description) {
+		this(property, value);
+		this.description = description;
+	}
+	public GlobalProperty(String property, String value, String description,
+	    Class<? extends CustomDatatype<?>> datatypeClass, String datatypeConfig) {
+		this(property, value, description);
+		this.datatypeClassname = datatypeClass.getName();
+		this.datatypeConfig = datatypeConfig;
+	}
+	public String getProperty() {
+		return property;
+	}
+	public void setProperty(String property) {
+		this.property = property;
+	}
+	public String getPropertyValue() {
+		return propertyValue;
+	}
+	public void setPropertyValue(String propertyValue) {
+		this.propertyValue = propertyValue;
+	}
+	public String getDescription() {
+		return description;
+	}
+	public void setDescription(String description) {
+		this.description = description;
+	}
+	@Override
+	public Integer getId() {
+		throw new UnsupportedOperationException();
+	}
+	@Override
+	public void setId(Integer id) {
+		throw new UnsupportedOperationException();
+	}
+	@Override
+	public String getDatatypeClassname() {
+		return datatypeClassname;
+	}
+	public void setDatatypeClassname(String datatypeClassname) {
+		this.datatypeClassname = datatypeClassname;
+	}
+	@Override
+	public String getDatatypeConfig() {
+		return datatypeConfig;
+	}
+	public void setDatatypeConfig(String datatypeConfig) {
+		this.datatypeConfig = datatypeConfig;
+	}
+	@Override
+	public String getPreferredHandlerClassname() {
+		return preferredHandlerClassname;
+	}
+	public void setPreferredHandlerClassname(String preferredHandlerClassname) {
+		this.preferredHandlerClassname = preferredHandlerClassname;
+	}
+	@Override
+	public String getHandlerConfig() {
+		return handlerConfig;
+	}
+	public void setHandlerConfig(String handlerConfig) {
+		this.handlerConfig = handlerConfig;
+	}
+	@Override
+	public String toString() {
+		return "property: " + getProperty() + " value: " + getPropertyValue();
+	}
+	@Override
+	public GlobalProperty getDescriptor() {
+		return this;
+	}
+	@Override
+	public String getValueReference() {
+		return getPropertyValue();
+	}
+	@Override
+	public void setValueReferenceInternal(String valueToPersist) {
+		setPropertyValue(valueToPersist);
+	}
+	@Override
+	public Object getValue() {
+		if (typedValue == null) {
+			typedValue = CustomDatatypeUtil.getDatatypeOrDefault(this).fromReferenceString(getValueReference());
+		}
+		return typedValue;
+	}
+	@Override
+	public <T> void setValue(T typedValue){
+		this.typedValue = typedValue;
+		dirty = true;
+	}
+	@Deprecated
+	@JsonIgnore
+	@Override
+	public boolean isDirty() {
+		return getDirty();
+	}
+	public boolean getDirty() {
+		return dirty;
+	}
+	public User getChangedBy() {
+		return changedBy;
+	}
+	public void setChangedBy(User changedBy) {
+		this.changedBy = changedBy;
+	}
+	public Date getDateChanged() {
+		return dateChanged;
+	}
+	public void setDateChanged(Date dateChanged) {
+		this.dateChanged = dateChanged;
+	}
+	public Privilege getViewPrivilege() {
+		return viewPrivilege;
+	}
+	public void setViewPrivilege(Privilege viewPrivilege) {
+		this.viewPrivilege = viewPrivilege;
+	}
+	public Privilege getEditPrivilege() {
+		return editPrivilege;
+	}
+	public void setEditPrivilege(Privilege editPrivilege) {
+		this.editPrivilege = editPrivilege;
+	}
+	public Privilege getDeletePrivilege() {
+		return deletePrivilege;
+	}
+	public void setDeletePrivilege(Privilege deletePrivilege) {
+		this.deletePrivilege = deletePrivilege;
+	}
+}
+_____
+package org.openmrs.util;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import liquibase.GlobalConfiguration;
+import org.apache.commons.io.IOUtils;
+import org.openmrs.GlobalProperty;
+import org.openmrs.api.handler.ExistingVisitAssignmentHandler;
+import org.openmrs.customdatatype.datatype.BooleanDatatype;
+import org.openmrs.customdatatype.datatype.FreeTextDatatype;
+import org.openmrs.hl7.HL7Constants;
+import org.openmrs.module.ModuleConstants;
+import org.openmrs.module.ModuleFactory;
+import org.openmrs.patient.impl.LuhnIdentifierValidator;
+import org.openmrs.scheduler.SchedulerConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import static java.util.Arrays.asList;
+public final class OpenmrsConstants {
+	private static final Logger log = LoggerFactory.getLogger(OpenmrsConstants.class);
+	public static String KEY_OPENMRS_APPLICATION_DATA_DIRECTORY = "OPENMRS_APPLICATION_DATA_DIRECTORY";
+	public static final int CONCEPT_CLASS_DRUG = 3;
+	private static final Package THIS_PACKAGE = OpenmrsConstants.class.getPackage();
+	public static final String OPENMRS_VERSION = THIS_PACKAGE.getSpecificationVendor() != null ? THIS_PACKAGE
+	        .getSpecificationVendor() : (getBuildVersion() != null ? getBuildVersion() : getVersion());
+	public static final String OPENMRS_VERSION_SHORT = THIS_PACKAGE.getSpecificationVersion() != null ? THIS_PACKAGE
+	        .getSpecificationVersion() : (getBuildVersionShort() != null ? getBuildVersionShort() : getVersion());
+	private static String getBuildVersion() {
+		return getOpenmrsProperty("openmrs.version.long");
+	}
+	private static String getBuildVersionShort() {
+		return getOpenmrsProperty("openmrs.version.short");
+	}
+	private static String getVersion() {
+		return getOpenmrsProperty("openmrs.version");
+	}
+	public static String getOpenmrsProperty(String property) {
+		InputStream file = OpenmrsConstants.class.getClassLoader().getResourceAsStream("org/openmrs/api/openmrs.properties");
+		if (file == null) {
+			log.error("Unable to find the openmrs.properties file");
+			return null;
+		}
+		try {
+			Properties props = new Properties();
+			props.load(file);
+			file.close();
+			return props.getProperty(property);
+		}
+		catch (IOException e) {
+			log.error("Unable to parse the openmrs.properties file", e);
+		}
+		finally {
+			IOUtils.closeQuietly(file);
+		}
+		return null;
+	}
+	public static String DATABASE_NAME = "openmrs";
+	public static String DATABASE_BUSINESS_NAME = "openmrs";
+	public static boolean OBSCURE_PATIENTS = false;
+	public static String OBSCURE_PATIENTS_GIVEN_NAME = "Demo";
+	public static String OBSCURE_PATIENTS_MIDDLE_NAME = null;
+	public static String OBSCURE_PATIENTS_FAMILY_NAME = "Person";
+	public static final String REGEX_LARGE = "[!\"#\\$%&'\\(\\)\\*,+-\\./:;<=>\\?@\\[\\\\\\\\\\]^_`{\\|}~]";
+	public static final String REGEX_SMALL = "[!\"#\\$%&'\\(\\)\\*,\\./:;<=>\\?@\\[\\\\\\\\\\]^_`{\\|}~]";
+	public static final Integer CIVIL_STATUS_CONCEPT_ID = 1054;
+	public static final String APPLICATION_DATA_DIRECTORY_FALLBACK_UNIX = "/var/lib";
+	public static final String APPLICATION_DATA_DIRECTORY_FALLBACK_WIN = System.getenv("appdata");
+	public static final String APPLICATION_DATA_DIRECTORY_RUNTIME_PROPERTY = "application_data_directory";
+	public static final String AUTO_UPDATE_DATABASE_RUNTIME_PROPERTY = "auto_update_database";
+	public static final Collection<String> STOP_WORDS() {
+		List<String> stopWords = new ArrayList<>();
+		stopWords.add("A");
+		stopWords.add("AND");
+		stopWords.add("AT");
+		stopWords.add("BUT");
+		stopWords.add("BY");
+		stopWords.add("FOR");
+		stopWords.add("HAS");
+		stopWords.add("OF");
+		stopWords.add("THE");
+		stopWords.add("TO");
+		return stopWords;
+	}
+	@Deprecated
+	@SuppressWarnings("squid:S00100")
+	public static final Map<String, String> GENDER() {
+		Map<String, String> genders = new LinkedHashMap<>();
+		genders.put("M", "Male");
+		genders.put("F", "Female");
+		return genders;
+	}
+	public static final List<String> GENDERS = Collections.unmodifiableList(asList("M", "F"));
+	public static final Collection<String> AUTO_ROLES() {
+		List<String> roles = new ArrayList<>();
+		roles.add(RoleConstants.ANONYMOUS);
+		roles.add(RoleConstants.AUTHENTICATED);
+		return roles;
+	}
+	public static final String GLOBAL_PROPERTY_DRUG_FREQUENCIES = "dashboard.regimen.displayFrequencies";
+	public static final String GLOBAL_PROPERTY_CONCEPTS_LOCKED = "concepts.locked";
+	public static final String GLOBAL_PROPERTY_PATIENT_LISTING_ATTRIBUTES = "patient.listingAttributeTypes";
+	public static final String GLOBAL_PROPERTY_PATIENT_VIEWING_ATTRIBUTES = "patient.viewingAttributeTypes";
+	public static final String GLOBAL_PROPERTY_PATIENT_HEADER_ATTRIBUTES = "patient.headerAttributeTypes";
+	public static final String GLOBAL_PROPERTY_USER_LISTING_ATTRIBUTES = "user.listingAttributeTypes";
+	public static final String GLOBAL_PROPERTY_USER_VIEWING_ATTRIBUTES = "user.viewingAttributeTypes";
+	public static final String GLOBAL_PROPERTY_USER_HEADER_ATTRIBUTES = "user.headerAttributeTypes";
+	public static final String GLOBAL_PROPERTY_USER_REQUIRE_EMAIL_AS_USERNAME = "user.requireEmailAsUsername";
+	public static final String GLOBAL_PROPERTY_HL7_ARCHIVE_DIRECTORY = "hl7_archive.dir";
+	public static final String GLOBAL_PROPERTY_DEFAULT_THEME = "default_theme";
+	public static final String GLOBAL_PROPERTY_APPLICATION_NAME = "application.name";
+	public static final String[] GLOBAL_PROPERTIES_OF_PERSON_ATTRIBUTES = { GLOBAL_PROPERTY_PATIENT_LISTING_ATTRIBUTES,
+	        GLOBAL_PROPERTY_PATIENT_VIEWING_ATTRIBUTES, GLOBAL_PROPERTY_PATIENT_HEADER_ATTRIBUTES,
+	        GLOBAL_PROPERTY_USER_LISTING_ATTRIBUTES, GLOBAL_PROPERTY_USER_VIEWING_ATTRIBUTES,
+	        GLOBAL_PROPERTY_USER_HEADER_ATTRIBUTES, GLOBAL_PROPERTY_USER_REQUIRE_EMAIL_AS_USERNAME };
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_REGEX = "patient.identifierRegex";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_PREFIX = "patient.identifierPrefix";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SUFFIX = "patient.identifierSuffix";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SEARCH_PATTERN = "patient.identifierSearchPattern";
+	public static final String GLOBAL_PROPERTY_PATIENT_NAME_REGEX = "patient.nameValidationRegex";
+	public static final String GLOBAL_PROPERTY_PERSON_SEARCH_MAX_RESULTS = "person.searchMaxResults";
+	public static final int GLOBAL_PROPERTY_PERSON_SEARCH_MAX_RESULTS_DEFAULT_VALUE = 1000;
+	public static final String GLOBAL_PROPERTY_PERSON_ATTRIBUTE_SEARCH_MATCH_MODE = "person.attributeSearchMatchMode";
+	public static final String GLOBAL_PROPERTY_PERSON_ATTRIBUTE_SEARCH_MATCH_EXACT = "EXACT";
+	public static final String GLOBAL_PROPERTY_PERSON_ATTRIBUTE_SEARCH_MATCH_ANYWHERE = "ANYWHERE";
+	public static final String GLOBAL_PROPERTY_GZIP_ENABLED = "gzip.enabled";
+	public static final String GLOBAL_PROPERTY_GZIP_ACCEPT_COMPRESSED_REQUESTS_FOR_PATHS = "gzip.acceptCompressedRequestsForPaths";
+	public static final String GLOBAL_PROPERTY_MEDICAL_RECORD_OBSERVATIONS = "concept.medicalRecordObservations";
+	public static final String GLOBAL_PROPERTY_PROBLEM_LIST = "concept.problemList";
+	public static final String GLOBAL_PROPERTY_SHOW_PATIENT_NAME = "dashboard.showPatientName";
+	public static final String GLOBAL_PROPERTY_ENABLE_VISITS = "visits.enabled";
+	public static final String GLOBAL_PROPERTY_ALLOW_OVERLAPPING_VISITS = "visits.allowOverlappingVisits";
+	public static final String GLOBAL_PROPERTY_DEFAULT_PATIENT_IDENTIFIER_VALIDATOR = "patient.defaultPatientIdentifierValidator";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_IMPORTANT_TYPES = "patient_identifier.importantTypes";
+	public static final String GLOBAL_PROPERTY_ENCOUNTER_FORM_OBS_SORT_ORDER = "encounterForm.obsSortOrder";
+	public static final String GLOBAL_PROPERTY_LOCALE_ALLOWED_LIST = "locale.allowed.list";
+	public static final String GLOBAL_PROPERTY_IMPLEMENTATION_ID = "implementation_id";
+	public static final String GLOBAL_PROPERTY_NEWPATIENTFORM_SHOW_RELATIONSHIPS = "new_patient_form.showRelationships";
+	public static final String GLOBAL_PROPERTY_NEWPATIENTFORM_RELATIONSHIPS = "newPatientForm.relationships";
+	public static final String GLOBAL_PROPERTY_COMPLEX_OBS_DIR = "obs.complex_obs_dir";
+	public static final String GLOBAL_PROPERTY_MIN_SEARCH_CHARACTERS = "minSearchCharacters";
+	public static final int GLOBAL_PROPERTY_DEFAULT_MIN_SEARCH_CHARACTERS = 2;
+	public static final String GLOBAL_PROPERTY_DEFAULT_LOCALE = "default_locale";
+	public static final String GLOBAL_PROPERTY_DEFAULT_LOCATION_NAME = "default_location";
+	public static final String GLOBAL_PROPERTY_DEFAULT_LOCALE_DEFAULT_VALUE = "en_GB";
+	public static final String GLOBAL_PROPERTY_DEFAULT_WEEK_START_DAY = "datePicker.weekStart";
+	public static final String GLOBAL_PROPERTY_DEFAULT_WEEK_START_DAY_DEFAULT_VALUE = "0";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SEARCH_MATCH_MODE = "patientIdentifierSearch.matchMode";
+	public static final String GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_MODE = "patientSearch.matchMode";
+	public static final String GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_EXACT = "EXACT";
+	public static final String GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_ANYWHERE = "ANYWHERE";
+	public static final String GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_START = "START";
+	public static final String GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_SOUNDEX = "SOUNDEX";
+	public static final String GLOBAL_PROPERTY_PROVIDER_SEARCH_MATCH_MODE = "providerSearch.matchMode";
+	public static final String GLOBAL_PROPERTY_DEFAULT_SERIALIZER = "serialization.defaultSerializer";
+	public static final String GLOBAL_PROPERTY_IGNORE_MISSING_NONLOCAL_PATIENTS = "hl7_processor.ignore_missing_patient_non_local";
+	public static final String GLOBAL_PROPERTY_TRUE_CONCEPT = "concept.true";
+	public static final String GLOBAL_PROPERTY_FALSE_CONCEPT = "concept.false";
+	public static final String GLOBAL_PROPERTY_UNKNOWN_CONCEPT = "concept.unknown";
+	public static final String GLOBAL_PROPERTY_LOCATION_WIDGET_TYPE = "location.field.style";
+	public static final String GLOBAL_PROPERTY_REPORT_BUG_URL = "reportProblem.url";
+	public static final String GLOBAL_PROPERTY_ADDRESS_TEMPLATE = "layout.address.format";
+	public static final String GLOBAL_PROPERTY_LAYOUT_NAME_FORMAT = "layout.name.format";
+	public static final String GLOBAL_PROPERTY_LAYOUT_NAME_TEMPLATE = "layout.name.template";
+	public static final String GLOBAL_PROPERTY_ENCOUNTER_TYPES_LOCKED = "EncounterType.encounterTypes.locked";
+	public static final String GLOBAL_PROPERTY_FORMS_LOCKED = "forms.locked";
+	public static final String GLOBAL_PROPERTY_PERSON_ATRIBUTE_TYPES_LOCKED = "personAttributeTypes.locked";
+	public static final String GLOBAL_PROPERTY_PATIENT_IDENTIFIER_TYPES_LOCKED = "patientIdentifierTypes.locked";
+	public static final String GLOBAL_PROPERTY_DRUG_ORDER_REQUIRE_DRUG = "drugOrder.requireDrug";
+	public static final String GLOBAL_PROPERTY_DRUG_ORDER_REQUIRE_OUTPATIENT_QUANTITY = "drugOrder.requireOutpatientQuantity";
+	public static final String DEFAULT_ADDRESS_TEMPLATE = "<org.openmrs.layout.address.AddressTemplate>\n"
+	        + "    <nameMappings class=\"properties\">\n"
+	        + "      <property name=\"postalCode\" value=\"Location.postalCode\"/>\n"
+	        + "      <property name=\"address2\" value=\"Location.address2\"/>\n"
+	        + "      <property name=\"address1\" value=\"Location.address1\"/>\n"
+	        + "      <property name=\"country\" value=\"Location.country\"/>\n"
+	        + "      <property name=\"stateProvince\" value=\"Location.stateProvince\"/>\n"
+	        + "      <property name=\"cityVillage\" value=\"Location.cityVillage\"/>\n" + "    </nameMappings>\n"
+	        + "    <sizeMappings class=\"properties\">\n" + "      <property name=\"postalCode\" value=\"10\"/>\n"
+	        + "      <property name=\"address2\" value=\"40\"/>\n" + "      <property name=\"address1\" value=\"40\"/>\n"
+	        + "      <property name=\"country\" value=\"10\"/>\n"
+	        + "      <property name=\"stateProvince\" value=\"10\"/>\n"
+	        + "      <property name=\"cityVillage\" value=\"10\"/>\n" + "    </sizeMappings>\n" + "    <lineByLineFormat>\n"
+	        + "      <string>address1</string>\n" + "      <string>address2</string>\n"
+	        + "      <string>cityVillage stateProvince country postalCode</string>\n" + "    </lineByLineFormat>\n"
+	        + "   <requiredElements>\\n\" + \" </requiredElements>\\n\" + \" </org.openmrs.layout.address.AddressTemplate>";
+	public static final String GP_PASSWORD_REQUIRES_UPPER_AND_LOWER_CASE = "security.passwordRequiresUpperAndLowerCase";
+	public static final String GP_PASSWORD_REQUIRES_NON_DIGIT = "security.passwordRequiresNonDigit";
+	public static final String GP_PASSWORD_REQUIRES_DIGIT = "security.passwordRequiresDigit";
+	public static final String GP_PASSWORD_CANNOT_MATCH_USERNAME_OR_SYSTEMID = "security.passwordCannotMatchUsername";
+	public static final String GP_PASSWORD_MINIMUM_LENGTH = "security.passwordMinimumLength";
+	public static final String GP_PASSWORD_RESET_VALIDTIME = "security.validTime";
+	public static final String GP_PASSWORD_CUSTOM_REGEX = "security.passwordCustomRegex";
+	public static final String GP_GRAPH_COLOR_ABSOLUTE = "graph.color.absolute";
+	public static final String GP_GRAPH_COLOR_NORMAL = "graph.color.normal";
+	public static final String GP_GRAPH_COLOR_CRITICAL = "graph.color.critical";
+	public static final String GP_SEARCH_WIDGET_BATCH_SIZE = "searchWidget.batchSize";
+	public static final String GP_SEARCH_WIDGET_IN_SERIAL_MODE = "searchWidget.runInSerialMode";
+	public static final String GP_SEARCH_WIDGET_DELAY_INTERVAL = "searchWidget.searchDelayInterval";
+	public static final String GP_SEARCH_WIDGET_MAXIMUM_RESULTS = "searchWidget.maximumResults";
+	public static final String GP_SEARCH_DATE_DISPLAY_FORMAT = "searchWidget.dateDisplayFormat";
+	public static final String GP_ENABLE_CONCEPT_MAP_TYPE_MANAGEMENT = "concept_map_type_management.enable";
+	public static final String GP_VISIT_ASSIGNMENT_HANDLER = "visits.assignmentHandler";
+	public static final String GP_ENCOUNTER_TYPE_TO_VISIT_TYPE_MAPPING = "visits.encounterTypeToVisitTypeMapping";
+	public static final String GP_DASHBOARD_PROVIDER_DISPLAY_ENCOUNTER_ROLES = "dashboard.encounters.providerDisplayRoles";
+	public static final String GP_DASHBOARD_MAX_NUMBER_OF_ENCOUNTERS_TO_SHOW = "dashboard.encounters.maximumNumberToShow";
+	public static final String GP_DASHBOARD_METADATA_CASE_CONVERSION = "dashboard.metadata.caseConversion";
+	public static final String GP_DEFAULT_CONCEPT_MAP_TYPE = "concept.defaultConceptMapType";
+	public static final String GP_CONCEPT_DRUG_DOSAGE_FORM_CONCEPT_CLASSES = "conceptDrug.dosageForm.conceptClasses";
+	public static final String GP_CONCEPT_DRUG_ROUTE_CONCEPT_CLASSES = "conceptDrug.route.conceptClasses";
+	public static final String GP_ALLERGY_ALLERGEN_CONCEPT_CLASSES = "allergy.allergen.ConceptClasses";
+	public static final String GP_ALLERGY_REACTION_CONCEPT_CLASSES = "allergy.reaction.ConceptClasses";
+	public static final String GP_ALLERGEN_OTHER_NON_CODED_UUID = "allergy.concept.otherNonCoded";
+	public static final String ENCRYPTION_CIPHER_CONFIGURATION = "AES/CBC/PKCS5Padding";
+	public static final String ENCRYPTION_KEY_SPEC = "AES";
+	public static final String ENCRYPTION_VECTOR_RUNTIME_PROPERTY = "encryption.vector";
+	public static final String ENCRYPTION_VECTOR_DEFAULT = "9wyBUNglFCRVSUhMfsTa3Q==";
+	public static final String ENCRYPTION_KEY_RUNTIME_PROPERTY = "encryption.key";
+	public static final String ENCRYPTION_KEY_DEFAULT = "dTfyELRrAICGDwzjHDjuhw==";
+	public static final String GP_VISIT_TYPES_TO_AUTO_CLOSE = "visits.autoCloseVisitType";
+	public static final String AUTO_CLOSE_VISITS_TASK_NAME = "Auto Close Visits Task";
+	public static final String GP_ALLOWED_FAILED_LOGINS_BEFORE_LOCKOUT = "security.allowedFailedLoginsBeforeLockout";
+	public static final String GP_UNLOCK_ACCOUNT_WAITING_TIME  = "security.unlockAccountWaitingTime";
+	public static final String GP_CASE_SENSITIVE_DATABASE_STRING_COMPARISON = "search.caseSensitiveDatabaseStringComparison";
+	public static final String GP_DASHBOARD_CONCEPTS = "dashboard.header.showConcept";
+	public static final String GP_MAIL_SMTP_STARTTLS_ENABLE = "mail.smtp.starttls.enable";
+	public static final String GP_NEXT_ORDER_NUMBER_SEED = "order.nextOrderNumberSeed";
+	public static final String GP_ORDER_NUMBER_GENERATOR_BEAN_ID = "order.orderNumberGeneratorBeanId";
+	public static final String GP_DRUG_ROUTES_CONCEPT_UUID = "order.drugRoutesConceptUuid";
+	public static final String GP_DRUG_DOSING_UNITS_CONCEPT_UUID = "order.drugDosingUnitsConceptUuid";
+	public static final String GP_DRUG_DISPENSING_UNITS_CONCEPT_UUID = "order.drugDispensingUnitsConceptUuid";
+	public static final String GP_DURATION_UNITS_CONCEPT_UUID = "order.durationUnitsConceptUuid";
+	public static final String GP_TEST_SPECIMEN_SOURCES_CONCEPT_UUID = "order.testSpecimenSourcesConceptUuid";
+	public static final String GP_UNKNOWN_PROVIDER_UUID = "provider.unknownProviderUuid";
+	public static final String GP_SEARCH_INDEX_VERSION = "search.indexVersion";
+	public static final Integer SEARCH_INDEX_VERSION = 7;
+	public static final String GP_DISABLE_VALIDATION = "validation.disable";
+	public static final String GP_DRUG_ORDER_DRUG_OTHER = "drugOrder.drugOther";
+	@Deprecated
+	public static final String GP_HOST_URL = "host.url";
+	public static final String GP_PASSWORD_RESET_URL = "security.passwordResetUrl";
+	public static final String GP_NUMBER_OF_DAYS_TO_AUTO_RETIRE_USERS = "users.numberOfDaysToRetire";
+	public static final List<GlobalProperty> CORE_GLOBAL_PROPERTIES() {
+		List<GlobalProperty> props = new ArrayList<>();
+		props.add(new GlobalProperty("use_patient_attribute.healthCenter", "false",
+		        "Indicates whether or not the 'health center' attribute is shown when viewing/searching for patients",
+		        BooleanDatatype.class, null));
+		props.add(new GlobalProperty("use_patient_attribute.mothersName", "false",
+		        "Indicates whether or not mother's name is able to be added/viewed for a patient", BooleanDatatype.class,
+		        null));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_NEWPATIENTFORM_SHOW_RELATIONSHIPS, "false",
+		        "true/false whether or not to show the relationship editor on the addPatient.htm screen",
+		        BooleanDatatype.class, null));
+		props.add(new GlobalProperty("dashboard.overview.showConcepts", "",
+		        "Comma delimited list of concepts ids to show on the patient dashboard overview tab"));
+		props
+		        .add(new GlobalProperty("dashboard.encounters.showEmptyFields", "true",
+		                "true/false whether or not to show empty fields on the 'View Encounter' window",
+		                BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                "dashboard.encounters.usePages",
+		                "smart",
+		                "true/false/smart on how to show the pages on the 'View Encounter' window.  'smart' means that if > 50% of the fields have page numbers defined, show data in pages"));
+		props.add(new GlobalProperty("dashboard.encounters.showViewLink", "true",
+		        "true/false whether or not to show the 'View Encounter' link on the patient dashboard",
+		        BooleanDatatype.class, null));
+		props.add(new GlobalProperty("dashboard.encounters.showEditLink", "true",
+		        "true/false whether or not to show the 'Edit Encounter' link on the patient dashboard",
+		        BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                "dashboard.header.programs_to_show",
+		                "",
+		                "List of programs to show Enrollment details of in the patient header. (Should be an ordered comma-separated list of program_ids or names.)"));
+		props
+		        .add(new GlobalProperty(
+		                "dashboard.header.workflows_to_show",
+		                "",
+		                "List of programs to show Enrollment details of in the patient header. List of workflows to show current status of in the patient header. These will only be displayed if they belong to a program listed above. (Should be a comma-separated list of program_workflow_ids.)"));
+		props.add(new GlobalProperty("dashboard.relationships.show_types", "",
+		        "Types of relationships separated by commas.  Doctor/Patient,Parent/Child"));
+		props.add(new GlobalProperty("FormEntry.enableDashboardTab", "true",
+		        "true/false whether or not to show a Form Entry tab on the patient dashboard", BooleanDatatype.class, null));
+		props.add(new GlobalProperty("FormEntry.enableOnEncounterTab", "false",
+		        "true/false whether or not to show a Enter Form button on the encounters tab of the patient dashboard",
+		        BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                "dashboard.regimen.displayDrugSetIds",
+		                "ANTIRETROVIRAL DRUGS,TUBERCULOSIS TREATMENT DRUGS",
+		                "Drug sets that appear on the Patient Dashboard Regimen tab. Comma separated list of name of concepts that are defined as drug sets."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_DRUG_FREQUENCIES,
+		                "7 days/week,6 days/week,5 days/week,4 days/week,3 days/week,2 days/week,1 days/week",
+		                "Frequency of a drug order that appear on the Patient Dashboard. Comma separated list of name of concepts that are defined as drug frequencies."));
+		props.add(new GlobalProperty(GP_GRAPH_COLOR_ABSOLUTE, "rgb(20,20,20)",
+		        "Color of the 'invalid' section of numeric graphs on the patient dashboard."));
+		props.add(new GlobalProperty(GP_GRAPH_COLOR_NORMAL, "rgb(255,126,0)",
+		        "Color of the 'normal' section of numeric graphs on the patient dashboard."));
+		props.add(new GlobalProperty(GP_GRAPH_COLOR_CRITICAL, "rgb(200,0,0)",
+		        "Color of the 'critical' section of numeric graphs on the patient dashboard."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_LOCATION_WIDGET_TYPE, "default",
+		        "Type of widget to use for location fields"));
+		props.add(new GlobalProperty(GP_MAIL_SMTP_STARTTLS_ENABLE, "false",
+		        "Set to true to enable TLS encryption, else set to false"));
+		props.add(new GlobalProperty(GP_PASSWORD_RESET_URL, "",
+		        "The URL to redirect to after requesting for a password reset. Always provide a place holder in this url with name {activationKey}, it will get substituted by the actual activation key."));
+		props.add(new GlobalProperty("mail.transport_protocol", "smtp",
+		        "Transport protocol for the messaging engine. Valid values: smtp"));
+		props.add(new GlobalProperty("mail.smtp_host", "localhost", "SMTP host name"));
+		props.add(new GlobalProperty("mail.smtp_port", "25", "SMTP port"));
+		props.add(new GlobalProperty("mail.from", "info@openmrs.org", "Email address to use as the default from address"));
+		props.add(new GlobalProperty("mail.debug", "false",
+		        "true/false whether to print debugging information during mailing"));
+		props.add(new GlobalProperty("mail.smtp_auth", "false", "true/false whether the smtp host requires authentication"));
+		props.add(new GlobalProperty("mail.user", "test", "Username of the SMTP user (if smtp_auth is enabled)"));
+		props.add(new GlobalProperty("mail.password", "test", "Password for the SMTP user (if smtp_auth is enabled)"));
+		props.add(new GlobalProperty("mail.default_content_type", "text/plain",
+		        "Content type to append to the mail messages"));
+		props.add(new GlobalProperty(ModuleConstants.REPOSITORY_FOLDER_PROPERTY,
+		        ModuleConstants.REPOSITORY_FOLDER_PROPERTY_DEFAULT, "Name of the folder in which to store the modules"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_ADDRESS_TEMPLATE, DEFAULT_ADDRESS_TEMPLATE,
+		        "XML description of address formats"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_LAYOUT_NAME_FORMAT, PERSON_NAME_FORMAT_SHORT,
+		        "Format in which to display the person names.  Valid values are short, long"));
+		props.add(new GlobalProperty("scheduler.username", SchedulerConstants.SCHEDULER_DEFAULT_USERNAME,
+		        "Username for the OpenMRS user that will perform the scheduler activities"));
+		props.add(new GlobalProperty("scheduler.password", SchedulerConstants.SCHEDULER_DEFAULT_PASSWORD,
+		        "Password for the OpenMRS user that will perform the scheduler activities"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_CONCEPTS_LOCKED, "false", "if true, do not allow editing concepts",
+		        BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_PATIENT_LISTING_ATTRIBUTES, "",
+		        "A comma delimited list of PersonAttributeType names that should be displayed for patients in _lists_"));
+		props
+		        .add(new GlobalProperty(GLOBAL_PROPERTY_PATIENT_VIEWING_ATTRIBUTES, "",
+		                "A comma delimited list of PersonAttributeType names that should be displayed for patients when _viewing individually_"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_PATIENT_HEADER_ATTRIBUTES, "",
+		        "A comma delimited list of PersonAttributeType names that will be shown on the patient dashboard"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_USER_LISTING_ATTRIBUTES, "",
+		        "A comma delimited list of PersonAttributeType names that should be displayed for users in _lists_"));
+		props
+		        .add(new GlobalProperty(GLOBAL_PROPERTY_USER_VIEWING_ATTRIBUTES, "",
+		                "A comma delimited list of PersonAttributeType names that should be displayed for users when _viewing individually_"));
+		props
+		        .add(new GlobalProperty(GLOBAL_PROPERTY_USER_HEADER_ATTRIBUTES, "",
+		                "A comma delimited list of PersonAttributeType names that will be shown on the user dashboard. (not used in v1.5)"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_IDENTIFIER_REGEX,
+		                "",
+		                "WARNING: Using this search property can cause a drop in mysql performance with large patient sets.  A MySQL regular expression for the patient identifier search strings.  The @SEARCH@ string is replaced at runtime with the user's search string.  An empty regex will cause a simply 'like' sql search to be used. Example: ^0*@SEARCH@([A-Z]+-[0-9])?$"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_IDENTIFIER_PREFIX,
+		                "",
+		                "This property is only used if "
+		                        + GLOBAL_PROPERTY_PATIENT_IDENTIFIER_REGEX
+		                        + " is empty.  The string here is prepended to the sql indentifier search string.  The sql becomes \"... where identifier like '<PREFIX><QUERY STRING><SUFFIX>';\".  Typically this value is either a percent sign (%) or empty."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SUFFIX,
+		                "",
+		                "This property is only used if "
+		                        + GLOBAL_PROPERTY_PATIENT_IDENTIFIER_REGEX
+		                        + " is empty.  The string here is prepended to the sql indentifier search string.  The sql becomes \"... where identifier like '<PREFIX><QUERY STRING><SUFFIX>';\".  Typically this value is either a percent sign (%) or empty."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SEARCH_PATTERN,
+		                "",
+		                "If this is empty, the regex or suffix/prefix search is used.  Comma separated list of identifiers to check.  Allows for faster searching of multiple options rather than the slow regex. e.g. @SEARCH@,0@SEARCH@,@SEARCH-1@-@CHECKDIGIT@,0@SEARCH-1@-@CHECKDIGIT@ would turn a request for \"4127\" into a search for \"in ('4127','04127','412-7','0412-7')\""));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_NAME_REGEX,
+		                "",
+		                "Names of the patients must pass this regex. Eg : ^[a-zA-Z \\-]+$ contains only english alphabet letters, spaces, and hyphens. A value of .* or the empty string means no validation is done."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_PERSON_SEARCH_MAX_RESULTS, String
+		        .valueOf(GLOBAL_PROPERTY_PERSON_SEARCH_MAX_RESULTS_DEFAULT_VALUE),
+		        "The maximum number of results returned by patient searches"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_GZIP_ENABLED,
+		                "false",
+		                "Set to 'true' to turn on OpenMRS's gzip filter, and have the webapp compress data before sending it to any client that supports it. Generally use this if you are running Tomcat standalone. If you are running Tomcat behind Apache, then you'd want to use Apache to do gzip compression.",
+		                BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_LOG_LEVEL,
+		                "org.openmrs.api:" + LOG_LEVEL_INFO,
+		                "Logging levels for log4j2.xml. Valid format is class:level,class:level. If class not specified, 'org.openmrs.api' presumed. Valid levels are trace, debug, info, warn, error or fatal"));
+		props.add(new GlobalProperty(GP_LOG_LOCATION, "",
+		        "A directory where the OpenMRS log file appender is stored. The log file name is 'openmrs.log'."));
+		props.add(new GlobalProperty(GP_LOG_LAYOUT, "%p - %C{1}.%M(%L) |%d{ISO8601}| %m%n",
+		        "A log layout pattern which is used by the OpenMRS file appender."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_DEFAULT_PATIENT_IDENTIFIER_VALIDATOR,
+		                LUHN_IDENTIFIER_VALIDATOR,
+		                "This property sets the default patient identifier validator.  The default validator is only used in a handful of (mostly legacy) instances.  For example, it's used to generate the isValidCheckDigit calculated column and to append the string \"(default)\" to the name of the default validator on the editPatientIdentifierType form."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_IDENTIFIER_IMPORTANT_TYPES,
+		                "",
+		                "A comma delimited list of PatientIdentifier names : PatientIdentifier locations that will be displayed on the patient dashboard.  E.g.: TRACnet ID:Rwanda,ELDID:Kenya"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_COMPLEX_OBS_DIR, "complex_obs",
+		        "Default directory for storing complex obs."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_ENCOUNTER_FORM_OBS_SORT_ORDER,
+		                "number",
+		                "The sort order for the obs listed on the encounter edit form.  'number' sorts on the associated numbering from the form schema.  'weight' sorts on the order displayed in the form schema."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_LOCALE_ALLOWED_LIST, "en, en_GB, es, fr, it, pt",
+		        "Comma delimited list of locales allowed for use on system"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_NEWPATIENTFORM_RELATIONSHIPS,
+		                "",
+		                "Comma separated list of the RelationshipTypes to show on the new/short patient form.  The list is defined like '3a, 4b, 7a'.  The number is the RelationshipTypeId and the 'a' vs 'b' part is which side of the relationship is filled in by the user."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_MIN_SEARCH_CHARACTERS, "2",
+		        "Number of characters user must input before searching is started."));
+		props
+		        .add(new GlobalProperty(
+		                OpenmrsConstants.GLOBAL_PROPERTY_DEFAULT_LOCALE,
+		                OpenmrsConstants.GLOBAL_PROPERTY_DEFAULT_LOCALE_DEFAULT_VALUE,
+		                "Specifies the default locale. You can specify both the language code(ISO-639) and the country code(ISO-3166), e.g. 'en_GB' or just country: e.g. 'en'"));
+		props.add(new GlobalProperty(OpenmrsConstants.GLOBAL_PROPERTY_DEFAULT_WEEK_START_DAY,
+		        OpenmrsConstants.GLOBAL_PROPERTY_DEFAULT_WEEK_START_DAY_DEFAULT_VALUE,
+		        "First day of the week in the date picker. Domingo/Dimanche/Sunday:0  Lunes/Lundi/Monday:1"));
+		props.add(new GlobalProperty(GP_PASSWORD_CANNOT_MATCH_USERNAME_OR_SYSTEMID, "true",
+		        "Configure whether passwords must not match user's username or system id", BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GP_PASSWORD_CUSTOM_REGEX, "",
+		        "Configure a custom regular expression that a password must match"));
+		props.add(new GlobalProperty(GP_PASSWORD_MINIMUM_LENGTH, "8",
+		        "Configure the minimum length required of all passwords"));
+		props.add(new GlobalProperty(GP_PASSWORD_RESET_VALIDTIME, "600000",
+		        " Specifies the duration of time in seconds for which a password reset token is valid, the default value is 10 minutes and the allowed values range from 1 minute to 12hrs"));
+		props.add(new GlobalProperty(GP_PASSWORD_REQUIRES_DIGIT, "true",
+		        "Configure whether passwords must contain at least one digit", BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GP_PASSWORD_REQUIRES_NON_DIGIT, "true",
+		        "Configure whether passwords must contain at least one non-digit", BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(GP_PASSWORD_REQUIRES_UPPER_AND_LOWER_CASE, "true",
+		                "Configure whether passwords must contain both upper and lower case characters",
+		                BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_IGNORE_MISSING_NONLOCAL_PATIENTS, "false",
+		        "If true, hl7 messages for patients that are not found and are non-local will silently be dropped/ignored",
+		        BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_SHOW_PATIENT_NAME,
+		                "false",
+		                "Whether or not to display the patient name in the patient dashboard title. Note that enabling this could be security risk if multiple users operate on the same computer.",
+		                BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_DEFAULT_THEME, "",
+		        "Default theme for users.  OpenMRS ships with themes of 'green', 'orange', 'purple', and 'legacy'"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_HL7_ARCHIVE_DIRECTORY, HL7Constants.HL7_ARCHIVE_DIRECTORY_NAME,
+		        "The default name or absolute path for the folder where to write the hl7_in_archives."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_REPORT_BUG_URL, "http:
+		        "The openmrs url where to submit bug reports"));
+		props.add(new GlobalProperty(GP_SEARCH_WIDGET_BATCH_SIZE, "200",
+		        "The maximum number of search results that are returned by an ajax call"));
+		props
+		        .add(new GlobalProperty(
+		                GP_SEARCH_WIDGET_IN_SERIAL_MODE,
+		                "false",
+		                "Specifies whether the search widgets should make ajax requests in serial or parallel order, a value of true is appropriate for implementations running on a slow network connection and vice versa",
+		                BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                GP_SEARCH_WIDGET_DELAY_INTERVAL,
+		                "300",
+		                "Specifies time interval in milliseconds when searching, between keyboard keyup event and triggering the search off, should be higher if most users are slow when typing so as to minimise the load on the server"));
+		props
+		        .add(new GlobalProperty(GP_SEARCH_DATE_DISPLAY_FORMAT, null,
+		                "Date display format to be used to display the date somewhere in the UI i.e the search widgets and autocompletes"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_DEFAULT_LOCATION_NAME, "Unknown Location",
+		        "The name of the location to use as a system default"));
+		props
+				.add(new GlobalProperty(
+						GLOBAL_PROPERTY_PATIENT_IDENTIFIER_SEARCH_MATCH_MODE,
+						GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_EXACT,
+						"Specifies how patient identifiers are matched while searching for a patient. Valid values are 'EXACT, 'ANYWHERE' or 'START'. Defaults to 'EXACT' if missing or invalid value is present."));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_MODE,
+		                GLOBAL_PROPERTY_PATIENT_SEARCH_MATCH_START,
+		                "Specifies how patient names are matched while searching patient. Valid values are 'ANYWHERE' or 'START'. Defaults to start if missing or invalid value is present."));
+		props.add(new GlobalProperty(GP_ENABLE_CONCEPT_MAP_TYPE_MANAGEMENT, "false",
+		        "Enables or disables management of concept map types", BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_ENABLE_VISITS,
+		                "true",
+		                "Set to true to enable the Visits feature. This will replace the 'Encounters' tab with a 'Visits' tab on the dashboard.",
+		                BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GP_VISIT_ASSIGNMENT_HANDLER, ExistingVisitAssignmentHandler.class.getName(),
+		        "Set to the name of the class responsible for assigning encounters to visits."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_APPLICATION_NAME, "OpenMRS",
+		        "The name of this application, as presented to the user, for example on the login and welcome pages."));
+		props
+		        .add(new GlobalProperty(
+		                GP_ENCOUNTER_TYPE_TO_VISIT_TYPE_MAPPING,
+		                "",
+		                "Specifies how encounter types are mapped to visit types when automatically assigning encounters to visits. e.g 1:1, 2:1, 3:2 in the format encounterTypeId:visitTypeId or encounterTypeUuid:visitTypeUuid or a combination of encounter/visit type uuids and ids e.g 1:759799ab-c9a5-435e-b671-77773ada74e4"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_ENCOUNTER_TYPES_LOCKED, "false",
+		        "saving, retiring or deleting an Encounter Type is not permitted, if true", BooleanDatatype.class, null));
+		props
+		        .add(new GlobalProperty(
+		                GP_DASHBOARD_PROVIDER_DISPLAY_ENCOUNTER_ROLES,
+		                "",
+		                "A comma-separated list of encounter roles (by name or id). Providers with these roles in an encounter will be displayed on the encounter tab of the patient dashboard."));
+		props.add(new GlobalProperty(GP_SEARCH_WIDGET_MAXIMUM_RESULTS, "2000",
+		        "Specifies the maximum number of results to return from a single search in the search widgets"));
+		props
+		        .add(new GlobalProperty(
+		                GP_DASHBOARD_MAX_NUMBER_OF_ENCOUNTERS_TO_SHOW,
+		                "3",
+		                "An integer which, if specified, would determine the maximum number of encounters to display on the encounter tab of the patient dashboard."));
+		props.add(new GlobalProperty(GP_VISIT_TYPES_TO_AUTO_CLOSE, "",
+		        "comma-separated list of the visit type(s) to automatically close"));
+		props.add(new GlobalProperty(GP_ALLOWED_FAILED_LOGINS_BEFORE_LOCKOUT, "7",
+		        "Maximum number of failed logins allowed after which username is locked out"));
+		props.add(new GlobalProperty(GP_UNLOCK_ACCOUNT_WAITING_TIME, "5",
+			"Waiting time for account to get automatically unlocked after getting locked due to multiple invalid login tries"));
+		props.add(new GlobalProperty(GP_DEFAULT_CONCEPT_MAP_TYPE, "NARROWER-THAN",
+		        "Default concept map type which is used when no other is set"));
+		props
+		        .add(new GlobalProperty(GP_CONCEPT_DRUG_DOSAGE_FORM_CONCEPT_CLASSES, "",
+		                "A comma-separated list of the allowed concept classes for the dosage form field of the concept drug management form."));
+		props
+		        .add(new GlobalProperty(GP_CONCEPT_DRUG_ROUTE_CONCEPT_CLASSES, "",
+		                "A comma-separated list of the allowed concept classes for the route field of the concept drug management form."));
+		props
+		        .add(new GlobalProperty(
+		                GP_CASE_SENSITIVE_DATABASE_STRING_COMPARISON,
+		                "false",
+		                "Indicates whether database string comparison is case sensitive or not. Setting this to false for MySQL with a case insensitive collation improves search performance."));
+		props
+		        .add(new GlobalProperty(
+		                GP_DASHBOARD_METADATA_CASE_CONVERSION,
+		                "",
+		                "Indicates which type automatic case conversion is applied to program/workflow/state in the patient dashboard. Valid values: lowercase, uppercase, capitalize. If empty no conversion is applied."));
+		props.add(new GlobalProperty(GP_ALLERGY_ALLERGEN_CONCEPT_CLASSES, "Drug,MedSet",
+		        "A comma-separated list of the allowed concept classes for the allergen field of the allergy dialog"));
+		props.add(new GlobalProperty(GP_ALLERGY_REACTION_CONCEPT_CLASSES, "Symptom",
+		        "A comma-separated list of the allowed concept classes for the reaction field of the allergy dialog"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_USER_REQUIRE_EMAIL_AS_USERNAME, "false",
+		        "Indicates whether a username must be a valid e-mail or not.", BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GP_SEARCH_INDEX_VERSION, "",
+		        "Indicates the index version. If it is blank, the index needs to be rebuilt."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_ALLOW_OVERLAPPING_VISITS, "true",
+		        "true/false whether or not to allow visits of a given patient to overlap", BooleanDatatype.class, null));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_FORMS_LOCKED, "false",
+		        "Set to a value of true if you do not want any changes to be made on forms, else set to false."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_DRUG_ORDER_REQUIRE_DRUG, "false",
+		        "Set to value true if you need to specify a formulation(Drug) when creating a drug order."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_DRUG_ORDER_REQUIRE_OUTPATIENT_QUANTITY, "true",
+			"true/false whether to require quantity, quantityUnits, and numRefills for outpatient drug orders"));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_PERSON_ATRIBUTE_TYPES_LOCKED, "false",
+		        "Set to a value of true if you do not want allow editing person attribute types, else set to false."));
+		props.add(new GlobalProperty(GLOBAL_PROPERTY_PATIENT_IDENTIFIER_TYPES_LOCKED, "false",
+		        "Set to a value of true if you do not want allow editing patient identifier types, else set to false."));
+		props.add(new GlobalProperty(GP_NEXT_ORDER_NUMBER_SEED, "1", "The next order number available for assignment"));
+		props.add(new GlobalProperty(GP_ORDER_NUMBER_GENERATOR_BEAN_ID, "",
+		        "Specifies spring bean id of the order generator to use when assigning order numbers"));
+		props.add(new GlobalProperty(GP_DRUG_ROUTES_CONCEPT_UUID, "",
+		        "Specifies the uuid of the concept set where its members represent the possible drug routes"));
+		props.add(new GlobalProperty(GP_DRUG_DOSING_UNITS_CONCEPT_UUID, "",
+		        "Specifies the uuid of the concept set where its members represent the possible drug dosing units"));
+		props.add(new GlobalProperty(GP_DRUG_DISPENSING_UNITS_CONCEPT_UUID, "",
+		        "Specifies the uuid of the concept set where its members represent the possible drug dispensing units"));
+		props.add(new GlobalProperty(GP_DURATION_UNITS_CONCEPT_UUID, "",
+		        "Specifies the uuid of the concept set where its members represent the possible duration units"));
+		props.add(new GlobalProperty(GP_TEST_SPECIMEN_SOURCES_CONCEPT_UUID, "",
+		        "Specifies the uuid of the concept set where its members represent the possible test specimen sources"));
+		props.add(new GlobalProperty(GP_UNKNOWN_PROVIDER_UUID, "", "Specifies the uuid of the Unknown Provider account"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PROVIDER_SEARCH_MATCH_MODE,
+		                "EXACT",
+		                "Specifies how provider identifiers are matched while searching for providers. Valid values are START,EXACT, END or ANYWHERE"));
+		props
+		        .add(new GlobalProperty(
+		                GLOBAL_PROPERTY_PERSON_ATTRIBUTE_SEARCH_MATCH_MODE,
+		                GLOBAL_PROPERTY_PERSON_ATTRIBUTE_SEARCH_MATCH_EXACT,
+		                "Specifies how person attributes are matched while searching person. Valid values are 'ANYWHERE' or 'EXACT'. Defaults to exact if missing or invalid value is present."));
+		props.add(new GlobalProperty(GP_DISABLE_VALIDATION, "false",
+				"Disables validation of OpenMRS Objects. Only takes affect on next restart. Warning: only do this is you know what you are doing!"));
+		props.add(new GlobalProperty("allergy.concept.severity.mild", "1498AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the MILD severity concept"));
+		props.add(new GlobalProperty("allergy.concept.severity.moderate", "1499AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the MODERATE severity concept"));
+		props.add(new GlobalProperty("allergy.concept.severity.severe", "1500AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the SEVERE severity concept"));
+		props.add(new GlobalProperty("allergy.concept.allergen.food", "162553AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the food allergens concept"));
+		props.add(new GlobalProperty("allergy.concept.allergen.drug", "162552AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the drug allergens concept"));
+		props.add(new GlobalProperty("allergy.concept.allergen.environment", "162554AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the environment allergens concept"));
+		props.add(new GlobalProperty("allergy.concept.reactions", "162555AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the allergy reactions concept"));
+		props.add(new GlobalProperty(GP_ALLERGEN_OTHER_NON_CODED_UUID, "5622AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the allergy other non coded concept"));
+		props.add(new GlobalProperty("allergy.concept.unknown", "1067AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		        "UUID for the allergy unknown concept"));
+		props
+				.add(new GlobalProperty(GP_DRUG_ORDER_DRUG_OTHER, "", "Specifies the uuid of the concept which represents drug other non coded"));
+		props.add(new GlobalProperty(GP_LOGIN_URL, LOGIN_URL,
+			"Responsible for defining the Authentication URL "));
+		props.addAll(ModuleFactory.getGlobalProperties());
+		return props;
+	}
+	public static final String PROPOSED_CONCEPT_IDENTIFIER = "PROPOSED";
+	public static final String CONCEPT_PROPOSAL_UNMAPPED = "UNMAPPED";
+	public static final String CONCEPT_PROPOSAL_CONCEPT = "CONCEPT";
+	public static final String CONCEPT_PROPOSAL_SYNONYM = "SYNONYM";
+	public static final String CONCEPT_PROPOSAL_REJECT = "REJECT";
+	public static final Collection<String> CONCEPT_PROPOSAL_STATES() {
+		Collection<String> states = new ArrayList<>();
+		states.add(CONCEPT_PROPOSAL_UNMAPPED);
+		states.add(CONCEPT_PROPOSAL_CONCEPT);
+		states.add(CONCEPT_PROPOSAL_SYNONYM);
+		states.add(CONCEPT_PROPOSAL_REJECT);
+		return states;
+	}
+	public static final Locale SPANISH_LANGUAGE = new Locale("es");
+	public static final Locale PORTUGUESE_LANGUAGE = new Locale("pt");
+	public static final Locale ITALIAN_LANGUAGE = new Locale("it");
+	public static final String USER_PROPERTY_CHANGE_PASSWORD = "forcePassword";
+	public static final String USER_PROPERTY_DEFAULT_LOCALE = "defaultLocale";
+	public static final String USER_PROPERTY_DEFAULT_LOCATION = "defaultLocation";
+	public static final String USER_PROPERTY_SHOW_RETIRED = "showRetired";
+	public static final String USER_PROPERTY_SHOW_VERBOSE = "showVerbose";
+	public static final String USER_PROPERTY_NOTIFICATION = "notification";
+	public static final String USER_PROPERTY_NOTIFICATION_ADDRESS = "notificationAddress";
+	public static final String USER_PROPERTY_NOTIFICATION_FORMAT = "notificationFormat"; 
+	public static final String USER_PROPERTY_LOGIN_ATTEMPTS = "loginAttempts";
+	public static final String USER_PROPERTY_LOCKOUT_TIMESTAMP = "lockoutTimestamp";
+	public static final String USER_PROPERTY_PROFICIENT_LOCALES = "proficientLocales";
+	public static final String USER_PROPERTY_LAST_LOGIN_TIMESTAMP = "lastLoginTimestamp";
+	public static final String OPERATING_SYSTEM_KEY = "os.name";
+	public static final String OPERATING_SYSTEM = System.getProperty(OPERATING_SYSTEM_KEY);
+	public static final String OPERATING_SYSTEM_WINDOWS_XP = "Windows XP";
+	public static final String OPERATING_SYSTEM_WINDOWS_VISTA = "Windows Vista";
+	public static final String OPERATING_SYSTEM_LINUX = "Linux";
+	public static final String OPERATING_SYSTEM_SUNOS = "SunOS";
+	public static final String OPERATING_SYSTEM_FREEBSD = "FreeBSD";
+	public static final String OPERATING_SYSTEM_OSX = "Mac OS X";
+	public static final String IMPLEMENTATION_ID_REMOTE_CONNECTION_URL = "https:
+	public static final boolean UNIX_BASED_OPERATING_SYSTEM = (OPERATING_SYSTEM.contains(OPERATING_SYSTEM_LINUX)
+	        || OPERATING_SYSTEM.contains(OPERATING_SYSTEM_SUNOS)
+	        || OPERATING_SYSTEM.contains(OPERATING_SYSTEM_FREEBSD) || OPERATING_SYSTEM.contains(OPERATING_SYSTEM_OSX));
+	public static final boolean WINDOWS_BASED_OPERATING_SYSTEM = OPERATING_SYSTEM.contains("Windows");
+	public static final boolean WINDOWS_VISTA_OPERATING_SYSTEM = OPERATING_SYSTEM.equals(OPERATING_SYSTEM_WINDOWS_VISTA);
+	public static final String SHORT_SERIALIZATION = "isShortSerialization";
+	public static final String GLOBAL_PROPERTY_LOG_LEVEL = "log.level";
+	public static final String GP_LOG_LOCATION = "log.location";
+	public static final String GP_LOG_LAYOUT = "log.layout";
+	public static final String LOG_OPENMRS_FILE_APPENDER = "OPENMRS FILE APPENDER";
+	public static final String LOG_CLASS_DEFAULT = "org.openmrs.api";
+	public static final String LOG_LEVEL_TRACE = "trace";
+	public static final String LOG_LEVEL_DEBUG = "debug";
+	public static final String LOG_LEVEL_INFO = "info";
+	public static final String LOG_LEVEL_WARN = "warn";
+	public static final String LOG_LEVEL_ERROR = "error";
+	public static final String LOG_LEVEL_FATAL = "fatal";
+	public static final String MEMORY_APPENDER_NAME = "MEMORY_APPENDER";
+	public static final String LOGIN_URL = "login.htm";
+	public static final String GP_LOGIN_URL = "login.url";
+	public static enum PERSON_TYPE {
+		PERSON,
+		PATIENT,
+		USER
+	}
+	public static final String LUHN_IDENTIFIER_VALIDATOR = LuhnIdentifierValidator.class.getName();
+	public static final String DEFAULT_CUSTOM_DATATYPE = FreeTextDatatype.class.getName();
+	public static final String REGISTERED_COMPONENT_NAME_PREFIX = "bean:";
+	public static final String PERSON_NAME_FORMAT_SHORT = "short";
+	public static final String PERSON_NAME_FORMAT_LONG = "long";
+	public static final String LIQUIBASE_DUPLICATE_FILE_MODE_DEFAULT = GlobalConfiguration.DuplicateFileMode.WARN.name();
+	public static final String ZERO_LOGIN_ATTEMPTS_VALUE = "0";
+	private OpenmrsConstants() {
+	}
+}
+_____
+package org.openmrs;
+import java.text.DateFormat;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
+import org.apache.commons.lang3.StringUtils;
+import org.hibernate.envers.Audited;
+import org.openmrs.annotation.AllowDirectAccess;
+import org.openmrs.api.APIException;
+import org.openmrs.api.context.Context;
+import org.openmrs.api.db.hibernate.HibernateUtil;
+import org.openmrs.obs.ComplexData;
+import org.openmrs.obs.ComplexObsHandler;
+import org.openmrs.util.Format;
+import org.openmrs.util.Format.FORMAT_TYPE;
+import org.openmrs.util.OpenmrsUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+@Audited
+public class Obs extends BaseFormRecordableOpenmrsData {
+	public enum Interpretation {
+		NORMAL, ABNORMAL, CRITICALLY_ABNORMAL, NEGATIVE, POSITIVE, CRITICALLY_LOW, LOW, HIGH, CRITICALLY_HIGH, VERY_SUSCEPTIBLE, SUSCEPTIBLE, INTERMEDIATE, RESISTANT, SIGNIFICANT_CHANGE_DOWN, SIGNIFICANT_CHANGE_UP, OFF_SCALE_LOW, OFF_SCALE_HIGH
+	}
+	public enum Status {
+		PRELIMINARY, FINAL, AMENDED
+	}
+	private static final String DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm";
+	private static final String TIME_PATTERN = "HH:mm";
+	private static final String DATE_PATTERN = "yyyy-MM-dd";
+	public static final long serialVersionUID = 112342333L;
+	private static final Logger log = LoggerFactory.getLogger(Obs.class);
+	protected Integer obsId;
+	protected Concept concept;
+	protected Date obsDatetime;
+	protected String accessionNumber;
+	protected Obs obsGroup;
+	@AllowDirectAccess
+	protected Set<Obs> groupMembers;
+	protected Concept valueCoded;
+	protected ConceptName valueCodedName;
+	protected Drug valueDrug;
+	protected Integer valueGroupId;
+	protected Date valueDatetime;
+	protected Double valueNumeric;
+	protected String valueModifier;
+	protected String valueText;
+	protected String valueComplex;
+	protected transient ComplexData complexData;
+	protected String comment;
+	protected transient Integer personId;
+	protected Person person;
+	protected Order order;
+	protected Location location;
+	protected Encounter encounter;
+	private Obs previousVersion;
+	private Boolean dirty = Boolean.FALSE;
+	private Interpretation interpretation;
+	private Status status = Status.FINAL;
+	private ObsReferenceRange referenceRange;
+	public Obs() {
+	}
+	public Obs(Person person, Concept question, Date obsDatetime, Location location) {
+		this.person = person;
+		if (person != null) {
+			this.personId = person.getPersonId();
+		}
+		this.concept = question;
+		this.obsDatetime = obsDatetime;
+		this.location = location;
+	}
+	public Obs(Integer obsId) {
+		this.obsId = obsId;
+	}
+	public static Obs newInstance(Obs obsToCopy) {
+		Obs newObs = new Obs(obsToCopy.getPerson(), obsToCopy.getConcept(), obsToCopy.getObsDatetime(),
+		        obsToCopy.getLocation());
+		newObs.setObsGroup(obsToCopy.getObsGroup());
+		newObs.setAccessionNumber(obsToCopy.getAccessionNumber());
+		newObs.setValueCoded(obsToCopy.getValueCoded());
+		newObs.setValueDrug(obsToCopy.getValueDrug());
+		newObs.setValueGroupId(obsToCopy.getValueGroupId());
+		newObs.setValueDatetime(obsToCopy.getValueDatetime());
+		newObs.setValueNumeric(obsToCopy.getValueNumeric());
+		newObs.setValueModifier(obsToCopy.getValueModifier());
+		newObs.setValueText(obsToCopy.getValueText());
+		newObs.setComment(obsToCopy.getComment());
+		newObs.setEncounter(obsToCopy.getEncounter());
+		newObs.setCreator(obsToCopy.getCreator());
+		newObs.setDateCreated(obsToCopy.getDateCreated());
+		newObs.setVoided(obsToCopy.getVoided());
+		newObs.setVoidedBy(obsToCopy.getVoidedBy());
+		newObs.setDateVoided(obsToCopy.getDateVoided());
+		newObs.setVoidReason(obsToCopy.getVoidReason());
+		newObs.setStatus(obsToCopy.getStatus());
+		newObs.setInterpretation(obsToCopy.getInterpretation());
+		newObs.setOrder(obsToCopy.getOrder());
+		newObs.setValueComplex(obsToCopy.getValueComplex());
+		newObs.setComplexData(obsToCopy.getComplexData());
+		newObs.setFormField(obsToCopy.getFormFieldNamespace(), obsToCopy.getFormFieldPath());
+		if (obsToCopy.hasGroupMembers(true)) {
+			for (Obs member : obsToCopy.getGroupMembers(true)) {
+				if (member.getObsId() == null) {
+					newObs.addGroupMember(member);
+				} else {
+					Obs newMember = Obs.newInstance(member);
+					newMember.setPreviousVersion(member);
+					newObs.addGroupMember(newMember);
+				}
+			}
+		}
+		return newObs;
+	}
+	public String getComment() {
+		return comment;
+	}
+	public void setComment(String comment) {
+		markAsDirty(this.comment, comment);
+		this.comment = comment;
+	}
+	public Concept getConcept() {
+		return concept;
+	}
+	public void setConcept(Concept concept) {
+		markAsDirty(this.concept, concept);
+		this.concept = concept;
+	}
+	public ConceptDescription getConceptDescription() {
+		if (getConcept() == null) {
+			return null;
+		}
+		return concept.getDescription();
+	}
+	public Encounter getEncounter() {
+		return encounter;
+	}
+	public void setEncounter(Encounter encounter) {
+		markAsDirty(this.encounter, encounter);
+		this.encounter = encounter;
+	}
+	public Location getLocation() {
+		return location;
+	}
+	public void setLocation(Location location) {
+		markAsDirty(this.location, location);
+		this.location = location;
+	}
+	public Date getObsDatetime() {
+		return obsDatetime;
+	}
+	public void setObsDatetime(Date obsDatetime) {
+		markAsDirty(this.obsDatetime, obsDatetime);
+		this.obsDatetime = obsDatetime;
+	}
+	public Obs getObsGroup() {
+		return obsGroup;
+	}
+	public void setObsGroup(Obs obsGroup) {
+		markAsDirty(this.obsGroup, obsGroup);
+		this.obsGroup = obsGroup;
+	}
+	public boolean isObsGrouping() {
+		return hasGroupMembers(true);
+	}
+	public boolean hasGroupMembers() {
+		return hasGroupMembers(false);
+	}
+	public boolean hasGroupMembers(boolean includeVoided) {
+		return !org.springframework.util.CollectionUtils.isEmpty(getGroupMembers(includeVoided));
+	}
+	public Set<Obs> getGroupMembers() {
+		return getGroupMembers(false);
+	}
+	public Set<Obs> getGroupMembers(boolean includeVoided) {
+		if (includeVoided) {
+			return groupMembers;
+		}
+		if (groupMembers == null) {
+			return null;
+		}
+		Set<Obs> nonVoided = new LinkedHashSet<>(groupMembers);
+		nonVoided.removeIf(BaseOpenmrsData::getVoided);
+		return nonVoided;
+	}
+	public void setGroupMembers(Set<Obs> groupMembers) {
+		this.groupMembers = groupMembers;
+	}
+	public void addGroupMember(Obs member) {
+		if (member == null) {
+			return;
+		}
+		if (getGroupMembers() == null) {
+			groupMembers = new HashSet<>();
+		}
+		if (member.equals(this)) {
+			throw new APIException("Obs.error.groupCannotHaveItselfAsAMentor", new Object[] { this, member });
+		}
+		member.setObsGroup(this);
+		groupMembers.add(member);
+	}
+	public void removeGroupMember(Obs member) {
+		if (member == null || getGroupMembers() == null) {
+			return;
+		}
+		if (groupMembers.remove(member)) {
+			member.setObsGroup(null);
+		}
+	}
+	public Set<Obs> getRelatedObservations() {
+		Set<Obs> ret = new HashSet<>();
+		if (this.isObsGrouping()) {
+			ret.addAll(this.getGroupMembers());
+			Obs parentObs = this;
+			while (parentObs.getObsGroup() != null) {
+				for (Obs obsSibling : parentObs.getObsGroup().getGroupMembers()) {
+					if (!obsSibling.isObsGrouping()) {
+						ret.add(obsSibling);
+					}
+				}
+				parentObs = parentObs.getObsGroup();
+			}
+		} else if (this.getObsGroup() != null) {
+			for (Obs obsSibling : this.getObsGroup().getGroupMembers()) {
+				if (!obsSibling.isObsGrouping()) {
+					ret.add(obsSibling);
+				}
+			}
+		}
+		return ret;
+	}
+	public Integer getObsId() {
+		return obsId;
+	}
+	public void setObsId(Integer obsId) {
+		this.obsId = obsId;
+	}
+	public Order getOrder() {
+		return order;
+	}
+	public void setOrder(Order order) {
+		markAsDirty(this.order, order);
+		this.order = order;
+	}
+	public Integer getPersonId() {
+		return personId;
+	}
+	protected void setPersonId(Integer personId) {
+		markAsDirty(this.personId, personId);
+		this.personId = personId;
+	}
+	public Person getPerson() {
+		return person;
+	}
+	public void setPerson(Person person) {
+		markAsDirty(this.person, person);
+		this.person = person;
+		if (person != null) {
+			setPersonId(person.getPersonId());
+		}
+	}
+	public void setValueBoolean(Boolean valueBoolean) {
+		if (getConcept() != null && getConcept().getDatatype() != null && getConcept().getDatatype().isBoolean()) {
+			if (valueBoolean != null) {
+				setValueCoded(valueBoolean ? Context.getConceptService().getTrueConcept() : Context.getConceptService()
+				        .getFalseConcept());
+			} else {
+				setValueCoded(null);
+			}
+		}
+	}
+	public Boolean getValueAsBoolean() {
+		if (getValueCoded() != null) {
+			if (getValueCoded().equals(Context.getConceptService().getTrueConcept())) {
+				return Boolean.TRUE;
+			} else if (getValueCoded().equals(Context.getConceptService().getFalseConcept())) {
+				return Boolean.FALSE;
+			}
+		} else if (getValueNumeric() != null) {
+			if (getValueNumeric() == 1) {
+				return Boolean.TRUE;
+			} else if (getValueNumeric() == 0) {
+				return Boolean.FALSE;
+			}
+		}
+		return null;
+	}
+	public Boolean getValueBoolean() {
+		if (getConcept() != null && valueCoded != null && getConcept().getDatatype().isBoolean()) {
+			Concept trueConcept = Context.getConceptService().getTrueConcept();
+			return trueConcept != null && valueCoded.getId().equals(trueConcept.getId());
+		}
+		return null;
+	}
+	public Concept getValueCoded() {
+		return valueCoded;
+	}
+	public void setValueCoded(Concept valueCoded) {
+		markAsDirty(this.valueCoded, valueCoded);
+		this.valueCoded = valueCoded;
+	}
+	public ConceptName getValueCodedName() {
+		return valueCodedName;
+	}
+	public void setValueCodedName(ConceptName valueCodedName) {
+		markAsDirty(this.valueCodedName, valueCodedName);
+		this.valueCodedName = valueCodedName;
+	}
+	public Drug getValueDrug() {
+		return valueDrug;
+	}
+	public void setValueDrug(Drug valueDrug) {
+		markAsDirty(this.valueDrug, valueDrug);
+		this.valueDrug = valueDrug;
+	}
+	public Date getValueDatetime() {
+		return valueDatetime;
+	}
+	public void setValueDatetime(Date valueDatetime) {
+		markAsDirty(this.valueDatetime, valueDatetime);
+		this.valueDatetime = valueDatetime;
+	}
+	public Date getValueDate() {
+		return valueDatetime;
+	}
+	public void setValueDate(Date valueDate) {
+		markAsDirty(this.valueDatetime, valueDate);
+		this.valueDatetime = valueDate;
+	}
+	public Date getValueTime() {
+		return valueDatetime;
+	}
+	public void setValueTime(Date valueTime) {
+		markAsDirty(this.valueDatetime, valueTime);
+		this.valueDatetime = valueTime;
+	}
+	public Integer getValueGroupId() {
+		return valueGroupId;
+	}
+	public void setValueGroupId(Integer valueGroupId) {
+		markAsDirty(this.valueGroupId, valueGroupId);
+		this.valueGroupId = valueGroupId;
+	}
+	public String getValueModifier() {
+		return valueModifier;
+	}
+	public void setValueModifier(String valueModifier) {
+		markAsDirty(this.valueModifier, valueModifier);
+		this.valueModifier = valueModifier;
+	}
+	public Double getValueNumeric() {
+		return valueNumeric;
+	}
+	public void setValueNumeric(Double valueNumeric) {
+		markAsDirty(this.valueNumeric, valueNumeric);
+		this.valueNumeric = valueNumeric;
+	}
+	public String getValueText() {
+		return valueText;
+	}
+	public void setValueText(String valueText) {
+		markAsDirty(this.valueText, valueText);
+		this.valueText = valueText;
+	}
+	public boolean isComplex() {
+		if (getConcept() != null) {
+			return getConcept().isComplex();
+		}
+		return false;
+	}
+	public String getValueComplex() {
+		return this.valueComplex;
+	}
+	public void setValueComplex(String valueComplex) {
+		markAsDirty(this.valueComplex, valueComplex);
+		this.valueComplex = valueComplex;
+	}
+	public void setComplexData(ComplexData complexData) {
+		markAsDirty(this.complexData, complexData);
+		this.complexData = complexData;
+	}
+	public ComplexData getComplexData() {
+		return this.complexData;
+	}
+	public String getAccessionNumber() {
+		return accessionNumber;
+	}
+	public void setAccessionNumber(String accessionNumber) {
+		markAsDirty(this.accessionNumber, accessionNumber);
+		this.accessionNumber = accessionNumber;
+	}
+	public String getValueAsString(Locale locale) {
+		NumberFormat nf = NumberFormat.getNumberInstance(locale);
+		DecimalFormat df = (DecimalFormat) nf;
+		df.applyPattern("#0.0#####");
+		if (getConcept() != null) {
+			String abbrev = getConcept().getDatatype().getHl7Abbreviation();
+			if ("BIT".equals(abbrev)) {
+				return getValueAsBoolean() == null ? "" : getValueAsBoolean().toString();
+			} else if ("CWE".equals(abbrev)) {
+				if (getValueCoded() == null) {
+					return "";
+				}
+				if (getValueDrug() != null) {
+					return getValueDrug().getFullName(locale);
+				} else {
+					ConceptName codedName = getValueCodedName();
+					if (codedName != null) {
+						return getValueCoded().getName(locale, false).getName();
+					} else {
+						ConceptName fallbackName = getValueCoded().getName();
+						if (fallbackName != null) {
+							return fallbackName.getName();
+						} else {
+							return "";
+						}
+					}
+				}
+			} else if ("NM".equals(abbrev) || "SN".equals(abbrev)) {
+				if (getValueNumeric() == null) {
+					return "";
+				} else {
+					Concept deproxiedConcept = HibernateUtil.getRealObjectFromProxy(getConcept());
+					if (deproxiedConcept instanceof ConceptNumeric) {
+						ConceptNumeric cn = (ConceptNumeric) deproxiedConcept;
+						if (!cn.getAllowDecimal()) {
+							double d = getValueNumeric();
+							int i = (int) d;
+							return Integer.toString(i);
+						} else {
+							df.format(getValueNumeric());
+						}
+					}
+				}
+			} else if ("DT".equals(abbrev)) {
+				DateFormat dateFormat = new SimpleDateFormat(DATE_PATTERN);
+				return (getValueDatetime() == null ? "" : dateFormat.format(getValueDatetime()));
+			} else if ("TM".equals(abbrev)) {
+				return (getValueDatetime() == null ? "" : Format.format(getValueDatetime(), locale, FORMAT_TYPE.TIME));
+			} else if ("TS".equals(abbrev)) {
+				return (getValueDatetime() == null ? "" : Format.format(getValueDatetime(), locale, FORMAT_TYPE.TIMESTAMP));
+			} else if ("ST".equals(abbrev)) {
+				return getValueText();
+			} else if ("ED".equals(abbrev) && getValueComplex() != null) {
+				String[] valuesComplex = getValueComplex().split("\\|");
+				for (String value : valuesComplex) {
+					if (StringUtils.isNotEmpty(value)) {
+						return value.trim();
+					}
+				}
+			}
+		}
+		if (getValueNumeric() != null) {
+			return df.format(getValueNumeric());
+		} else if (getValueCoded() != null) {
+			if (getValueDrug() != null) {
+				return getValueDrug().getFullName(locale);
+			} else {
+				ConceptName valudeCodedName = getValueCodedName();
+				if (valudeCodedName != null) {
+					return valudeCodedName.getName();
+				} else {
+					return "";
+				}
+			}
+		} else if (getValueDatetime() != null) {
+			return Format.format(getValueDatetime(), locale, FORMAT_TYPE.DATE);
+		} else if (getValueText() != null) {
+			return getValueText();
+		} else if (hasGroupMembers()) {
+			StringBuilder sb = new StringBuilder();
+			for (Obs groupMember : getGroupMembers()) {
+				if (sb.length() > 0) {
+					sb.append(", ");
+				}
+				sb.append(groupMember.getValueAsString(locale));
+			}
+			return sb.toString();
+		}
+		if (getValueComplex() != null) {
+			String[] valuesComplex = getValueComplex().split("\\|");
+			for (String value : valuesComplex) {
+				if (StringUtils.isNotEmpty(value)) {
+					return value.trim();
+				}
+			}
+		}
+		return "";
+	}
+	public void setValueAsString(String s) throws ParseException {
+		log.debug("getConcept() == {}", getConcept());
+		if (getConcept() != null && !StringUtils.isBlank(s)) {
+			String abbrev = getConcept().getDatatype().getHl7Abbreviation();
+			if ("BIT".equals(abbrev)) {
+				setValueBoolean(Boolean.valueOf(s));
+			} else if ("CWE".equals(abbrev)) {
+				throw new RuntimeException("Not Yet Implemented");
+			} else if ("NM".equals(abbrev) || "SN".equals(abbrev)) {
+				setValueNumeric(Double.valueOf(s));
+			} else if ("DT".equals(abbrev)) {
+				DateFormat dateFormat = new SimpleDateFormat(DATE_PATTERN);
+				setValueDatetime(dateFormat.parse(s));
+			} else if ("TM".equals(abbrev)) {
+				DateFormat timeFormat = new SimpleDateFormat(TIME_PATTERN);
+				setValueDatetime(timeFormat.parse(s));
+			} else if ("TS".equals(abbrev)) {
+				DateFormat datetimeFormat = new SimpleDateFormat(DATE_TIME_PATTERN);
+				setValueDatetime(datetimeFormat.parse(s));
+			} else if ("ST".equals(abbrev)) {
+				setValueText(s);
+			} else {
+				throw new RuntimeException("Don't know how to handle " + abbrev + " for concept: " + getConcept().getName().getName());
+			}
+		} else {
+			throw new RuntimeException("concept is null for " + this);
+		}
+	}
+	@Override
+	public String toString() {
+		if (obsId == null) {
+			return "obs id is null";
+		}
+		return "Obs #" + obsId.toString();
+	}
+	@Override
+	public Integer getId() {
+		return getObsId();
+	}
+	@Override
+	public void setId(Integer id) {
+		setObsId(id);
+	}
+	public Obs getPreviousVersion() {
+		return previousVersion;
+	}
+	public void setPreviousVersion(Obs previousVersion) {
+		markAsDirty(this.previousVersion, previousVersion);
+		this.previousVersion = previousVersion;
+	}
+	public Boolean hasPreviousVersion() {
+		return getPreviousVersion() != null;
+	}
+	@Override
+	public void setCreator(User creator) {
+		markAsDirty(getCreator(), creator);
+		super.setCreator(creator);
+	}
+	@Override
+	public void setDateCreated(Date dateCreated) {
+		markAsDirty(getDateCreated(), dateCreated);
+		super.setDateCreated(dateCreated);
+	}
+	@Override
+	public void setFormField(String namespace, String formFieldPath) {
+		String oldValue = formNamespaceAndPath;
+		super.setFormField(namespace, formFieldPath);
+		markAsDirty(oldValue, formNamespaceAndPath);
+	}
+	public boolean isDirty() {
+		return dirty;
+	}
+	protected void markAsDirty(Object oldValue, Object newValue) {
+		if (!isDirty() && obsId != null && !OpenmrsUtil.nullSafeEquals(oldValue, newValue)) {
+			dirty = true;
+		}
+	}
+	public Interpretation getInterpretation() {
+		return interpretation;
+	}
+	public void setInterpretation(Interpretation interpretation) {
+		markAsDirty(this.interpretation, interpretation);
+		this.interpretation = interpretation;
+	}
+	public Status getStatus() {
+		return status;
+	}
+	public void setStatus(Status status) {
+		markAsDirty(this.status, status);
+		this.status = status;
+	}
+	public ObsReferenceRange getReferenceRange() {
+		return referenceRange;
+	}
+	public void setReferenceRange(ObsReferenceRange referenceRange) {
+		this.referenceRange = referenceRange;
+	}
+}
+_____
+package org.openmrs.customdatatype;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.apache.commons.lang3.StringUtils;
+import org.openmrs.ConceptDatatype;
+import org.openmrs.api.APIException;
+import org.openmrs.api.context.Context;
+import org.openmrs.attribute.Attribute;
+import org.openmrs.attribute.AttributeType;
+import org.openmrs.serialization.SerializationException;
+import org.openmrs.util.OpenmrsConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class CustomDatatypeUtil {
+	private CustomDatatypeUtil() {
+	}
+	private static final Logger log = LoggerFactory.getLogger(CustomDatatypeUtil.class);
+	public static CustomDatatype<?> getDatatype(CustomValueDescriptor descriptor) {
+		return getDatatype(descriptor.getDatatypeClassname(), descriptor.getDatatypeConfig());
+	}
+	public static CustomDatatype<?> getDatatype(String datatypeClassname, String datatypeConfig) {
+		try {
+			Class dtClass = Context.loadClass(datatypeClassname);
+			CustomDatatype<?> ret = (CustomDatatype<?>) Context.getDatatypeService().getDatatype(dtClass, datatypeConfig);
+			if (ret == null) {
+				throw new CustomDatatypeException("Can't find datatype: " + datatypeClassname);
+			}
+			return ret;
+		}
+		catch (Exception ex) {
+			throw new CustomDatatypeException("Error loading " + datatypeClassname + " and configuring it with "
+			        + datatypeConfig, ex);
+		}
+	}
+	public static CustomDatatype<?> getDatatypeOrDefault(CustomValueDescriptor descriptor) {
+		try {
+			return getDatatype(descriptor);
+		}
+		catch (CustomDatatypeException ex) {
+			return getDatatype(OpenmrsConstants.DEFAULT_CUSTOM_DATATYPE, null);
+		}
+	}
+	public static CustomDatatypeHandler getHandler(CustomValueDescriptor descriptor) {
+		return getHandler(getDatatypeOrDefault(descriptor), descriptor.getPreferredHandlerClassname(), descriptor
+		        .getHandlerConfig());
+	}
+	public static CustomDatatypeHandler getHandler(CustomDatatype<?> dt, String preferredHandlerClassname,
+	        String handlerConfig) {
+		if (preferredHandlerClassname != null) {
+			try {
+				Class<? extends CustomDatatypeHandler> clazz = (Class<? extends CustomDatatypeHandler>) Context
+				        .loadClass(preferredHandlerClassname);
+				CustomDatatypeHandler handler = clazz.newInstance();
+				if (handlerConfig != null) {
+					handler.setHandlerConfiguration(handlerConfig);
+				}
+				return handler;
+			}
+			catch (Exception ex) {
+				log.warn("Failed to instantiate and configure preferred handler with class " + preferredHandlerClassname
+				        + " and config " + handlerConfig, ex);
+			}
+		}
+		return Context.getDatatypeService().getHandler(dt, handlerConfig);
+	}
+	public static String serializeSimpleConfiguration(Map<String, String> simpleConfig) {
+		if (simpleConfig == null || simpleConfig.size() == 0) {
+			return "";
+		}
+		try {
+			return Context.getSerializationService().getDefaultSerializer().serialize(simpleConfig);
+		}
+		catch (SerializationException ex) {
+			throw new APIException(ex);
+		}
+	}
+	@SuppressWarnings("unchecked")
+	public static Map<String, String> deserializeSimpleConfiguration(String serializedConfig) {
+		if (StringUtils.isBlank(serializedConfig)) {
+			return Collections.emptyMap();
+		}
+		try {
+			return Context.getSerializationService().getDefaultSerializer().deserialize(serializedConfig, Map.class);
+		}
+		catch (SerializationException ex) {
+			throw new APIException(ex);
+		}
+	}
+	public static <T extends AttributeType<?>, U> Map<T, String> getValueReferences(Map<T, U> datatypeValues) {
+		Map<T, String> serializedAttributeValues = null;
+		if (datatypeValues != null) {
+			serializedAttributeValues = new HashMap<>();
+			for (Map.Entry<T, U> e : datatypeValues.entrySet()) {
+				T vat = e.getKey();
+				CustomDatatype<U> customDatatype = (CustomDatatype<U>) getDatatype(vat);
+				String valueReference;
+				try {
+					valueReference = customDatatype.getReferenceStringForValue(e.getValue());
+				}
+				catch (UnsupportedOperationException ex) {
+					throw new APIException("CustomDatatype.error.cannot.search", new Object[] { customDatatype.getClass() });
+				}
+				serializedAttributeValues.put(vat, valueReference);
+			}
+		}
+		return serializedAttributeValues;
+	}
+	public static List<String> getDatatypeClassnames() {
+		List<String> ret = new ArrayList<>();
+		for (Class<?> c : Context.getDatatypeService().getAllDatatypeClasses()) {
+			ret.add(c.getName());
+		}
+		return ret;
+	}
+	public static List<String> getHandlerClassnames() {
+		List<String> ret = new ArrayList<>();
+		for (Class<?> c : Context.getDatatypeService().getAllHandlerClasses()) {
+			ret.add(c.getName());
+		}
+		return ret;
+	}
+	public static boolean isCompatibleHandler(CustomDatatypeHandler handler, CustomDatatype<?> datatype) {
+		List<Class<? extends CustomDatatypeHandler>> handlerClasses = Context.getDatatypeService().getHandlerClasses(
+		    (Class<? extends CustomDatatype<?>>) datatype.getClass());
+		return handlerClasses.contains(handler.getClass());
+	}
+	public static void saveAttributesIfNecessary(Customizable<?> customizable) {
+		for (Attribute attr : customizable.getAttributes()) {
+			saveIfDirty(attr);
+		}
+	}
+	public static void saveIfDirty(SingleCustomValue<?> value) {
+		if (value.isDirty()) {
+			CustomDatatype datatype = CustomDatatypeUtil.getDatatype(value.getDescriptor());
+			if (value.getValue() == null) {
+				throw new InvalidCustomValueException(value.getClass() + " with type=" + value.getDescriptor()
+				        + " cannot be null");
+			}
+			String existingValueReference = null;
+			try {
+				existingValueReference = value.getValueReference();
+			}
+			catch (NotYetPersistedException ex) {
+			}
+			String newValueReference = datatype.save(value.getValue(), existingValueReference);
+			value.setValueReferenceInternal(newValueReference);
+		}
+	}
+	@SuppressWarnings("unchecked")
+	public static <T, D extends CustomValueDescriptor> boolean validate(SingleCustomValue<D> value) {
+		try {
+			CustomDatatype<T> datatype = (CustomDatatype<T>) getDatatype(value.getDescriptor());
+			datatype.validate((T) value.getValue());
+			return true;
+		}
+		catch (Exception ex) {
+			return false;
+		}
+	}
+}
+_____
+package org.openmrs.api.db;
+import org.openmrs.api.APIException;
+public class DAOException extends APIException {
+	private static final long serialVersionUID = -185144340435149253L;
+	public DAOException() {
+	}
+	public DAOException(String message) {
+		super(message);
+	}
+	public DAOException(String message, Throwable cause) {
+		super(message, cause);
+	}
+	public DAOException(Throwable cause) {
+		super(cause);
+	}
+}
+_____
+package org.openmrs;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import javax.persistence.Access;
+import javax.persistence.AccessType;
+import javax.persistence.CascadeType;
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.JoinColumn;
+import javax.persistence.ManyToOne;
+import javax.persistence.OneToMany;
+import javax.persistence.OrderBy;
+import javax.persistence.Table;
+import org.hibernate.annotations.BatchSize;
+import org.hibernate.annotations.Cascade;
+import org.hibernate.envers.Audited;
+import org.openmrs.annotation.AllowDirectAccess;
+import org.openmrs.annotation.DisableHandlers;
+import org.openmrs.api.context.Context;
+import org.openmrs.api.handler.VoidHandler;
+@Entity
+@Table(name = "encounter")
+@BatchSize(size = 25)
+@Audited
+public class Encounter extends BaseChangeableOpenmrsData {
+	public static final long serialVersionUID = 2L;
+	@Id
+	@GeneratedValue(strategy = GenerationType.IDENTITY)
+	@Column(name = "encounter_id")
+	private Integer encounterId;
+	@Column(name = "encounter_datetime", nullable = false, length = 19)
+	private Date encounterDatetime;
+	@ManyToOne(optional = false)
+	@JoinColumn(name = "patient_id")
+	private Patient patient;
+	@ManyToOne
+	@JoinColumn(name = "location_id")
+	private Location location;
+	@ManyToOne
+	@JoinColumn(name = "form_id")
+	private Form form;
+	@ManyToOne(optional = false)
+	@JoinColumn(name = "encounter_type")
+	private EncounterType encounterType;
+	@OneToMany(mappedBy = "encounter")
+	private Set<Order> orders;
+	@OneToMany(mappedBy = "encounter")
+	private Set<Diagnosis> diagnoses;
+	@OneToMany(mappedBy = "encounter")
+	private Set<Condition> conditions;
+	@OneToMany(mappedBy = "encounter")
+	@Access(AccessType.FIELD)
+	@OrderBy("concept_id")
+	@BatchSize(size = 25)
+	@AllowDirectAccess
+	private Set<Obs> obs;
+	@ManyToOne
+	@Cascade(org.hibernate.annotations.CascadeType.SAVE_UPDATE)
+	@JoinColumn(name = "visit_id")
+	private Visit visit;
+	@OneToMany(mappedBy = "encounter", cascade = CascadeType.ALL)
+	@OrderBy("provider_id")
+	@DisableHandlers(handlerTypes = { VoidHandler.class })
+	private Set<EncounterProvider> encounterProviders = new LinkedHashSet<>();
+	@OneToMany(mappedBy = "encounter")
+	private Set<Allergy> allergies;
+	public Encounter() {
+	}
+	public Encounter(Integer encounterId) {
+		this.encounterId = encounterId;
+	}
+	public Date getEncounterDatetime() {
+		return encounterDatetime;
+	}
+	public void setEncounterDatetime(Date encounterDatetime) {
+		this.encounterDatetime = encounterDatetime;
+	}
+	public Integer getEncounterId() {
+		return encounterId;
+	}
+	public void setEncounterId(Integer encounterId) {
+		this.encounterId = encounterId;
+	}
+	public EncounterType getEncounterType() {
+		return encounterType;
+	}
+	public void setEncounterType(EncounterType encounterType) {
+		this.encounterType = encounterType;
+	}
+	public Location getLocation() {
+		return location;
+	}
+	public void setLocation(Location location) {
+		this.location = location;
+	}
+	public Set<Obs> getObs() {
+		Set<Obs> ret = new LinkedHashSet<>();
+		if (this.obs != null) {
+			for (Obs o : this.obs) {
+				ret.addAll(getObsLeaves(o));
+			}
+		}
+		return ret;
+	}
+	private List<Obs> getObsLeaves(Obs obsParent) {
+		List<Obs> leaves = new ArrayList<>();
+		if (obsParent.hasGroupMembers()) {
+			for (Obs child : obsParent.getGroupMembers()) {
+				if (!child.getVoided()) {
+					if (!child.isObsGrouping()) {
+						leaves.add(child);
+					} else {
+						leaves.addAll(getObsLeaves(child));
+					}
+				}
+			}
+		} else if (!obsParent.getVoided()) {
+			leaves.add(obsParent);
+		}
+		return leaves;
+	}
+	private Set<Obs> getFlattenedObsLeaves(Obs obsParent, boolean includedVoided) {
+		Set<Obs> leaves = new LinkedHashSet<>();
+		if (includedVoided || (!obsParent.getVoided())) {
+			leaves.add(obsParent);
+			if (obsParent.hasGroupMembers()) {
+				for (Obs child : obsParent.getGroupMembers(includedVoided)) {
+					leaves.addAll(getFlattenedObsLeaves(child, includedVoided));
+				}
+			}
+		}
+		return leaves;
+	}
+	public Set<Obs> getAllObs(boolean includeVoided) {
+		if (includeVoided && obs != null) {
+			return obs;
+		}
+		Set<Obs> ret = new LinkedHashSet<>();
+		if (this.obs != null) {
+			ret = this.obs.stream().filter(o -> includeVoided || !o.getVoided()).collect(Collectors.toSet());
+		}
+		return ret;
+	}
+	public Set<Obs> getAllObs() {
+		return getAllObs(false);
+	}
+	public Set<Obs> getAllFlattenedObs(boolean includeVoided) {
+		Set<Obs> ret = new LinkedHashSet<>();
+		if (this.obs != null) {
+			for (Obs o : this.obs) {
+				if (includeVoided || (!o.getVoided())) {
+					ret.addAll(getFlattenedObsLeaves(o, includeVoided));
+				}
+			}
+		}
+		return ret;
+	}
+	public Set<Obs> getObsAtTopLevel(boolean includeVoided) {
+		return getAllObs(includeVoided).stream().filter(o -> o.getObsGroup() == null)
+		        .collect(Collectors.toCollection(LinkedHashSet::new));
+	}
+	public void setObs(Set<Obs> obs) {
+		this.obs = obs;
+	}
+	public void addObs(Obs observation) {
+		if (obs == null) {
+			obs = new LinkedHashSet<>();
+		}
+		if (observation != null) {
+			obs.add(observation);
+			Deque<Obs> obsToUpdate = new ArrayDeque<>();
+			obsToUpdate.add(observation);
+			Set<Obs> seenIt = new LinkedHashSet<>();
+			while (!obsToUpdate.isEmpty()) {
+				Obs o = obsToUpdate.removeFirst();
+				if (o == null || seenIt.contains(o)) {
+					continue;
+				}
+				seenIt.add(o);
+				o.setEncounter(this);
+				if (o.getObsDatetime() == null) {
+					o.setObsDatetime(getEncounterDatetime());
+				}
+				if (o.getPerson() == null) {
+					o.setPerson(getPatient());
+				}
+				if (o.getLocation() == null) {
+					o.setLocation(getLocation());
+				}
+				if (o.getGroupMembers(true) != null) {
+					obsToUpdate.addAll(o.getGroupMembers());
+				}
+			}
+		}
+	}
+	public void removeObs(Obs observation) {
+		if (obs != null) {
+			obs.remove(observation);
+		}
+	}
+	public Set<Order> getOrders() {
+		if (orders == null) {
+			orders = new LinkedHashSet<>();
+		}
+		return orders;
+	}
+	public void setOrders(Set<Order> orders) {
+		this.orders = orders;
+	}
+	public void addOrder(Order order) {
+		if (order != null) {
+			order.setEncounter(this);
+			getOrders().add(order);
+		}
+	}
+	public void removeOrder(Order order) {
+		if (orders != null) {
+			orders.remove(order);
+		}
+	}
+	public Patient getPatient() {
+		return patient;
+	}
+	public void setPatient(Patient patient) {
+		this.patient = patient;
+	}
+	public Set<Diagnosis> getDiagnoses() {
+		if (diagnoses == null) {
+			diagnoses = new LinkedHashSet<>();
+		}
+		return diagnoses;
+	}
+	public void setDiagnoses(Set<Diagnosis> diagnoses) {
+		this.diagnoses = diagnoses;
+	}
+	public Set<Condition> getConditions() {
+		return getConditions(false);
+	}
+	public Set<Condition> getConditions(boolean includeVoided) {
+		return Optional.ofNullable(conditions).orElse(new LinkedHashSet<>())
+			.stream().filter(c -> includeVoided || !c.getVoided()).collect(Collectors.toSet());
+	}
+	public void setConditions(Set<Condition> conditions) {
+		this.conditions = conditions;
+	}
+	public void addCondition(Condition condition) {
+		if (conditions == null) {
+			conditions = new LinkedHashSet<>();
+		}
+		if (condition != null) {
+			condition.setEncounter(this);
+			conditions.add(condition);
+		}
+	}
+	public void removeCondition(Condition condition) {
+		Optional.ofNullable(conditions).orElse(new LinkedHashSet<>()).stream().filter(c -> !c.getVoided() && c.equals(condition)).forEach(c -> {
+			c.setVoided(true);
+			c.setDateVoided(new Date());
+			c.setVoidReason("Voided by the API");
+			c.setVoidedBy(Context.getAuthenticatedUser());
+		});
+	}
+	public Set<EncounterProvider> getEncounterProviders() {
+		return encounterProviders;
+	}
+	public void setEncounterProviders(Set<EncounterProvider> encounterProviders) {
+		this.encounterProviders = encounterProviders;
+	}
+	public Set<EncounterProvider> getActiveEncounterProviders() {
+		Set<EncounterProvider> activeProviders = new LinkedHashSet<>();
+		Set<EncounterProvider> providers = getEncounterProviders();
+		if (providers != null && !providers.isEmpty()) {
+			activeProviders = providers.stream().filter(p -> !p.getVoided()).collect(Collectors.toSet());
+		}
+		return activeProviders;
+	}
+	public Form getForm() {
+		return form;
+	}
+	public void setForm(Form form) {
+		this.form = form;
+	}
+	@Override
+	public String toString() {
+		String ret = "";
+		ret += encounterId == null ? "(no ID) " : encounterId.toString() + " ";
+		ret += this.getEncounterDatetime() == null ? "(no Date) " : this.getEncounterDatetime().toString() + " ";
+		ret += this.getEncounterType() == null ? "(no Type) " : this.getEncounterType().getName() + " ";
+		ret += this.getLocation() == null ? "(no Location) " : this.getLocation().getName() + " ";
+		ret += this.getPatient() == null ? "(no Patient) " : this.getPatient().getPatientId().toString() + " ";
+		ret += this.getForm() == null ? "(no Form) " : this.getForm().getName() + " ";
+		ret += "num Obs: " + this.getObsAtTopLevel(false) + " ";
+		ret += "num Orders: " + this.getOrders().size() + " ";
+		return "Encounter: [" + ret + "]";
+	}
+	@Override
+	public Integer getId() {
+		return getEncounterId();
+	}
+	@Override
+	public void setId(Integer id) {
+		setEncounterId(id);
+	}
+	public Visit getVisit() {
+		return visit;
+	}
+	public void setVisit(Visit visit) {
+		this.visit = visit;
+	}
+	public Map<EncounterRole, Set<Provider>> getProvidersByRoles() {
+		return getProvidersByRoles(false);
+	}
+	public Map<EncounterRole, Set<Provider>> getProvidersByRoles(boolean includeVoided) {
+		return encounterProviders
+		        .stream()
+		        .filter(ep -> includeVoided || !ep.getVoided())
+		        .collect(
+		            Collectors.groupingBy(EncounterProvider::getEncounterRole,
+		                Collectors.mapping(EncounterProvider::getProvider, Collectors.toSet())));
+	}
+	public Set<Provider> getProvidersByRole(EncounterRole role) {
+		return getProvidersByRole(role, false);
+	}
+	public Set<Provider> getProvidersByRole(EncounterRole role, boolean includeVoided) {
+		return encounterProviders.stream()
+		        .filter(ep -> ep.getEncounterRole().equals(role) && (includeVoided || !ep.getVoided()))
+		        .map(EncounterProvider::getProvider).collect(Collectors.toSet());
+	}
+	public void addProvider(EncounterRole role, Provider provider) {
+		for (EncounterProvider ep : encounterProviders) {
+			if (ep.getEncounterRole().equals(role) && ep.getProvider().equals(provider) && !ep.getVoided()) {
+				return;
+			}
+		}
+		EncounterProvider encounterProvider = new EncounterProvider();
+		encounterProvider.setEncounter(this);
+		encounterProvider.setEncounterRole(role);
+		encounterProvider.setProvider(provider);
+		encounterProvider.setDateCreated(new Date());
+		encounterProvider.setCreator(Context.getAuthenticatedUser());
+		encounterProviders.add(encounterProvider);
+	}
+	public void setProvider(EncounterRole role, Provider provider) {
+		boolean hasProvider = false;
+		for (EncounterProvider encounterProvider : encounterProviders) {
+			if (encounterProvider.getEncounterRole().equals(role)) {
+				if (!encounterProvider.getProvider().equals(provider)) {
+					encounterProvider.setVoided(true);
+					encounterProvider.setDateVoided(new Date());
+					encounterProvider.setVoidedBy(Context.getAuthenticatedUser());
+				} else if (!encounterProvider.getVoided()) {
+					hasProvider = true;
+				}
+			}
+		}
+		if (!hasProvider) {
+			addProvider(role, provider);
+		}
+	}
+	public void removeProvider(EncounterRole role, Provider provider) {
+		for (EncounterProvider encounterProvider : encounterProviders) {
+			if (encounterProvider.getEncounterRole().equals(role) && encounterProvider.getProvider().equals(provider)
+			        && !encounterProvider.getVoided()) {
+				encounterProvider.setVoided(true);
+				encounterProvider.setDateVoided(new Date());
+				encounterProvider.setVoidedBy(Context.getAuthenticatedUser());
+				return;
+			}
+		}
+	}
+	public Encounter copyAndAssignToAnotherPatient(Patient patient) {
+		Encounter target = new Encounter();
+		target.setChangedBy(getChangedBy());
+		target.setCreator(getCreator());
+		target.setDateChanged(getDateChanged());
+		target.setDateCreated(getDateCreated());
+		target.setDateVoided(getDateVoided());
+		target.setVoided(getVoided());
+		target.setVoidedBy(getVoidedBy());
+		target.setVoidReason(getVoidReason());
+		target.setEncounterDatetime(getEncounterDatetime());
+		target.setEncounterType(getEncounterType());
+		target.setForm(getForm());
+		target.setLocation(getLocation());
+		target.setPatient(patient);
+		for (EncounterProvider encounterProvider : getEncounterProviders()) {
+			EncounterProvider encounterProviderCopy = encounterProvider.copy();
+			encounterProviderCopy.setEncounter(target);
+			target.getEncounterProviders().add(encounterProviderCopy);
+		}
+		Context.getEncounterService().saveEncounter(target);
+		for (Obs obs : getAllObs()) {
+			Obs obsCopy = Obs.newInstance(obs);
+			obsCopy.setEncounter(target);
+			obsCopy.setPerson(patient);
+			target.addObs(obsCopy);
+		}
+		return target;
+	}
+	public List<OrderGroup> getOrderGroups() {
+		Map<String, OrderGroup> orderGroups = new HashMap<>();
+		for (Order order : orders) {
+			if (order.getOrderGroup() != null) {
+				orderGroups.computeIfAbsent(order.getOrderGroup().getUuid(), k -> order.getOrderGroup());
+				order.getOrderGroup().addOrder(order, null);
+			}
+		}
+		return new ArrayList<>(orderGroups.values());
+	}
+	public List<Order> getOrdersWithoutOrderGroups() {
+		return orders.stream().filter(o -> o.getOrderGroup() == null).collect(Collectors.toList());
+	}
+	public Boolean hasDiagnosis(Diagnosis diagnosis) {
+		for (Diagnosis diagnosis1 : getDiagnoses()) {
+			if (diagnosis.equals(diagnosis1)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	public Set<Allergy> getAllergies() {
+		return getAllergies(false);
+	}
+	public Set<Allergy> getAllergies(boolean includeVoided) {
+		return Optional.ofNullable(allergies).orElse(new LinkedHashSet<>())
+			.stream().filter(c -> includeVoided || !c.getVoided()).collect(Collectors.toSet());
+	}
+	public void setAllergies(Set<Allergy> allergies) {
+		this.allergies = allergies;
+	}
+	public void addAllergy(Allergy allergy) {
+		if (allergies == null) {
+			allergies = new LinkedHashSet<>();
+		}
+		if (allergy != null) {
+			allergy.setEncounter(this);
+			allergies.add(allergy);
+		}
+	}
+	public void removeAllergy(Allergy allergy) {
+		Optional.ofNullable(allergies).orElse(new LinkedHashSet<>()).stream().filter(c -> !c.getVoided() && c.equals(allergy)).forEach(c -> {
+			c.setVoided(true);
+			c.setDateVoided(new Date());
+			c.setVoidReason("Voided by the API");
+			c.setVoidedBy(Context.getAuthenticatedUser());
+		});
+	}
+}
+_____
+package org.openmrs.api.db.hibernate;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.CriteriaQuery;
+import javax.persistence.criteria.Join;
+import javax.persistence.criteria.Predicate;
+import javax.persistence.criteria.Root;
+import javax.persistence.criteria.Subquery;
+import org.apache.commons.lang3.StringUtils;
+import org.hibernate.Hibernate;
+import org.hibernate.ScrollMode;
+import org.hibernate.ScrollableResults;
+import org.hibernate.Session;
+import org.hibernate.SessionFactory;
+import org.hibernate.dialect.Dialect;
+import org.hibernate.dialect.HSQLDialect;
+import org.hibernate.dialect.PostgreSQL82Dialect;
+import org.hibernate.engine.spi.SessionFactoryImplementor;
+import org.hibernate.proxy.HibernateProxy;
+import org.openmrs.Location;
+import org.openmrs.LocationAttribute;
+import org.openmrs.api.db.DAOException;
+import org.openmrs.attribute.AttributeType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+public class HibernateUtil {
+	private HibernateUtil() {
+	}
+	private static final Logger log = LoggerFactory.getLogger(HibernateUtil.class);
+	private static Dialect dialect = null;
+	private static Boolean isHSQLDialect = null;
+	private static Boolean isPostgreSQLDialect = null;
+	public static boolean isHSQLDialect(SessionFactory sessionFactory) {
+		if (isHSQLDialect == null) {
+			isHSQLDialect = HSQLDialect.class.getName().equals(getDialect(sessionFactory).getClass().getName());
+		}
+		return isHSQLDialect;
+	}
+	public static boolean isPostgreSQLDialect(SessionFactory sessionFactory) {
+		if (isPostgreSQLDialect == null) {
+			isPostgreSQLDialect = PostgreSQL82Dialect.class.getName()
+			        .equals(getDialect(sessionFactory).getClass().getName());
+		}
+		return isPostgreSQLDialect;
+	}
+	public static Dialect getDialect(SessionFactory sessionFactory) {
+		if (dialect != null) {
+			return dialect;
+		}
+		SessionFactoryImplementor implementor = (SessionFactoryImplementor) sessionFactory;
+		dialect = implementor.getDialect();
+		log.debug("Getting dialect for session: {}", dialect);
+		return dialect;
+	}
+	public static String escapeSqlWildcards(final String oldString, SessionFactory sessionFactory) {
+		return sessionFactory.getCurrentSession().doReturningWork(connection -> escapeSqlWildcards(oldString, connection));
+	}
+	public static String escapeSqlWildcards(String oldString, Connection connection) {
+		if (!StringUtils.isBlank(oldString)) {
+			String escapeCharacter = "";
+			try {
+				escapeCharacter = connection.getMetaData().getSearchStringEscape();
+			}
+			catch (SQLException e) {
+				log.warn("Error generated", e);
+			}
+			return StringUtils.replaceEach(oldString, new String[] { "%", "_", "*", "'" }, new String[] {
+			        escapeCharacter + "%", escapeCharacter + "_", escapeCharacter + "*", "''" });
+		} else {
+			return oldString;
+		}
+	}
+	public static <AT extends AttributeType> List<Predicate> getAttributePredicate(CriteriaBuilder cb,
+	        Root<Location> locationRoot, Map<AT, String> serializedAttributeValues) {
+		List<Predicate> predicates = new ArrayList<>();
+		for (Map.Entry<AT, String> entry : serializedAttributeValues.entrySet()) {
+			Subquery<Integer> subquery = cb.createQuery().subquery(Integer.class);
+			Root<Location> locationSubRoot = subquery.from(Location.class);
+			Join<Location, LocationAttribute> attributeJoin = locationSubRoot.join("attributes");
+			Predicate[] attributePredicates = new Predicate[] { cb.equal(attributeJoin.get("attributeType"), entry.getKey()),
+			        cb.equal(attributeJoin.get("valueReference"), entry.getValue()),
+			        cb.isFalse(attributeJoin.get("voided")) };
+			subquery.select(locationSubRoot.get("locationId")).where(attributePredicates);
+			predicates.add(cb.in(locationRoot.get("locationId")).value(subquery));
+		}
+		return predicates;
+	}
+	public static <T> T getRealObjectFromProxy(T persistentObject) {
+		if (persistentObject == null) {
+			return null;
+		}
+		if (persistentObject instanceof HibernateProxy) {
+			Hibernate.initialize(persistentObject);
+			persistentObject = (T) ((HibernateProxy) persistentObject).getHibernateLazyInitializer().getImplementation();
+		}
+		return persistentObject;
+	}
+	public static <T> T getUniqueEntityByUUID(SessionFactory sessionFactory, Class<T> entityClass, String uuid) throws DAOException {
+		Session session = sessionFactory.getCurrentSession();
+		CriteriaBuilder cb = session.getCriteriaBuilder();
+		CriteriaQuery<T> query = cb.createQuery(entityClass);
+		Root<T> root = query.from(entityClass);
+		query.where(cb.equal(root.get("uuid"), uuid));
+		return session.createQuery(query).uniqueResult();
+	}
+	public static <T> ScrollableResults getScrollableResult(SessionFactory sessionFactory, Class<T> type, int fetchSize) {
+		Session session = sessionFactory.getCurrentSession();
+		CriteriaBuilder criteriaBuilder = session.getCriteriaBuilder();
+		CriteriaQuery<T> criteriaQuery = criteriaBuilder.createQuery(type);
+		Root<T> root = criteriaQuery.from(type);
+		criteriaQuery.select(root);
+		return session.createQuery(criteriaQuery)
+			.setFetchSize(fetchSize)
+			.scroll(ScrollMode.FORWARD_ONLY);
+	}
+}
+_____
+package org.openmrs;
+import org.hibernate.envers.Audited;
+import org.openmrs.api.APIException;
+import org.openmrs.api.db.hibernate.HibernateUtil;
+import org.openmrs.order.OrderUtil;
+import org.openmrs.util.OpenmrsUtil;
+import java.util.Date;
+@Audited
+public class Order extends BaseCustomizableData<OrderAttribute> implements FormRecordable {
+	public static final long serialVersionUID = 4334343L;
+	public enum Urgency {
+		ROUTINE,
+		STAT,
+		ON_SCHEDULED_DATE
+	}
+	public enum Action {
+		NEW,
+		REVISE,
+		DISCONTINUE,
+		RENEW
+	}
+	public enum FulfillerStatus {
+		RECEIVED,
+		IN_PROGRESS,
+		EXCEPTION,
+		ON_HOLD,
+		DECLINED,
+		COMPLETED
+	}
+	private Integer orderId;
+	private Patient patient;
+	private OrderType orderType;
+	private Concept concept;
+	private String instructions;
+	private Date dateActivated;
+	private Date autoExpireDate;
+	private Encounter encounter;
+	private Provider orderer;
+	private Date dateStopped;
+	private Concept orderReason;
+	private String accessionNumber;
+	private String orderReasonNonCoded;
+	private Urgency urgency = Urgency.ROUTINE;
+	private String orderNumber;
+	private String commentToFulfiller;
+	private CareSetting careSetting;
+	private Date scheduledDate;
+	private String formNamespaceAndPath;
+	private Double sortWeight;
+	private Order previousOrder;
+	private Action action = Action.NEW;
+	private OrderGroup orderGroup;
+	private FulfillerStatus fulfillerStatus;
+	private String fulfillerComment;
+	public Order() {
+	}
+	public Order(Integer orderId) {
+		this.orderId = orderId;
+	}
+	public Order copy() {
+		return copyHelper(new Order());
+	}
+	protected Order copyHelper(Order target) {
+		target.setPatient(getPatient());
+		target.setOrderType(getOrderType());
+		target.setConcept(getConcept());
+		target.setInstructions(getInstructions());
+		target.setDateActivated(getDateActivated());
+		target.setAutoExpireDate(getAutoExpireDate());
+		target.setEncounter(getEncounter());
+		target.setOrderer(getOrderer());
+		target.setCreator(getCreator());
+		target.setDateCreated(getDateCreated());
+		target.dateStopped = getDateStopped();
+		target.setOrderReason(getOrderReason());
+		target.setOrderReasonNonCoded(getOrderReasonNonCoded());
+		target.setAccessionNumber(getAccessionNumber());
+		target.setVoided(getVoided());
+		target.setVoidedBy(getVoidedBy());
+		target.setDateVoided(getDateVoided());
+		target.setVoidReason(getVoidReason());
+		target.setUrgency(getUrgency());
+		target.setCommentToFulfiller(getCommentToFulfiller());
+		target.previousOrder = getPreviousOrder();
+		target.action = getAction();
+		target.orderNumber = getOrderNumber();
+		target.setCareSetting(getCareSetting());
+		target.setChangedBy(getChangedBy());
+		target.setDateChanged(getDateChanged());
+		target.setScheduledDate(getScheduledDate());
+		target.setOrderGroup(getOrderGroup());
+		target.setSortWeight(getSortWeight());
+		target.setFulfillerComment(getFulfillerComment());
+		target.setFulfillerStatus(getFulfillerStatus());
+		target.setFormNamespaceAndPath(getFormNamespaceAndPath());
+		return target;
+	}
+	public Date getAutoExpireDate() {
+		return autoExpireDate;
+	}
+	public void setAutoExpireDate(Date autoExpireDate) {
+		this.autoExpireDate = autoExpireDate;
+	}
+	public Concept getConcept() {
+		return concept;
+	}
+	public void setConcept(Concept concept) {
+		this.concept = concept;
+	}
+	public Date getScheduledDate() {
+		return scheduledDate;
+	}
+	public void setScheduledDate(Date scheduledDate) {
+		this.scheduledDate = scheduledDate;
+	}
+	public Date getDateStopped() {
+		return dateStopped;
+	}
+	public Concept getOrderReason() {
+		return orderReason;
+	}
+	public void setOrderReason(Concept orderReason) {
+		this.orderReason = orderReason;
+	}
+	public Encounter getEncounter() {
+		return encounter;
+	}
+	public void setEncounter(Encounter encounter) {
+		this.encounter = encounter;
+	}
+	public String getInstructions() {
+		return instructions;
+	}
+	public void setInstructions(String instructions) {
+		this.instructions = instructions;
+	}
+	public String getAccessionNumber() {
+		return accessionNumber;
+	}
+	public void setAccessionNumber(String accessionNumber) {
+		this.accessionNumber = accessionNumber;
+	}
+	public Provider getOrderer() {
+		return orderer;
+	}
+	public void setOrderer(Provider orderer) {
+		this.orderer = orderer;
+	}
+	public Integer getOrderId() {
+		return orderId;
+	}
+	public void setOrderId(Integer orderId) {
+		this.orderId = orderId;
+	}
+	public Date getDateActivated() {
+		return dateActivated;
+	}
+	public void setDateActivated(Date dateActivated) {
+		this.dateActivated = dateActivated;
+	}
+	public String getOrderReasonNonCoded() {
+		return orderReasonNonCoded;
+	}
+	public void setOrderReasonNonCoded(String orderReasonNonCoded) {
+		this.orderReasonNonCoded = orderReasonNonCoded;
+	}
+	public String getCommentToFulfiller() {
+		return commentToFulfiller;
+	}
+	public void setCommentToFulfiller(String commentToFulfiller) {
+		this.commentToFulfiller = commentToFulfiller;
+	}
+	public boolean isActivated() {
+		return isActivated(new Date());
+	}
+	public boolean isActivated(Date checkDate) {
+		if (dateActivated == null) {
+			return false;
+		}
+		if (checkDate == null) {
+			checkDate = new Date();
+		}
+		return OpenmrsUtil.compare(dateActivated, checkDate) <= 0;
+	}
+	public boolean isActive() {
+		return isActive(new Date());
+	}
+	public boolean isActive(Date aCheckDate) {
+		if (getVoided() || action == Action.DISCONTINUE) {
+			return false;
+		}
+		Date checkDate = aCheckDate == null ? new Date() : aCheckDate;
+		return isActivated(checkDate) && !isDiscontinued(checkDate) && !isExpired(checkDate);
+	}
+	public boolean isStarted() {
+		return isStarted(new Date());
+	}
+	public boolean isStarted(Date aCheckDate) {
+		if (getVoided()) {
+			return false;
+		}
+		if (getEffectiveStartDate() == null) {
+			return false;
+		}
+		Date checkDate = aCheckDate == null ? new Date() : aCheckDate;
+		return !checkDate.before(getEffectiveStartDate());
+	}
+	public boolean isDiscontinued(Date aCheckDate) {
+		if (dateStopped != null && autoExpireDate != null && dateStopped.after(autoExpireDate)) {
+			throw new APIException("Order.error.invalidDateStoppedAndAutoExpireDate", (Object[]) null);
+		}
+		if (getVoided()) {
+			return false;
+		}
+		Date checkDate = aCheckDate == null ? new Date() : aCheckDate;
+		if (!isActivated(checkDate) || dateStopped == null) {
+			return false;
+		}
+		return checkDate.after(dateStopped);
+	}
+	public boolean isExpired() {
+		return isExpired(new Date());
+	}
+	public boolean isExpired(Date aCheckDate) {
+		if (dateStopped != null && autoExpireDate != null && dateStopped.after(autoExpireDate)) {
+			throw new APIException("Order.error.invalidDateStoppedAndAutoExpireDate", (Object[]) null);
+		}
+		if (getVoided()) {
+			return false;
+		}
+		Date checkDate = aCheckDate == null ? new Date() : aCheckDate;
+		if (!isActivated(checkDate)) {
+			return false;
+		}
+		if (isDiscontinued(checkDate) || autoExpireDate == null) {
+			return false;
+		}
+		return checkDate.after(autoExpireDate);
+	}
+	public boolean isDiscontinuedRightNow() {
+		return isDiscontinued(new Date());
+	}
+	public Patient getPatient() {
+		return patient;
+	}
+	public void setPatient(Patient patient) {
+		this.patient = patient;
+	}
+	@Override
+	public Integer getId() {
+		return getOrderId();
+	}
+	@Override
+	public String toString() {
+		String prefix = Action.DISCONTINUE == getAction() ? "DC " : "";
+		return prefix + "Order. orderId: " + orderId + " patient: " + patient + " concept: " + concept + " care setting: "
+		        + careSetting;
+	}
+	@Override
+	public void setId(Integer id) {
+		setOrderId(id);
+	}
+	public Urgency getUrgency() {
+		return urgency;
+	}
+	public void setUrgency(Urgency urgency) {
+		this.urgency = urgency;
+	}
+	public String getOrderNumber() {
+		return orderNumber;
+	}
+	public Order getPreviousOrder() {
+		return HibernateUtil.getRealObjectFromProxy(previousOrder);
+	}
+	public void setPreviousOrder(Order previousOrder) {
+		this.previousOrder = previousOrder;
+	}
+	public Action getAction() {
+		return action;
+	}
+	public void setAction(Action action) {
+		this.action = action;
+	}
+	public CareSetting getCareSetting() {
+		return careSetting;
+	}
+	public void setCareSetting(CareSetting careSetting) {
+		this.careSetting = careSetting;
+	}
+	public OrderType getOrderType() {
+		return orderType;
+	}
+	public void setOrderType(OrderType orderType) {
+		this.orderType = orderType;
+	}
+	public Order cloneForDiscontinuing() {
+		Order newOrder = new Order();
+		newOrder.setCareSetting(getCareSetting());
+		newOrder.setConcept(getConcept());
+		newOrder.setAction(Action.DISCONTINUE);
+		newOrder.setPreviousOrder(this);
+		newOrder.setPatient(getPatient());
+		newOrder.setOrderType(getOrderType());
+		return newOrder;
+	}
+	public Order cloneForRevision() {
+		return cloneForRevisionHelper(new Order());
+	}
+	protected Order cloneForRevisionHelper(Order target) {
+		if (getAction() == Action.DISCONTINUE) {
+			target.setAction(Action.DISCONTINUE);
+			target.setPreviousOrder(getPreviousOrder());
+			target.setDateActivated(getDateActivated());
+		} else {
+			target.setAction(Action.REVISE);
+			target.setPreviousOrder(this);
+			target.setAutoExpireDate(getAutoExpireDate());
+		}
+		target.setCareSetting(getCareSetting());
+		target.setConcept(getConcept());
+		target.setPatient(getPatient());
+		target.setOrderType(getOrderType());
+		target.setScheduledDate(getScheduledDate());
+		target.setInstructions(getInstructions());
+		target.setUrgency(getUrgency());
+		target.setCommentToFulfiller(getCommentToFulfiller());
+		target.setOrderReason(getOrderReason());
+		target.setOrderReasonNonCoded(getOrderReasonNonCoded());
+		target.setOrderGroup(getOrderGroup());
+		target.setSortWeight(getSortWeight());
+		target.setFulfillerStatus(getFulfillerStatus());
+		target.setFulfillerComment(getFulfillerComment());
+		target.setFormNamespaceAndPath(getFormNamespaceAndPath());
+		return target;
+	}
+	public boolean isType(OrderType orderType) {
+		return OrderUtil.isType(orderType, this.orderType);
+	}
+	public boolean hasSameOrderableAs(Order otherOrder) {
+		if (otherOrder == null) {
+			return false;
+		}
+		return OpenmrsUtil.nullSafeEquals(this.getConcept(), otherOrder.getConcept());
+	}
+	public Date getEffectiveStartDate() {
+		return this.urgency == Urgency.ON_SCHEDULED_DATE ? this.getScheduledDate() : this.getDateActivated();
+	}
+	public Date getEffectiveStopDate() {
+		return this.getDateStopped() != null ? this.getDateStopped() : this.getAutoExpireDate();
+	}
+	public OrderGroup getOrderGroup() {
+		return orderGroup;
+	}
+	public void setOrderGroup(OrderGroup orderGroup) {
+		this.orderGroup = orderGroup;
+	}
+	public Double getSortWeight() {
+		return sortWeight;
+	}
+	public void setSortWeight(Double sortWeight) {
+		this.sortWeight = sortWeight;
+	}
+	public FulfillerStatus getFulfillerStatus() {
+		return fulfillerStatus;
+	}
+	public void setFulfillerStatus(FulfillerStatus fulfillerStatus) {
+		this.fulfillerStatus = fulfillerStatus;
+	}
+	public String getFulfillerComment() {
+		return fulfillerComment;
+	}
+	public void setFulfillerComment(String fulfillerComment) {
+		this.fulfillerComment = fulfillerComment;		
+	}
+	public String getFormNamespaceAndPath() {
+		return formNamespaceAndPath;
+	}
+	public void setFormNamespaceAndPath(String formNamespaceAndPath) {
+		this.formNamespaceAndPath = formNamespaceAndPath;
+	}
+	@Override
+	public String getFormFieldNamespace() {
+		return BaseFormRecordableOpenmrsData.getFormFieldNamespace(formNamespaceAndPath);
+	}
+	@Override
+	public String getFormFieldPath() {
+		return BaseFormRecordableOpenmrsData.getFormFieldPath(formNamespaceAndPath);
+	}
+	@Override
+	public void setFormField(String namespace, String formFieldPath) {
+		formNamespaceAndPath = BaseFormRecordableOpenmrsData.getFormNamespaceAndPath(namespace, formFieldPath);
+	}
+}
+_____
+package org.openmrs.api.context;
+import org.aopalliance.aop.Advice;
+import org.apache.commons.lang3.StringUtils;
+import org.hibernate.SessionFactory;
+import org.openmrs.Allergen;
+import org.openmrs.GlobalProperty;
+import org.openmrs.OpenmrsObject;
+import org.openmrs.PersonName;
+import org.openmrs.Privilege;
+import org.openmrs.Role;
+import org.openmrs.User;
+import org.openmrs.api.APIException;
+import org.openmrs.api.AdministrationService;
+import org.openmrs.api.CohortService;
+import org.openmrs.api.ConceptService;
+import org.openmrs.api.ConditionService;
+import org.openmrs.api.DatatypeService;
+import org.openmrs.api.DiagnosisService;
+import org.openmrs.api.EncounterService;
+import org.openmrs.api.FormService;
+import org.openmrs.api.LocationService;
+import org.openmrs.api.MedicationDispenseService;
+import org.openmrs.api.ObsService;
+import org.openmrs.api.OpenmrsService;
+import org.openmrs.api.OrderService;
+import org.openmrs.api.OrderSetService;
+import org.openmrs.api.PatientService;
+import org.openmrs.api.PersonService;
+import org.openmrs.api.ProgramWorkflowService;
+import org.openmrs.api.ProviderService;
+import org.openmrs.api.SerializationService;
+import org.openmrs.api.UserService;
+import org.openmrs.api.VisitService;
+import org.openmrs.api.db.ContextDAO;
+import org.openmrs.hl7.HL7Service;
+import org.openmrs.logic.LogicService;
+import org.openmrs.messagesource.MessageSourceService;
+import org.openmrs.module.ModuleMustStartException;
+import org.openmrs.module.ModuleUtil;
+import org.openmrs.notification.AlertService;
+import org.openmrs.notification.MessageException;
+import org.openmrs.notification.MessagePreparator;
+import org.openmrs.notification.MessageSender;
+import org.openmrs.notification.MessageService;
+import org.openmrs.notification.mail.MailMessageSender;
+import org.openmrs.notification.mail.velocity.VelocityMessagePreparator;
+import org.openmrs.scheduler.SchedulerService;
+import org.openmrs.scheduler.SchedulerUtil;
+import org.openmrs.util.ConfigUtil;
+import org.openmrs.util.DatabaseUpdateException;
+import org.openmrs.util.DatabaseUpdater;
+import org.openmrs.util.InputRequiredException;
+import org.openmrs.util.LocaleUtility;
+import org.openmrs.util.OpenmrsClassLoader;
+import org.openmrs.util.OpenmrsConstants;
+import org.openmrs.util.OpenmrsUtil;
+import org.openmrs.util.PrivilegeConstants;
+import org.openmrs.validator.ValidateUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.aop.Advisor;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
+import javax.mail.Authenticator;
+import javax.mail.PasswordAuthentication;
+import javax.mail.Session;
+import java.sql.Connection;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.Future;
+public class Context {
+	private static final Logger log = LoggerFactory.getLogger(Context.class);
+	private static ContextDAO contextDAO;
+	private static Session mailSession;
+	private static final ThreadLocal<Object[] > userContextHolder = new ThreadLocal<>();
+	private static volatile ServiceContext serviceContext;
+	private static Properties runtimeProperties = new Properties();
+	private static Properties configProperties = new Properties();
+	private static AuthenticationScheme authenticationScheme;
+	public Context() {
+	}
+	static ContextDAO getContextDAO() {
+		if (contextDAO == null) {
+			throw new APIException("error.context.null", (Object[]) null);
+		}
+		return contextDAO;
+	}
+	public void setContextDAO(ContextDAO dao) {
+		setDAO(dao);
+	}
+	public static void setDAO(ContextDAO dao) {
+		contextDAO = dao;
+	}
+	private static void setAuthenticationScheme() {
+		authenticationScheme = new UsernamePasswordAuthenticationScheme();
+		try {
+			authenticationScheme = Context.getServiceContext().getApplicationContext().getBean(AuthenticationScheme.class); 
+			log.info("An authentication scheme override was provided. Using this one in place of the OpenMRS default authentication scheme.");
+		}
+		catch(NoUniqueBeanDefinitionException e) {
+			log.error("Multiple authentication schemes overrides are being provided, this is currently not supported. Sticking to OpenMRS default authentication scheme.");
+		}
+		catch(NoSuchBeanDefinitionException e) {
+			log.debug("No authentication scheme override was provided. Sticking to OpenMRS default authentication scheme.");
+		}
+		catch(BeansException e){
+			log.error("Fatal error encountered when injecting the authentication scheme override. Sticking to OpenMRS default authentication scheme.");
+		}
+	}
+	public static Class<?> loadClass(String className) throws ClassNotFoundException {
+		return OpenmrsClassLoader.getInstance().loadClass(className);
+	}
+	public static void setUserContext(UserContext ctx) {
+		log.trace("Setting user context {}", ctx);
+		Object[] arr = new Object[] { ctx };
+		userContextHolder.set(arr);
+	}
+	public static void clearUserContext() {
+		log.trace("Clearing user context {}", Arrays.toString(userContextHolder.get()));
+		userContextHolder.remove();
+	}
+	public static UserContext getUserContext() {
+		Object[] arr = userContextHolder.get();
+		log.trace("Getting user context {} from userContextHolder {}", Arrays.toString(arr), userContextHolder);
+		if (arr == null) {
+			log.trace("userContext is null.");
+			throw new APIException(
+					"A user context must first be passed to setUserContext()...use Context.openSession() (and closeSession() to prevent memory leaks!) before using the API");
+		}
+		return (UserContext) userContextHolder.get()[0];
+	}
+	static ServiceContext getServiceContext() {
+		if (serviceContext == null) {
+			synchronized (Context.class) {
+				if (serviceContext == null) {
+					log.info("Creating new service context");
+					serviceContext = ServiceContext.getInstance();
+				}
+			}
+		}
+		log.trace("serviceContext: {}", serviceContext);
+		return ServiceContext.getInstance();
+	}
+	public void setServiceContext(ServiceContext ctx) {
+		setContext(ctx);
+	}
+	public static void setContext(ServiceContext ctx) {
+		serviceContext = ctx;
+	}
+	public static AuthenticationScheme getAuthenticationScheme() {
+		return authenticationScheme;
+	}
+	@Deprecated
+	public static void authenticate(String username, String password) throws ContextAuthenticationException {
+		authenticate(new UsernamePasswordCredentials(username, password));
+	}
+	public static Authenticated authenticate(Credentials credentials) throws ContextAuthenticationException {
+		if (Daemon.isDaemonThread()) {
+			log.error("Authentication attempted while operating on a "
+					+ "daemon thread, authenticating is not necessary or allowed");
+			return new BasicAuthenticated(Daemon.getDaemonThreadUser(), "No auth scheme used by Context - Daemon user is always authenticated.");
+		}
+		if (credentials == null) {
+			throw new ContextAuthenticationException("Context cannot authenticate with null credentials.");
+		}
+		return getUserContext().authenticate(credentials);
+	}
+	public static void refreshAuthenticatedUser() {
+		if (Daemon.isDaemonThread()) {
+			return;
+		}
+		log.debug("Refreshing authenticated user");
+		getUserContext().refreshAuthenticatedUser();
+	}
+	public static void becomeUser(String systemId) throws ContextAuthenticationException {
+		log.info("systemId: {}", systemId);
+		getUserContext().becomeUser(systemId);
+	}
+	public static Properties getRuntimeProperties() {
+		log.trace("getting runtime properties. size: {}", runtimeProperties.size());
+		Properties props = new Properties();
+		props.putAll(runtimeProperties);
+		return props;
+	}
+	public static void setRuntimeProperties(Properties props) {
+		runtimeProperties = props;
+	}
+	public static ConceptService getConceptService() {
+		return getServiceContext().getConceptService();
+	}
+	public static EncounterService getEncounterService() {
+		return getServiceContext().getEncounterService();
+	}
+	public static LocationService getLocationService() {
+		return getServiceContext().getLocationService();
+	}
+	public static ObsService getObsService() {
+		return getServiceContext().getObsService();
+	}
+	public static PatientService getPatientService() {
+		return getServiceContext().getPatientService();
+	}
+	public static CohortService getCohortService() {
+		return getServiceContext().getCohortService();
+	}
+	public static PersonService getPersonService() {
+		return getServiceContext().getPersonService();
+	}
+	public static ConditionService getConditionService(){
+		return getServiceContext().getConditionService();
+	}
+	public static DiagnosisService getDiagnosisService(){
+		return getServiceContext().getDiagnosisService();
+	}
+	public static MedicationDispenseService getMedicationDispenseService(){
+		return getServiceContext().getMedicationDispenseService();
+	}
+	public static HL7Service getHL7Service() {
+		return getServiceContext().getHL7Service();
+	}
+	public static UserService getUserService() {
+		return getServiceContext().getUserService();
+	}
+	public static OrderService getOrderService() {
+		return getServiceContext().getOrderService();
+	}
+	public static OrderSetService getOrderSetService() {
+		return getServiceContext().getOrderSetService();
+	}
+	public static FormService getFormService() {
+		return getServiceContext().getFormService();
+	}
+	public static SerializationService getSerializationService() {
+		return getServiceContext().getSerializationService();
+	}
+	public static LogicService getLogicService() {
+		return getServiceContext().getLogicService();
+	}
+	public static AdministrationService getAdministrationService() {
+		return getServiceContext().getAdministrationService();
+	}
+	public static MessageSourceService getMessageSourceService() {
+		return getServiceContext().getMessageSourceService();
+	}
+	public static SchedulerService getSchedulerService() {
+		return getServiceContext().getSchedulerService();
+	}
+	public static AlertService getAlertService() {
+		return getServiceContext().getAlertService();
+	}
+	public static ProgramWorkflowService getProgramWorkflowService() {
+		return getServiceContext().getProgramWorkflowService();
+	}
+	public static MessageService getMessageService() {
+		MessageService ms = getServiceContext().getMessageService();
+		try {
+			if (ms.getMessagePreparator() == null) {
+				ms.setMessagePreparator(getMessagePreparator());
+			}
+			if (ms.getMessageSender() == null) {
+				ms.setMessageSender(getMessageSender());
+			}
+		}
+		catch (Exception e) {
+			log.error("Unable to create message service due", e);
+		}
+		return ms;
+	}
+	public static Properties getMailProperties() {
+		Properties p = new Properties();
+		String prefix = "mail.";
+		for (GlobalProperty gp : getAdministrationService().getGlobalPropertiesByPrefix(prefix)) {
+			if (gp.getProperty().equals("mail.transport_protocol")) {
+				p.setProperty("mail.transport.protocol", gp.getPropertyValue());
+			}
+			else if (gp.getProperty().equals("mail.smtp_host")) {
+				p.setProperty("mail.smtp.host", gp.getPropertyValue());
+			}
+			else if (gp.getProperty().equals("mail.smtp_port")) {
+				p.setProperty("mail.smtp.port", gp.getPropertyValue());
+			}
+			else if (gp.getProperty().equals("mail.smtp_auth")) {
+				p.setProperty("mail.smtp.auth", gp.getPropertyValue());
+			}
+			else {
+				p.setProperty(gp.getProperty(), gp.getPropertyValue());
+			}
+		}
+		for (String runtimeProperty : runtimeProperties.stringPropertyNames()) {
+			if (runtimeProperty.startsWith(prefix)) {
+				p.setProperty(runtimeProperty, runtimeProperties.getProperty(runtimeProperty));
+			}
+		}
+		for (String systemProperty : System.getProperties().stringPropertyNames()) {
+			if (systemProperty.startsWith(prefix)) {
+				p.setProperty(systemProperty, System.getProperty(systemProperty));
+			}
+		}
+		return p;
+	}
+	private static Session getMailSession() {
+		if (mailSession == null) {
+			synchronized (Context.class) {
+				if (mailSession == null) {
+					Authenticator auth = new Authenticator() {
+						@Override
+						public PasswordAuthentication getPasswordAuthentication() {
+							return new PasswordAuthentication(
+								ConfigUtil.getProperty("mail.user"),
+								ConfigUtil.getProperty("mail.password")
+							);
+						}
+					};
+					mailSession = Session.getInstance(getMailProperties(), auth);
+				}
+			}
+		}
+		return mailSession;
+	}
+	private static MessageSender getMessageSender() {
+		return new MailMessageSender(getMailSession());
+	}
+	private static MessagePreparator getMessagePreparator() throws MessageException {
+		return new VelocityMessagePreparator();
+	}
+	public static User getAuthenticatedUser() {
+		if (Daemon.isDaemonThread()) {
+			return Daemon.getDaemonThreadUser();
+		}
+		return getUserContext().getAuthenticatedUser();
+	}
+	public static boolean isAuthenticated() {
+		if (Daemon.isDaemonThread()) {
+			return true;
+		} else {
+			try {
+				return getAuthenticatedUser() != null;
+			} catch (APIException e) {
+				log.info("Could not get authenticated user inside called to isAuthenticated(), assuming no user context has been defined", e);
+				return false;
+			}
+		}
+	}
+	public static void logout() {
+		if (!isSessionOpen()) {
+			return; 
+		}
+		log.debug("Logging out : {}", getAuthenticatedUser());
+		getUserContext().logout();
+		setUserContext(new UserContext(getAuthenticationScheme()));
+	}
+	public static Set<Role> getAllRoles(User user) throws Exception {
+		return getUserContext().getAllRoles();
+	}
+	public static boolean hasPrivilege(String privilege) {
+		if (Daemon.isDaemonThread()) {
+			return true;
+		}
+		return getUserContext().hasPrivilege(privilege);
+	}
+	public static void requirePrivilege(String privilege) throws ContextAuthenticationException {
+		if (!hasPrivilege(privilege)) {
+			String errorMessage;
+			if (StringUtils.isNotBlank(privilege)) {
+				errorMessage = Context.getMessageSourceService().getMessage("error.privilegesRequired",
+						new Object[] { privilege }, null);
+			} else {
+				errorMessage = Context.getMessageSourceService().getMessage("error.privilegesRequiredNoArgs");
+			}
+			throw new ContextAuthenticationException(errorMessage);
+		}
+	}
+	public static void addProxyPrivilege(String privilege) {
+		getUserContext().addProxyPrivilege(privilege);
+	}
+	public static void removeProxyPrivilege(String privilege) {
+		getUserContext().removeProxyPrivilege(privilege);
+	}
+	public static void setLocale(Locale locale) {
+		getUserContext().setLocale(locale);
+	}
+	public static Locale getLocale() {
+		if (!isSessionOpen()) {
+			return LocaleUtility.getDefaultLocale();
+		}
+		return getUserContext().getLocale();
+	}
+	public static void openSession() {
+		log.trace("opening session");
+		setUserContext(new UserContext(getAuthenticationScheme())); 
+		getContextDAO().openSession();
+	}
+	public static void closeSession() {
+		log.trace("closing session");
+		clearUserContext(); 
+		getContextDAO().closeSession();
+	}
+	public static void openSessionWithCurrentUser() {
+		getContextDAO().openSession();
+	}
+	public static void closeSessionWithCurrentUser() {
+		getContextDAO().closeSession();
+	}
+	public static void clearSession() {
+		log.trace("clearing session");
+		getContextDAO().clearSession();
+	}
+	public static void flushSession() {
+		log.trace("flushing session");
+		getContextDAO().flushSession();
+	}
+	public static boolean isSessionOpen() {
+		return userContextHolder.get() != null;
+	}
+	public static void refreshEntity(Object obj) {
+		log.trace("refreshing object: {}", obj);
+		getContextDAO().refreshEntity(obj);
+	}
+	public static void evictFromSession(Object obj) {
+		log.trace("clearing session");
+		getContextDAO().evictFromSession(obj);
+	}
+	public static void evictEntity(OpenmrsObject object) {
+		log.debug("Clearing DB cache for entity: {} with id: {}", object.getClass(), object.getId());
+		getContextDAO().evictEntity(object);
+	}
+	public static void evictAllEntities(Class<?> entityClass) {
+		log.debug("Clearing DB cache for entities of type: {}", entityClass);
+		getContextDAO().evictAllEntities(entityClass);
+	}
+	public static void clearEntireCache() {
+		log.debug("Clearing DB cache from all regions");
+		getContextDAO().clearEntireCache();
+	}
+	public static synchronized void startup(Properties props) throws DatabaseUpdateException, InputRequiredException,
+	ModuleMustStartException {
+		getContextDAO().startup(props);
+		checkForDatabaseUpdates(props);
+		OpenmrsUtil.startup(props);
+		openSession();
+		clearSession();
+		checkCoreDataset();
+		getContextDAO().setupSearchIndex();
+		ModuleUtil.startup(props);
+	}
+	public static synchronized void startup(String url, String username, String password, Properties properties)
+			throws DatabaseUpdateException, InputRequiredException, ModuleMustStartException {
+		if (properties == null) {
+			properties = new Properties();
+		}
+		properties.put("connection.url", url);
+		properties.put("connection.username", username);
+		properties.put("connection.password", password);
+		setRuntimeProperties(properties);
+		openSession(); 
+		startup(properties);
+		SchedulerUtil.startup(properties);
+		closeSession();
+	}
+	public static void shutdown() {
+		log.debug("Shutting down the scheduler");
+		try {
+			SchedulerUtil.shutdown();
+		}
+		catch (Exception e) {
+			log.warn("Error while shutting down scheduler service", e);
+		}
+		log.debug("Shutting down the modules");
+		try {
+			ModuleUtil.shutdown();
+		}
+		catch (Exception e) {
+			log.warn("Error while shutting down module system", e);
+		}
+		log.debug("Shutting down the context");
+		try {
+			ContextDAO dao = null;
+			try {
+				dao = getContextDAO();
+			}
+			catch (APIException e) {
+			}
+			if (dao != null) {
+				dao.shutdown();
+			}
+		}
+		catch (Exception e) {
+			log.warn("Error while shutting down context dao", e);
+		}
+	}
+	public static <T> T getService(Class<? extends T> cls) {
+		return getServiceContext().getService(cls);
+	}
+	public static void addAdvisor(Class cls, Advisor advisor) {
+		getServiceContext().addAdvisor(cls, advisor);
+	}
+	public static void addAdvice(Class cls, Advice advice) {
+		getServiceContext().addAdvice(cls, advice);
+	}
+	public static void removeAdvisor(Class cls, Advisor advisor) {
+		getServiceContext().removeAdvisor(cls, advisor);
+	}
+	public static void removeAdvice(Class cls, Advice advice) {
+		getServiceContext().removeAdvice(cls, advice);
+	}
+	public static void checkCoreDataset() {
+		try {
+			Context.addProxyPrivilege(PrivilegeConstants.MANAGE_ROLES);
+			Set<String> currentRoleNames = new HashSet<>();
+			for (Role role : Context.getUserService().getAllRoles()) {
+				currentRoleNames.add(role.getRole().toUpperCase());
+			}
+			Map<String, String> map = OpenmrsUtil.getCoreRoles();
+			for (Map.Entry<String, String> entry : map.entrySet()) {
+				String roleName = entry.getKey();
+				if (!currentRoleNames.contains(roleName.toUpperCase())) {
+					Role role = new Role();
+					role.setRole(roleName);
+					role.setDescription(entry.getValue());
+					Context.getUserService().saveRole(role);
+				}
+			}
+		}
+		catch (Exception e) {
+			log.error("Error while setting core roles for openmrs system", e);
+		}
+		finally {
+			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_ROLES);
+		}
+		try {
+			Context.addProxyPrivilege(PrivilegeConstants.MANAGE_PRIVILEGES);
+			Set<String> currentPrivilegeNames = new HashSet<>();
+			for (Privilege privilege : Context.getUserService().getAllPrivileges()) {
+				currentPrivilegeNames.add(privilege.getPrivilege().toUpperCase());
+			}
+			Map<String, String> map = OpenmrsUtil.getCorePrivileges();
+			for (Map.Entry<String, String> entry : map.entrySet()) {
+				String privilegeName = entry.getKey();
+				if (!currentPrivilegeNames.contains(privilegeName.toUpperCase())) {
+					Privilege p = new Privilege();
+					p.setPrivilege(privilegeName);
+					p.setDescription(entry.getValue());
+					Context.getUserService().savePrivilege(p);
+				}
+			}
+		}
+		catch (Exception e) {
+			log.error("Error while setting core privileges", e);
+		}
+		finally {
+			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_PRIVILEGES);
+		}
+		try {
+			Context.addProxyPrivilege(PrivilegeConstants.MANAGE_GLOBAL_PROPERTIES);
+			Context.addProxyPrivilege(PrivilegeConstants.GET_GLOBAL_PROPERTIES);
+			Set<String> currentPropNames = new HashSet<>();
+			Map<String, GlobalProperty> propsMissingDescription = new HashMap<>();
+			Map<String, GlobalProperty> propsMissingDatatype = new HashMap<>();
+			for (GlobalProperty prop : Context.getAdministrationService().getAllGlobalProperties()) {
+				currentPropNames.add(prop.getProperty().toUpperCase());
+				if (prop.getDescription() == null) {
+					propsMissingDescription.put(prop.getProperty().toUpperCase(), prop);
+				}
+				if (prop.getDatatypeClassname() == null) {
+					propsMissingDatatype.put(prop.getProperty().toUpperCase(), prop);
+				}
+			}
+			for (GlobalProperty coreProp : OpenmrsConstants.CORE_GLOBAL_PROPERTIES()) {
+				String corePropName = coreProp.getProperty().toUpperCase();
+				if (!currentPropNames.contains(corePropName)) {
+					Context.getAdministrationService().saveGlobalProperty(coreProp);
+					currentPropNames.add(corePropName); 
+				} else {
+					GlobalProperty propToUpdate = propsMissingDescription.get(corePropName);
+					if (propToUpdate != null) {
+						propToUpdate.setDescription(coreProp.getDescription());
+						Context.getAdministrationService().saveGlobalProperty(propToUpdate);
+					}
+					propToUpdate = propsMissingDatatype.get(corePropName);
+					if (propToUpdate != null && coreProp.getDatatypeClassname() != null) {
+						propToUpdate.setDatatypeClassname(coreProp.getDatatypeClassname());
+						propToUpdate.setDatatypeConfig(coreProp.getDatatypeConfig());
+						propToUpdate.setPreferredHandlerClassname(coreProp.getPreferredHandlerClassname());
+						propToUpdate.setHandlerConfig(coreProp.getHandlerConfig());
+						Context.getAdministrationService().saveGlobalProperty(propToUpdate);
+					}
+				}
+			}
+		}
+		catch (Exception e) {
+			log.error("Error while setting core global properties", e);
+		}
+		finally {
+			Context.removeProxyPrivilege(PrivilegeConstants.MANAGE_GLOBAL_PROPERTIES);
+			Context.removeProxyPrivilege(PrivilegeConstants.GET_GLOBAL_PROPERTIES);
+		}
+		AdministrationService as = Context.getAdministrationService();
+		Boolean disableValidation = Boolean.valueOf(as.getGlobalProperty(OpenmrsConstants.GP_DISABLE_VALIDATION, "false"));
+		ValidateUtil.setDisableValidation(disableValidation);
+		PersonName.setFormat(Context.getAdministrationService().getGlobalProperty(
+				OpenmrsConstants.GLOBAL_PROPERTY_LAYOUT_NAME_FORMAT));
+		Allergen.setOtherNonCodedConceptUuid(Context.getAdministrationService().getGlobalProperty(
+				OpenmrsConstants.GP_ALLERGEN_OTHER_NON_CODED_UUID));
+	}
+	private static void checkForDatabaseUpdates(Properties props) throws DatabaseUpdateException, InputRequiredException {
+		boolean updatesRequired;
+		try {
+			updatesRequired = DatabaseUpdater.updatesRequired();
+		}
+		catch (Exception e) {
+			throw new DatabaseUpdateException("Unable to check if database updates are required", e);
+		}
+		if (updatesRequired) {
+			if (DatabaseUpdater.allowAutoUpdate()) {
+				DatabaseUpdater.executeChangelog();
+			} else {
+				throw new DatabaseUpdateException(
+						"Database updates are required.  Call Context.updateDatabase() before .startup() to continue.");
+			}
+		}
+	}
+	@Deprecated
+	public static void updateDatabase(Map<String, Object> userInput) throws DatabaseUpdateException {
+		throw new UnsupportedOperationException("As of 2.4, this method is not longer implemented");
+	}
+	public static SimpleDateFormat getDateFormat() {
+		return OpenmrsUtil.getDateFormat(getLocale());
+	}
+	public static SimpleDateFormat getTimeFormat() {
+		return OpenmrsUtil.getTimeFormat(getLocale());
+	}
+	public static SimpleDateFormat getDateTimeFormat() {
+		return OpenmrsUtil.getDateTimeFormat(getLocale());
+	}
+	public static boolean isRefreshingContext() {
+		return getServiceContext().isRefreshingContext();
+	}
+	public static <T> List<T> getRegisteredComponents(Class<T> type) {
+		return getServiceContext().getRegisteredComponents(type);
+	}
+	public static <T> T getRegisteredComponent(String beanName, Class<T> type) throws APIException {
+		return getServiceContext().getRegisteredComponent(beanName, type);
+	}
+	public static List<OpenmrsService> getModuleOpenmrsServices(String modulePackage) {
+		return getServiceContext().getModuleOpenmrsServices(modulePackage);
+	}
+	public static VisitService getVisitService() {
+		return getServiceContext().getVisitService();
+	}
+	public static ProviderService getProviderService() {
+		return getServiceContext().getProviderService();
+	}
+	public static DatatypeService getDatatypeService() {
+		return getServiceContext().getDatatypeService();
+	}
+	public static void addConfigProperty(Object key, Object value) {
+		configProperties.put(key, value);
+	}
+	public static void removeConfigProperty(Object key) {
+		configProperties.remove(key);
+	}
+	public static Properties getConfigProperties() {
+		Properties props = new Properties();
+		props.putAll(configProperties);
+		return props;
+	}
+	public static void updateSearchIndex() {
+		getContextDAO().updateSearchIndex();
+	}
+	public static Future<?> updateSearchIndexAsync() {
+		return getContextDAO().updateSearchIndexAsync();
+	}
+	public static void updateSearchIndexForType(Class<?> type) {
+		getContextDAO().updateSearchIndexForType(type);
+	}
+	public static void updateSearchIndexForObject(Object object) {
+		getContextDAO().updateSearchIndexForObject(object);
+	}
+	public static void setUseSystemClassLoader(boolean useSystemClassLoader) {
+		getServiceContext().setUseSystemClassLoader(useSystemClassLoader);
+	}
+	public static boolean isUseSystemClassLoader() {
+		return getServiceContext().isUseSystemClassLoader();
+	}
+	public static Connection getDatabaseConnection() {
+		return getContextDAO().getDatabaseConnection();
+	}
+}

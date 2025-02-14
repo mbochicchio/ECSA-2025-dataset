@@ -1,0 +1,3990 @@
+package com.rabbitmq.client.impl;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.UnexpectedFrameError;
+import static java.lang.String.format;
+final class CommandAssembler {
+    private static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
+    private enum CAState {
+        EXPECTING_METHOD, EXPECTING_CONTENT_HEADER, EXPECTING_CONTENT_BODY, COMPLETE
+    }
+    private CAState state;
+    private Method method;
+    private AMQContentHeader contentHeader;
+    private final List<byte[]> bodyN;
+    private int bodyLength;
+    private long remainingBodyBytes;
+    private final int maxBodyLength;
+    public CommandAssembler(Method method, AMQContentHeader contentHeader, byte[] body,
+                            int maxBodyLength) {
+        this.method = method;
+        this.contentHeader = contentHeader;
+        this.bodyN = new ArrayList<>(2);
+        this.bodyLength = 0;
+        this.remainingBodyBytes = 0;
+        this.maxBodyLength = maxBodyLength;
+        appendBodyFragment(body);
+        if (method == null) {
+            this.state = CAState.EXPECTING_METHOD;
+        } else if (contentHeader == null) {
+            this.state = method.hasContent() ? CAState.EXPECTING_CONTENT_HEADER : CAState.COMPLETE;
+        } else {
+            this.remainingBodyBytes = contentHeader.getBodySize() - this.bodyLength;
+            updateContentBodyState();
+        }
+    }
+    public synchronized Method getMethod() {
+        return this.method;
+    }
+    public synchronized AMQContentHeader getContentHeader() {
+        return this.contentHeader;
+    }
+    public synchronized boolean isComplete() {
+        return (this.state == CAState.COMPLETE);
+    }
+    private void updateContentBodyState() {
+        this.state = (this.remainingBodyBytes > 0) ? CAState.EXPECTING_CONTENT_BODY : CAState.COMPLETE;
+    }
+    private void consumeMethodFrame(Frame f) throws IOException {
+        if (f.getType() == AMQP.FRAME_METHOD) {
+            this.method = AMQImpl.readMethodFrom(f.getInputStream());
+            this.state = this.method.hasContent() ? CAState.EXPECTING_CONTENT_HEADER : CAState.COMPLETE;
+        } else {
+            throw new UnexpectedFrameError(f, AMQP.FRAME_METHOD);
+        }
+    }
+    private void consumeHeaderFrame(Frame f) throws IOException {
+        if (f.getType() == AMQP.FRAME_HEADER) {
+            this.contentHeader = AMQImpl.readContentHeaderFrom(f.getInputStream());
+            long bodySize = this.contentHeader.getBodySize();
+            if (bodySize >= this.maxBodyLength) {
+                throw new IllegalStateException(format(
+                    "Message body is too large (%d), maximum configured size is %d. " +
+                        "See ConnectionFactory#setMaxInboundMessageBodySize " +
+                        "if you need to increase the limit.",
+                    bodySize, this.maxBodyLength
+                ));
+            }
+            this.remainingBodyBytes = bodySize;
+            updateContentBodyState();
+        } else {
+            throw new UnexpectedFrameError(f, AMQP.FRAME_HEADER);
+        }
+    }
+    private void consumeBodyFrame(Frame f) {
+        if (f.getType() == AMQP.FRAME_BODY) {
+            byte[] fragment = f.getPayload();
+            this.remainingBodyBytes -= fragment.length;
+            updateContentBodyState();
+            if (this.remainingBodyBytes < 0) {
+                throw new UnsupportedOperationException("%%%%%% FIXME unimplemented");
+            }
+            appendBodyFragment(fragment);
+        } else {
+            throw new UnexpectedFrameError(f, AMQP.FRAME_BODY);
+        }
+    }
+    private byte[] coalesceContentBody() {
+        if (this.bodyLength == 0) return EMPTY_BYTE_ARRAY;
+        if (this.bodyN.size() == 1) return this.bodyN.get(0);
+        byte[] body = new byte[bodyLength];
+        int offset = 0;
+        for (byte[] fragment : this.bodyN) {
+            System.arraycopy(fragment, 0, body, offset, fragment.length);
+            offset += fragment.length;
+        }
+        this.bodyN.clear();
+        this.bodyN.add(body);
+        return body;
+    }
+    public synchronized byte[] getContentBody() {
+        return coalesceContentBody();
+    }
+    private void appendBodyFragment(byte[] fragment) {
+        if (fragment == null || fragment.length == 0) return;
+        bodyN.add(fragment);
+        bodyLength += fragment.length;
+    }
+    public synchronized boolean handleFrame(Frame f) throws IOException
+    {
+        switch (this.state) {
+          case EXPECTING_METHOD:          consumeMethodFrame(f); break;
+          case EXPECTING_CONTENT_HEADER:  consumeHeaderFrame(f); break;
+          case EXPECTING_CONTENT_BODY:    consumeBodyFrame(f);   break;
+          default:
+              throw new IllegalStateException("Bad Command State " + this.state);
+        }
+        return isComplete();
+    }
+}
+package com.rabbitmq.client.impl;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.impl.AMQImpl.MethodVisitor;
+public abstract class Method implements com.rabbitmq.client.Method {
+    @Override
+    public abstract int protocolClassId(); 
+    @Override
+    public abstract int protocolMethodId(); 
+    @Override
+    public abstract String protocolMethodName();
+    public abstract boolean hasContent();
+    public abstract Object visit(MethodVisitor visitor) throws IOException;
+    public abstract void writeArgumentsTo(MethodArgumentWriter writer) throws IOException;
+    public void appendArgumentDebugStringTo(StringBuilder buffer) {
+        buffer.append("(?)");
+    }
+    @Override public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("#method<").append(protocolMethodName()).append(">");
+        this.appendArgumentDebugStringTo(sb);
+        return sb.toString();
+    }
+    public Frame toFrame(int channelNumber) throws IOException {
+        Frame frame = new Frame(AMQP.FRAME_METHOD, channelNumber);
+        DataOutputStream bodyOut = frame.getOutputStream();
+        bodyOut.writeShort(protocolClassId());
+        bodyOut.writeShort(protocolMethodId());
+        MethodArgumentWriter argWriter = new MethodArgumentWriter(new ValueWriter(bodyOut));
+        writeArgumentsTo(argWriter);
+        argWriter.flush();
+        return frame;
+    }
+}
+package com.rabbitmq.client.impl;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.ContentHeader;
+public abstract class AMQContentHeader implements ContentHeader {
+    private long bodySize; 
+    protected AMQContentHeader() {
+        this.bodySize = 0;
+    }
+    protected AMQContentHeader(DataInputStream in) throws IOException {
+        in.readShort(); 
+        this.bodySize = in.readLong();
+    }
+    public long getBodySize() { return bodySize; }
+    private void writeTo(DataOutputStream out, long bodySize) throws IOException {
+        out.writeShort(0); 
+        out.writeLong(bodySize);
+        writePropertiesTo(new ContentHeaderPropertyWriter(out));
+    }
+    public abstract void writePropertiesTo(ContentHeaderPropertyWriter writer) throws IOException;
+    @Override
+    public void appendPropertyDebugStringTo(StringBuilder acc) {
+        acc.append("(?)");
+    }
+    @Override public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("#contentHeader<").append(getClassName()).append(">");
+        this.appendPropertyDebugStringTo(sb);
+        return sb.toString();
+    }
+    public Frame toFrame(int channelNumber, long bodySize) throws IOException {
+        Frame frame = new Frame(AMQP.FRAME_HEADER, channelNumber);
+        DataOutputStream bodyOut = frame.getOutputStream();
+        bodyOut.writeShort(getClassId());
+        writeTo(bodyOut, bodySize);
+        return frame;
+    }
+    @Override
+    public Object clone() throws CloneNotSupportedException {
+        return super.clone();
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.Method;
+import com.rabbitmq.client.*;
+import com.rabbitmq.client.impl.AMQChannel.BlockingRpcContinuation;
+import com.rabbitmq.client.impl.recovery.RecoveryCanBeginListener;
+import com.rabbitmq.client.observation.ObservationCollector;
+import com.rabbitmq.utility.BlockingCell;
+import com.rabbitmq.utility.Utility;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+final class Copyright {
+    final static String COPYRIGHT="Copyright (c) 2007-2025 Broadcom Inc. and/or its subsidiaries.";
+    final static String LICENSE="Licensed under the MPL. See https:
+}
+public class AMQConnection extends ShutdownNotifierComponent implements Connection, NetworkConnection {
+    private static final int MAX_UNSIGNED_SHORT = 65535;
+    private static final Logger LOGGER = LoggerFactory.getLogger(AMQConnection.class);
+    static final double CHANNEL_SHUTDOWN_TIMEOUT_MULTIPLIER = 1.05;
+    private final ExecutorService consumerWorkServiceExecutor;
+    private final ScheduledExecutorService heartbeatExecutor;
+    private final ExecutorService shutdownExecutor;
+    private Thread mainLoopThread;
+    private final AtomicBoolean ioLoopThreadSet = new AtomicBoolean(false);
+    private volatile Thread ioLoopThread;
+    private ThreadFactory threadFactory = Executors.defaultThreadFactory();
+    private String id;
+    private final List<RecoveryCanBeginListener> recoveryCanBeginListeners =
+            Collections.synchronizedList(new ArrayList<>());
+    private final ErrorOnWriteListener errorOnWriteListener;
+    private final int workPoolTimeout;
+    private final AtomicBoolean finalShutdownStarted = new AtomicBoolean(false);
+    private volatile ObservationCollector.ConnectionInfo connectionInfo;
+    public static Map<String, Object> defaultClientProperties() {
+        Map<String,Object> props = new HashMap<>();
+        props.put("product", LongStringHelper.asLongString("RabbitMQ"));
+        props.put("version", LongStringHelper.asLongString(ClientVersion.VERSION));
+        props.put("platform", LongStringHelper.asLongString("Java"));
+        props.put("copyright", LongStringHelper.asLongString(Copyright.COPYRIGHT));
+        props.put("information", LongStringHelper.asLongString(Copyright.LICENSE));
+        Map<String, Object> capabilities = new HashMap<>();
+        capabilities.put("publisher_confirms", true);
+        capabilities.put("exchange_exchange_bindings", true);
+        capabilities.put("basic.nack", true);
+        capabilities.put("consumer_cancel_notify", true);
+        capabilities.put("connection.blocked", true);
+        capabilities.put("authentication_failure_close", true);
+        props.put("capabilities", capabilities);
+        return props;
+    }
+    private static final Version clientVersion =
+        new Version(AMQP.PROTOCOL.MAJOR, AMQP.PROTOCOL.MINOR);
+    private final AMQChannel _channel0;
+    protected ConsumerWorkService _workService = null;
+    private final FrameHandler _frameHandler;
+    private volatile boolean _running = false;
+    private final ExceptionHandler _exceptionHandler;
+    private final BlockingCell<Object> _appContinuation = new BlockingCell<>();
+    private volatile boolean _brokerInitiatedShutdown;
+    private volatile boolean _inConnectionNegotiation;
+    private HeartbeatSender _heartbeatSender;
+    private final String _virtualHost;
+    private final Map<String, Object> _clientProperties;
+    private final SaslConfig saslConfig;
+    private final int requestedHeartbeat;
+    private final int requestedChannelMax;
+    private final int requestedFrameMax;
+    private final int handshakeTimeout;
+    private final int shutdownTimeout;
+    private final CredentialsProvider credentialsProvider;
+    private final Collection<BlockedListener> blockedListeners = new CopyOnWriteArrayList<>();
+    protected final MetricsCollector metricsCollector;
+    protected final ObservationCollector observationCollector;
+    private final int channelRpcTimeout;
+    private final boolean channelShouldCheckRpcResponseType;
+    private final TrafficListener trafficListener;
+    private final CredentialsRefreshService credentialsRefreshService;
+    private volatile int _frameMax = 0;
+    private volatile int _missedHeartbeats = 0;
+    private volatile int _heartbeat = 0;
+    private volatile ChannelManager _channelManager;
+    private volatile Map<String, Object> _serverProperties;
+    private final int maxInboundMessageBodySize;
+    final void disconnectChannel(ChannelN channel) {
+        ChannelManager cm = _channelManager;
+        if (cm != null)
+            cm.releaseChannelNumber(channel);
+    }
+    private void ensureIsOpen()
+        throws AlreadyClosedException
+    {
+        if (!isOpen()) {
+            throw new AlreadyClosedException(getCloseReason());
+        }
+    }
+    @Override
+    public InetAddress getAddress() {
+        return _frameHandler.getAddress();
+    }
+    @Override
+    public InetAddress getLocalAddress() {
+        return _frameHandler.getLocalAddress();
+    }
+    @Override
+    public int getPort() {
+        return _frameHandler.getPort();
+    }
+    @Override
+    public int getLocalPort() {
+        return _frameHandler.getLocalPort();
+    }
+    public FrameHandler getFrameHandler(){
+        return _frameHandler;
+    }
+    @Override
+    public Map<String, Object> getServerProperties() {
+        return _serverProperties;
+    }
+    public AMQConnection(ConnectionParams params, FrameHandler frameHandler) {
+        this(params, frameHandler, new NoOpMetricsCollector(), ObservationCollector.NO_OP);
+    }
+    public AMQConnection(ConnectionParams params, FrameHandler frameHandler,
+                         MetricsCollector metricsCollector, ObservationCollector observationCollector)
+    {
+        checkPreconditions();
+        this.credentialsProvider = params.getCredentialsProvider();
+        this._frameHandler = frameHandler;
+        this._virtualHost = params.getVirtualHost();
+        this._exceptionHandler = params.getExceptionHandler();
+        this._clientProperties = new HashMap<>(params.getClientProperties());
+        this.requestedFrameMax = params.getRequestedFrameMax();
+        this.requestedChannelMax = params.getRequestedChannelMax();
+        this.requestedHeartbeat = params.getRequestedHeartbeat();
+        this.handshakeTimeout = params.getHandshakeTimeout();
+        this.shutdownTimeout = params.getShutdownTimeout();
+        this.saslConfig = params.getSaslConfig();
+        this.consumerWorkServiceExecutor = params.getConsumerWorkServiceExecutor();
+        this.heartbeatExecutor = params.getHeartbeatExecutor();
+        this.shutdownExecutor = params.getShutdownExecutor();
+        this.threadFactory = params.getThreadFactory();
+        if(params.getChannelRpcTimeout() < 0) {
+            throw new IllegalArgumentException("Continuation timeout on RPC calls cannot be less than 0");
+        }
+        this.channelRpcTimeout = params.getChannelRpcTimeout();
+        this.channelShouldCheckRpcResponseType = params.channelShouldCheckRpcResponseType();
+        this.trafficListener = params.getTrafficListener() == null ? TrafficListener.NO_OP : params.getTrafficListener();
+        this.credentialsRefreshService = params.getCredentialsRefreshService();
+        this._channel0 = createChannel0();
+        this._channelManager = null;
+        this._brokerInitiatedShutdown = false;
+        this._inConnectionNegotiation = true; 
+        this.metricsCollector = metricsCollector;
+        this.observationCollector = observationCollector;
+        this.errorOnWriteListener = params.getErrorOnWriteListener() != null ? params.getErrorOnWriteListener() :
+            (connection, exception) -> { throw exception; }; 
+        this.workPoolTimeout = params.getWorkPoolTimeout();
+        this.maxInboundMessageBodySize = params.getMaxInboundMessageBodySize();
+    }
+    AMQChannel createChannel0() {
+        return new AMQChannel(this, 0) {
+            @Override public boolean processAsync(Command c) throws IOException {
+                return getConnection().processControlCommand(c);
+            }
+        };
+    }
+    private void initializeConsumerWorkService() {
+        this._workService  = new ConsumerWorkService(consumerWorkServiceExecutor, threadFactory, workPoolTimeout, shutdownTimeout);
+    }
+    private void initializeHeartbeatSender() {
+        this._heartbeatSender = new HeartbeatSender(_frameHandler, heartbeatExecutor, threadFactory);
+    }
+    public void start()
+            throws IOException, TimeoutException {
+        initializeConsumerWorkService();
+        initializeHeartbeatSender();
+        this._running = true;
+        AMQChannel.SimpleBlockingRpcContinuation connStartBlocker =
+            new AMQChannel.SimpleBlockingRpcContinuation();
+        _channel0.enqueueRpc(connStartBlocker);
+        try {
+            _frameHandler.setTimeout(handshakeTimeout);
+            _frameHandler.sendHeader();
+        } catch (IOException ioe) {
+            _frameHandler.close();
+            throw ioe;
+        }
+        this._frameHandler.initialize(this);
+        AMQP.Connection.Start connStart;
+        AMQP.Connection.Tune connTune = null;
+        try {
+            connStart =
+                    (AMQP.Connection.Start) connStartBlocker.getReply(handshakeTimeout/2).getMethod();
+            _serverProperties = Collections.unmodifiableMap(connStart.getServerProperties());
+            Version serverVersion =
+                    new Version(connStart.getVersionMajor(),
+                                       connStart.getVersionMinor());
+            if (!Version.checkVersion(clientVersion, serverVersion)) {
+                throw new ProtocolVersionMismatchException(clientVersion,
+                                                                  serverVersion);
+            }
+            String[] mechanisms = connStart.getMechanisms().toString().split(" ");
+            SaslMechanism sm = this.saslConfig.getSaslMechanism(mechanisms);
+            if (sm == null) {
+                throw new IOException("No compatible authentication mechanism found - " +
+                                              "server offered [" + connStart.getMechanisms() + "]");
+            }
+            String username = credentialsProvider.getUsername();
+            String password = credentialsProvider.getPassword();
+            if (credentialsProvider.getTimeBeforeExpiration() != null) {
+                if (this.credentialsRefreshService == null) {
+                    throw new IllegalStateException("Credentials can expire, a credentials refresh service should be set");
+                }
+                if (this.credentialsRefreshService.isApproachingExpiration(credentialsProvider.getTimeBeforeExpiration())) {
+                    credentialsProvider.refresh();
+                    username = credentialsProvider.getUsername();
+                    password = credentialsProvider.getPassword();
+                }
+            }
+            LongString challenge = null;
+            LongString response = sm.handleChallenge(null, username, password);
+            do {
+                Method method = (challenge == null)
+                                        ? new AMQP.Connection.StartOk.Builder()
+                                                  .clientProperties(_clientProperties)
+                                                  .mechanism(sm.getName())
+                                                  .response(response)
+                                                  .build()
+                                        : new AMQP.Connection.SecureOk.Builder().response(response).build();
+                try {
+                    Method serverResponse = _channel0.rpc(method, handshakeTimeout/2).getMethod();
+                    if (serverResponse instanceof AMQP.Connection.Tune) {
+                        connTune = (AMQP.Connection.Tune) serverResponse;
+                    } else {
+                        challenge = ((AMQP.Connection.Secure) serverResponse).getChallenge();
+                        response = sm.handleChallenge(challenge, username, password);
+                    }
+                } catch (ShutdownSignalException e) {
+                    Method shutdownMethod = e.getReason();
+                    if (shutdownMethod instanceof AMQP.Connection.Close) {
+                        AMQP.Connection.Close shutdownClose = (AMQP.Connection.Close) shutdownMethod;
+                        if (shutdownClose.getReplyCode() == AMQP.ACCESS_REFUSED) {
+                            throw new AuthenticationFailureException(shutdownClose.getReplyText());
+                        }
+                    }
+                    throw new PossibleAuthenticationFailureException(e);
+                }
+            } while (connTune == null);
+        } catch (TimeoutException | IOException te) {
+            _frameHandler.close();
+            throw te;
+        } catch (ShutdownSignalException sse) {
+            _frameHandler.close();
+            throw AMQChannel.wrap(sse);
+        }
+        try {
+            int negotiatedChannelMax =
+                negotiateChannelMax(this.requestedChannelMax,
+                                    connTune.getChannelMax());
+            if (!checkUnsignedShort(negotiatedChannelMax)) {
+                throw new IllegalArgumentException("Negotiated channel max must be between 0 and " + MAX_UNSIGNED_SHORT + ": " + negotiatedChannelMax);
+            }
+            _channelManager = instantiateChannelManager(negotiatedChannelMax, threadFactory);
+            int frameMax =
+                negotiatedMaxValue(this.requestedFrameMax,
+                                   connTune.getFrameMax());
+            this._frameMax = frameMax;
+            int negotiatedHeartbeat =
+                negotiatedMaxValue(this.requestedHeartbeat,
+                                   connTune.getHeartbeat());
+            if (!checkUnsignedShort(negotiatedHeartbeat)) {
+                throw new IllegalArgumentException("Negotiated heartbeat must be between 0 and " + MAX_UNSIGNED_SHORT + ": " + negotiatedHeartbeat);
+            }
+            setHeartbeat(negotiatedHeartbeat);
+            this.connectionInfo = new DefaultConnectionInfo(
+                getAddress(),
+                getPort()
+            );
+            _channel0.transmit(new AMQP.Connection.TuneOk.Builder()
+                                .channelMax(negotiatedChannelMax)
+                                .frameMax(frameMax)
+                                .heartbeat(negotiatedHeartbeat)
+                              .build());
+            _channel0.exnWrappingRpc(new AMQP.Connection.Open.Builder()
+                                      .virtualHost(_virtualHost)
+                                    .build());
+        } catch (IOException ioe) {
+            _heartbeatSender.shutdown();
+            _frameHandler.close();
+            throw ioe;
+        } catch (ShutdownSignalException sse) {
+            _heartbeatSender.shutdown();
+            _frameHandler.close();
+            throw AMQChannel.wrap(sse);
+        }
+        if (this.credentialsProvider.getTimeBeforeExpiration() != null) {
+            String registrationId = this.credentialsRefreshService.register(credentialsProvider, () -> {
+                if (!isOpen()) {
+                    return false;
+                }
+                if (this._inConnectionNegotiation) {
+                    return true;
+                }
+                String refreshedPassword = credentialsProvider.getPassword();
+                UpdateSecretExtension.UpdateSecret updateSecret = new UpdateSecretExtension.UpdateSecret(
+                        LongStringHelper.asLongString(refreshedPassword), "Refresh scheduled by client"
+                );
+                try {
+                    _channel0.rpc(updateSecret);
+                } catch (ShutdownSignalException e) {
+                    LOGGER.warn("Error while trying to update secret: {}. Connection has been closed.", e.getMessage());
+                    return false;
+                }
+                return true;
+            });
+            addShutdownListener(sse -> this.credentialsRefreshService.unregister(this.credentialsProvider, registrationId));
+        }
+        this._inConnectionNegotiation = false;
+    }
+    protected ChannelManager instantiateChannelManager(int channelMax, ThreadFactory threadFactory) {
+        ChannelManager result = new ChannelManager(
+            this._workService, channelMax, threadFactory,
+            this.metricsCollector, this.observationCollector);
+        configureChannelManager(result);
+        return result;
+    }
+    protected void configureChannelManager(ChannelManager channelManager) {
+        channelManager.setShutdownExecutor(this.shutdownExecutor);
+        channelManager.setChannelShutdownTimeout((int) ((requestedHeartbeat * CHANNEL_SHUTDOWN_TIMEOUT_MULTIPLIER) * 1000));
+    }
+    public void startMainLoop() {
+        MainLoop loop = new MainLoop();
+        final String name = "AMQP Connection " + getHostAddress() + ":" + getPort();
+        mainLoopThread = Environment.newThread(threadFactory, loop, name);
+        ioLoopThread(mainLoopThread);
+        mainLoopThread.start();
+    }
+    protected int negotiateChannelMax(int requestedChannelMax, int serverMax) {
+        return negotiatedMaxValue(requestedChannelMax, serverMax);
+    }
+    private static void checkPreconditions() {
+        AMQCommand.checkPreconditions();
+    }
+    @Override
+    public int getChannelMax() {
+        ChannelManager cm = _channelManager;
+        if (cm == null) return 0;
+        return cm.getChannelMax();
+    }
+    @Override
+    public int getFrameMax() {
+        return _frameMax;
+    }
+    @Override
+    public int getHeartbeat() {
+        return _heartbeat;
+    }
+    public void setHeartbeat(int heartbeat) {
+        try {
+            _heartbeatSender.setHeartbeat(heartbeat);
+            _heartbeat = heartbeat;
+            _frameHandler.setTimeout(heartbeat * 1000 / 4);
+        } catch (SocketException se) {
+        }
+    }
+    public void setThreadFactory(ThreadFactory threadFactory) {
+        this.threadFactory = threadFactory;
+    }
+    public ThreadFactory getThreadFactory() {
+        return threadFactory;
+    }
+    @Override
+    public Map<String, Object> getClientProperties() {
+        return new HashMap<>(_clientProperties);
+    }
+    @Override
+    public String getClientProvidedName() {
+        return (String) _clientProperties.get("connection_name");
+    }
+    @Override
+    public ExceptionHandler getExceptionHandler() {
+        return _exceptionHandler;
+    }
+    public boolean willShutDownConsumerExecutor() {
+        return this._workService.usesPrivateExecutor();
+    }
+    @Override
+    public Channel createChannel(int channelNumber) throws IOException {
+        ensureIsOpen();
+        ChannelManager cm = _channelManager;
+        if (cm == null) return null;
+        Channel channel = cm.createChannel(this, channelNumber);
+        if (channel != null) {
+            metricsCollector.newChannel(channel);
+        }
+        return channel;
+    }
+    @Override
+    public Channel createChannel() throws IOException {
+        ensureIsOpen();
+        ChannelManager cm = _channelManager;
+        if (cm == null) return null;
+        Channel channel = cm.createChannel(this);
+        if (channel != null) {
+            metricsCollector.newChannel(channel);
+        }
+        return channel;
+    }
+    void writeFrame(Frame f) throws IOException {
+        _frameHandler.writeFrame(f);
+        _heartbeatSender.signalActivity();
+    }
+    public void flush() throws IOException {
+        try {
+            _frameHandler.flush();
+        } catch (IOException ioe) {
+            this.errorOnWriteListener.handle(this, ioe);
+        }
+    }
+    private static int negotiatedMaxValue(int clientValue, int serverValue) {
+        return (clientValue == 0 || serverValue == 0) ?
+            Math.max(clientValue, serverValue) :
+            Math.min(clientValue, serverValue);
+    }
+    private static boolean checkUnsignedShort(int value) {
+        return value >= 0 && value <= MAX_UNSIGNED_SHORT;
+    }
+    private class MainLoop implements Runnable {
+        @Override
+        public void run() {
+            boolean shouldDoFinalShutdown = true;
+            try {
+                while (_running) {
+                    Frame frame = _frameHandler.readFrame();
+                    readFrame(frame);
+                }
+            } catch (Throwable ex) {
+                if (ex instanceof InterruptedException) {
+                    shouldDoFinalShutdown = false;
+                } else {
+                    handleFailure(ex);
+                }
+            } finally {
+                if (shouldDoFinalShutdown) {
+                    doFinalShutdown();
+                }
+            }
+        }
+    }
+    public boolean handleReadFrame(Frame frame) {
+        if(_running) {
+            try {
+                readFrame(frame);
+                return true;
+            } catch (WorkPoolFullException e) {
+                throw e;
+            } catch (Throwable ex) {
+                try {
+                    handleFailure(ex);
+                } finally {
+                    doFinalShutdown();
+                }
+            }
+        }
+        return false;
+    }
+    public boolean isRunning() {
+        return _running;
+    }
+    public boolean hasBrokerInitiatedShutdown() {
+        return _brokerInitiatedShutdown;
+    }
+    private void readFrame(Frame frame) throws IOException {
+        if (frame != null) {
+            _missedHeartbeats = 0;
+            if (frame.getType() == AMQP.FRAME_HEARTBEAT) {
+            } else {
+                if (frame.getChannel() == 0) { 
+                    _channel0.handleFrame(frame);
+                } else {
+                    if (isOpen()) {
+                        ChannelManager cm = _channelManager;
+                        if (cm != null) {
+                            ChannelN channel;
+                            try {
+                                channel = cm.getChannel(frame.getChannel());
+                            } catch(UnknownChannelException e) {
+                                LOGGER.info("Received a frame on an unknown channel, ignoring it");
+                                return;
+                            }
+                            channel.handleFrame(frame);
+                        }
+                    }
+                }
+            }
+        } else {
+            handleSocketTimeout();
+        }
+    }
+    public void handleHeartbeatFailure() {
+        Exception ex = new MissedHeartbeatException("Detected missed server heartbeats, heartbeat interval: " +
+            _heartbeat + " seconds, RabbitMQ node hostname: " + this.getHostAddress());
+        try {
+            _exceptionHandler.handleUnexpectedConnectionDriverException(this, ex);
+            shutdown(null, false, ex, true);
+        } finally {
+            doFinalShutdown();
+        }
+    }
+    public void handleIoError(Throwable ex) {
+        try {
+            handleFailure(ex);
+        } finally {
+            doFinalShutdown();
+        }
+    }
+    private void handleFailure(Throwable ex)  {
+        if(ex instanceof EOFException) {
+            if (!_brokerInitiatedShutdown)
+                shutdown(null, false, ex, true);
+        } else {
+            _exceptionHandler.handleUnexpectedConnectionDriverException(AMQConnection.this,
+                ex);
+            shutdown(null, false, ex, true);
+        }
+    }
+    public void doFinalShutdown() {
+        if (finalShutdownStarted.compareAndSet(false, true)) {
+            _frameHandler.close();
+            _appContinuation.set(null);
+            closeMainLoopThreadIfNecessary();
+            notifyListeners();
+            notifyRecoveryCanBeginListeners();
+        }
+    }
+    private void closeMainLoopThreadIfNecessary() {
+        if (mainLoopReadThreadNotNull() && notInMainLoopThread()) {
+            if (this.mainLoopThread.isAlive()) {
+                this.mainLoopThread.interrupt();
+            }
+        }
+    }
+    private boolean notInMainLoopThread() {
+        return Thread.currentThread() != this.mainLoopThread;
+    }
+    private boolean mainLoopReadThreadNotNull() {
+        return this.mainLoopThread != null;
+    }
+    private void notifyRecoveryCanBeginListeners() {
+        ShutdownSignalException sse = this.getCloseReason();
+        for(RecoveryCanBeginListener fn : Utility.copy(this.recoveryCanBeginListeners)) {
+            fn.recoveryCanBegin(sse);
+        }
+    }
+    public void addRecoveryCanBeginListener(RecoveryCanBeginListener fn) {
+        this.recoveryCanBeginListeners.add(fn);
+    }
+    @SuppressWarnings("unused")
+    public void removeRecoveryCanBeginListener(RecoveryCanBeginListener fn) {
+        this.recoveryCanBeginListeners.remove(fn);
+    }
+    private void handleSocketTimeout() throws SocketTimeoutException {
+        if (_inConnectionNegotiation) {
+            throw new SocketTimeoutException("Timeout during Connection negotiation");
+        }
+        if (_heartbeat == 0) { 
+            return;
+        }
+        if (++_missedHeartbeats > (2 * 4)) {
+            throw new MissedHeartbeatException("Heartbeat missing with heartbeat = " +
+                                               _heartbeat + " seconds, for " + this.getHostAddress());
+        }
+    }
+    @SuppressWarnings("unused")
+    public boolean processControlCommand(Command c) throws IOException
+    {
+        Method method = c.getMethod();
+        if (isOpen()) {
+            if (method instanceof AMQP.Connection.Close) {
+                handleConnectionClose(c);
+                return true;
+            } else if (method instanceof AMQP.Connection.Blocked) {
+                AMQP.Connection.Blocked blocked = (AMQP.Connection.Blocked) method;
+                try {
+                    for (BlockedListener l : this.blockedListeners) {
+                        l.handleBlocked(blocked.getReason());
+                    }
+                } catch (Throwable ex) {
+                    getExceptionHandler().handleBlockedListenerException(this, ex);
+                }
+                return true;
+            } else if (method instanceof AMQP.Connection.Unblocked) {
+                try {
+                    for (BlockedListener l : this.blockedListeners) {
+                        l.handleUnblocked();
+                    }
+                } catch (Throwable ex) {
+                    getExceptionHandler().handleBlockedListenerException(this, ex);
+                }
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            if (method instanceof AMQP.Connection.Close) {
+                try {
+                    _channel0.quiescingTransmit(new AMQP.Connection.CloseOk.Builder().build());
+                } catch (IOException ignored) { } 
+                return true;
+            } else if (method instanceof AMQP.Connection.CloseOk) {
+                _running = false;
+                return !_channel0.isOutstandingRpc();
+            } else { 
+                return true;
+            }
+        }
+    }
+    private void handleConnectionClose(Command closeCommand) {
+        ShutdownSignalException sse = shutdown(closeCommand.getMethod(), false, null, _inConnectionNegotiation);
+        try {
+            _channel0.quiescingTransmit(new AMQP.Connection.CloseOk.Builder().build());
+        } catch (IOException ignored) { } 
+        _brokerInitiatedShutdown = true;
+        SocketCloseWait scw = new SocketCloseWait(sse);
+        if(shutdownExecutor != null) {
+            shutdownExecutor.execute(scw);
+        } else {
+            final String name = "RabbitMQ connection shutdown monitor " +
+                                    getHostAddress() + ":" + getPort();
+            Thread waiter = Environment.newThread(threadFactory, scw, name);
+            waiter.start();
+        }
+    }
+    private class SocketCloseWait implements Runnable {
+        private long SOCKET_CLOSE_TIMEOUT = 10000;
+        private final ShutdownSignalException cause;
+        SocketCloseWait(ShutdownSignalException sse) {
+            cause = sse;
+        }
+        @Override
+        public void run() {
+            try {
+                _appContinuation.get(SOCKET_CLOSE_TIMEOUT);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (TimeoutException ignored) {
+            } finally {
+                _running = false;
+                    _channel0.notifyOutstandingRpc(cause);
+            }
+        }
+    }
+    public ShutdownSignalException shutdown(Method reason,
+                         boolean initiatedByApplication,
+                         Throwable cause,
+                         boolean notifyRpc)
+    {
+        ShutdownSignalException sse = startShutdown(reason, initiatedByApplication, cause, notifyRpc);
+        finishShutdown(sse);
+        return sse;
+    }
+    private ShutdownSignalException startShutdown(Method reason,
+                         boolean initiatedByApplication,
+                         Throwable cause,
+                         boolean notifyRpc)
+    {
+        ShutdownSignalException sse = new ShutdownSignalException(true,initiatedByApplication,
+                                                                  reason, this);
+        sse.initCause(cause);
+        if (!setShutdownCauseIfOpen(sse)) {
+            if (initiatedByApplication)
+                throw new AlreadyClosedException(getCloseReason(), cause);
+        }
+        _heartbeatSender.shutdown();
+        _channel0.processShutdownSignal(sse, !initiatedByApplication, notifyRpc);
+        return sse;
+    }
+    private void finishShutdown(ShutdownSignalException sse) {
+        ChannelManager cm = _channelManager;
+        if (cm != null) cm.handleSignal(sse);
+    }
+    @Override
+    public void close()
+        throws IOException
+    {
+        close(-1);
+    }
+    @Override
+    public void close(int timeout)
+        throws IOException
+    {
+        close(AMQP.REPLY_SUCCESS, "OK", timeout);
+    }
+    @Override
+    public void close(int closeCode, String closeMessage)
+        throws IOException
+    {
+        close(closeCode, closeMessage, -1);
+    }
+    @Override
+    public void close(int closeCode, String closeMessage, int timeout)
+        throws IOException
+    {
+        close(closeCode, closeMessage, true, null, timeout, false);
+    }
+    @Override
+    public void abort()
+    {
+        abort(-1);
+    }
+    @Override
+    public void abort(int closeCode, String closeMessage)
+    {
+       abort(closeCode, closeMessage, -1);
+    }
+    @Override
+    public void abort(int timeout)
+    {
+        abort(AMQP.REPLY_SUCCESS, "OK", timeout);
+    }
+    @Override
+    public void abort(int closeCode, String closeMessage, int timeout)
+    {
+        try {
+            close(closeCode, closeMessage, true, null, timeout, true);
+        } catch (IOException ignored) { } 
+    }
+    public void close(int closeCode,
+                      String closeMessage,
+                      boolean initiatedByApplication,
+                      Throwable cause)
+        throws IOException
+    {
+        close(closeCode, closeMessage, initiatedByApplication, cause, -1, false);
+    }
+    public void close(int closeCode,
+                      String closeMessage,
+                      boolean initiatedByApplication,
+                      Throwable cause,
+                      int timeout,
+                      boolean abort)
+        throws IOException
+    {
+        boolean sync = !(Thread.currentThread() == ioLoopThread);
+        try {
+            AMQP.Connection.Close reason =
+                new AMQP.Connection.Close.Builder()
+                    .replyCode(closeCode)
+                    .replyText(closeMessage)
+                .build();
+            final ShutdownSignalException sse = startShutdown(reason, initiatedByApplication, cause, true);
+            if(sync){
+                BlockingRpcContinuation<AMQCommand> k = new BlockingRpcContinuation<AMQCommand>(){
+                    @Override
+                    public AMQCommand transformReply(AMQCommand command) {
+                        AMQConnection.this.finishShutdown(sse);
+                        return command;
+                    }};
+              _channel0.quiescingRpc(reason, k);
+              k.getReply(timeout);
+            } else {
+              _channel0.quiescingTransmit(reason);
+            }
+        } catch (TimeoutException tte) {
+            if (!abort) {
+                ShutdownSignalException sse = new ShutdownSignalException(true, true, null, this);
+                sse.initCause(cause);
+                throw sse;
+            }
+        } catch (ShutdownSignalException | IOException sse) {
+            if (!abort)
+                throw sse;
+        } finally {
+            if(sync) _frameHandler.close();
+        }
+    }
+    @Override public String toString() {
+        final String virtualHost = "/".equals(_virtualHost) ? _virtualHost : "/" + _virtualHost;
+        return "amqp:
+    }
+    private String getHostAddress() {
+        return getAddress() == null ? null : getAddress().getHostAddress();
+    }
+    @Override
+    public void addBlockedListener(BlockedListener listener) {
+        blockedListeners.add(listener);
+    }
+    @Override
+    public BlockedListener addBlockedListener(BlockedCallback blockedCallback, UnblockedCallback unblockedCallback) {
+        BlockedListener blockedListener = new BlockedListener() {
+            @Override
+            public void handleBlocked(String reason) throws IOException {
+                blockedCallback.handle(reason);
+            }
+            @Override
+            public void handleUnblocked() throws IOException {
+                unblockedCallback.handle();
+            }
+        };
+        this.addBlockedListener(blockedListener);
+        return blockedListener;
+    }
+    @Override
+    public boolean removeBlockedListener(BlockedListener listener) {
+        return blockedListeners.remove(listener);
+    }
+    @Override
+    public void clearBlockedListeners() {
+        blockedListeners.clear();
+    }
+    @Override
+    public String getId() {
+        return id;
+    }
+    @Override
+    public void setId(String id) {
+        this.id = id;
+    }
+    public void ioLoopThread(Thread thread) {
+        if (this.ioLoopThreadSet.compareAndSet(false, true)) {
+            this.ioLoopThread = thread;
+        }
+    }
+    public int getChannelRpcTimeout() {
+        return channelRpcTimeout;
+    }
+    public boolean willCheckRpcResponseType() {
+        return channelShouldCheckRpcResponseType;
+    }
+    public TrafficListener getTrafficListener() {
+        return trafficListener;
+    }
+    int getMaxInboundMessageBodySize() {
+        return maxInboundMessageBodySize;
+    }
+    private static class DefaultConnectionInfo implements ObservationCollector.ConnectionInfo {
+        private final String peerAddress;
+        private final int peerPort;
+        private DefaultConnectionInfo(InetAddress address, int peerPort) {
+            this.peerAddress = address == null ? "" : (address.getHostAddress() == null ? "" : address.getHostAddress());
+            this.peerPort = peerPort;
+        }
+        @Override
+        public String getPeerAddress() {
+            return peerAddress;
+        }
+        @Override
+        public int getPeerPort() {
+            return this.peerPort;
+        }
+    }
+    ObservationCollector.ConnectionInfo connectionInfo() {
+        return this.connectionInfo;
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.LongString;
+import com.rabbitmq.client.MalformedFrameException;
+import java.io.*;
+import java.math.BigDecimal;
+import java.net.SocketTimeoutException;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import static java.lang.String.format;
+public class Frame {
+    private final int type;
+    private final int channel;
+    private final byte[] payload;
+    private final ByteArrayOutputStream accumulator;
+    private static final int NON_BODY_SIZE = 1  + 2  + 4  + 1 ;
+    public Frame(int type, int channel) {
+        this.type = type;
+        this.channel = channel;
+        this.payload = null;
+        this.accumulator = new ByteArrayOutputStream();
+    }
+    public Frame(int type, int channel, byte[] payload) {
+        this.type = type;
+        this.channel = channel;
+        this.payload = payload;
+        this.accumulator = null;
+    }
+    public static Frame fromBodyFragment(int channelNumber, byte[] body, int offset, int length)
+        throws IOException
+    {
+        Frame frame = new Frame(AMQP.FRAME_BODY, channelNumber);
+        DataOutputStream bodyOut = frame.getOutputStream();
+        bodyOut.write(body, offset, length);
+        return frame;
+    }
+    public static Frame readFrom(DataInputStream is, int maxPayloadSize) throws IOException {
+        int type;
+        int channel;
+        try {
+            type = is.readUnsignedByte();
+        } catch (SocketTimeoutException ste) {
+            return null; 
+        }
+        if (type == 'A') {
+            protocolVersionMismatch(is);
+        }
+        channel = is.readUnsignedShort();
+        int payloadSize = is.readInt();
+        if (payloadSize >= maxPayloadSize) {
+            throw new IllegalStateException(format(
+                "Frame body is too large (%d), maximum configured size is %d. " +
+                    "See ConnectionFactory#setMaxInboundMessageBodySize " +
+                    "if you need to increase the limit.",
+                payloadSize, maxPayloadSize
+            ));
+        }
+        byte[] payload = new byte[payloadSize];
+        is.readFully(payload);
+        int frameEndMarker = is.readUnsignedByte();
+        if (frameEndMarker != AMQP.FRAME_END) {
+            throw new MalformedFrameException("Bad frame end marker: " + frameEndMarker);
+        }
+        return new Frame(type, channel, payload);
+    }
+    public static void protocolVersionMismatch(DataInputStream is) throws IOException {
+        MalformedFrameException x;
+        byte[] expectedBytes = new byte[] { 'M', 'Q', 'P' };
+        for (byte expectedByte : expectedBytes) {
+            int nextByte = is.readUnsignedByte();
+            if (nextByte != expectedByte) {
+                throw new MalformedFrameException("Invalid AMQP protocol header from server: expected character " +
+                    expectedByte + ", got " + nextByte);
+            }
+        }
+        try {
+            int[] signature = new int[4];
+            for (int i = 0; i < 4; i++) {
+                signature[i] = is.readUnsignedByte();
+            }
+            if (signature[0] == 1 &&
+                signature[1] == 1 &&
+                signature[2] == 8 &&
+                signature[3] == 0) {
+                x = new MalformedFrameException("AMQP protocol version mismatch; we are version " +
+                        AMQP.PROTOCOL.MAJOR + "-" + AMQP.PROTOCOL.MINOR + "-" + AMQP.PROTOCOL.REVISION +
+                        ", server is 0-8");
+            }
+            else {
+                String sig = "";
+                for (int i = 0; i < 4; i++) {
+                    if (i != 0) sig += ",";
+                    sig += signature[i];
+                }
+                x = new MalformedFrameException("AMQP protocol version mismatch; we are version " +
+                        AMQP.PROTOCOL.MAJOR + "-" + AMQP.PROTOCOL.MINOR + "-" + AMQP.PROTOCOL.REVISION +
+                        ", server sent signature " + sig);
+            }
+        } catch (IOException ex) {
+            x = new MalformedFrameException("Invalid AMQP protocol header from server");
+        }
+        throw x;
+    }
+    public void writeTo(DataOutputStream os) throws IOException {
+        os.writeByte(type);
+        os.writeShort(channel);
+        if (accumulator != null) {
+            os.writeInt(accumulator.size());
+            accumulator.writeTo(os);
+        } else {
+            os.writeInt(payload.length);
+            os.write(payload);
+        }
+        os.write(AMQP.FRAME_END);
+    }
+    public int size() {
+        if(accumulator != null) {
+            return accumulator.size() + NON_BODY_SIZE;
+        } else {
+            return payload.length + NON_BODY_SIZE;
+        }
+    }
+    public byte[] getPayload() {
+        if (payload != null) return payload;
+        return accumulator.toByteArray();
+    }
+    public DataInputStream getInputStream() {
+        return new DataInputStream(new ByteArrayInputStream(getPayload()));
+    }
+    public DataOutputStream getOutputStream() {
+        return new DataOutputStream(accumulator);
+    }
+    @Override public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Frame(type=").append(type).append(", channel=").append(channel).append(", ");
+        if (accumulator == null) {
+            sb.append(payload.length).append(" bytes of payload)");
+        } else {
+            sb.append(accumulator.size()).append(" bytes of accumulator)");
+        }
+        return sb.toString();
+    }
+    public static long tableSize(Map<String, Object> table)
+        throws UnsupportedEncodingException
+    {
+        long acc = 0;
+        for(Map.Entry<String, Object> entry: table.entrySet()) {
+            acc += shortStrSize(entry.getKey());
+            acc += fieldValueSize(entry.getValue());
+        }
+        return acc;
+    }
+    private static long fieldValueSize(Object value)
+        throws UnsupportedEncodingException
+    {
+        long acc = 1; 
+        if(value instanceof String) {
+            acc += longStrSize((String)value);
+        }
+        else if(value instanceof LongString) {
+            acc += 4 + ((LongString)value).length();
+        }
+        else if(value instanceof Integer) {
+            acc += 4;
+        }
+        else if(value instanceof BigDecimal) {
+            acc += 5;
+        }
+        else if(value instanceof Date) {
+            acc += 8;
+        }
+        else if(value instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String,Object> map = (Map<String,Object>) value;
+            acc += 4 + tableSize(map);
+        }
+        else if (value instanceof Byte) {
+            acc += 1;
+        }
+        else if(value instanceof Double) {
+            acc += 8;
+        }
+        else if(value instanceof Float) {
+            acc += 4;
+        }
+        else if(value instanceof Long) {
+            acc += 8;
+        }
+        else if(value instanceof Short) {
+            acc += 2;
+        }
+        else if(value instanceof Boolean) {
+            acc += 1;
+        }
+        else if(value instanceof byte[]) {
+            acc += 4 + ((byte[])value).length;
+        }
+        else if(value instanceof List) {
+            acc += 4 + arraySize((List<?>)value);
+        }
+        else if(value instanceof Object[]) {
+            acc += 4 + arraySize((Object[])value);
+        }
+        else if(value == null) {
+        }
+        else {
+            throw new IllegalArgumentException("invalid value in table");
+        }
+        return acc;
+    }
+    public static long arraySize(List<?> values)
+        throws UnsupportedEncodingException
+    {
+        long acc = 0;
+        for (Object value : values) {
+            acc += fieldValueSize(value);
+        }
+        return acc;
+    }
+    public static long arraySize(Object[] values) throws UnsupportedEncodingException {
+        long acc = 0;
+        for (Object value : values) {
+            acc += fieldValueSize(value);
+        }
+        return acc;
+    }
+    private static int longStrSize(String str)
+        throws UnsupportedEncodingException
+    {
+        return str.getBytes("utf-8").length + 4;
+    }
+    private static int shortStrSize(String str)
+        throws UnsupportedEncodingException
+    {
+        return str.getBytes("utf-8").length + 1;
+    }
+    public int getType() {
+        return type;
+    }
+    public int getChannel() {
+        return channel;
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.*;
+import com.rabbitmq.client.AMQP.Basic;
+import com.rabbitmq.client.AMQP.Confirm;
+import com.rabbitmq.client.AMQP.Exchange;
+import com.rabbitmq.client.AMQP.Queue;
+import com.rabbitmq.client.AMQP.Tx;
+import com.rabbitmq.client.Method;
+import com.rabbitmq.client.observation.ObservationCollector;
+import com.rabbitmq.utility.BlockingValueOrException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+public abstract class AMQChannel extends ShutdownNotifierComponent {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AMQChannel.class);
+    static final int NO_RPC_TIMEOUT = 0;
+    protected final Lock _channelLock = new ReentrantLock();
+    protected final Condition _channelLockCondition = _channelLock.newCondition();
+    private final AMQConnection _connection;
+    private final int _channelNumber;
+    private AMQCommand _command;
+    private RpcWrapper _activeRpc = null;
+    volatile boolean _blockContent = false;
+    final int _rpcTimeout;
+    private final boolean _checkRpcResponseType;
+    private final TrafficListener _trafficListener;
+    private final int maxInboundMessageBodySize;
+    private final ObservationCollector.ConnectionInfo connectionInfo;
+    public AMQChannel(AMQConnection connection, int channelNumber) {
+        this._connection = connection;
+        this._channelNumber = channelNumber;
+        if(connection.getChannelRpcTimeout() < 0) {
+            throw new IllegalArgumentException("Continuation timeout on RPC calls cannot be less than 0");
+        }
+        this._rpcTimeout = connection.getChannelRpcTimeout();
+        this._checkRpcResponseType = connection.willCheckRpcResponseType();
+        this._trafficListener = connection.getTrafficListener();
+        this.maxInboundMessageBodySize = connection.getMaxInboundMessageBodySize();
+        this._command = new AMQCommand(this.maxInboundMessageBodySize);
+        this.connectionInfo = connection.connectionInfo();
+    }
+    public int getChannelNumber() {
+        return _channelNumber;
+    }
+    void handleFrame(Frame frame) throws IOException {
+        AMQCommand command = _command;
+        if (command.handleFrame(frame)) { 
+            _command = new AMQCommand(this.maxInboundMessageBodySize); 
+            handleCompleteInboundCommand(command);
+        }
+    }
+    public static IOException wrap(ShutdownSignalException ex) {
+        return wrap(ex, null);
+    }
+    public static IOException wrap(ShutdownSignalException ex, String message) {
+        return new IOException(message, ex);
+    }
+    public AMQCommand exnWrappingRpc(Method m)
+        throws IOException
+    {
+        try {
+            return privateRpc(m);
+        } catch (AlreadyClosedException ace) {
+            throw ace;
+        } catch (ShutdownSignalException ex) {
+            throw wrap(ex);
+        }
+    }
+    CompletableFuture<Command> exnWrappingAsyncRpc(Method m)
+        throws IOException
+    {
+        try {
+            return privateAsyncRpc(m);
+        } catch (AlreadyClosedException ace) {
+            throw ace;
+        } catch (ShutdownSignalException ex) {
+            throw wrap(ex);
+        }
+    }
+    public void handleCompleteInboundCommand(AMQCommand command) throws IOException {
+        this._trafficListener.read(command);
+        if (!processAsync(command)) {
+            if (_checkRpcResponseType) {
+                _channelLock.lock();
+                try {
+                    if (_activeRpc != null && !_activeRpc.canHandleReply(command)) {
+                        return;
+                    }
+                } finally {
+                    _channelLock.unlock();
+                }
+            }
+            final RpcWrapper nextOutstandingRpc = nextOutstandingRpc();
+            if(nextOutstandingRpc != null) {
+                nextOutstandingRpc.complete(command);
+                markRpcFinished();
+            }
+        }
+    }
+    public void enqueueRpc(RpcContinuation k)
+    {
+        doEnqueueRpc(() -> new RpcContinuationRpcWrapper(k));
+    }
+    private void enqueueAsyncRpc(Method method, CompletableFuture<Command> future) {
+        doEnqueueRpc(() -> new CompletableFutureRpcWrapper(method, future));
+    }
+    private void doEnqueueRpc(Supplier<RpcWrapper> rpcWrapperSupplier) {
+        _channelLock.lock();
+        try {
+            boolean waitClearedInterruptStatus = false;
+            while (_activeRpc != null) {
+                try {
+                    _channelLockCondition.await();
+                } catch (InterruptedException e) { 
+                    waitClearedInterruptStatus = true;
+                }
+            }
+            if (waitClearedInterruptStatus) {
+                Thread.currentThread().interrupt();
+            }
+            _activeRpc = rpcWrapperSupplier.get();
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    boolean isOutstandingRpc()
+    {
+        _channelLock.lock();
+        try {
+            return (_activeRpc != null);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public RpcWrapper nextOutstandingRpc()
+    {
+        _channelLock.lock();
+        try {
+            RpcWrapper result = _activeRpc;
+            _activeRpc = null;
+            _channelLockCondition.signalAll();
+            return result;
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    protected void markRpcFinished() {
+    }
+    private void ensureIsOpen()
+        throws AlreadyClosedException
+    {
+        if (!isOpen()) {
+            throw new AlreadyClosedException(getCloseReason());
+        }
+    }
+    public AMQCommand rpc(Method m)
+        throws IOException, ShutdownSignalException
+    {
+        return privateRpc(m);
+    }
+    public AMQCommand rpc(Method m, int timeout)
+            throws IOException, ShutdownSignalException, TimeoutException {
+        return privateRpc(m, timeout);
+    }
+    private AMQCommand privateRpc(Method m)
+        throws IOException, ShutdownSignalException
+    {
+        SimpleBlockingRpcContinuation k = new SimpleBlockingRpcContinuation(m);
+        rpc(m, k);
+        if(_rpcTimeout == NO_RPC_TIMEOUT) {
+            return k.getReply();
+        } else {
+            try {
+                return k.getReply(_rpcTimeout);
+            } catch (TimeoutException e) {
+                throw wrapTimeoutException(m, e);
+            }
+        }
+    }
+    private void cleanRpcChannelState() {
+        try {
+            nextOutstandingRpc();
+            markRpcFinished();
+        } catch (Exception ex) {
+            LOGGER.warn("Error while cleaning timed out channel RPC: {}", ex.getMessage());
+        }
+    }
+    ChannelContinuationTimeoutException wrapTimeoutException(final Method m, final TimeoutException e)  {
+        cleanRpcChannelState();
+        return new ChannelContinuationTimeoutException(e, this, this._channelNumber, m);
+    }
+    private CompletableFuture<Command> privateAsyncRpc(Method m)
+        throws IOException, ShutdownSignalException
+    {
+        CompletableFuture<Command> future = new CompletableFuture<>();
+        asyncRpc(m, future);
+        return future;
+    }
+    private AMQCommand privateRpc(Method m, int timeout)
+            throws IOException, ShutdownSignalException, TimeoutException {
+        SimpleBlockingRpcContinuation k = new SimpleBlockingRpcContinuation(m);
+        rpc(m, k);
+        try {
+            return k.getReply(timeout);
+        } catch (TimeoutException e) {
+            cleanRpcChannelState();
+            throw e;
+        }
+    }
+    public void rpc(Method m, RpcContinuation k)
+        throws IOException
+    {
+        _channelLock.lock();
+        try {
+            ensureIsOpen();
+            quiescingRpc(m, k);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    void quiescingRpc(Method m, RpcContinuation k)
+        throws IOException
+    {
+        _channelLock.lock();
+        try {
+            enqueueRpc(k);
+            quiescingTransmit(m);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    private void asyncRpc(Method m, CompletableFuture<Command> future)
+        throws IOException
+    {
+        _channelLock.lock();
+        try {
+            ensureIsOpen();
+            quiescingAsyncRpc(m, future);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    private void quiescingAsyncRpc(Method m, CompletableFuture<Command> future)
+        throws IOException
+    {
+        _channelLock.lock();
+        try {
+            enqueueAsyncRpc(m, future);
+            quiescingTransmit(m);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public abstract boolean processAsync(Command command) throws IOException;
+    @Override public String toString() {
+        return "AMQChannel(" + _connection + "," + _channelNumber + ")";
+    }
+    public void processShutdownSignal(ShutdownSignalException signal,
+                                      boolean ignoreClosed,
+                                      boolean notifyRpc) {
+        try {
+            _channelLock.lock();
+            try {
+                if (!setShutdownCauseIfOpen(signal)) {
+                    if (!ignoreClosed)
+                        throw new AlreadyClosedException(getCloseReason());
+                }
+                _channelLockCondition.signalAll();
+            } finally {
+                _channelLock.unlock();
+            }
+        } finally {
+            if (notifyRpc)
+                notifyOutstandingRpc(signal);
+        }
+    }
+    void notifyOutstandingRpc(ShutdownSignalException signal) {
+        RpcWrapper k = nextOutstandingRpc();
+        if (k != null) {
+            k.shutdown(signal);
+        }
+    }
+    public void transmit(Method m) throws IOException {
+        _channelLock.lock();
+        try {
+            transmit(new AMQCommand(m));
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public void transmit(AMQCommand c) throws IOException {
+        _channelLock.lock();
+        try {
+            ensureIsOpen();
+            quiescingTransmit(c);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public void quiescingTransmit(Method m) throws IOException {
+        _channelLock.lock();
+        try {
+            quiescingTransmit(new AMQCommand(m));
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public void quiescingTransmit(AMQCommand c) throws IOException {
+        _channelLock.lock();
+        try {
+            if (c.getMethod().hasContent()) {
+                while (_blockContent) {
+                    try {
+                        _channelLockCondition.await();
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                    ensureIsOpen();
+                }
+            }
+            this._trafficListener.write(c);
+            c.transmit(this);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    public AMQConnection getConnection() {
+        return _connection;
+    }
+    public interface RpcContinuation {
+        void handleCommand(AMQCommand command);
+        boolean canHandleReply(AMQCommand command);
+        void handleShutdownSignal(ShutdownSignalException signal);
+    }
+    public static abstract class BlockingRpcContinuation<T> implements RpcContinuation {
+        final BlockingValueOrException<T, ShutdownSignalException> _blocker =
+                new BlockingValueOrException<>();
+        protected final Method request;
+        BlockingRpcContinuation() {
+            request = null;
+        }
+        BlockingRpcContinuation(final Method request) {
+            this.request = request;
+        }
+        @Override
+        public void handleCommand(AMQCommand command) {
+            _blocker.setValue(transformReply(command));
+        }
+        @Override
+        public void handleShutdownSignal(ShutdownSignalException signal) {
+            _blocker.setException(signal);
+        }
+        public T getReply() throws ShutdownSignalException
+        {
+            return _blocker.uninterruptibleGetValue();
+        }
+        T getReply(int timeout)
+            throws ShutdownSignalException, TimeoutException
+        {
+            return _blocker.uninterruptibleGetValue(timeout);
+        }
+        @Override
+        public boolean canHandleReply(AMQCommand command) {
+            return isResponseCompatibleWithRequest(request, command.getMethod());
+        }
+        public abstract T transformReply(AMQCommand command);
+        static boolean isResponseCompatibleWithRequest(Method request, Method response) {
+            if (request != null) {
+                if (request instanceof Basic.Qos) {
+                    return response instanceof Basic.QosOk;
+                } else if (request instanceof Basic.Get) {
+                    return response instanceof Basic.GetOk || response instanceof Basic.GetEmpty;
+                } else if (request instanceof Basic.Consume) {
+                    if (!(response instanceof Basic.ConsumeOk))
+                        return false;
+                    final String consumerTag = ((Basic.Consume) request).getConsumerTag();
+                    return consumerTag == null || consumerTag.equals("") || consumerTag.equals(((Basic.ConsumeOk) response).getConsumerTag());
+                } else if (request instanceof Basic.Cancel) {
+                    if (!(response instanceof Basic.CancelOk))
+                        return false;
+                    return ((Basic.Cancel) request).getConsumerTag().equals(((Basic.CancelOk) response).getConsumerTag());
+                } else if (request instanceof Basic.Recover) {
+                    return response instanceof Basic.RecoverOk;
+                } else if (request instanceof Exchange.Declare) {
+                    return response instanceof Exchange.DeclareOk;
+                } else if (request instanceof Exchange.Delete) {
+                    return response instanceof Exchange.DeleteOk;
+                } else if (request instanceof Exchange.Bind) {
+                    return response instanceof Exchange.BindOk;
+                } else if (request instanceof Exchange.Unbind) {
+                    return response instanceof Exchange.UnbindOk;
+                } else if (request instanceof Queue.Declare) {
+                    return response instanceof Queue.DeclareOk;
+                } else if (request instanceof Queue.Delete) {
+                    return response instanceof Queue.DeleteOk;
+                } else if (request instanceof Queue.Bind) {
+                    return response instanceof Queue.BindOk;
+                } else if (request instanceof Queue.Unbind) {
+                    return response instanceof Queue.UnbindOk;
+                } else if (request instanceof Queue.Purge) {
+                    return response instanceof Queue.PurgeOk;
+                } else if (request instanceof Tx.Select) {
+                    return response instanceof Tx.SelectOk;
+                } else if (request instanceof Tx.Commit) {
+                    return response instanceof Tx.CommitOk;
+                } else if (request instanceof Tx.Rollback) {
+                    return response instanceof Tx.RollbackOk;
+                } else if (request instanceof Confirm.Select) {
+                    return response instanceof Confirm.SelectOk;
+                }
+            }
+            return true;
+        }
+    }
+    public static class SimpleBlockingRpcContinuation
+        extends BlockingRpcContinuation<AMQCommand>
+    {
+        SimpleBlockingRpcContinuation() {
+            super();
+        }
+        SimpleBlockingRpcContinuation(final Method method) {
+            super(method);
+        }
+        @Override
+        public AMQCommand transformReply(AMQCommand command) {
+            return command;
+        }
+    }
+    protected ObservationCollector.ConnectionInfo connectionInfo() {
+        return this.connectionInfo;
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.*;
+import com.rabbitmq.client.Connection;
+import com.rabbitmq.client.Method;
+import com.rabbitmq.client.AMQP.BasicProperties;
+import com.rabbitmq.client.impl.AMQImpl.Channel;
+import com.rabbitmq.client.impl.AMQImpl.Queue;
+import com.rabbitmq.client.impl.AMQImpl.*;
+import com.rabbitmq.client.observation.ObservationCollector;
+import com.rabbitmq.utility.Utility;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeoutException;
+public class ChannelN extends AMQChannel implements com.rabbitmq.client.Channel {
+    private static final int MAX_UNSIGNED_SHORT = 65535;
+    private static final String UNSPECIFIED_OUT_OF_BAND = "";
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChannelN.class);
+    private final Map<String, Consumer> _consumers =
+        Collections.synchronizedMap(new HashMap<String, Consumer>());
+    private final Collection<ReturnListener> returnListeners = new CopyOnWriteArrayList<ReturnListener>();
+    private final Collection<ConfirmListener> confirmListeners = new CopyOnWriteArrayList<ConfirmListener>();
+    private long nextPublishSeqNo = 0L;
+    private volatile Consumer defaultConsumer = null;
+    private final ConsumerDispatcher dispatcher;
+    private volatile CountDownLatch finishedShutdownFlag = null;
+    private final SortedSet<Long> unconfirmedSet =
+            Collections.synchronizedSortedSet(new TreeSet<Long>());
+    private boolean confirmSelectActivated = false;
+    private volatile boolean onlyAcksReceived = true;
+    protected final MetricsCollector metricsCollector;
+    private final ObservationCollector observationCollector;
+    public ChannelN(AMQConnection connection, int channelNumber,
+                    ConsumerWorkService workService) {
+        this(connection, channelNumber, workService,
+             new NoOpMetricsCollector(), ObservationCollector.NO_OP);
+    }
+    public ChannelN(AMQConnection connection, int channelNumber,
+                    ConsumerWorkService workService,
+                    MetricsCollector metricsCollector, ObservationCollector observationCollector) {
+        super(connection, channelNumber);
+        this.dispatcher = new ConsumerDispatcher(connection, this, workService);
+        this.metricsCollector = metricsCollector;
+        this.observationCollector = observationCollector;
+    }
+    public void open() throws IOException {
+        exnWrappingRpc(new Channel.Open(UNSPECIFIED_OUT_OF_BAND));
+    }
+    @Override
+    public void addReturnListener(ReturnListener listener) {
+        returnListeners.add(listener);
+    }
+    @Override
+    public ReturnListener addReturnListener(ReturnCallback returnCallback) {
+        ReturnListener returnListener = (replyCode, replyText, exchange, routingKey, properties, body) -> returnCallback.handle(new Return(
+            replyCode, replyText, exchange, routingKey, properties, body
+        ));
+        this.addReturnListener(returnListener);
+        return returnListener;
+    }
+    @Override
+    public boolean removeReturnListener(ReturnListener listener) {
+        return returnListeners.remove(listener);
+    }
+    @Override
+    public void clearReturnListeners() {
+        returnListeners.clear();
+    }
+    @Override
+    public void addConfirmListener(ConfirmListener listener) {
+        confirmListeners.add(listener);
+    }
+    @Override
+    public ConfirmListener addConfirmListener(ConfirmCallback ackCallback, ConfirmCallback nackCallback) {
+        ConfirmListener confirmListener = new ConfirmListener() {
+            @Override
+            public void handleAck(long deliveryTag, boolean multiple) throws IOException {
+                ackCallback.handle(deliveryTag, multiple);
+            }
+            @Override
+            public void handleNack(long deliveryTag, boolean multiple) throws IOException {
+                nackCallback.handle(deliveryTag, multiple);
+            }
+        };
+        this.addConfirmListener(confirmListener);
+        return confirmListener;
+    }
+    @Override
+    public boolean removeConfirmListener(ConfirmListener listener) {
+        return confirmListeners.remove(listener);
+    }
+    @Override
+    public void clearConfirmListeners() {
+        confirmListeners.clear();
+    }
+    @Override
+    public boolean waitForConfirms()
+        throws InterruptedException
+    {
+        boolean confirms = false;
+        try {
+            confirms = waitForConfirms(0L);
+        } catch (TimeoutException e) { }
+        return confirms;
+    }
+    @Override
+    public boolean waitForConfirms(long timeout)
+            throws InterruptedException, TimeoutException {
+        if (nextPublishSeqNo == 0L)
+            throw new IllegalStateException("Confirms not selected");
+        long startTime = System.currentTimeMillis();
+        synchronized (unconfirmedSet) {
+            while (true) {
+                if (getCloseReason() != null) {
+                    throw Utility.fixStackTrace(getCloseReason());
+                }
+                if (unconfirmedSet.isEmpty()) {
+                    boolean aux = onlyAcksReceived;
+                    onlyAcksReceived = true;
+                    return aux;
+                }
+                if (timeout == 0L) {
+                    unconfirmedSet.wait();
+                } else {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    if (timeout > elapsed) {
+                        unconfirmedSet.wait(timeout - elapsed);
+                    } else {
+                        throw new TimeoutException();
+                    }
+                }
+            }
+        }
+    }
+    @Override
+    public void waitForConfirmsOrDie()
+        throws IOException, InterruptedException
+    {
+        try {
+            waitForConfirmsOrDie(0L);
+        } catch (TimeoutException e) { }
+    }
+    @Override
+    public void waitForConfirmsOrDie(long timeout)
+        throws IOException, InterruptedException, TimeoutException
+    {
+        try {
+            if (!waitForConfirms(timeout)) {
+                close(AMQP.REPLY_SUCCESS, "NACKS RECEIVED", true, null, false);
+                throw new IOException("nacks received");
+            }
+        } catch (TimeoutException e) {
+            close(AMQP.PRECONDITION_FAILED, "TIMEOUT WAITING FOR ACK");
+            throw(e);
+        }
+    }
+    @Override
+    public Consumer getDefaultConsumer() {
+        return defaultConsumer;
+    }
+    @Override
+    public void setDefaultConsumer(Consumer consumer) {
+        defaultConsumer = consumer;
+    }
+    private void broadcastShutdownSignal(ShutdownSignalException signal) {
+        this.finishedShutdownFlag = this.dispatcher.handleShutdownSignal(Utility.copy(_consumers), signal);
+    }
+    private void startProcessShutdownSignal(ShutdownSignalException signal,
+                                                boolean ignoreClosed,
+                                                boolean notifyRpc)
+    {   super.processShutdownSignal(signal, ignoreClosed, notifyRpc);
+    }
+    private void finishProcessShutdownSignal()
+    {
+        this.dispatcher.quiesce();
+        broadcastShutdownSignal(getCloseReason());
+        synchronized (unconfirmedSet) {
+            unconfirmedSet.notifyAll();
+        }
+    }
+    @Override public void processShutdownSignal(ShutdownSignalException signal,
+                                                boolean ignoreClosed,
+                                                boolean notifyRpc)
+    {
+        startProcessShutdownSignal(signal, ignoreClosed, notifyRpc);
+        finishProcessShutdownSignal();
+    }
+    CountDownLatch getShutdownLatch() {
+        return this.finishedShutdownFlag;
+    }
+    private void releaseChannel() {
+        getConnection().disconnectChannel(this);
+    }
+    @Override public boolean processAsync(Command command) throws IOException
+    {
+        Method method = command.getMethod();
+        if (method instanceof Channel.Close) {
+            asyncShutdown(command);
+            return true;
+        }
+        if (isOpen()) {
+            if (method instanceof Basic.Deliver) {
+                processDelivery(command, (Basic.Deliver) method);
+                return true;
+            } else if (method instanceof Basic.Return) {
+                callReturnListeners(command, (Basic.Return) method);
+                return true;
+            } else if (method instanceof Channel.Flow) {
+                Channel.Flow channelFlow = (Channel.Flow) method;
+                _channelLock.lock();
+                try {
+                    _blockContent = !channelFlow.getActive();
+                    transmit(new Channel.FlowOk(!_blockContent));
+                    _channelLockCondition.signalAll();
+                } finally {
+                    _channelLock.unlock();
+                }
+                return true;
+            } else if (method instanceof Basic.Ack) {
+                Basic.Ack ack = (Basic.Ack) method;
+                callConfirmListeners(command, ack);
+                handleAckNack(ack.getDeliveryTag(), ack.getMultiple(), false);
+                return true;
+            } else if (method instanceof Basic.Nack) {
+                Basic.Nack nack = (Basic.Nack) method;
+                callConfirmListeners(command, nack);
+                handleAckNack(nack.getDeliveryTag(), nack.getMultiple(), true);
+                return true;
+            } else if (method instanceof Basic.RecoverOk) {
+                for (Map.Entry<String, Consumer> entry : Utility.copy(_consumers).entrySet()) {
+                    this.dispatcher.handleRecoverOk(entry.getValue(), entry.getKey());
+                }
+                return false;
+            } else if (method instanceof Basic.Cancel) {
+                Basic.Cancel m = (Basic.Cancel)method;
+                String consumerTag = m.getConsumerTag();
+                Consumer callback = _consumers.remove(consumerTag);
+                if (callback == null) {
+                    callback = defaultConsumer;
+                }
+                if (callback != null) {
+                    try {
+                        this.dispatcher.handleCancel(callback, consumerTag);
+                    } catch (WorkPoolFullException e) {
+                        throw e;
+                    } catch (Throwable ex) {
+                        getConnection().getExceptionHandler().handleConsumerException(this,
+                                                                                      ex,
+                                                                                      callback,
+                                                                                      consumerTag,
+                                                                                      "handleCancel");
+                    }
+                } else {
+                    LOGGER.warn("Could not cancel consumer with unknown tag {}", consumerTag);
+                }
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            if (method instanceof Channel.CloseOk) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+    }
+    protected void processDelivery(Command command, Basic.Deliver method) {
+        Basic.Deliver m = method;
+        Consumer callback = _consumers.get(m.getConsumerTag());
+        if (callback == null) {
+            if (defaultConsumer == null) {
+                throw new IllegalStateException("Unsolicited delivery -" +
+                        " see Channel.setDefaultConsumer to handle this" +
+                        " case.");
+            }
+            else {
+                callback = defaultConsumer;
+            }
+        }
+        Envelope envelope = new Envelope(m.getDeliveryTag(),
+                                         m.getRedelivered(),
+                                         m.getExchange(),
+                                         m.getRoutingKey());
+        try {
+            metricsCollector.consumedMessage(this, m.getDeliveryTag(), m.getConsumerTag());
+            this.dispatcher.handleDelivery(callback,
+                                           m.getConsumerTag(),
+                                           envelope,
+                                           (BasicProperties) command.getContentHeader(),
+                                           command.getContentBody());
+        } catch (WorkPoolFullException e) {
+            throw e;
+        } catch (Throwable ex) {
+            getConnection().getExceptionHandler().handleConsumerException(this,
+                ex,
+                callback,
+                m.getConsumerTag(),
+                "handleDelivery");
+        }
+    }
+    private void callReturnListeners(Command command, Basic.Return basicReturn) {
+        try {
+            for (ReturnListener l : this.returnListeners) {
+                l.handleReturn(basicReturn.getReplyCode(),
+                    basicReturn.getReplyText(),
+                    basicReturn.getExchange(),
+                    basicReturn.getRoutingKey(),
+                    (BasicProperties) command.getContentHeader(),
+                    command.getContentBody());
+            }
+        } catch (Throwable ex) {
+            getConnection().getExceptionHandler().handleReturnListenerException(this, ex);
+        } finally {
+            metricsCollector.basicPublishUnrouted(this);
+        }
+    }
+    private void callConfirmListeners(@SuppressWarnings("unused") Command command, Basic.Ack ack) {
+        try {
+            for (ConfirmListener l : this.confirmListeners) {
+                l.handleAck(ack.getDeliveryTag(), ack.getMultiple());
+            }
+        } catch (Throwable ex) {
+            getConnection().getExceptionHandler().handleConfirmListenerException(this, ex);
+        } finally {
+            metricsCollector.basicPublishAck(this, ack.getDeliveryTag(), ack.getMultiple());
+        }
+    }
+    private void callConfirmListeners(@SuppressWarnings("unused") Command command, Basic.Nack nack) {
+        try {
+            for (ConfirmListener l : this.confirmListeners) {
+                l.handleNack(nack.getDeliveryTag(), nack.getMultiple());
+            }
+        } catch (Throwable ex) {
+            getConnection().getExceptionHandler().handleConfirmListenerException(this, ex);
+        } finally {
+            metricsCollector.basicPublishNack(this, nack.getDeliveryTag(), nack.getMultiple());
+        }
+    }
+    private void asyncShutdown(Command command) throws IOException {
+        ShutdownSignalException signal = new ShutdownSignalException(false,
+                                                                     false,
+                                                                     command.getMethod(),
+                                                                     this);
+        _channelLock.lock();
+        try {
+            try {
+                processShutdownSignal(signal, true, false);
+                quiescingTransmit(new Channel.CloseOk());
+            } finally {
+                releaseChannel();
+                notifyOutstandingRpc(signal);
+            }
+        }
+        finally {
+            _channelLock.unlock();
+        }
+        notifyListeners();
+    }
+    @Override
+    public void close()
+        throws IOException, TimeoutException {
+        close(AMQP.REPLY_SUCCESS, "OK");
+    }
+    @Override
+    public void close(int closeCode, String closeMessage)
+        throws IOException, TimeoutException {
+        close(closeCode, closeMessage, true, null, false);
+    }
+    @Override
+    public void abort()
+    {
+        abort(AMQP.REPLY_SUCCESS, "OK");
+    }
+    @Override
+    public void abort(int closeCode, String closeMessage)
+    {
+        try {
+          close(closeCode, closeMessage, true, null, true);
+        } catch (IOException | TimeoutException _e) {
+        }
+    }
+    protected void close(int closeCode,
+                      String closeMessage,
+                      boolean initiatedByApplication,
+                      Throwable cause,
+                      boolean abort)
+        throws IOException, TimeoutException {
+        Channel.Close reason = new Channel.Close(closeCode, closeMessage, 0, 0);
+        ShutdownSignalException signal = new ShutdownSignalException(false,
+                                                                     initiatedByApplication,
+                                                                     reason,
+                                                                     this);
+        if (cause != null) {
+            signal.initCause(cause);
+        }
+        BlockingRpcContinuation<AMQCommand> k = new BlockingRpcContinuation<AMQCommand>(){
+            @Override
+            public AMQCommand transformReply(AMQCommand command) {
+                ChannelN.this.finishProcessShutdownSignal();
+                return command;
+            }};
+        boolean notify = false;
+        try {
+            _channelLock.lock();
+            try {
+                startProcessShutdownSignal(signal, !initiatedByApplication, true);
+                quiescingRpc(reason, k);
+            } finally {
+                _channelLock.unlock();
+            }
+            notify = true;
+            k.getReply(10000);
+        } catch (TimeoutException ise) {
+            if (!abort)
+                throw ise;
+        } catch (ShutdownSignalException sse) {
+            if (!abort)
+                throw sse;
+        } catch (IOException ioe) {
+            if (!abort)
+                throw ioe;
+        } finally {
+            if (abort || notify) {
+                releaseChannel();
+                notifyListeners();
+            }
+        }
+    }
+    @Override
+    public void basicQos(int prefetchSize, int prefetchCount, boolean global)
+	throws IOException
+    {
+        if (prefetchCount < 0 || prefetchCount > MAX_UNSIGNED_SHORT) {
+            throw new IllegalArgumentException("Prefetch count must be between 0 and " + MAX_UNSIGNED_SHORT);
+        }
+	    exnWrappingRpc(new Basic.Qos(prefetchSize, prefetchCount, global));
+    }
+    @Override
+    public void basicQos(int prefetchCount, boolean global)
+            throws IOException
+    {
+        basicQos(0, prefetchCount, global);
+    }
+    @Override
+    public void basicQos(int prefetchCount)
+	throws IOException
+    {
+	basicQos(0, prefetchCount, false);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey,
+                             BasicProperties props, byte[] body)
+        throws IOException
+    {
+        basicPublish(exchange, routingKey, false, props, body);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey,
+                             boolean mandatory,
+                             BasicProperties props, byte[] body)
+        throws IOException
+    {
+        basicPublish(exchange, routingKey, mandatory, false, props, body);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey,
+                             boolean mandatory, boolean immediate,
+                             BasicProperties props, byte[] body)
+        throws IOException
+    {
+        final long deliveryTag;
+        if (nextPublishSeqNo > 0) {
+            deliveryTag = getNextPublishSeqNo();
+            unconfirmedSet.add(deliveryTag);
+            nextPublishSeqNo++;
+        } else {
+            deliveryTag = 0;
+        }
+        if (props == null) {
+            props = MessageProperties.MINIMAL_BASIC;
+        }
+        AMQP.Basic.Publish publish = new Basic.Publish.Builder()
+                .exchange(exchange)
+                .routingKey(routingKey)
+                .mandatory(mandatory)
+                .immediate(immediate)
+                .build();
+        try {
+            ObservationCollector.PublishCall publishCall = properties -> {
+                AMQCommand command = new AMQCommand(publish, properties, body);
+                transmit(command);
+            };
+            observationCollector.publish(publishCall, publish, props, body, this.connectionInfo());
+        } catch (IOException | AlreadyClosedException e) {
+            metricsCollector.basicPublishFailure(this, e);
+            throw e;
+        }
+        metricsCollector.basicPublish(this, deliveryTag);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, String type,
+                                              boolean durable, boolean autoDelete,
+                                              Map<String, Object> arguments)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type,
+                               durable, autoDelete, false,
+                               arguments);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type,
+        boolean durable, boolean autoDelete,
+        Map<String, Object> arguments)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type.getType(),
+            durable, autoDelete,
+            arguments);
+    }
+    @Override
+    public void exchangeDeclareNoWait(String exchange,
+                                      String type,
+                                      boolean durable,
+                                      boolean autoDelete,
+                                      boolean internal,
+                                      Map<String, Object> arguments) throws IOException {
+        transmit(new AMQCommand(new Exchange.Declare.Builder()
+                                .exchange(exchange)
+                                .type(type)
+                                .durable(durable)
+                                .autoDelete(autoDelete)
+                                .internal(internal)
+                                .arguments(arguments)
+                                .passive(false)
+                                .nowait(true)
+                                .build()));
+    }
+    @Override
+    public void exchangeDeclareNoWait(String exchange,
+        BuiltinExchangeType type,
+        boolean durable,
+        boolean autoDelete,
+        boolean internal,
+        Map<String, Object> arguments) throws IOException {
+        exchangeDeclareNoWait(exchange, type.getType(),
+            durable, autoDelete, internal,
+            arguments);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, String type,
+                                              boolean durable,
+                                              boolean autoDelete,
+                                              boolean internal,
+                                              Map<String, Object> arguments)
+            throws IOException
+    {
+        return (Exchange.DeclareOk)
+                exnWrappingRpc(new Exchange.Declare.Builder()
+                                .exchange(exchange)
+                                .type(type)
+                                .durable(durable)
+                                .autoDelete(autoDelete)
+                                .internal(internal)
+                                .arguments(arguments)
+                               .build())
+                .getMethod();
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type,
+        boolean durable,
+        boolean autoDelete,
+        boolean internal,
+        Map<String, Object> arguments)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type.getType(),
+            durable, autoDelete, internal,
+            arguments);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, String type,
+                                              boolean durable)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type, durable, false, null);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type,
+        boolean durable)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type.getType(), durable);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, String type)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type, false, false, null);
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type)
+        throws IOException
+    {
+        return exchangeDeclare(exchange, type.getType());
+    }
+    @Override
+    public Exchange.DeclareOk exchangeDeclarePassive(String exchange)
+        throws IOException
+    {
+        return (Exchange.DeclareOk)
+            exnWrappingRpc(new Exchange.Declare.Builder()
+                            .exchange(exchange)
+                            .type("")
+                            .passive()
+                           .build())
+            .getMethod();
+    }
+    @Override
+    public Exchange.DeleteOk exchangeDelete(String exchange, boolean ifUnused)
+        throws IOException
+    {
+        return (Exchange.DeleteOk)
+            exnWrappingRpc(new Exchange.Delete.Builder()
+                            .exchange(exchange)
+                            .ifUnused(ifUnused)
+                           .build())
+            .getMethod();
+    }
+    @Override
+    public void exchangeDeleteNoWait(String exchange, boolean ifUnused) throws IOException {
+        transmit(new AMQCommand(new Exchange.Delete.Builder()
+                                        .exchange(exchange)
+                                        .ifUnused(ifUnused)
+                                        .nowait(true)
+                                        .build()));
+    }
+    @Override
+    public Exchange.DeleteOk exchangeDelete(String exchange)
+        throws IOException
+    {
+        return exchangeDelete(exchange, false);
+    }
+    @Override
+    public Exchange.BindOk exchangeBind(String destination, String source,
+            String routingKey, Map<String, Object> arguments)
+            throws IOException {
+        return (Exchange.BindOk)
+               exnWrappingRpc(new Exchange.Bind.Builder()
+                               .destination(destination)
+                               .source(source)
+                               .routingKey(routingKey)
+                               .arguments(arguments)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public void exchangeBindNoWait(String destination,
+                                   String source,
+                                   String routingKey,
+                                   Map<String, Object> arguments) throws IOException {
+        transmit(new AMQCommand(new Exchange.Bind.Builder()
+                                .destination(destination)
+                                .source(source)
+                                .routingKey(routingKey)
+                                .arguments(arguments)
+                                .nowait(true)
+                                .build()));
+    }
+    @Override
+    public Exchange.BindOk exchangeBind(String destination, String source,
+            String routingKey) throws IOException {
+        return exchangeBind(destination, source, routingKey, null);
+    }
+    @Override
+    public Exchange.UnbindOk exchangeUnbind(String destination, String source,
+            String routingKey, Map<String, Object> arguments)
+            throws IOException {
+        return (Exchange.UnbindOk)
+               exnWrappingRpc(new Exchange.Unbind.Builder()
+                               .destination(destination)
+                               .source(source)
+                               .routingKey(routingKey)
+                               .arguments(arguments)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public Exchange.UnbindOk exchangeUnbind(String destination, String source,
+            String routingKey) throws IOException {
+        return exchangeUnbind(destination, source, routingKey, null);
+    }
+    @Override
+    public void exchangeUnbindNoWait(String destination, String source,
+                                     String routingKey, Map<String, Object> arguments)
+            throws IOException {
+        transmit(new AMQCommand(new Exchange.Unbind.Builder()
+                                 .destination(destination)
+                                 .source(source)
+                                 .routingKey(routingKey)
+                                 .arguments(arguments)
+                                 .nowait(true)
+                                 .build()));
+    }
+    @Override
+    public Queue.DeclareOk queueDeclare(String queue, boolean durable, boolean exclusive,
+                                        boolean autoDelete, Map<String, Object> arguments)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.DeclareOk)
+               exnWrappingRpc(new Queue.Declare.Builder()
+                               .queue(queue)
+                               .durable(durable)
+                               .exclusive(exclusive)
+                               .autoDelete(autoDelete)
+                               .arguments(arguments)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public com.rabbitmq.client.AMQP.Queue.DeclareOk queueDeclare()
+        throws IOException
+    {
+        return queueDeclare("", false, true, true, null);
+    }
+    @Override
+    public void queueDeclareNoWait(String queue,
+                                   boolean durable,
+                                   boolean exclusive,
+                                   boolean autoDelete,
+                                   Map<String, Object> arguments) throws IOException {
+        validateQueueNameLength(queue);
+        transmit(new AMQCommand(new Queue.Declare.Builder()
+                                .queue(queue)
+                                .durable(durable)
+                                .exclusive(exclusive)
+                                .autoDelete(autoDelete)
+                                .arguments(arguments)
+                                .passive(false)
+                                .nowait(true)
+                                .build()));
+    }
+    @Override
+    public Queue.DeclareOk queueDeclarePassive(String queue)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.DeclareOk)
+               exnWrappingRpc(new Queue.Declare.Builder()
+                               .queue(queue)
+                               .passive()
+                               .exclusive()
+                               .autoDelete()
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public long messageCount(String queue) throws IOException {
+        Queue.DeclareOk ok = queueDeclarePassive(queue);
+        return ok.getMessageCount();
+    }
+    @Override
+    public long consumerCount(String queue) throws IOException {
+        Queue.DeclareOk ok = queueDeclarePassive(queue);
+        return ok.getConsumerCount();
+    }
+    @Override
+    public Queue.DeleteOk queueDelete(String queue, boolean ifUnused, boolean ifEmpty)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.DeleteOk)
+               exnWrappingRpc(new Queue.Delete.Builder()
+                               .queue(queue)
+                               .ifUnused(ifUnused)
+                               .ifEmpty(ifEmpty)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public void queueDeleteNoWait(String queue, boolean ifUnused, boolean ifEmpty) throws IOException {
+        validateQueueNameLength(queue);
+        transmit(new AMQCommand(new Queue.Delete.Builder()
+                                        .queue(queue)
+                                        .ifUnused(ifUnused)
+                                        .ifEmpty(ifEmpty)
+                                        .nowait(true)
+                                        .build()));
+    }
+    @Override
+    public Queue.DeleteOk queueDelete(String queue)
+        throws IOException
+    {
+        return queueDelete(queue, false, false);
+    }
+    @Override
+    public Queue.BindOk queueBind(String queue, String exchange,
+                                  String routingKey, Map<String, Object> arguments)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.BindOk)
+               exnWrappingRpc(new Queue.Bind.Builder()
+                               .queue(queue)
+                               .exchange(exchange)
+                               .routingKey(routingKey)
+                               .arguments(arguments)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public Queue.BindOk queueBind(String queue, String exchange, String routingKey)
+        throws IOException
+    {
+        return queueBind(queue, exchange, routingKey, null);
+    }
+    @Override
+    public void queueBindNoWait(String queue,
+                                String exchange,
+                                String routingKey,
+                                Map<String, Object> arguments) throws IOException {
+        validateQueueNameLength(queue);
+        transmit(new AMQCommand(new Queue.Bind.Builder()
+                                .queue(queue)
+                                .exchange(exchange)
+                                .routingKey(routingKey)
+                                .arguments(arguments)
+                                .nowait(true)
+                                .build()));
+    }
+    @Override
+    public Queue.UnbindOk queueUnbind(String queue, String exchange, String routingKey,
+                                      Map<String, Object> arguments)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.UnbindOk)
+               exnWrappingRpc(new Queue.Unbind.Builder()
+                               .queue(queue)
+                               .exchange(exchange)
+                               .routingKey(routingKey)
+                               .arguments(arguments)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public Queue.PurgeOk queuePurge(String queue)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        return (Queue.PurgeOk)
+               exnWrappingRpc(new Queue.Purge.Builder()
+                               .queue(queue)
+                              .build())
+               .getMethod();
+    }
+    @Override
+    public Queue.UnbindOk queueUnbind(String queue, String exchange, String routingKey)
+        throws IOException
+    {
+        return queueUnbind(queue, exchange, routingKey, null);
+    }
+    @Override
+    public GetResponse basicGet(String queue, boolean autoAck)
+        throws IOException
+    {
+        validateQueueNameLength(queue);
+        AMQCommand replyCommand = exnWrappingRpc(new Basic.Get.Builder()
+                                                  .queue(queue)
+                                                  .noAck(autoAck)
+                                                 .build());
+        return this.observationCollector.basicGet(() -> {
+            Method method = replyCommand.getMethod();
+            if (method instanceof Basic.GetOk) {
+                Basic.GetOk getOk = (Basic.GetOk)method;
+                Envelope envelope = new Envelope(getOk.getDeliveryTag(),
+                    getOk.getRedelivered(),
+                    getOk.getExchange(),
+                    getOk.getRoutingKey());
+                BasicProperties props = (BasicProperties)replyCommand.getContentHeader();
+                byte[] body = replyCommand.getContentBody();
+                int messageCount = getOk.getMessageCount();
+                metricsCollector.consumedMessage(this, getOk.getDeliveryTag(), autoAck);
+                return new GetResponse(envelope, props, body, messageCount);
+            } else if (method instanceof Basic.GetEmpty) {
+                return null;
+            } else {
+                throw new UnexpectedMethodError(method);
+            }
+        }, queue);
+    }
+    @Override
+    public void basicAck(long deliveryTag, boolean multiple)
+        throws IOException
+    {
+        transmit(new Basic.Ack(deliveryTag, multiple));
+        metricsCollector.basicAck(this, deliveryTag, multiple);
+    }
+    @Override
+    public void basicNack(long deliveryTag, boolean multiple, boolean requeue)
+        throws IOException
+    {
+        transmit(new Basic.Nack(deliveryTag, multiple, requeue));
+        metricsCollector.basicNack(this, deliveryTag, requeue);
+    }
+    @Override
+    public void basicReject(long deliveryTag, boolean requeue)
+        throws IOException
+    {
+        transmit(new Basic.Reject(deliveryTag, requeue));
+        metricsCollector.basicReject(this, deliveryTag, requeue);
+    }
+    @Override
+    public String basicConsume(String queue, Consumer callback)
+        throws IOException
+    {
+        return basicConsume(queue, false, callback);
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Consumer callback)
+        throws IOException
+    {
+        return basicConsume(queue, autoAck, "", callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments,
+                               Consumer callback)
+        throws IOException
+    {
+        return basicConsume(queue, autoAck, "", false, false, arguments, callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback, CancelCallback cancelCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag,
+                               Consumer callback)
+        throws IOException
+    {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback, CancelCallback cancelCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag , false, false, null, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, CancelCallback cancelCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, final boolean autoAck, String consumerTag,
+                               boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+                               final Consumer callback)
+        throws IOException
+    {
+        final Method m = new Basic.Consume.Builder()
+            .queue(queue)
+            .consumerTag(consumerTag)
+            .noLocal(noLocal)
+            .noAck(autoAck)
+            .exclusive(exclusive)
+            .arguments(arguments)
+            .build();
+        BlockingRpcContinuation<String> k = new BlockingRpcContinuation<String>(m) {
+            @Override
+            public String transformReply(AMQCommand replyCommand) {
+                String actualConsumerTag = ((Basic.ConsumeOk) replyCommand.getMethod()).getConsumerTag();
+                Consumer wrappedCallback = observationCollector.basicConsume(queue, consumerTag, callback);
+                _consumers.put(actualConsumerTag, wrappedCallback);
+                metricsCollector.basicConsume(ChannelN.this, actualConsumerTag, autoAck);
+                dispatcher.handleConsumeOk(wrappedCallback, actualConsumerTag);
+                return actualConsumerTag;
+            }
+        };
+        rpc(m, k);
+        try {
+            if(_rpcTimeout == NO_RPC_TIMEOUT) {
+                return k.getReply();
+            } else {
+                try {
+                    return k.getReply(_rpcTimeout);
+                } catch (TimeoutException e) {
+                    throw wrapTimeoutException(m, e);
+                }
+            }
+        } catch(ShutdownSignalException ex) {
+            throw wrap(ex);
+        }
+    }
+    private Consumer consumerFromDeliverCancelCallbacks(final DeliverCallback deliverCallback, final CancelCallback cancelCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException {
+                cancelCallback.handle(consumerTag);
+            }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) { }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    private Consumer consumerFromDeliverShutdownCallbacks(final DeliverCallback deliverCallback, final ConsumerShutdownSignalCallback shutdownSignalCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException { }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) {
+                shutdownSignalCallback.handleShutdownSignal(consumerTag, sig);
+            }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    private Consumer consumerFromDeliverCancelShutdownCallbacks(final DeliverCallback deliverCallback, final CancelCallback cancelCallback, final ConsumerShutdownSignalCallback shutdownSignalCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException {
+                cancelCallback.handle(consumerTag);
+            }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) {
+                shutdownSignalCallback.handleShutdownSignal(consumerTag, sig);
+            }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    @Override
+    public void basicCancel(final String consumerTag)
+        throws IOException
+    {
+        final Consumer originalConsumer = _consumers.get(consumerTag);
+        if (originalConsumer == null) {
+            LOGGER.warn("Tried to cancel consumer with unknown tag {}", consumerTag);
+            return;
+        }
+        final Method m = new Basic.Cancel(consumerTag, false);
+        BlockingRpcContinuation<Consumer> k = new BlockingRpcContinuation<Consumer>(m) {
+            @Override
+            public Consumer transformReply(AMQCommand replyCommand) {
+                if (!(replyCommand.getMethod() instanceof Basic.CancelOk))
+                    LOGGER.warn("Received reply {} was not of expected method Basic.CancelOk", replyCommand.getMethod());
+                _consumers.remove(consumerTag); 
+                dispatcher.handleCancelOk(originalConsumer, consumerTag);
+                return originalConsumer;
+            }
+        };
+        rpc(m, k);
+        try {
+            if(_rpcTimeout == NO_RPC_TIMEOUT) {
+                k.getReply(); 
+            } else {
+                try {
+                    k.getReply(_rpcTimeout);
+                } catch (TimeoutException e) {
+                    throw wrapTimeoutException(m, e);
+                }
+            }
+        } catch(ShutdownSignalException ex) {
+            throw wrap(ex);
+        }
+        metricsCollector.basicCancel(this, consumerTag);
+    }
+    @Override
+    public Basic.RecoverOk basicRecover()
+        throws IOException
+    {
+        return basicRecover(true);
+    }
+    @Override
+    public Basic.RecoverOk basicRecover(boolean requeue)
+        throws IOException
+    {
+        return (Basic.RecoverOk) exnWrappingRpc(new Basic.Recover(requeue)).getMethod();
+    }
+    @Override
+    public Tx.SelectOk txSelect()
+        throws IOException
+    {
+        return (Tx.SelectOk) exnWrappingRpc(new Tx.Select()).getMethod();
+    }
+    @Override
+    public Tx.CommitOk txCommit()
+        throws IOException
+    {
+        return (Tx.CommitOk) exnWrappingRpc(new Tx.Commit()).getMethod();
+    }
+    @Override
+    public Tx.RollbackOk txRollback()
+        throws IOException
+    {
+        return (Tx.RollbackOk) exnWrappingRpc(new Tx.Rollback()).getMethod();
+    }
+    @Override
+    public Confirm.SelectOk confirmSelect()
+        throws IOException
+    {
+        if (confirmSelectActivated) {
+            return new Confirm.SelectOk();
+        }
+        if (nextPublishSeqNo == 0) nextPublishSeqNo = 1;
+        Confirm.SelectOk result = (Confirm.SelectOk)
+            exnWrappingRpc(new Confirm.Select(false)).getMethod();
+        confirmSelectActivated = true;
+        return result;
+    }
+    @Override
+    public long getNextPublishSeqNo() {
+        return nextPublishSeqNo;
+    }
+    @Override
+    public void asyncRpc(Method method) throws IOException {
+        transmit(method);
+    }
+    @Override
+    public AMQCommand rpc(Method method) throws IOException {
+        return exnWrappingRpc(method);
+    }
+    @Override
+    public CompletableFuture<Command> asyncCompletableRpc(Method method) throws IOException {
+        return exnWrappingAsyncRpc(method);
+    }
+    @Override
+    public void enqueueRpc(RpcContinuation k) {
+        _channelLock.lock();
+        try {
+            super.enqueueRpc(k);
+            dispatcher.setUnlimited(true);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    @Override
+    protected void markRpcFinished() {
+        _channelLock.lock();
+        try {
+            dispatcher.setUnlimited(false);
+        } finally {
+            _channelLock.unlock();
+        }
+    }
+    private void handleAckNack(long seqNo, boolean multiple, boolean nack) {
+        if (multiple) {
+            unconfirmedSet.headSet(seqNo + 1).clear();
+        } else {
+            unconfirmedSet.remove(seqNo);
+        }
+        synchronized (unconfirmedSet) {
+            onlyAcksReceived = onlyAcksReceived && !nack;
+            if (unconfirmedSet.isEmpty())
+                unconfirmedSet.notifyAll();
+        }
+    }
+    private static void validateQueueNameLength(String queue) {
+        if(queue.length() > 255) {
+           throw new IllegalArgumentException("queue name must be no more than 255 characters long");
+        }
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.ShutdownSignalException;
+public interface RpcWrapper {
+    boolean canHandleReply(AMQCommand command);
+    void complete(AMQCommand command);
+    void shutdown(ShutdownSignalException signal);
+}
+package com.rabbitmq.client.impl;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import com.rabbitmq.client.AMQP;
+import com.rabbitmq.client.Command;
+public class AMQCommand implements Command {
+    public static final int EMPTY_FRAME_SIZE = 8;
+    private final CommandAssembler assembler;
+    private final Lock assemblerLock = new ReentrantLock();
+    AMQCommand(int maxBodyLength) {
+        this(null, null, null, maxBodyLength);
+    }
+    public AMQCommand() {
+        this(null, null, null, Integer.MAX_VALUE);
+    }
+    public AMQCommand(com.rabbitmq.client.Method method) {
+        this(method, null, null, Integer.MAX_VALUE);
+    }
+    public AMQCommand(com.rabbitmq.client.Method method, AMQContentHeader contentHeader, byte[] body) {
+        this.assembler = new CommandAssembler((Method) method, contentHeader, body, Integer.MAX_VALUE);
+    }
+    public AMQCommand(com.rabbitmq.client.Method method, AMQContentHeader contentHeader, byte[] body,
+                      int maxBodyLength) {
+        this.assembler = new CommandAssembler((Method) method, contentHeader, body, maxBodyLength);
+    }
+    @Override
+    public Method getMethod() {
+        return this.assembler.getMethod();
+    }
+    @Override
+    public AMQContentHeader getContentHeader() {
+        return this.assembler.getContentHeader();
+    }
+    @Override
+    public byte[] getContentBody() {
+        return this.assembler.getContentBody();
+    }
+    public boolean handleFrame(Frame f) throws IOException {
+        return this.assembler.handleFrame(f);
+    }
+    public void transmit(AMQChannel channel) throws IOException {
+        int channelNumber = channel.getChannelNumber();
+        AMQConnection connection = channel.getConnection();
+        assemblerLock.lock();
+        try {
+            Method m = this.assembler.getMethod();
+            if (m.hasContent()) {
+                byte[] body = this.assembler.getContentBody();
+                Frame headerFrame = this.assembler.getContentHeader().toFrame(channelNumber, body.length);
+                int frameMax = connection.getFrameMax();
+                boolean cappedFrameMax = frameMax > 0;
+                int bodyPayloadMax = cappedFrameMax ? frameMax - EMPTY_FRAME_SIZE : body.length;
+                if (cappedFrameMax && headerFrame.size() > frameMax) {
+                    String msg = String.format("Content headers exceeded max frame size: %d > %d", headerFrame.size(), frameMax);
+                    throw new IllegalArgumentException(msg);
+                }
+                connection.writeFrame(m.toFrame(channelNumber));
+                connection.writeFrame(headerFrame);
+                for (int offset = 0; offset < body.length; offset += bodyPayloadMax) {
+                    int remaining = body.length - offset;
+                    int fragmentLength = (remaining < bodyPayloadMax) ? remaining
+                            : bodyPayloadMax;
+                    Frame frame = Frame.fromBodyFragment(channelNumber, body,
+                            offset, fragmentLength);
+                    connection.writeFrame(frame);
+                }
+            } else {
+                connection.writeFrame(m.toFrame(channelNumber));
+            }
+        } finally {
+            assemblerLock.unlock();
+        }
+        connection.flush();
+    }
+    @Override public String toString() {
+        return toString(false);
+    }
+    public String toString(boolean suppressBody){
+        assemblerLock.lock();
+        try {
+            return new StringBuilder()
+                .append('{')
+                .append(this.assembler.getMethod())
+                .append(", ")
+                .append(this.assembler.getContentHeader())
+                .append(", ")
+                .append(contentBodyStringBuilder(
+                        this.assembler.getContentBody(), suppressBody))
+                .append('}').toString();
+        } finally {
+            assemblerLock.unlock();
+        }
+    }
+    private static StringBuilder contentBodyStringBuilder(byte[] body, boolean suppressBody) {
+        try {
+            if (suppressBody) {
+                return new StringBuilder().append(body.length).append(" bytes of payload");
+            } else {
+                return new StringBuilder().append('\"').append(new String(body, "UTF-8")).append('\"');
+            }
+        } catch (Exception e) {
+            return new StringBuilder().append('|').append(body.length).append('|');
+        }
+    }
+    public static void checkPreconditions() {
+        checkEmptyFrameSize();
+    }
+    private static void checkEmptyFrameSize() {
+        Frame f = new Frame(AMQP.FRAME_BODY, 0, new byte[0]);
+        ByteArrayOutputStream s = new ByteArrayOutputStream();
+        try {
+            f.writeTo(new DataOutputStream(s));
+        } catch (IOException ioe) {
+            throw new IllegalStateException("IOException while checking EMPTY_FRAME_SIZE");
+        }
+        int actualLength = s.toByteArray().length;
+        if (EMPTY_FRAME_SIZE != actualLength) {
+            throw new IllegalStateException("Internal error: expected EMPTY_FRAME_SIZE("
+                    + EMPTY_FRAME_SIZE
+                    + ") is not equal to computed value: " + actualLength);
+        }
+    }
+}
+package com.rabbitmq.client;
+public interface Command {
+    Method getMethod();
+    ContentHeader getContentHeader();
+    byte[] getContentBody();
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.ShutdownSignalException;
+public class RpcContinuationRpcWrapper implements RpcWrapper {
+    private final AMQChannel.RpcContinuation continuation;
+    public RpcContinuationRpcWrapper(AMQChannel.RpcContinuation continuation) {
+        this.continuation = continuation;
+    }
+    @Override
+    public boolean canHandleReply(AMQCommand command) {
+        return continuation.canHandleReply(command);
+    }
+    @Override
+    public void complete(AMQCommand command) {
+        continuation.handleCommand(command);
+    }
+    @Override
+    public void shutdown(ShutdownSignalException signal) {
+        continuation.handleShutdownSignal(signal);
+    }
+}
+package com.rabbitmq.client.impl.recovery;
+import com.rabbitmq.client.*;
+import com.rabbitmq.client.impl.AMQCommand;
+import com.rabbitmq.client.impl.recovery.Utils.IoTimeoutExceptionRunnable;
+import com.rabbitmq.utility.Utility;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeoutException;
+public class AutorecoveringChannel implements RecoverableChannel {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AutorecoveringChannel.class);
+    private volatile RecoveryAwareChannelN delegate;
+    private volatile AutorecoveringConnection connection;
+    private final List<ShutdownListener> shutdownHooks  = new CopyOnWriteArrayList<>();
+    private final List<RecoveryListener> recoveryListeners = new CopyOnWriteArrayList<>();
+    private final List<ReturnListener> returnListeners = new CopyOnWriteArrayList<>();
+    private final List<ConfirmListener> confirmListeners = new CopyOnWriteArrayList<>();
+    private final Set<String> consumerTags = Collections.synchronizedSet(new HashSet<>());
+    private int prefetchCountConsumer;
+    private int prefetchCountGlobal;
+    private boolean usesPublisherConfirms;
+    private boolean usesTransactions;
+    public AutorecoveringChannel(AutorecoveringConnection connection, RecoveryAwareChannelN delegate) {
+        this.connection = connection;
+        this.delegate = delegate;
+    }
+    @Override
+    public int getChannelNumber() {
+        return delegate.getChannelNumber();
+    }
+    @Override
+    public Connection getConnection() {
+        return delegate.getConnection();
+    }
+    public Channel getDelegate() {
+        return delegate;
+    }
+    @Override
+    public void close() throws IOException, TimeoutException {
+        executeAndClean(() -> delegate.close());
+    }
+    @Override
+    public void close(int closeCode, String closeMessage) throws IOException, TimeoutException {
+        executeAndClean(() -> delegate.close(closeCode, closeMessage));
+    }
+    @Override
+    public void abort() {
+        this.delegate.abort();
+        this.clean();
+    }
+    @Override
+    public void abort(int closeCode, String closeMessage) {
+        this.delegate.abort(closeCode, closeMessage != null ? closeMessage : "");
+        this.clean();
+    }
+    private void clean() {
+        for (String consumerTag : Utility.copy(consumerTags)) {
+            this.deleteRecordedConsumer(consumerTag);
+        }
+        this.connection.unregisterChannel(this);
+    }
+    private void executeAndClean(IoTimeoutExceptionRunnable callback) throws IOException, TimeoutException {
+        try {
+            callback.run();
+        } finally {
+            this.clean();
+        }
+    }
+    @Override
+    public void addReturnListener(ReturnListener listener) {
+        this.returnListeners.add(listener);
+        delegate.addReturnListener(listener);
+    }
+    @Override
+    public ReturnListener addReturnListener(ReturnCallback returnCallback) {
+        ReturnListener returnListener = (replyCode, replyText, exchange, routingKey, properties, body) -> returnCallback.handle(new Return(
+            replyCode, replyText, exchange, routingKey, properties, body
+        ));
+        this.addReturnListener(returnListener);
+        return returnListener;
+    }
+    @Override
+    public boolean removeReturnListener(ReturnListener listener) {
+        this.returnListeners.remove(listener);
+        return delegate.removeReturnListener(listener);
+    }
+    @Override
+    public void clearReturnListeners() {
+        this.returnListeners.clear();
+        delegate.clearReturnListeners();
+    }
+    @Override
+    public void addConfirmListener(ConfirmListener listener) {
+        this.confirmListeners.add(listener);
+        delegate.addConfirmListener(listener);
+    }
+    @Override
+    public ConfirmListener addConfirmListener(ConfirmCallback ackCallback, ConfirmCallback nackCallback) {
+        ConfirmListener confirmListener = new ConfirmListener() {
+            @Override
+            public void handleAck(long deliveryTag, boolean multiple) throws IOException {
+                ackCallback.handle(deliveryTag, multiple);
+            }
+            @Override
+            public void handleNack(long deliveryTag, boolean multiple) throws IOException {
+                nackCallback.handle(deliveryTag, multiple);
+            }
+        };
+        this.addConfirmListener(confirmListener);
+        return confirmListener;
+    }
+    @Override
+    public boolean removeConfirmListener(ConfirmListener listener) {
+        this.confirmListeners.remove(listener);
+        return delegate.removeConfirmListener(listener);
+    }
+    @Override
+    public void clearConfirmListeners() {
+        this.confirmListeners.clear();
+        delegate.clearConfirmListeners();
+    }
+    @Override
+    public Consumer getDefaultConsumer() {
+        return delegate.getDefaultConsumer();
+    }
+    @Override
+    public void setDefaultConsumer(Consumer consumer) {
+        delegate.setDefaultConsumer(consumer);
+    }
+    @Override
+    public void basicQos(int prefetchSize, int prefetchCount, boolean global) throws IOException {
+        if (global) {
+            this.prefetchCountGlobal = prefetchCount;
+        } else {
+            this.prefetchCountConsumer = prefetchCount;
+        }
+        delegate.basicQos(prefetchSize, prefetchCount, global);
+    }
+    @Override
+    public void basicQos(int prefetchCount) throws IOException {
+        basicQos(0, prefetchCount, false);
+    }
+    @Override
+    public void basicQos(int prefetchCount, boolean global) throws IOException {
+        basicQos(0, prefetchCount, global);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey, AMQP.BasicProperties props, byte[] body) throws IOException {
+        delegate.basicPublish(exchange, routingKey, props, body);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey, boolean mandatory, AMQP.BasicProperties props, byte[] body) throws IOException {
+        delegate.basicPublish(exchange, routingKey, mandatory, props, body);
+    }
+    @Override
+    public void basicPublish(String exchange, String routingKey, boolean mandatory, boolean immediate, AMQP.BasicProperties props, byte[] body) throws IOException {
+        delegate.basicPublish(exchange, routingKey, mandatory, immediate, props, body);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, String type) throws IOException {
+        return exchangeDeclare(exchange, type, false, false, null);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type) throws IOException {
+        return exchangeDeclare(exchange, type.getType());
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, String type, boolean durable) throws IOException {
+        return exchangeDeclare(exchange, type, durable, false, null);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type, boolean durable) throws IOException {
+        return exchangeDeclare(exchange, type.getType(), durable);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, String type, boolean durable, boolean autoDelete, Map<String, Object> arguments) throws IOException {
+        return exchangeDeclare(exchange, type, durable, autoDelete, false, arguments);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type, boolean durable, boolean autoDelete, Map<String, Object> arguments) throws IOException {
+        return exchangeDeclare(exchange, type.getType(), durable, autoDelete, arguments);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, String type, boolean durable, boolean autoDelete, boolean internal, Map<String, Object> arguments) throws IOException {
+        final AMQP.Exchange.DeclareOk ok = delegate.exchangeDeclare(exchange, type, durable, autoDelete, internal, arguments);
+        recordExchange(ok, exchange, type, durable, autoDelete, arguments);
+        return ok;
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclare(String exchange, BuiltinExchangeType type, boolean durable, boolean autoDelete, boolean internal, Map<String, Object> arguments) throws IOException {
+        return exchangeDeclare(exchange, type.getType(), durable, autoDelete, internal, arguments);
+    }
+    @Override
+    public void exchangeDeclareNoWait(String exchange, String type, boolean durable, boolean autoDelete, boolean internal, Map<String, Object> arguments) throws IOException {
+        RecordedExchange x = new RecordedExchange(this, exchange).
+          type(type).
+          durable(durable).
+          autoDelete(autoDelete).
+          arguments(arguments);
+        recordExchange(exchange, x);
+        delegate.exchangeDeclareNoWait(exchange, type, durable, autoDelete, internal, arguments);
+    }
+    @Override
+    public void exchangeDeclareNoWait(String exchange, BuiltinExchangeType type, boolean durable, boolean autoDelete, boolean internal, Map<String, Object> arguments) throws IOException {
+        exchangeDeclareNoWait(exchange, type.getType(), durable, autoDelete, internal, arguments);
+    }
+    @Override
+    public AMQP.Exchange.DeclareOk exchangeDeclarePassive(String name) throws IOException {
+        return delegate.exchangeDeclarePassive(name);
+    }
+    @Override
+    public AMQP.Exchange.DeleteOk exchangeDelete(String exchange, boolean ifUnused) throws IOException {
+        deleteRecordedExchange(exchange);
+        return delegate.exchangeDelete(exchange, ifUnused);
+    }
+    @Override
+    public void exchangeDeleteNoWait(String exchange, boolean ifUnused) throws IOException {
+        deleteRecordedExchange(exchange);
+        delegate.exchangeDeleteNoWait(exchange, ifUnused);
+    }
+    @Override
+    public AMQP.Exchange.DeleteOk exchangeDelete(String exchange) throws IOException {
+        return exchangeDelete(exchange, false);
+    }
+    @Override
+    public AMQP.Exchange.BindOk exchangeBind(String destination, String source, String routingKey) throws IOException {
+        return exchangeBind(destination, source, routingKey, null);
+    }
+    @Override
+    public AMQP.Exchange.BindOk exchangeBind(String destination, String source, String routingKey, Map<String, Object> arguments) throws IOException {
+        final AMQP.Exchange.BindOk ok = delegate.exchangeBind(destination, source, routingKey, arguments);
+        recordExchangeBinding(destination, source, routingKey, arguments);
+        return ok;
+    }
+    @Override
+    public void exchangeBindNoWait(String destination, String source, String routingKey, Map<String, Object> arguments) throws IOException {
+        delegate.exchangeBindNoWait(destination, source, routingKey, arguments);
+        recordExchangeBinding(destination, source, routingKey, arguments);
+    }
+    @Override
+    public AMQP.Exchange.UnbindOk exchangeUnbind(String destination, String source, String routingKey) throws IOException {
+        return exchangeUnbind(destination, source, routingKey, null);
+    }
+    @Override
+    public AMQP.Exchange.UnbindOk exchangeUnbind(String destination, String source, String routingKey, Map<String, Object> arguments) throws IOException {
+        deleteRecordedExchangeBinding(destination, source, routingKey, arguments);
+        this.maybeDeleteRecordedAutoDeleteExchange(source);
+        return delegate.exchangeUnbind(destination, source, routingKey, arguments);
+    }
+    @Override
+    public void exchangeUnbindNoWait(String destination, String source, String routingKey, Map<String, Object> arguments) throws IOException {
+        delegate.exchangeUnbindNoWait(destination, source, routingKey, arguments);
+        deleteRecordedExchangeBinding(destination, source, routingKey, arguments);
+    }
+    @Override
+    public AMQP.Queue.DeclareOk queueDeclare() throws IOException {
+        return queueDeclare("", false, true, true, null);
+    }
+    @Override
+    public AMQP.Queue.DeclareOk queueDeclare(String queue, boolean durable, boolean exclusive, boolean autoDelete, Map<String, Object> arguments) throws IOException {
+        final AMQP.Queue.DeclareOk ok = delegate.queueDeclare(queue, durable, exclusive, autoDelete, arguments);
+        recordQueue(ok, queue, durable, exclusive, autoDelete, arguments);
+        return ok;
+    }
+    @Override
+    public void queueDeclareNoWait(String queue,
+                                   boolean durable,
+                                   boolean exclusive,
+                                   boolean autoDelete,
+                                   Map<String, Object> arguments) throws IOException {
+        RecordedQueue meta = new RecordedQueue(this, queue).
+            durable(durable).
+            exclusive(exclusive).
+            autoDelete(autoDelete).
+            arguments(arguments).
+            recoveredQueueNameSupplier(connection.getRecoveredQueueNameSupplier());
+        delegate.queueDeclareNoWait(queue, durable, exclusive, autoDelete, arguments);
+        recordQueue(queue, meta);
+    }
+    @Override
+    public AMQP.Queue.DeclareOk queueDeclarePassive(String queue) throws IOException {
+        return delegate.queueDeclarePassive(queue);
+    }
+    @Override
+    public long messageCount(String queue) throws IOException {
+        return delegate.messageCount(queue);
+    }
+    @Override
+    public long consumerCount(String queue) throws IOException {
+        return delegate.consumerCount(queue);
+    }
+    @Override
+    public AMQP.Queue.DeleteOk queueDelete(String queue) throws IOException {
+        return queueDelete(queue, false, false);
+    }
+    @Override
+    public AMQP.Queue.DeleteOk queueDelete(String queue, boolean ifUnused, boolean ifEmpty) throws IOException {
+        deleteRecordedQueue(queue);
+        return delegate.queueDelete(queue, ifUnused, ifEmpty);
+    }
+    @Override
+    public void queueDeleteNoWait(String queue, boolean ifUnused, boolean ifEmpty) throws IOException {
+        deleteRecordedQueue(queue);
+        delegate.queueDeleteNoWait(queue, ifUnused, ifEmpty);
+    }
+    @Override
+    public AMQP.Queue.BindOk queueBind(String queue, String exchange, String routingKey) throws IOException {
+        return queueBind(queue, exchange, routingKey, null);
+    }
+    @Override
+    public AMQP.Queue.BindOk queueBind(String queue, String exchange, String routingKey, Map<String, Object> arguments) throws IOException {
+        AMQP.Queue.BindOk ok = delegate.queueBind(queue, exchange, routingKey, arguments);
+        recordQueueBinding(queue, exchange, routingKey, arguments);
+        return ok;
+    }
+    @Override
+    public void queueBindNoWait(String queue, String exchange, String routingKey, Map<String, Object> arguments) throws IOException {
+        delegate.queueBindNoWait(queue, exchange, routingKey, arguments);
+        recordQueueBinding(queue, exchange, routingKey, arguments);
+    }
+    @Override
+    public AMQP.Queue.UnbindOk queueUnbind(String queue, String exchange, String routingKey) throws IOException {
+        return queueUnbind(queue, exchange, routingKey, null);
+    }
+    @Override
+    public AMQP.Queue.UnbindOk queueUnbind(String queue, String exchange, String routingKey, Map<String, Object> arguments) throws IOException {
+        deleteRecordedQueueBinding(queue, exchange, routingKey, arguments);
+        this.maybeDeleteRecordedAutoDeleteExchange(exchange);
+        return delegate.queueUnbind(queue, exchange, routingKey, arguments);
+    }
+    @Override
+    public AMQP.Queue.PurgeOk queuePurge(String queue) throws IOException {
+        return delegate.queuePurge(queue);
+    }
+    @Override
+    public GetResponse basicGet(String queue, boolean autoAck) throws IOException {
+        return delegate.basicGet(queue, autoAck);
+    }
+    @Override
+    public void basicAck(long deliveryTag, boolean multiple) throws IOException {
+        delegate.basicAck(deliveryTag, multiple);
+    }
+    @Override
+    public void basicNack(long deliveryTag, boolean multiple, boolean requeue) throws IOException {
+        delegate.basicNack(deliveryTag, multiple, requeue);
+    }
+    @Override
+    public void basicReject(long deliveryTag, boolean requeue) throws IOException {
+        delegate.basicReject(deliveryTag, requeue);
+    }
+    @Override
+    public String basicConsume(String queue, Consumer callback) throws IOException {
+        return basicConsume(queue, false, callback);
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, false, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Consumer callback) throws IOException {
+        return basicConsume(queue, autoAck, "", callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, Consumer callback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback, CancelCallback cancelCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, false, false, null, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, Consumer callback) throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, callback);
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback, CancelCallback cancelCallback)
+        throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, Map<String, Object> arguments, DeliverCallback deliverCallback, CancelCallback cancelCallback,
+        ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, "", false, false, arguments, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments, Consumer callback) throws IOException {
+        final String result = delegate.basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, callback);
+        recordConsumer(result, queue, autoAck, exclusive, arguments, callback);
+        return result;
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, CancelCallback cancelCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverCancelCallbacks(deliverCallback, cancelCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverShutdownCallbacks(deliverCallback, shutdownSignalCallback));
+    }
+    @Override
+    public String basicConsume(String queue, boolean autoAck, String consumerTag, boolean noLocal, boolean exclusive, Map<String, Object> arguments,
+        DeliverCallback deliverCallback, CancelCallback cancelCallback, ConsumerShutdownSignalCallback shutdownSignalCallback) throws IOException {
+        return basicConsume(queue, autoAck, consumerTag, noLocal, exclusive, arguments, consumerFromDeliverCancelShutdownCallbacks(deliverCallback, cancelCallback, shutdownSignalCallback));
+    }
+    private Consumer consumerFromDeliverCancelCallbacks(final DeliverCallback deliverCallback, final CancelCallback cancelCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException {
+                cancelCallback.handle(consumerTag);
+            }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) { }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    private Consumer consumerFromDeliverShutdownCallbacks(final DeliverCallback deliverCallback, final ConsumerShutdownSignalCallback shutdownSignalCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException { }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) {
+                shutdownSignalCallback.handleShutdownSignal(consumerTag, sig);
+            }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    private Consumer consumerFromDeliverCancelShutdownCallbacks(final DeliverCallback deliverCallback, final CancelCallback cancelCallback, final ConsumerShutdownSignalCallback shutdownSignalCallback) {
+        return new Consumer() {
+            @Override
+            public void handleConsumeOk(String consumerTag) { }
+            @Override
+            public void handleCancelOk(String consumerTag) { }
+            @Override
+            public void handleCancel(String consumerTag) throws IOException {
+                cancelCallback.handle(consumerTag);
+            }
+            @Override
+            public void handleShutdownSignal(String consumerTag, ShutdownSignalException sig) {
+                shutdownSignalCallback.handleShutdownSignal(consumerTag, sig);
+            }
+            @Override
+            public void handleRecoverOk(String consumerTag) { }
+            @Override
+            public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+                deliverCallback.handle(consumerTag, new Delivery(envelope, properties, body));
+            }
+        };
+    }
+    @Override
+    public void basicCancel(String consumerTag) throws IOException {
+        this.deleteRecordedConsumer(consumerTag);
+        delegate.basicCancel(consumerTag);
+    }
+    @Override
+    public AMQP.Basic.RecoverOk basicRecover() throws IOException {
+        return delegate.basicRecover();
+    }
+    @Override
+    public AMQP.Basic.RecoverOk basicRecover(boolean requeue) throws IOException {
+        return delegate.basicRecover(requeue);
+    }
+    @Override
+    public AMQP.Tx.SelectOk txSelect() throws IOException {
+        this.usesTransactions = true;
+        return delegate.txSelect();
+    }
+    @Override
+    public AMQP.Tx.CommitOk txCommit() throws IOException {
+        return delegate.txCommit();
+    }
+    @Override
+    public AMQP.Tx.RollbackOk txRollback() throws IOException {
+        return delegate.txRollback();
+    }
+    @Override
+    public AMQP.Confirm.SelectOk confirmSelect() throws IOException {
+        this.usesPublisherConfirms = true;
+        return delegate.confirmSelect();
+    }
+    @Override
+    public long getNextPublishSeqNo() {
+        return delegate.getNextPublishSeqNo();
+    }
+    @Override
+    public boolean waitForConfirms() throws InterruptedException {
+        return delegate.waitForConfirms();
+    }
+    @Override
+    public boolean waitForConfirms(long timeout) throws InterruptedException, TimeoutException {
+        return delegate.waitForConfirms(timeout);
+    }
+    @Override
+    public void waitForConfirmsOrDie() throws IOException, InterruptedException {
+        delegate.waitForConfirmsOrDie();
+    }
+    @Override
+    public void waitForConfirmsOrDie(long timeout) throws IOException, InterruptedException, TimeoutException {
+        delegate.waitForConfirmsOrDie(timeout);
+    }
+    @Override
+    public void asyncRpc(Method method) throws IOException {
+        delegate.asyncRpc(method);
+    }
+    @Override
+    public Command rpc(Method method) throws IOException {
+        recordOnRpcRequest(method);
+        AMQCommand response = delegate.rpc(method);
+        recordOnRpcResponse(response.getMethod(), method);
+        return response;
+    }
+    @Override
+    public void addShutdownListener(ShutdownListener listener) {
+        this.shutdownHooks.add(listener);
+        delegate.addShutdownListener(listener);
+    }
+    @Override
+    public void removeShutdownListener(ShutdownListener listener) {
+        this.shutdownHooks.remove(listener);
+        delegate.removeShutdownListener(listener);
+    }
+    @Override
+    public ShutdownSignalException getCloseReason() {
+        return delegate.getCloseReason();
+    }
+    @Override
+    public void notifyListeners() {
+        delegate.notifyListeners();
+    }
+    @Override
+    public boolean isOpen() {
+        return delegate.isOpen();
+    }
+    @Override
+    public void addRecoveryListener(RecoveryListener listener) {
+        this.recoveryListeners.add(listener);
+    }
+    @Override
+    public void removeRecoveryListener(RecoveryListener listener) {
+        this.recoveryListeners.remove(listener);
+    }
+    public void automaticallyRecover(AutorecoveringConnection connection, Connection connDelegate) throws IOException {
+        RecoveryAwareChannelN defunctChannel = this.delegate;
+        this.connection = connection;
+        final RecoveryAwareChannelN newChannel = (RecoveryAwareChannelN) connDelegate.createChannel(this.getChannelNumber());
+        if (newChannel == null) 
+            throw new IOException("Failed to create new channel for channel number=" + this.getChannelNumber() + " during recovery");
+        newChannel.inheritOffsetFrom(defunctChannel);
+        this.delegate = newChannel;
+        this.notifyRecoveryListenersStarted();
+        this.recoverShutdownListeners();
+        this.recoverReturnListeners();
+        this.recoverConfirmListeners();
+        this.recoverState();
+        this.notifyRecoveryListenersComplete();
+    }
+    private void recoverShutdownListeners() {
+        for (ShutdownListener sh : this.shutdownHooks) {
+            this.delegate.addShutdownListener(sh);
+        }
+    }
+    private void recoverReturnListeners() {
+        for(ReturnListener rl : this.returnListeners) {
+            this.delegate.addReturnListener(rl);
+        }
+    }
+    private void recoverConfirmListeners() {
+        for(ConfirmListener cl : this.confirmListeners) {
+            this.delegate.addConfirmListener(cl);
+        }
+    }
+    private void recoverState() throws IOException {
+        if (this.prefetchCountConsumer != 0) {
+            basicQos(this.prefetchCountConsumer, false);
+        }
+        if (this.prefetchCountGlobal != 0) {
+            basicQos(this.prefetchCountGlobal, true);
+        }
+        if(this.usesPublisherConfirms) {
+            this.confirmSelect();
+        }
+        if(this.usesTransactions) {
+            this.txSelect();
+        }
+    }
+    private void notifyRecoveryListenersComplete() {
+        for (RecoveryListener f : this.recoveryListeners) {
+            f.handleRecovery(this);
+        }
+    }
+    private void notifyRecoveryListenersStarted() {
+        for (RecoveryListener f : this.recoveryListeners) {
+            f.handleRecoveryStarted(this);
+        }
+    }
+    private void recordQueueBinding(String queue, String exchange, String routingKey, Map<String, Object> arguments) {
+        this.connection.recordQueueBinding(this, queue, exchange, routingKey, arguments);
+    }
+    private boolean deleteRecordedQueueBinding(String queue, String exchange, String routingKey, Map<String, Object> arguments) {
+        return this.connection.deleteRecordedQueueBinding(this, queue, exchange, routingKey, arguments);
+    }
+    private void recordExchangeBinding(String destination, String source, String routingKey, Map<String, Object> arguments) {
+        this.connection.recordExchangeBinding(this, destination, source, routingKey, arguments);
+    }
+    private boolean deleteRecordedExchangeBinding(String destination, String source, String routingKey, Map<String, Object> arguments) {
+        return this.connection.deleteRecordedExchangeBinding(this, destination, source, routingKey, arguments);
+    }
+    private void recordQueue(AMQP.Queue.DeclareOk ok, String queue, boolean durable, boolean exclusive, boolean autoDelete, Map<String, Object> arguments) {
+        RecordedQueue q = new RecordedQueue(this, ok.getQueue()).
+                durable(durable).
+                exclusive(exclusive).
+                autoDelete(autoDelete).
+                arguments(arguments).
+                recoveredQueueNameSupplier(connection.getRecoveredQueueNameSupplier());
+        if (queue.equals(RecordedQueue.EMPTY_STRING)) {
+            q.serverNamed(true);
+        }
+        recordQueue(ok, q);
+    }
+    private void recordQueue(AMQP.Queue.DeclareOk ok, RecordedQueue q) {
+        this.connection.recordQueue(ok, q);
+    }
+    private void recordQueue(String queue, RecordedQueue meta) {
+        this.connection.recordQueue(queue, meta);
+    }
+    private void deleteRecordedQueue(String queue) {
+        this.connection.deleteRecordedQueue(queue);
+    }
+    private void recordExchange(AMQP.Exchange.DeclareOk ok, String exchange, String type, boolean durable, boolean autoDelete, Map<String, Object> arguments) {
+        RecordedExchange x = new RecordedExchange(this, exchange).
+                type(type).
+                durable(durable).
+                autoDelete(autoDelete).
+                arguments(arguments);
+        recordExchange(exchange, x);
+    }
+    private void recordExchange(String exchange, RecordedExchange x) {
+        this.connection.recordExchange(exchange, x);
+    }
+    private void deleteRecordedExchange(String exchange) {
+        this.connection.deleteRecordedExchange(exchange);
+    }
+    private void recordConsumer(String result,
+                                String queue,
+                                boolean autoAck,
+                                boolean exclusive,
+                                Map<String, Object> arguments,
+                                Consumer callback) {
+        RecordedConsumer consumer = new RecordedConsumer(this, queue).
+                                            autoAck(autoAck).
+                                            consumerTag(result).
+                                            exclusive(exclusive).
+                                            arguments(arguments).
+                                            consumer(callback);
+        this.consumerTags.add(result);
+        this.connection.recordConsumer(result, consumer);
+    }
+    public void deleteRecordedConsumer(String consumerTag) {
+        this.consumerTags.remove(consumerTag);
+        RecordedConsumer c = this.connection.deleteRecordedConsumer(consumerTag);
+        if (c != null) {
+            this.connection.maybeDeleteRecordedAutoDeleteQueue(c.getQueue());
+        }
+    }
+    private void maybeDeleteRecordedAutoDeleteExchange(String exchange) {
+        this.connection.maybeDeleteRecordedAutoDeleteExchange(exchange);
+    }
+    void updateConsumerTag(String tag, String newTag) {
+        synchronized (this.consumerTags) {
+            consumerTags.remove(tag);
+            consumerTags.add(newTag);
+        }
+    }
+    @Override
+    public CompletableFuture<Command> asyncCompletableRpc(Method method) throws IOException {
+        recordOnRpcRequest(method);
+        CompletableFuture<Command> future = this.delegate.asyncCompletableRpc(method);
+        future.thenAccept(command -> {
+            if (command != null) {
+                recordOnRpcResponse(command.getMethod(), method);
+            }
+        });
+        return future;
+    }
+    private void recordOnRpcRequest(Method method) {
+        if (method instanceof AMQP.Queue.Delete) {
+            deleteRecordedQueue(((AMQP.Queue.Delete) method).getQueue());
+        } else if (method instanceof AMQP.Exchange.Delete) {
+            deleteRecordedExchange(((AMQP.Exchange.Delete) method).getExchange());
+        } else if (method instanceof AMQP.Queue.Unbind) {
+            AMQP.Queue.Unbind unbind = (AMQP.Queue.Unbind) method;
+            deleteRecordedQueueBinding(
+                    unbind.getQueue(), unbind.getExchange(),
+                    unbind.getRoutingKey(), unbind.getArguments()
+            );
+            this.maybeDeleteRecordedAutoDeleteExchange(unbind.getExchange());
+        } else if (method instanceof AMQP.Exchange.Unbind) {
+            AMQP.Exchange.Unbind unbind = (AMQP.Exchange.Unbind) method;
+            deleteRecordedExchangeBinding(
+                    unbind.getDestination(), unbind.getSource(),
+                    unbind.getRoutingKey(), unbind.getArguments()
+            );
+            this.maybeDeleteRecordedAutoDeleteExchange(unbind.getSource());
+        }
+    }
+    private void recordOnRpcResponse(Method response, Method request) {
+        if (response instanceof AMQP.Queue.DeclareOk) {
+            if (request instanceof AMQP.Queue.Declare) {
+                AMQP.Queue.DeclareOk ok = (AMQP.Queue.DeclareOk) response;
+                AMQP.Queue.Declare declare = (AMQP.Queue.Declare) request;
+                recordQueue(
+                        ok, declare.getQueue(),
+                        declare.getDurable(), declare.getExclusive(), declare.getAutoDelete(),
+                        declare.getArguments()
+                );
+            } else {
+                LOGGER.warn("RPC response {} and RPC request {} not compatible, topology not recorded.",
+                        response.getClass(), request.getClass());
+            }
+        } else if (response instanceof AMQP.Exchange.DeclareOk) {
+            if (request instanceof AMQP.Exchange.Declare) {
+                AMQP.Exchange.DeclareOk ok = (AMQP.Exchange.DeclareOk) response;
+                AMQP.Exchange.Declare declare = (AMQP.Exchange.Declare) request;
+                recordExchange(
+                        ok, declare.getExchange(), declare.getType(),
+                        declare.getDurable(), declare.getAutoDelete(),
+                        declare.getArguments()
+                );
+            } else {
+                LOGGER.warn("RPC response {} and RPC request {} not compatible, topology not recorded.",
+                        response.getClass(), request.getClass());
+            }
+        } else if (response instanceof AMQP.Queue.BindOk) {
+            if (request instanceof AMQP.Queue.Bind) {
+                AMQP.Queue.Bind bind = (AMQP.Queue.Bind) request;
+                recordQueueBinding(bind.getQueue(), bind.getExchange(), bind.getRoutingKey(), bind.getArguments());
+            } else {
+                LOGGER.warn("RPC response {} and RPC request {} not compatible, topology not recorded.",
+                        response.getClass(), request.getClass());
+            }
+        } else if (response instanceof AMQP.Exchange.BindOk) {
+            if (request instanceof AMQP.Exchange.Bind) {
+                AMQP.Exchange.Bind bind = (AMQP.Exchange.Bind) request;
+                recordExchangeBinding(bind.getDestination(), bind.getSource(), bind.getRoutingKey(), bind.getArguments());
+            } else {
+                LOGGER.warn("RPC response {} and RPC request {} not compatible, topology not recorded.",
+                        response.getClass(), request.getClass());
+            }
+        }
+    }
+    @Override
+    public String toString() {
+        return this.delegate.toString();
+    }
+}
+package com.rabbitmq.client.impl;
+import com.rabbitmq.client.*;
+import com.rabbitmq.client.Method;
+import java.util.concurrent.CompletableFuture;
+public class CompletableFutureRpcWrapper implements RpcWrapper {
+    private final com.rabbitmq.client.Method request;
+    private final CompletableFuture<Command> completableFuture;
+    public CompletableFutureRpcWrapper(Method method, CompletableFuture<Command> completableFuture) {
+        this.request = method;
+        this.completableFuture = completableFuture;
+    }
+    @Override
+    public boolean canHandleReply(AMQCommand command) {
+        return AMQChannel.SimpleBlockingRpcContinuation.isResponseCompatibleWithRequest(request, command.getMethod());
+    }
+    @Override
+    public void complete(AMQCommand command) {
+        completableFuture.complete(command);
+    }
+    @Override
+    public void shutdown(ShutdownSignalException signal) {
+        completableFuture.completeExceptionally(signal);
+    }
+}

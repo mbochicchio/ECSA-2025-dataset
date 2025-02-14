@@ -1,0 +1,889 @@
+package world.bentobox.bentobox.database.sql;
+import java.lang.reflect.Method;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import javax.sql.DataSource;
+import org.bukkit.Bukkit;
+import org.eclipse.jdt.annotation.NonNull;
+import com.google.gson.Gson;
+import com.google.gson.JsonSyntaxException;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.DatabaseConnector;
+import world.bentobox.bentobox.database.json.AbstractJSONDatabaseHandler;
+import world.bentobox.bentobox.database.objects.DataObject;
+public class SQLDatabaseHandler<T> extends AbstractJSONDatabaseHandler<T>
+{
+    protected static final String COULD_NOT_LOAD_OBJECTS = "Could not load objects ";
+    protected static final String COULD_NOT_LOAD_OBJECT = "Could not load object ";
+    protected DataSource dataSource;
+    private SQLConfiguration sqlConfig;
+    protected SQLDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector, SQLConfiguration sqlConfiguration)
+    {
+        super(plugin, type, databaseConnector);
+        this.sqlConfig = sqlConfiguration;
+        if (this.setDataSource((DataSource) this.databaseConnector.createConnection(type)))
+        {
+            this.createSchema();
+        }
+    }
+    public SQLConfiguration getSqlConfig()
+    {
+        return sqlConfig;
+    }
+    public void setSqlConfig(SQLConfiguration sqlConfig)
+    {
+        this.sqlConfig = sqlConfig;
+    }
+    protected void createSchema()
+    {
+        if (this.sqlConfig.renameRequired())
+        {
+            String sql = this.sqlConfig.getRenameTableSQL().
+                    replace("[oldTableName]", this.sqlConfig.getOldTableName()).
+                    replace("[tableName]", this.sqlConfig.getTableName());
+            try (Connection connection = this.dataSource.getConnection();
+                    PreparedStatement preparedStatement = connection.prepareStatement(sql))
+            {
+                preparedStatement.execute();
+            }
+            catch (SQLException e)
+            {
+                this.plugin.logError("Could not rename " + this.sqlConfig.getOldTableName() + " for data object " +
+                        this.dataObject.getCanonicalName() + " " + e.getMessage());
+            }
+        }
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getSchemaSQL()))
+        {
+            preparedStatement.execute();
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Problem trying to create schema for data object " +
+                    this.dataObject.getCanonicalName() + " " + e.getMessage());
+        }
+    }
+    @Override
+    public List<T> loadObjects()
+    {
+        try (Connection connection = this.dataSource.getConnection();
+                Statement preparedStatement = connection.createStatement())
+        {
+            return this.loadIt(preparedStatement);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECTS + e.getMessage());
+        }
+        return Collections.emptyList();
+    }
+    private List<T> loadIt(Statement preparedStatement)
+    {
+        List<T> list = new ArrayList<>();
+        try (ResultSet resultSet = preparedStatement.executeQuery(this.sqlConfig.getLoadObjectsSQL()))
+        {
+            Gson gson = this.getGson();
+            while (resultSet.next())
+            {
+                String json = resultSet.getString("json");
+                if (json != null)
+                {
+                    getGsonResultSet(gson, json, list);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECTS + e.getMessage());
+        }
+        return list;
+    }
+    private void getGsonResultSet(Gson gson, String json, List<T> list) {
+        try
+        {
+            T gsonResult = gson.fromJson(json, this.dataObject);
+            if (gsonResult != null)
+            {
+                list.add(gsonResult);
+            }
+        }
+        catch (JsonSyntaxException ex)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + ex.getMessage());
+            this.plugin.logError(json);
+        }
+    }
+    @Override
+    public T loadObject(@NonNull String uniqueId)
+    {
+        T result = null;
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getLoadObjectSQL()))
+        {
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            result = getObject(uniqueId, preparedStatement);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
+        }
+        return result;
+    }
+    private T getObject(@NonNull String uniqueId, PreparedStatement preparedStatement) {
+        try (ResultSet resultSet = preparedStatement.executeQuery())
+        {
+            if (resultSet.next())
+            {
+                Gson gson = this.getGson();
+                return gson.fromJson(resultSet.getString("json"), this.dataObject);
+            }
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError(COULD_NOT_LOAD_OBJECT + uniqueId + " " + e.getMessage());
+        }
+        return null;
+    }
+    @Override
+    public CompletableFuture<Boolean> saveObject(T instance)
+    {
+        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
+        if (instance == null)
+        {
+            this.plugin.logError("SQL database request to store a null. ");
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        String toStore = this.getGson().toJson(instance);
+        if (this.plugin.isEnabled())
+        {
+            this.processQueue.add(() -> store(completableFuture,
+                    instance.getClass().getName(),
+                    toStore,
+                    this.sqlConfig.getSaveObjectSQL(),
+                    true));
+        }
+        else
+        {
+            this.store(completableFuture, instance.getClass().getName(), toStore, this.sqlConfig.getSaveObjectSQL(), false);
+        }
+        return completableFuture;
+    }
+    private void store(CompletableFuture<Boolean> completableFuture, String name, String toStore, String storeSQL, boolean async)
+    {
+        if (async && !this.plugin.isEnabled())
+        {
+            return;
+        }
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(storeSQL))
+        {
+            preparedStatement.setString(1, toStore);
+            preparedStatement.setString(2, toStore);
+            preparedStatement.execute();
+            completableFuture.complete(true);
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Could not save object " + name + " " + e.getMessage());
+            completableFuture.complete(false);
+        }
+    }
+    @Override
+    public void deleteID(String uniqueId)
+    {
+        this.processQueue.add(() -> this.delete(uniqueId));
+    }
+    private void delete(String uniqueId)
+    {
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getDeleteObjectSQL()))
+        {
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            preparedStatement.execute();
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError("Could not delete object " + this.plugin.getSettings().getDatabasePrefix() +
+                    this.dataObject.getCanonicalName() + " " + uniqueId + " " + e.getMessage());
+        }
+    }
+    @Override
+    public void deleteObject(T instance)
+    {
+        if (instance == null)
+        {
+            this.plugin.logError("SQL database request to delete a null.");
+            return;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            return;
+        }
+        try
+        {
+            Method getUniqueId = this.dataObject.getMethod("getUniqueId");
+            this.deleteID((String) getUniqueId.invoke(instance));
+        }
+        catch (Exception e)
+        {
+            this.plugin.logError("Could not delete object " + instance.getClass().getName() + " " + e.getMessage());
+        }
+    }
+    @Override
+    public boolean objectExists(String uniqueId)
+    {
+        try (Connection connection = this.dataSource.getConnection();
+                PreparedStatement preparedStatement = connection.prepareStatement(this.sqlConfig.getObjectExistsSQL()))
+        {
+            preparedStatement.setString(1, this.sqlConfig.isUseQuotes() ? "\"" + uniqueId + "\"" : uniqueId);
+            try (ResultSet resultSet = preparedStatement.executeQuery())
+            {
+                if (resultSet.next())
+                {
+                    return resultSet.getBoolean(1);
+                }
+            }
+        }
+        catch (SQLException e)
+        {
+            this.plugin.logError("Could not check if key exists in database! " + uniqueId + " " + e.getMessage());
+        }
+        return false;
+    }
+    @Override
+    public void close()
+    {
+        this.shutdown = true;
+    }
+    public boolean setDataSource(DataSource dataSource)
+    {
+        if (dataSource == null)
+        {
+            this.plugin.logError("Could not connect to the database. Are the credentials in the config.yml file correct?");
+            this.plugin.logWarning("Disabling the plugin...");
+            Bukkit.getPluginManager().disablePlugin(this.plugin);
+            return false;
+        }
+        this.dataSource = dataSource;
+        return true;
+    }
+}
+package world.bentobox.bentobox.database;
+import java.beans.IntrospectionException;
+import java.lang.reflect.InvocationTargetException;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.api.addons.Addon;
+public abstract class AbstractDatabaseHandler<T> {
+    protected Queue<Runnable> processQueue;
+    private BukkitTask asyncSaveTask;
+    private boolean inSave;
+    protected boolean shutdown;
+    protected static final String DATABASE_FOLDER_NAME = "database";
+    protected Class<T> dataObject;
+    protected DatabaseConnector databaseConnector;
+    protected BentoBox plugin;
+    @Nullable
+    private Addon addon;
+    @Nullable
+    public Addon getAddon() {
+        return addon;
+    }
+    public void setAddon(@Nullable Addon addon) {
+        this.addon = addon;
+    }
+    protected AbstractDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector) {
+        this.plugin = plugin;
+        this.databaseConnector = databaseConnector;
+        this.dataObject = type;
+        if (!plugin.isEnabled()) return;
+        processQueue = new ConcurrentLinkedQueue<>();
+        asyncSaveTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            if(shutdown || plugin.isShutdown()) {
+                databaseConnector.closeConnection(dataObject);
+                asyncSaveTask.cancel();
+            } else if (!inSave && !processQueue.isEmpty()) {
+                inSave = true;
+                while(!processQueue.isEmpty()) {
+                    processQueue.poll().run();
+                }
+                inSave = false;
+            }
+        }, 0L, 1L);
+    }
+    protected AbstractDatabaseHandler() {}
+    public abstract List<T> loadObjects() throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    @Nullable
+    public abstract T loadObject(@NonNull String uniqueId) throws InstantiationException, IllegalAccessException, InvocationTargetException, ClassNotFoundException, IntrospectionException, NoSuchMethodException;
+    public CompletableFuture<List<T>> loadObjectsASync() {
+        CompletableFuture<List<T>> completableFuture = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(BentoBox.getInstance(), () -> {
+            try {
+                completableFuture.complete(loadObjects()); 
+            } catch (Exception e) {
+                completableFuture.completeExceptionally(e); 
+                plugin.logError("Failed to load objects asynchronously: " + e.getMessage());
+            }
+        });
+        return completableFuture;
+    }
+    public abstract CompletableFuture<Boolean> saveObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    public abstract void deleteObject(T instance) throws IllegalAccessException, InvocationTargetException, IntrospectionException ;
+    public abstract boolean objectExists(String uniqueId);
+    public abstract void close();
+    public abstract void deleteID(String uniqueId);
+}
+package world.bentobox.bentobox.database;
+import java.util.Arrays;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.json.JSONDatabase;
+import world.bentobox.bentobox.database.mongodb.MongoDBDatabase;
+import world.bentobox.bentobox.database.sql.mariadb.MariaDBDatabase;
+import world.bentobox.bentobox.database.sql.mysql.MySQLDatabase;
+import world.bentobox.bentobox.database.sql.postgresql.PostgreSQLDatabase;
+import world.bentobox.bentobox.database.sql.sqlite.SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.Json2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Json2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2PostgreSQLDatabase;
+import world.bentobox.bentobox.database.transition.Json2SQLiteDatabase;
+import world.bentobox.bentobox.database.transition.MariaDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MongoDB2JsonDatabase;
+import world.bentobox.bentobox.database.transition.MySQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.PostgreSQL2JsonDatabase;
+import world.bentobox.bentobox.database.transition.SQLite2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2JsonDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MariaDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MongoDBDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2MySQLDatabase;
+import world.bentobox.bentobox.database.transition.Yaml2SQLiteDatabase;
+import world.bentobox.bentobox.database.yaml.YamlDatabase;
+public interface DatabaseSetup {
+    static DatabaseSetup getDatabase() {
+        BentoBox plugin = BentoBox.getInstance();
+        return Arrays.stream(DatabaseType.values())
+                .filter(plugin.getSettings().getDatabaseType()::equals)
+                .findFirst()
+                .map(t -> t.database)
+                .orElseGet(() -> DatabaseType.JSON.database);
+    }
+    enum DatabaseType {
+        YAML(new YamlDatabase()),
+        YAML2JSON(new Yaml2JsonDatabase()),
+        YAML2MYSQL(new Yaml2MySQLDatabase()),
+        YAML2MARIADB(new Yaml2MariaDBDatabase()),
+        YAML2MONGODB(new Yaml2MongoDBDatabase()),
+        YAML2SQLITE(new Yaml2SQLiteDatabase()),
+        JSON(new JSONDatabase()),
+        JSON2MYSQL(new Json2MySQLDatabase()),
+        JSON2MARIADB(new Json2MariaDBDatabase()),
+        JSON2MONGODB(new Json2MongoDBDatabase()),
+        JSON2SQLITE(new Json2SQLiteDatabase()),
+        JSON2POSTGRESQL(new Json2PostgreSQLDatabase()),
+        MYSQL(new MySQLDatabase()),
+        MYSQL2JSON(new MySQL2JsonDatabase()),
+        MARIADB(new MariaDBDatabase()),
+        MARIADB2JSON(new MariaDB2JsonDatabase()),
+        MONGODB(new MongoDBDatabase()),
+        MONGODB2JSON(new MongoDB2JsonDatabase()),
+        SQLITE(new SQLiteDatabase()),
+        SQLITE2JSON(new SQLite2JsonDatabase()),
+        POSTGRESQL(new PostgreSQLDatabase()),
+        POSTGRESQL2JSON(new PostgreSQL2JsonDatabase());
+        DatabaseSetup database;
+        DatabaseType(DatabaseSetup database){
+            this.database = database;
+        }
+    }
+    <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass);
+}
+package world.bentobox.bentobox.database.sql.postgresql;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnectionSettingsImpl;
+import world.bentobox.bentobox.database.DatabaseSetup;
+public class PostgreSQLDatabase implements DatabaseSetup
+{
+    PostgreSQLDatabaseConnector connector;
+    @Override
+    public <T> AbstractDatabaseHandler<T> getHandler(Class<T> dataObjectClass)
+    {
+        BentoBox plugin = BentoBox.getInstance();
+        if (this.connector == null)
+        {
+            this.connector = new PostgreSQLDatabaseConnector(new DatabaseConnectionSettingsImpl(
+                    plugin.getSettings().getDatabaseHost(),
+                    plugin.getSettings().getDatabasePort(),
+                    plugin.getSettings().getDatabaseName(),
+                    plugin.getSettings().getDatabaseUsername(),
+                    plugin.getSettings().getDatabasePassword(),
+                    plugin.getSettings().isUseSSL(),
+                    plugin.getSettings().getMaximumPoolSize()));
+        }
+        return new PostgreSQLDatabaseHandler<>(plugin, dataObjectClass, this.connector);
+    }
+}
+package world.bentobox.bentobox.database.sql.postgresql;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.util.concurrent.CompletableFuture;
+import com.google.gson.Gson;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.DatabaseConnector;
+import world.bentobox.bentobox.database.objects.DataObject;
+import world.bentobox.bentobox.database.sql.SQLConfiguration;
+import world.bentobox.bentobox.database.sql.SQLDatabaseHandler;
+public class PostgreSQLDatabaseHandler<T> extends SQLDatabaseHandler<T>
+{
+    PostgreSQLDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector)
+    {
+        super(plugin,
+                type,
+                databaseConnector,
+                new SQLConfiguration(plugin, type).
+                schema("CREATE TABLE IF NOT EXISTS \"[tableName]\" (uniqueid VARCHAR PRIMARY KEY, json jsonb NOT NULL)").
+                loadObject("SELECT * FROM \"[tableName]\" WHERE uniqueid = ? LIMIT 1").
+                deleteObject("DELETE FROM \"[tableName]\" WHERE uniqueid = ?").
+                saveObject("INSERT INTO \"[tableName]\" (uniqueid, json) VALUES (?, cast(? as json)) "
+                        + "ON CONFLICT (uniqueid) DO UPDATE SET json = cast(? as json)").
+                loadObjects("SELECT json FROM \"[tableName]\"").
+                objectExists("SELECT EXISTS(SELECT * FROM \"[tableName]\" WHERE uniqueid = ?)").
+                renameTable("ALTER TABLE IF EXISTS \"[oldTableName]\" RENAME TO \"[tableName]\"").
+                setUseQuotes(false)
+                );
+    }
+    @Override
+    public CompletableFuture<Boolean> saveObject(T instance)
+    {
+        CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
+        if (instance == null)
+        {
+            this.plugin.logError("PostgreSQL database request to store a null. ");
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        if (!(instance instanceof DataObject))
+        {
+            this.plugin.logError("This class is not a DataObject: " + instance.getClass().getName());
+            completableFuture.complete(false);
+            return completableFuture;
+        }
+        Gson gson = this.getGson();
+        String toStore = gson.toJson(instance);
+        String uniqueId = ((DataObject) instance).getUniqueId();
+        this.processQueue.add(() ->
+        {
+            try (Connection connection = this.dataSource.getConnection();
+                    PreparedStatement preparedStatement = connection.prepareStatement(this.getSqlConfig().getSaveObjectSQL()))
+            {
+                preparedStatement.setString(1, uniqueId); 
+                preparedStatement.setString(2, toStore); 
+                preparedStatement.setString(3, toStore); 
+                preparedStatement.execute();
+                completableFuture.complete(true);
+            }
+            catch (SQLException e)
+            {
+                this.plugin.logError("Could not save object " + instance.getClass().getName() + " " + e.getMessage());
+                completableFuture.complete(false);
+            }
+        });
+        return completableFuture;
+    }
+}
+package world.bentobox.bentobox;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import org.apache.commons.lang.exception.ExceptionUtils;
+import org.bukkit.Bukkit;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.server.ServerCommandEvent;
+import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import org.eclipse.jdt.annotation.NonNull;
+import org.eclipse.jdt.annotation.Nullable;
+import world.bentobox.bentobox.api.configuration.Config;
+import world.bentobox.bentobox.api.events.BentoBoxReadyEvent;
+import world.bentobox.bentobox.api.localization.TextVariables;
+import world.bentobox.bentobox.api.user.Notifier;
+import world.bentobox.bentobox.api.user.User;
+import world.bentobox.bentobox.commands.BentoBoxCommand;
+import world.bentobox.bentobox.database.DatabaseSetup;
+import world.bentobox.bentobox.hooks.FancyNpcsHook;
+import world.bentobox.bentobox.hooks.ItemsAdderHook;
+import world.bentobox.bentobox.hooks.MultipaperHook;
+import world.bentobox.bentobox.hooks.MultiverseCoreHook;
+import world.bentobox.bentobox.hooks.MyWorldsHook;
+import world.bentobox.bentobox.hooks.MythicMobsHook;
+import world.bentobox.bentobox.hooks.SlimefunHook;
+import world.bentobox.bentobox.hooks.VaultHook;
+import world.bentobox.bentobox.hooks.ZNPCsPlusHook;
+import world.bentobox.bentobox.hooks.placeholders.PlaceholderAPIHook;
+import world.bentobox.bentobox.listeners.BannedCommands;
+import world.bentobox.bentobox.listeners.BlockEndDragon;
+import world.bentobox.bentobox.listeners.DeathListener;
+import world.bentobox.bentobox.listeners.JoinLeaveListener;
+import world.bentobox.bentobox.listeners.PanelListenerManager;
+import world.bentobox.bentobox.listeners.PrimaryIslandListener;
+import world.bentobox.bentobox.listeners.SeedWorldMakerListener;
+import world.bentobox.bentobox.listeners.StandardSpawnProtectionListener;
+import world.bentobox.bentobox.listeners.teleports.EntityTeleportListener;
+import world.bentobox.bentobox.listeners.teleports.PlayerTeleportListener;
+import world.bentobox.bentobox.managers.AddonsManager;
+import world.bentobox.bentobox.managers.BlueprintsManager;
+import world.bentobox.bentobox.managers.CommandsManager;
+import world.bentobox.bentobox.managers.FlagsManager;
+import world.bentobox.bentobox.managers.HooksManager;
+import world.bentobox.bentobox.managers.IslandDeletionManager;
+import world.bentobox.bentobox.managers.IslandWorldManager;
+import world.bentobox.bentobox.managers.IslandsManager;
+import world.bentobox.bentobox.managers.LocalesManager;
+import world.bentobox.bentobox.managers.PlaceholdersManager;
+import world.bentobox.bentobox.managers.PlayersManager;
+import world.bentobox.bentobox.managers.RanksManager;
+import world.bentobox.bentobox.managers.WebManager;
+import world.bentobox.bentobox.util.heads.HeadGetter;
+import world.bentobox.bentobox.versions.ServerCompatibility;
+public class BentoBox extends JavaPlugin implements Listener {
+    private static BentoBox instance;
+    private PlayersManager playersManager;
+    private IslandsManager islandsManager;
+    private CommandsManager commandsManager;
+    private LocalesManager localesManager;
+    private AddonsManager addonsManager;
+    private FlagsManager flagsManager;
+    private IslandWorldManager islandWorldManager;
+    private BlueprintsManager blueprintsManager;
+    private HooksManager hooksManager;
+    private PlaceholdersManager placeholdersManager;
+    private IslandDeletionManager islandDeletionManager;
+    private WebManager webManager;
+    private Settings settings;
+    private Notifier notifier;
+    private HeadGetter headGetter;
+    private boolean isLoaded;
+    @Nullable
+    private BStats metrics;
+    private Config<Settings> configObject;
+    private BukkitTask blueprintLoadingTask;
+    private boolean shutdown;
+    @Override
+    public void onEnable(){
+        setInstance(this);
+        if (!ServerCompatibility.getInstance().checkCompatibility().isCanLaunch()) {
+            logWarning("************ Disclaimer **************");
+            logWarning("BentoBox may not be compatible with this server!");
+            logWarning("BentoBox is tested only on the following Spigot versions:");
+            List<String> versions = ServerCompatibility.ServerVersion.getVersions(ServerCompatibility.Compatibility.COMPATIBLE, ServerCompatibility.Compatibility.SUPPORTED)
+                    .stream().map(ServerCompatibility.ServerVersion::toString).toList();
+            logWarning(String.join(", ", versions));
+            logWarning("**************************************");
+        }
+        isLoaded = false;
+        final long loadStart = System.currentTimeMillis();
+        saveDefaultConfig();
+        flagsManager = new FlagsManager(this);
+        if (!loadSettings()) {
+            return;
+        }
+        saveConfig();
+        playersManager = new PlayersManager(this);
+        if (!this.isEnabled()) {
+            return;
+        }
+        islandsManager = new IslandsManager(this);
+        headGetter = new HeadGetter(this);
+        notifier = new Notifier();
+        commandsManager = new CommandsManager();
+        new BentoBoxCommand();
+        islandWorldManager = new IslandWorldManager(this);
+        blueprintsManager = new BlueprintsManager(this);
+        localesManager = new LocalesManager(this);
+        hooksManager = new HooksManager(this);
+        addonsManager = new AddonsManager(this);
+        addonsManager.loadAddons();
+        final long loadTime = System.currentTimeMillis() - loadStart;
+        Bukkit.getScheduler().runTask(instance, () -> {
+            try {
+                completeSetup(loadTime);
+            } catch (Exception e) {
+                fireCriticalError(e.getMessage(), "");
+                e.printStackTrace();
+            }
+        });
+    }
+    private void completeSetup(long loadTime) {
+        final long enableStart = System.currentTimeMillis();
+        hooksManager.registerHook(new MultipaperHook());
+        hooksManager.registerHook(new VaultHook());
+        hooksManager.registerHook(new FancyNpcsHook());
+        hooksManager.registerHook(new ZNPCsPlusHook());
+        hooksManager.registerHook(new MythicMobsHook());
+        hooksManager.registerHook(new PlaceholderAPIHook());
+        placeholdersManager = new PlaceholdersManager(this);
+        addonsManager.enableAddons();
+        addonsManager.getGameModeAddons().forEach(placeholdersManager::registerDefaultPlaceholders);
+        registerListeners();
+        log("Loading islands from database...");
+        try {
+            islandsManager.load();
+        } catch (Exception e) {
+            fireCriticalError(e.getMessage(), "Could not load islands!");
+            return;
+        }
+        flagsManager.registerListeners();
+        metrics = new BStats(this);
+        metrics.registerMetrics();
+        hooksManager.registerHook(new MultiverseCoreHook());
+        hooksManager.registerHook(new MyWorldsHook());
+        islandWorldManager.registerWorldsToMultiverse(true);
+        hooksManager.registerHook(new SlimefunHook());
+        hooksManager.registerHook(new ItemsAdderHook(this));
+        webManager = new WebManager(this);
+        final long enableTime = System.currentTimeMillis() - enableStart;
+        User.getInstance(Bukkit.getConsoleSender()).sendMessage("successfully-loaded",
+                TextVariables.VERSION, instance.getDescription().getVersion(),
+                "[time]", String.valueOf(loadTime + enableTime));
+        blueprintLoadingTask = Bukkit.getScheduler().runTaskTimer(instance, () -> {
+            if (getBlueprintsManager().isBlueprintsLoaded()) {
+                blueprintLoadingTask.cancel();
+                isLoaded = true;
+                this.addonsManager.allLoaded();
+                settings.getReadyCommands().forEach(cmd -> Bukkit.getServer().dispatchCommand(getServer().getConsoleSender(), cmd));
+                Bukkit.getPluginManager().callEvent(new BentoBoxReadyEvent());
+                instance.log("All blueprints loaded.");
+            }
+        }, 0L, 1L);
+        if (getSettings().getDatabaseType().equals(DatabaseSetup.DatabaseType.YAML)) {
+            logWarning("*** You're still using YAML database ! ***");
+            logWarning("This database type is being deprecated from BentoBox as some official addons encountered difficulties supporting it correctly.");
+            logWarning("You should switch ASAP to an alternative database type. Please refer to the comments in BentoBox's config.yml.");
+            logWarning("There is NO guarantee YAML database will remain properly supported in the following updates, and its usage should as such be considered a non-viable situation.");
+            logWarning("*** *** *** *** *** *** *** *** *** *** ***");
+        }
+    }
+    private void fireCriticalError(String message, String error) {
+        logError("*****************CRITICAL ERROR!******************");
+        logError(message);
+        logError(error + " Disabling BentoBox...");
+        logError("*************************************************");
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        shutdown = true;
+        instance.setEnabled(false);
+    }
+    private void registerListeners() {
+        PluginManager manager = getServer().getPluginManager();
+        manager.registerEvents(new JoinLeaveListener(this), this);
+        manager.registerEvents(new PanelListenerManager(), this);
+        manager.registerEvents(new StandardSpawnProtectionListener(this), this);
+        manager.registerEvents(new PlayerTeleportListener(this), this);
+        manager.registerEvents(new EntityTeleportListener(this), this);
+        manager.registerEvents(new BlockEndDragon(this), this);
+        manager.registerEvents(new BannedCommands(this), this);
+        manager.registerEvents(new DeathListener(this), this);
+        manager.registerEvents(this, this);
+        islandDeletionManager = new IslandDeletionManager(this);
+        manager.registerEvents(islandDeletionManager, this);
+        manager.registerEvents(new PrimaryIslandListener(this), this);
+        manager.registerEvents(new SeedWorldMakerListener(this), this);
+    }
+    @Override
+    public void onDisable() {
+        shutdown = true;
+        HeadGetter.shutdown();
+        if (addonsManager != null) {
+            addonsManager.disableAddons();
+        }
+        if (playersManager != null) {
+            playersManager.shutdown();
+        }
+        if (islandsManager != null) {
+            islandsManager.shutdown();
+        }
+    }
+    @EventHandler
+    public void onServerStop(ServerCommandEvent e) {
+    }
+    public PlayersManager getPlayers() {
+        return playersManager;
+    }
+    public PlayersManager getPlayersManager() {
+        return getPlayers();
+    }
+    public IslandsManager getIslands() {
+        return islandsManager;
+    }
+    public IslandsManager getIslandsManager() {
+        return getIslands();
+    }
+    private static void setInstance(BentoBox plugin) {
+        BentoBox.instance = plugin;
+    }
+    public static BentoBox getInstance() {
+        return instance;
+    }
+    public CommandsManager getCommandsManager() {
+        return commandsManager;
+    }
+    public LocalesManager getLocalesManager() {
+        return localesManager;
+    }
+    public AddonsManager getAddonsManager() {
+        return addonsManager;
+    }
+    public FlagsManager getFlagsManager() {
+        return flagsManager;
+    }
+    @Deprecated(since = "2.0.0", forRemoval = true)
+    public RanksManager getRanksManager() {
+        return RanksManager.getInstance();
+    }
+    public IslandWorldManager getIWM() {
+        return islandWorldManager;
+    }
+    public Settings getSettings() {
+        return settings;
+    }
+    public boolean loadSettings() {
+        log("Loading Settings from config.yml...");
+        if (configObject == null) configObject = new Config<>(this, Settings.class);
+        settings = configObject.loadConfigObject();
+        if (settings == null) {
+            logError("Settings did not load correctly - disabling plugin - please check config.yml");
+            getPluginLoader().disablePlugin(this);
+            return false;
+        }
+        log("Saving default panels...");
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_creation_panel.yml"))) {
+            log("Saving default island_creation_panel...");
+            this.saveResource("panels/island_creation_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "language_panel.yml"))) {
+            log("Saving default language_panel...");
+            this.saveResource("panels/language_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "island_homes_panel.yml"))) {
+            log("Saving default island_homes_panel...");
+            this.saveResource("panels/island_homes_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_invite_panel.yml"))) {
+            log("Saving default team_invite_panel...");
+            this.saveResource("panels/team_invite_panel.yml", false);
+        }
+        if (!Files.exists(Path.of(this.getDataFolder().getPath(), "panels", "team_panel.yml"))) {
+            log("Saving default team_panel...");
+            this.saveResource("panels/team_panel.yml", false);
+        }
+        return true;
+    }
+    @Override
+    public void saveConfig() {
+        if (settings != null) configObject.saveConfigObject(settings);
+    }
+    public Notifier getNotifier() {
+        return notifier;
+    }
+    public HeadGetter getHeadGetter() {
+        return headGetter;
+    }
+    public void log(String string) {
+        getLogger().info(() -> string);
+    }
+    public void logDebug(Object object) {
+        getLogger().info(() -> "DEBUG: " + object);
+    }
+    public void logError(String error) {
+        getLogger().severe(() -> error);
+    }
+    public void logStacktrace(@NonNull Throwable throwable) {
+        logError(ExceptionUtils.getStackTrace(throwable));
+    }
+    public void logWarning(String warning) {
+        getLogger().warning(() -> warning);
+    }
+    public BlueprintsManager getBlueprintsManager() {
+        return blueprintsManager;
+    }
+    public boolean isLoaded() {
+        return isLoaded;
+    }
+    public HooksManager getHooks() {
+        return hooksManager;
+    }
+    public Optional<VaultHook> getVault() {
+        return Optional.ofNullable((VaultHook) hooksManager.getHook("Vault").orElse(null));
+    }
+    public PlaceholdersManager getPlaceholdersManager() {
+        return placeholdersManager;
+    }
+    public IslandDeletionManager getIslandDeletionManager() {
+        return islandDeletionManager;
+    }
+    @NonNull
+    public Optional<BStats> getMetrics() {
+        return Optional.ofNullable(metrics);
+    }
+    public WebManager getWebManager() {
+        return webManager;
+    }
+    @Override
+    public ChunkGenerator getDefaultWorldGenerator(@NonNull String worldName, String id) {
+        return addonsManager.getDefaultWorldGenerator(worldName, id);
+    }
+    @Override
+    public void reloadConfig() {
+        loadSettings();
+    }
+    public boolean isShutdown() {
+        return shutdown;
+    }
+}
+package world.bentobox.bentobox.database.json;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import world.bentobox.bentobox.BentoBox;
+import world.bentobox.bentobox.database.AbstractDatabaseHandler;
+import world.bentobox.bentobox.database.DatabaseConnector;
+public abstract class AbstractJSONDatabaseHandler<T> extends AbstractDatabaseHandler<T> {
+    private final Gson gson;
+    protected AbstractJSONDatabaseHandler(BentoBox plugin, Class<T> type, DatabaseConnector databaseConnector) {
+        super(plugin, type, databaseConnector);
+        GsonBuilder builder = new GsonBuilder().excludeFieldsWithoutExposeAnnotation().enableComplexMapKeySerialization().setPrettyPrinting();
+        builder.registerTypeAdapterFactory(new BentoboxTypeAdapterFactory(plugin));
+        builder.disableHtmlEscaping();
+        gson = builder.create();
+    }
+    protected Gson getGson() {
+        return gson;
+    }
+}

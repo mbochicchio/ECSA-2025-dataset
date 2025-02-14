@@ -1,0 +1,1211 @@
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.jquery.core.utils.LocaleUtils;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DatePicker //
+		final String pattern = LocaleUtils.getLocaleDatePattern(Locale.FRENCH); // gives the french date pattern, ie: dd/MM/yyyy
+		final DatePicker datepicker = new DatePicker("datepicker", Model.of(new Date()), pattern);
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+				target.add(form);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Arrays;
+import java.util.List;
+import org.wicketstuff.jquery.ui.samples.KendoSamplePage;
+abstract class AbstractTimePickerPage extends KendoSamplePage
+{
+	private static final long serialVersionUID = 1L;
+	@Override
+	protected List<DemoLink> getDemoLinks()
+	{
+		return Arrays.asList( // lf
+				new DemoLink(KendoDatePickerPage.class, "DatePicker"), // lf
+				new DemoLink(LocaleDatePickerPage.class, "DatePicker: using locale"), // lf
+				new DemoLink(PatternDatePickerPage.class, "DatePicker: using pattern"), // lf
+				new DemoLink(KendoTimePickerPage.class, "TimePicker"), // lf
+				new DemoLink(LocaleTimePickerPage.class, "TimePicker: using locale"), // lf
+				new DemoLink(PatternTimePickerPage.class, "TimePicker: using pattern"), // lf
+				new DemoLink(KendoDateTimePickerPage.class, "DateTimePicker"), // lf
+				new DemoLink(LocaleDateTimePickerPage.class, "DateTimePicker: using locale"), // lf
+				new DemoLink(PatternDateTimePickerPage.class, "DateTimePicker: using pattern"), // lf
+				new DemoLink(AjaxDatePickerPage.class, "AjaxDatePicker"), // lf
+				new DemoLink(LocaleAjaxDatePickerPage.class, "AjaxDatePicker: using locale"), // lf
+				new DemoLink(PatternAjaxDatePickerPage.class, "AjaxDatePicker: using pattern"), // lf
+				new DemoLink(AjaxTimePickerPage.class, "AjaxTimePicker"), // lf
+				new DemoLink(LocaleAjaxTimePickerPage.class, "AjaxTimePicker: using locale"), // lf
+				new DemoLink(PatternAjaxTimePickerPage.class, "AjaxTimePicker: using pattern"), // lf
+				new DemoLink(AjaxDateTimePickerPage.class, "AjaxDateTimePicker"), // lf
+				new DemoLink(LocaleAjaxDateTimePickerPage.class, "AjaxDateTimePicker: using locale"), // lf
+				new DemoLink(PatternAjaxDateTimePickerPage.class, "AjaxDateTimePicker: using pattern") // lf
+			);
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.jquery.core.utils.LocaleUtils;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDatePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternAjaxDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternAjaxDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DatePicker //
+		final String pattern = LocaleUtils.getLocaleDatePattern(Locale.FRENCH); // gives the french date pattern, ie: dd/MM/yyyy
+		final DatePicker datepicker = new AjaxDatePicker("datepicker", Model.of(new Date()), pattern) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new TimePicker("timepicker", Model.of(new Date()), Locale.FRANCE);
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+	/**
+	 * renderHead could be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final DateTimePicker datetimepicker = new DateTimePicker("datetimepicker", Model.of(new Date()), "EEE dd MMM yyyy", "HH:mm:ss");
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject());
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new TimePicker("timepicker", Model.of(new Date()), "hh:mm:ss a");
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.List;
+import org.apache.wicket.MarkupContainer;
+import org.apache.wicket.extensions.markup.html.tabs.AbstractTab;
+import org.apache.wicket.extensions.markup.html.tabs.ITab;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.html.WebMarkupContainer;
+import org.apache.wicket.markup.html.basic.Label;
+import org.apache.wicket.markup.html.link.BookmarkablePageLink;
+import org.apache.wicket.markup.html.link.Link;
+import org.apache.wicket.markup.html.list.ListItem;
+import org.apache.wicket.markup.html.list.ListView;
+import org.apache.wicket.markup.html.panel.Fragment;
+import org.apache.wicket.model.IModel;
+import org.apache.wicket.model.Model;
+import org.apache.wicket.resource.ResourceUtil;
+import org.apache.wicket.util.io.IClusterable;
+import org.apache.wicket.util.lang.Generics;
+import org.apache.wicket.util.reference.ClassReference;
+import org.apache.wicket.util.template.PackageTextTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.wicketstuff.jquery.core.resource.JavaScriptPackageHeaderItem;
+import org.wicketstuff.jquery.core.resource.StyleSheetPackageHeaderItem;
+public abstract class SamplePage extends TemplatePage // NOSONAR
+{
+	private static final long serialVersionUID = 1L;
+	private static final Logger LOG = LoggerFactory.getLogger(SamplePage.class);
+	protected enum Source
+	{
+		HTML, JAVA, CSS, TEXT
+	}
+	public SamplePage()
+	{
+		this.add(new Label("title", this.getResourceString("title")));
+		this.add(new Label("source-desc", this.getSource(Source.TEXT)).setEscapeModelStrings(false));
+	}
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(new StyleSheetPackageHeaderItem(SamplePage.class));
+		response.render(new JavaScriptPackageHeaderItem(SamplePage.class));
+	}
+	@Override
+	protected void onInitialize()
+	{
+		super.onInitialize();
+		this.add(new ListView<DemoLink>("demo-list", Model.ofList(this.getDemoLinks())) { // NOSONAR
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void populateItem(ListItem<DemoLink> item)
+			{
+				DemoLink object = item.getModelObject();
+				Link<SamplePage> link = new BookmarkablePageLink<SamplePage>("link", object.getPage());
+				link.add(new Label("label", object.getLabel()).setEscapeModelStrings(false));
+				item.add(link);
+			}
+			@Override
+			public boolean isVisible()
+			{
+				return !this.getModelObject().isEmpty(); // model object cannot be null
+			}
+		});
+	}
+	protected List<DemoLink> getDemoLinks()
+	{
+		return Collections.emptyList();
+	}
+	private String getResourceString(String string)
+	{
+		return this.getString(String.format("%s.%s", this.getClass().getSimpleName(), string));
+	}
+	protected IModel<String> getSource(Source source)
+	{
+		return Model.of(SamplePage.getSource(source, this.getClass()));
+	}
+	private static String getSource(Source source, Class<? extends SamplePage> scope)
+	{
+		final String filename = String.format("%s.%s", scope.getSimpleName(), source.toString().toLowerCase());
+		try (PackageTextTemplate stream = new PackageTextTemplate(scope, filename))
+		{
+			return ResourceUtil.readString(stream);
+		}
+		catch (IllegalArgumentException | IOException e)
+		{
+			LOG.debug(e.getMessage());
+		}
+		return "";
+	}
+	protected final List<ITab> newSourceTabList()
+	{
+		List<ITab> tabs = Generics.newArrayList(2);
+		tabs.add(this.newJavaAjaxTab());
+		tabs.add(this.newHtmlAjaxTab());
+		tabs.add(this.newStyleAjaxTab());
+		return tabs;
+	}
+	private ITab newJavaAjaxTab()
+	{
+		return new AbstractTab(Model.of("Java")) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public WebMarkupContainer getPanel(String panelId)
+			{
+				return new JavaFragment(panelId, SamplePage.this, getSource(Source.JAVA));
+			}
+		};
+	}
+	private ITab newHtmlAjaxTab()
+	{
+		return new AbstractTab(Model.of("HTML")) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public WebMarkupContainer getPanel(String panelId)
+			{
+				return new HtmlFragment(panelId, SamplePage.this, getSource(Source.HTML));
+			}
+		};
+	}
+	private ITab newStyleAjaxTab()
+	{
+		return new AbstractTab(Model.of("CSS")) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public WebMarkupContainer getPanel(String panelId)
+			{
+				return new StyleFragment(panelId, SamplePage.this, getSource(Source.CSS));
+			}
+		};
+	}
+	// Classes //
+	protected static class JavaFragment extends Fragment
+	{
+		private static final long serialVersionUID = 1L;
+		public JavaFragment(String id, MarkupContainer provider, IModel<String> model)
+		{
+			super(id, "fragment-java", provider);
+			this.add(new Label("code", model));
+		}
+	}
+	protected static class HtmlFragment extends Fragment
+	{
+		private static final long serialVersionUID = 1L;
+		public HtmlFragment(String id, MarkupContainer provider, IModel<String> model)
+		{
+			super(id, "fragment-html", provider);
+			this.add(new Label("code", model));
+		}
+	}
+	protected static class StyleFragment extends Fragment
+	{
+		private static final long serialVersionUID = 1L;
+		public StyleFragment(String id, MarkupContainer provider, IModel<String> model)
+		{
+			super(id, "fragment-style", provider);
+			this.add(new Label("code", model));
+		}
+	}
+	protected static class DemoLink implements IClusterable
+	{
+		private static final long serialVersionUID = 1L;
+		private final ClassReference<? extends SamplePage> reference;
+		private final String label;
+		public DemoLink(Class<? extends SamplePage> page, String label)
+		{
+			this.reference = ClassReference.of(page);
+			this.label = label;
+		}
+		public Class<? extends SamplePage> getPage()
+		{
+			return this.reference.get();
+		}
+		public String getLabel()
+		{
+			return this.label;
+		}
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DatePicker //
+		final DatePicker datepicker = new DatePicker("datepicker", Model.of(new Date()), Locale.FRANCE, "EEE dd MMM yyyy");
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+				target.add(form);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+	/**
+	 * renderHead can be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class KendoTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public KendoTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new TimePicker("timepicker", Model.of(new Date()));
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleAjaxTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleAjaxTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new AjaxTimePicker("timepicker", Model.of(new Date()), Locale.FRANCE) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+			}
+		});
+	}
+	/**
+	 * renderHead could be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDatePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleAjaxDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleAjaxDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DatePicker //
+		final DatePicker datepicker = new AjaxDatePicker("datepicker", Model.of(new Date()), Locale.FRANCE, "EEE dd MMM yyyy") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+	}
+	/**
+	 * renderHead can be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class KendoDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public KendoDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final DateTimePicker datetimepicker = new DateTimePicker("datetimepicker", Model.of(new Date()));
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); //warning, model object can be null
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); //warning, model object can be null
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final String datePattern = "EEE dd MMM yyyy";
+		final String timePattern = "HH:mm";
+		final DateTimePicker datetimepicker = new DateTimePicker("datetimepicker", Model.of(new Date()), Locale.FRANCE, datePattern, timePattern);
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); // warning, model object can be null
+				target.add(feedback);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+	/**
+	 * renderHead could be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDateTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class AjaxDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public AjaxDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final DateTimePicker datetimepicker = new AjaxDateTimePicker("datetimepicker", Model.of(new Date())) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.AjaxButton;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class KendoDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public KendoDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// Date Picker //
+		final DatePicker datepicker = new DatePicker("datepicker", Model.of(new Date()));
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+			}
+		});
+		form.add(new AjaxButton("button") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			protected void onSubmit(AjaxRequestTarget target)
+			{
+				this.info("Submitted: " + datepicker.getModelObject());
+				target.add(form);
+			}
+			@Override
+			protected void onError(AjaxRequestTarget target)
+			{
+				target.add(feedback);
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternAjaxTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternAjaxTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new AjaxTimePicker("timepicker", Model.of(new Date()), "hh:mm:ss a") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject());
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples;
+import org.wicketstuff.kendo.ui.widget.tabs.TabbedPanel;
+public abstract class KendoSamplePage extends SamplePage
+{
+	private static final long serialVersionUID = 1L;
+	public KendoSamplePage()
+	{
+		this.add(new TabbedPanel("sources", this.newSourceTabList()));
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDatePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DatePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class AjaxDatePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public AjaxDatePickerPage()
+	{
+		final Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DatePicker //
+		final DatePicker datepicker = new AjaxDatePicker("datepicker", Model.of(new Date())) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDateTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class PatternAjaxDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public PatternAjaxDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final DateTimePicker datetimepicker = new AjaxDateTimePicker("datetimepicker", Model.of(new Date()), "EEE dd MMM yyyy", "HH:mm:ss") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject());
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.TimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+public class AjaxTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public AjaxTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// TimePicker //
+		final TimePicker timepicker = new AjaxTimePicker("timepicker", Model.of(new Date())) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(timepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + timepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+	}
+}
+/*
+Licensed under the Apache License, Version 2.0 (the "License") http://www.apache.org/licenses/LICENSE-2.0
+ */
+package org.wicketstuff.jquery.ui.samples.kendoui.datetimepicker;
+import java.util.Date;
+import java.util.Locale;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.apache.wicket.markup.html.form.Form;
+import org.apache.wicket.model.Model;
+import org.wicketstuff.kendo.ui.form.button.Button;
+import org.wicketstuff.kendo.ui.form.datetime.AjaxDateTimePicker;
+import org.wicketstuff.kendo.ui.form.datetime.DateTimePicker;
+import org.wicketstuff.kendo.ui.panel.KendoFeedbackPanel;
+import org.wicketstuff.kendo.ui.resource.KendoCultureResourceReference;
+public class LocaleAjaxDateTimePickerPage extends AbstractTimePickerPage
+{
+	private static final long serialVersionUID = 1L;
+	public LocaleAjaxDateTimePickerPage()
+	{
+		Form<?> form = new Form<Void>("form");
+		this.add(form);
+		// FeedbackPanel //
+		final KendoFeedbackPanel feedback = new KendoFeedbackPanel("feedback");
+		form.add(feedback);
+		// DateTimePicker //
+		final String datePattern = "EEE dd MMM yyyy";
+		final String timePattern = "HH:mm";
+		final DateTimePicker datetimepicker = new AjaxDateTimePicker("datetimepicker", Model.of(new Date()), Locale.FRANCE, datePattern, timePattern) {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onValueChanged(IPartialPageRequestHandler handler)
+			{
+				this.info("Value Changed: " + this.getModelObject());
+				handler.add(feedback);
+			}
+			@Override
+			protected void onError(IPartialPageRequestHandler handler)
+			{
+				handler.add(feedback);
+			}
+		};
+		form.add(datetimepicker);
+		// Buttons //
+		form.add(new Button("submit") {
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void onSubmit()
+			{
+				this.info("Submitted: " + datetimepicker.getModelObject()); // warning, model object can be null
+			}
+		});
+	}
+	/**
+	 * renderHead could be overridden directly in DatePicker if using wicket6+ (javascript dependencies priority)
+	 */
+	@Override
+	public void renderHead(IHeaderResponse response)
+	{
+		super.renderHead(response);
+		response.render(JavaScriptHeaderItem.forReference(new KendoCultureResourceReference(Locale.FRANCE)));
+	}
+}

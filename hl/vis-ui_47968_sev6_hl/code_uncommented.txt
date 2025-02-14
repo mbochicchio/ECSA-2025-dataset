@@ -1,0 +1,2361 @@
+package com.kotcrab.vis.ui.widget.spinner;
+public abstract class AbstractSpinnerModel implements SpinnerModel {
+	protected Spinner spinner;
+	private boolean allowRebind;
+	private boolean wrap;
+	public AbstractSpinnerModel (boolean allowRebind) {
+		this.allowRebind = allowRebind;
+	}
+	@Override
+	public void bind (Spinner spinner) {
+		if (this.spinner != null && allowRebind == false)
+			throw new IllegalStateException("this spinner model can't be reused");
+		this.spinner = spinner;
+	}
+	protected abstract boolean incrementModel ();
+	protected abstract boolean decrementModel ();
+	@Override
+	public final boolean increment () {
+		return increment(spinner.isProgrammaticChangeEvents());
+	}
+	@Override
+	public final boolean increment (boolean fireEvent) {
+		boolean valueChanged = incrementModel();
+		if (valueChanged) spinner.notifyValueChanged(fireEvent);
+		return valueChanged;
+	}
+	@Override
+	public final boolean decrement () {
+		return decrement(spinner.isProgrammaticChangeEvents());
+	}
+	@Override
+	public final boolean decrement (boolean fireEvent) {
+		boolean valueChanged = decrementModel();
+		if (valueChanged) spinner.notifyValueChanged(fireEvent);
+		return valueChanged;
+	}
+	@Override
+	public boolean isWrap () {
+		return wrap;
+	}
+	@Override
+	public void setWrap (boolean wrap) {
+		this.wrap = wrap;
+	}
+	public boolean isAllowRebind () {
+		return allowRebind;
+	}
+	protected void setAllowRebind (boolean allowRebind) {
+		this.allowRebind = allowRebind;
+	}
+}
+package com.kotcrab.vis.ui.widget.spinner;
+import com.badlogic.gdx.Input.Keys;
+import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.InputEvent;
+import com.badlogic.gdx.scenes.scene2d.InputListener;
+import com.badlogic.gdx.scenes.scene2d.ui.Cell;
+import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
+import com.badlogic.gdx.scenes.scene2d.utils.Disableable;
+import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.scenes.scene2d.utils.FocusListener;
+import com.badlogic.gdx.utils.Pools;
+import com.badlogic.gdx.utils.Timer;
+import com.badlogic.gdx.utils.Timer.Task;
+import com.kotcrab.vis.ui.Sizes;
+import com.kotcrab.vis.ui.VisUI;
+import com.kotcrab.vis.ui.widget.*;
+public class Spinner extends VisTable implements Disableable {
+	private final Sizes sizes;
+	private SpinnerModel model;
+	private ButtonRepeatTask buttonRepeatTask = new ButtonRepeatTask();
+	private VisImageButton upButton;
+	private VisImageButton downButton;
+	private Cell<VisValidatableTextField> textFieldCell;
+	private Cell<VisLabel> labelCell;
+	private TextFieldEventPolicy textFieldEventPolicy = TextFieldEventPolicy.ON_FOCUS_LOST;
+	private boolean programmaticChangeEvents = true;
+	private boolean disabled;
+	public Spinner (String name, SpinnerModel model) {
+		this("default", name, model);
+	}
+	public Spinner (String styleName, String name, SpinnerModel model) {
+		this(VisUI.getSkin().get(styleName, SpinnerStyle.class), VisUI.getSizes(), name, model);
+	}
+	public Spinner (SpinnerStyle style, Sizes sizes, String name, SpinnerModel model) {
+		this.sizes = sizes;
+		this.model = model;
+		VisTable buttonsTable = new VisTable();
+		VisValidatableTextField textField = createTextField();
+		upButton = new VisImageButton(style.up);
+		downButton = new VisImageButton(style.down);
+		buttonsTable.add(upButton).height(sizes.spinnerButtonHeight).row();
+		buttonsTable.add(downButton).height(sizes.spinnerButtonHeight);
+		labelCell = add(new VisLabel(""));
+		setSelectorName(name);
+		textFieldCell = add(textField).height(sizes.spinnerButtonHeight * 2).growX();
+		add(buttonsTable);
+		addButtonsListeners(upButton, downButton);
+		model.bind(this);
+	}
+	private VisValidatableTextField createTextField () {
+		VisValidatableTextField textField = new VisValidatableTextField() {
+			@Override
+			public float getPrefWidth () {
+				return sizes.spinnerFieldSize;
+			}
+		};
+		textField.setRestoreLastValid(true);
+		textField.setProgrammaticChangeEvents(false);
+		addTextFieldListeners(textField);
+		return textField;
+	}
+	public void setModel (SpinnerModel model) {
+		this.model = model;
+		textFieldCell.setActor(createTextField());
+		model.bind(this);
+	}
+	private void addButtonsListeners (VisImageButton upButton, VisImageButton downButton) {
+		upButton.addListener(new ChangeListener() {
+			@Override
+			public void changed (ChangeEvent event, Actor actor) {
+				event.stop();
+				getStage().setScrollFocus(getTextField());
+				increment(true);
+			}
+		});
+		downButton.addListener(new ChangeListener() {
+			@Override
+			public void changed (ChangeEvent event, Actor actor) {
+				event.stop();
+				getStage().setScrollFocus(getTextField());
+				decrement(true);
+			}
+		});
+		upButton.addListener(new ButtonInputListener(true));
+		downButton.addListener(new ButtonInputListener(false));
+	}
+	private void addTextFieldListeners (final VisTextField textField) {
+		textField.addListener(new ChangeListener() {
+			@Override
+			public void changed (ChangeEvent event, Actor actor) {
+				event.stop();
+				model.textChanged();
+				if (textField.isInputValid() && textFieldEventPolicy == TextFieldEventPolicy.ON_KEY_TYPED) {
+					notifyValueChanged(true);
+				}
+			}
+		});
+		textField.addListener(new FocusListener() {
+			@Override
+			public void keyboardFocusChanged (FocusEvent event, Actor actor, boolean focused) {
+				if (focused == false) {
+					getStage().setScrollFocus(null);
+					if (textFieldEventPolicy == TextFieldEventPolicy.ON_FOCUS_LOST) {
+						notifyValueChanged(true);
+					}
+				}
+			}
+		});
+		textField.addListener(new InputListener() {
+			@Override
+			public boolean touchDown (InputEvent event, float x, float y, int pointer, int button) {
+				getStage().setScrollFocus(getTextField());
+				return true;
+			}
+			@Override
+			public boolean scrolled (InputEvent event, float x, float y, float amountX, float amountY) {
+				if (disabled) {
+					return false;
+				}
+				if (amountY >= 1) {
+					decrement(true);
+				} else if (amountY <= -1) {
+					increment(true);
+				}
+				return true;
+			}
+			@Override
+			public boolean keyDown (InputEvent event, int keycode) {
+				if (keycode == Keys.ENTER) {
+					notifyValueChanged(true);
+					return true;
+				}
+				return false;
+			}
+		});
+	}
+	@Override
+	public void setDisabled (boolean disabled) {
+		this.disabled = disabled;
+		upButton.setDisabled(disabled);
+		downButton.setDisabled(disabled);
+		getTextField().setDisabled(disabled);
+	}
+	@Override
+	public boolean isDisabled () {
+		return disabled;
+	}
+	public void setSelectorName (String name) {
+		labelCell.getActor().setText(name);
+		if (name == null || name.length() == 0) {
+			labelCell.padRight(0);
+		} else {
+			labelCell.padRight(6);
+		}
+	}
+	public String getSelectorName () {
+		return labelCell.getActor().getText().toString();
+	}
+	public void increment () {
+		model.increment(programmaticChangeEvents);
+	}
+	private void increment (boolean fireEvent) {
+		model.increment(fireEvent);
+	}
+	public void decrement () {
+		model.decrement(programmaticChangeEvents);
+	}
+	private void decrement (boolean fireEvent) {
+		model.decrement(fireEvent);
+	}
+	public void setProgrammaticChangeEvents (boolean programmaticChangeEvents) {
+		this.programmaticChangeEvents = programmaticChangeEvents;
+	}
+	public boolean isProgrammaticChangeEvents () {
+		return programmaticChangeEvents;
+	}
+	public void setTextFieldEventPolicy (TextFieldEventPolicy textFieldEventPolicy) {
+		this.textFieldEventPolicy = textFieldEventPolicy;
+	}
+	public TextFieldEventPolicy getTextFieldEventPolicy () {
+		return textFieldEventPolicy;
+	}
+	public int getMaxLength () {
+		return getTextField().getMaxLength();
+	}
+	public void setMaxLength (int maxLength) {
+		getTextField().setMaxLength(maxLength);
+	}
+	public SpinnerModel getModel () {
+		return model;
+	}
+	public void notifyValueChanged (boolean fireEvent) {
+		VisValidatableTextField textField = getTextField();
+		int cursor = textField.getCursorPosition();
+		textField.setCursorPosition(0);
+		textField.setText(model.getText());
+		textField.setCursorPosition(cursor);
+		if (fireEvent) {
+			ChangeListener.ChangeEvent changeEvent = Pools.obtain(ChangeListener.ChangeEvent.class);
+			fire(changeEvent);
+			Pools.free(changeEvent);
+		}
+	}
+	public VisValidatableTextField getTextField () {
+		return textFieldCell.getActor();
+	}
+	public static class SpinnerStyle {
+		public Drawable up;
+		public Drawable down;
+		public SpinnerStyle () {
+		}
+		public SpinnerStyle (SpinnerStyle style) {
+			this.up = style.up;
+			this.down = style.down;
+		}
+		public SpinnerStyle (Drawable up, Drawable down) {
+			this.up = up;
+			this.down = down;
+		}
+	}
+	private class ButtonRepeatTask extends Task {
+		boolean advance;
+		@Override
+		public void run () {
+			if (advance) {
+				increment(true);
+			} else {
+				decrement(true);
+			}
+		}
+	}
+	public enum TextFieldEventPolicy {
+		ON_ENTER_ONLY,
+		ON_FOCUS_LOST,
+		ON_KEY_TYPED
+	}
+	private class ButtonInputListener extends InputListener {
+		private float buttonRepeatInitialTime = 0.4f;
+		private float buttonRepeatTime = 0.08f;
+		private boolean advance;
+		public ButtonInputListener (boolean advance) {
+			this.advance = advance;
+		}
+		@Override
+		public boolean touchDown (InputEvent event, float x, float y, int pointer, int button) {
+			if (buttonRepeatTask.isScheduled() == false) {
+				buttonRepeatTask.advance = advance;
+				buttonRepeatTask.cancel();
+				Timer.schedule(buttonRepeatTask, buttonRepeatInitialTime, buttonRepeatTime);
+			}
+			return true;
+		}
+		@Override
+		public void touchUp (InputEvent event, float x, float y, int pointer, int button) {
+			buttonRepeatTask.cancel();
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget.spinner;
+public interface SpinnerModel {
+	void bind (Spinner spinner);
+	void textChanged ();
+	boolean increment ();
+	boolean increment (boolean fireEvent);
+	boolean decrement ();
+	boolean decrement (boolean fireEvent);
+	void setWrap (boolean wrap);
+	boolean isWrap ();
+	String getText ();
+}
+package com.kotcrab.vis.ui.widget.spinner;
+import com.kotcrab.vis.ui.util.*;
+import com.kotcrab.vis.ui.widget.VisValidatableTextField;
+import java.math.BigDecimal;
+public class FloatSpinnerModel extends AbstractSpinnerModel {
+	private InputValidator boundsValidator = new BoundsValidator();
+	private NumberDigitsTextFieldFilter textFieldFilter;
+	private BigDecimal max;
+	private BigDecimal min;
+	private BigDecimal step;
+	private BigDecimal current;
+	private int scale = 0;
+	public FloatSpinnerModel (String initialValue, String min, String max) {
+		this(initialValue, min, max, "1", 1);
+	}
+	public FloatSpinnerModel (String initialValue, String min, String max, String step) {
+		this(initialValue, min, max, step, 1);
+	}
+	public FloatSpinnerModel (String initialValue, String min, String max, String step, int scale) {
+		this(new BigDecimal(initialValue), new BigDecimal(min), new BigDecimal(max), new BigDecimal(step), scale);
+	}
+	public FloatSpinnerModel (BigDecimal initialValue, BigDecimal min, BigDecimal max, BigDecimal step, int scale) {
+		super(false);
+		this.current = initialValue;
+		this.max = max;
+		this.min = min;
+		this.step = step;
+		this.scale = scale;
+		if (this.min.compareTo(this.max) > 0) throw new IllegalArgumentException("min can't be > max");
+		if (this.step.compareTo(BigDecimal.ZERO) <= 0) throw new IllegalArgumentException("step must be > 0");
+		if (scale < 0) throw new IllegalArgumentException("scale must be >= 0");
+	}
+	@Override
+	public void bind (Spinner spinner) {
+		super.bind(spinner);
+		setScale(scale, false);
+		spinner.notifyValueChanged(true);
+	}
+	@Override
+	public void textChanged () {
+		String text = spinner.getTextField().getText();
+		if (text.equals("")) {
+			current = min.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		} else if (checkInputBounds(text)) {
+			current = new BigDecimal(text);
+		}
+	}
+	@Override
+	public boolean incrementModel () {
+		if (current.add(step).compareTo(max) > 0) {
+			if (current.compareTo(max) == 0) {
+				if (isWrap()) {
+					current = min.setScale(scale, BigDecimal.ROUND_HALF_UP);
+					return true;
+				}
+				return false;
+			}
+			current = max.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		} else {
+			current = current.add(step);
+		}
+		return true;
+	}
+	@Override
+	public boolean decrementModel () {
+		if (current.subtract(step).compareTo(min) < 0) {
+			if (current.compareTo(min) == 0) {
+				if (isWrap()) {
+					current = max.setScale(scale, BigDecimal.ROUND_HALF_UP);
+					return true;
+				}
+				return false;
+			}
+			current = min.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		} else {
+			current = current.subtract(step);
+		}
+		return true;
+	}
+	@Override
+	public String getText () {
+		return current.toPlainString();
+	}
+	public int getScale () {
+		return scale;
+	}
+	public void setScale (final int scale) {
+		setScale(scale, true);
+	}
+	private void setScale (final int scale, boolean notifySpinner) {
+		if (scale < 0) throw new IllegalStateException("Scale can't be < 0");
+		this.scale = scale;
+		current = current.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		VisValidatableTextField valueText = spinner.getTextField();
+		valueText.getValidators().clear();
+		valueText.addValidator(boundsValidator); 
+		if (scale == 0) {
+			valueText.addValidator(Validators.INTEGERS);
+			valueText.setTextFieldFilter(textFieldFilter = new IntDigitsOnlyFilter(true));
+		} else {
+			valueText.addValidator(Validators.FLOATS);
+			valueText.addValidator(new InputValidator() {
+				@Override
+				public boolean validateInput (String input) {
+					int dotIndex = input.indexOf('.');
+					if (dotIndex == -1) return true;
+					return input.length() - input.indexOf('.') - 1 <= scale;
+				}
+			});
+			valueText.setTextFieldFilter(textFieldFilter = new FloatDigitsOnlyFilter(true));
+		}
+		textFieldFilter.setUseFieldCursorPosition(true);
+		if (min.compareTo(BigDecimal.ZERO) >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		if (notifySpinner) {
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public void setValue (BigDecimal newValue) {
+		setValue(newValue, spinner.isProgrammaticChangeEvents());
+	}
+	public void setValue (BigDecimal newValue, boolean fireEvent) {
+		if (newValue.compareTo(max) > 0) {
+			current = max.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		} else if (newValue.compareTo(min) < 0) {
+			current = min.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		} else {
+			current = newValue.setScale(scale, BigDecimal.ROUND_HALF_UP);
+		}
+		spinner.notifyValueChanged(fireEvent);
+	}
+	public BigDecimal getValue () {
+		return current;
+	}
+	public BigDecimal getMin () {
+		return min;
+	}
+	public void setMin (BigDecimal min) {
+		if (min.compareTo(max) > 0) throw new IllegalArgumentException("min can't be > max");
+		this.min = min;
+		if (min.compareTo(BigDecimal.ZERO) >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		if (current.compareTo(min) < 0) {
+			current = min.setScale(scale, BigDecimal.ROUND_HALF_UP);
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public BigDecimal getMax () {
+		return max;
+	}
+	public void setMax (BigDecimal max) {
+		if (min.compareTo(max) > 0) throw new IllegalArgumentException("min can't be > max");
+		this.max = max;
+		if (current.compareTo(max) > 0) {
+			current = max.setScale(scale, BigDecimal.ROUND_HALF_UP);
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public BigDecimal getStep () {
+		return step;
+	}
+	public void setStep (BigDecimal step) {
+		if (step.compareTo(BigDecimal.ZERO) <= 0) throw new IllegalArgumentException("step must be > 0");
+		this.step = step;
+	}
+	private boolean checkInputBounds (String input) {
+		try {
+			BigDecimal x = new BigDecimal(input);
+			return x.compareTo(min) >= 0 && x.compareTo(max) <= 0;
+		} catch (NumberFormatException e) {
+			return false;
+		}
+	}
+	private class BoundsValidator implements InputValidator {
+		@Override
+		public boolean validateInput (String input) {
+			return checkInputBounds(input);
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget;
+import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.utils.FocusListener;
+import com.badlogic.gdx.utils.Array;
+import com.kotcrab.vis.ui.util.InputValidator;
+import com.kotcrab.vis.ui.util.Validators;
+public class VisValidatableTextField extends VisTextField {
+	private Array<InputValidator> validators = new Array<InputValidator>();
+	private boolean validationEnabled = true;
+	private LastValidFocusListener restoreFocusListener;
+	private boolean restoreLastValid = false;
+	private String lastValid;
+	public VisValidatableTextField () {
+		super();
+		init();
+	}
+	public VisValidatableTextField (String text) {
+		super(text);
+		init();
+	}
+	public VisValidatableTextField (String text, String styleName) {
+		super(text, styleName);
+		init();
+	}
+	public VisValidatableTextField (String text, VisTextFieldStyle style) {
+		super(text, style);
+		init();
+	}
+	public VisValidatableTextField (InputValidator validator) {
+		super();
+		addValidator(validator);
+		init();
+	}
+	public VisValidatableTextField (InputValidator... validators) {
+		super();
+		for (InputValidator validator : validators)
+			addValidator(validator);
+		init();
+	}
+	public VisValidatableTextField (boolean restoreLastValid, InputValidator validator) {
+		super();
+		addValidator(validator);
+		init();
+		setRestoreLastValid(restoreLastValid);
+	}
+	public VisValidatableTextField (boolean restoreLastValid, InputValidator... validators) {
+		super();
+		for (InputValidator validator : validators)
+			addValidator(validator);
+		init();
+		setRestoreLastValid(restoreLastValid);
+	}
+	private void init () {
+		setProgrammaticChangeEvents(true);
+		setIgnoreEqualsTextChange(false);
+	}
+	@Override
+	void beforeChangeEventFired () {
+		validateInput();
+	}
+	@Override
+	public void setText (String str) {
+		super.setText(str);
+		validateInput();
+	}
+	public void validateInput () {
+		if (validationEnabled) {
+			for (InputValidator validator : validators) {
+				if (validator.validateInput(getText()) == false) {
+					setInputValid(false);
+					return;
+				}
+			}
+		}
+		setInputValid(true);
+	}
+	public void addValidator (InputValidator validator) {
+		validators.add(validator);
+		validateInput();
+	}
+	public Array<InputValidator> getValidators () {
+		return validators;
+	}
+	public boolean isValidationEnabled () {
+		return validationEnabled;
+	}
+	public void setValidationEnabled (boolean validationEnabled) {
+		this.validationEnabled = validationEnabled;
+		validateInput();
+	}
+	public boolean isRestoreLastValid () {
+		return restoreLastValid;
+	}
+	public void setRestoreLastValid (boolean restoreLastValid) {
+		if (hasSelection)
+			throw new IllegalStateException("Last valid text restore can't be changed while filed has selection");
+		this.restoreLastValid = restoreLastValid;
+		if (restoreLastValid) {
+			if (restoreFocusListener == null) restoreFocusListener = new LastValidFocusListener();
+			addListener(restoreFocusListener);
+		} else {
+			removeListener(restoreFocusListener);
+		}
+	}
+	public void restoreLastValidText () {
+		if (restoreLastValid == false)
+			throw new IllegalStateException("Restore last valid is not enabled, see #setRestoreLastValid(boolean)");
+		VisValidatableTextField.super.setText(lastValid);
+		setInputValid(true);
+	}
+	private class LastValidFocusListener extends FocusListener {
+		@Override
+		public void keyboardFocusChanged (FocusEvent event, Actor actor, boolean focused) {
+			if (focused && restoreLastValid) {
+				lastValid = getText();
+			}
+			if (focused == false && isInputValid() == false && restoreLastValid) {
+				restoreLastValidText();
+			}
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget.spinner;
+import com.kotcrab.vis.ui.util.InputValidator;
+import com.kotcrab.vis.ui.util.IntDigitsOnlyFilter;
+import com.kotcrab.vis.ui.util.Validators;
+import com.kotcrab.vis.ui.widget.VisValidatableTextField;
+public class IntSpinnerModel extends AbstractSpinnerModel {
+	private BoundsValidator boundsValidator = new BoundsValidator();
+	private IntDigitsOnlyFilter textFieldFilter;
+	private int max;
+	private int min;
+	private int step;
+	private int current;
+	public IntSpinnerModel (int initialValue, int min, int max) {
+		this(initialValue, min, max, 1);
+	}
+	public IntSpinnerModel (int initialValue, int min, int max, int step) {
+		super(false);
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		if (step <= 0) throw new IllegalArgumentException("step must be > 0");
+		this.current = initialValue;
+		this.max = max;
+		this.min = min;
+		this.step = step;
+	}
+	@Override
+	public void bind (Spinner spinner) {
+		super.bind(spinner);
+		VisValidatableTextField valueText = spinner.getTextField();
+		valueText.getValidators().clear();
+		valueText.addValidator(boundsValidator);
+		valueText.addValidator(Validators.INTEGERS);
+		valueText.setTextFieldFilter(textFieldFilter = new IntDigitsOnlyFilter(true));
+		textFieldFilter.setUseFieldCursorPosition(true);
+		if (min >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		spinner.notifyValueChanged(true);
+	}
+	@Override
+	public void textChanged () {
+		String text = spinner.getTextField().getText();
+		if (text.equals("")) {
+			current = min;
+		} else if (checkInputBounds(text)) {
+			current = Integer.parseInt(text);
+		}
+	}
+	@Override
+	public boolean incrementModel () {
+		if (current + step > max) {
+			if (current == max) {
+				if (isWrap()) {
+					current = min;
+					return true;
+				}
+				return false;
+			}
+			current = max;
+		} else {
+			current += step;
+		}
+		return true;
+	}
+	@Override
+	public boolean decrementModel () {
+		if (current - step < min) {
+			if (current == min) {
+				if (isWrap()) {
+					current = max;
+					return true;
+				}
+				return false;
+			}
+			current = min;
+		} else {
+			current -= step;
+		}
+		return true;
+	}
+	@Override
+	public String getText () {
+		return String.valueOf(current);
+	}
+	public void setValue (int newValue) {
+		setValue(newValue, spinner.isProgrammaticChangeEvents());
+	}
+	public void setValue (int newValue, boolean fireEvent) {
+		if (newValue > max) {
+			current = max;
+		} else if (newValue < min) {
+			current = min;
+		} else {
+			current = newValue;
+		}
+		spinner.notifyValueChanged(fireEvent);
+	}
+	public int getValue () {
+		return current;
+	}
+	public int getMin () {
+		return min;
+	}
+	public void setMin (int min) {
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		this.min = min;
+		if (min >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		if (current < min) {
+			current = min;
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public int getMax () {
+		return max;
+	}
+	public void setMax (int max) {
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		this.max = max;
+		if (current > max) {
+			current = max;
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public int getStep () {
+		return step;
+	}
+	public void setStep (int step) {
+		if (step <= 0) throw new IllegalArgumentException("step must be > 0");
+		this.step = step;
+	}
+	private boolean checkInputBounds (String input) {
+		try {
+			float x = Integer.parseInt(input);
+			return x >= min && x <= max;
+		} catch (NumberFormatException e) {
+			return false;
+		}
+	}
+	private class BoundsValidator implements InputValidator {
+		@Override
+		public boolean validateInput (String input) {
+			return checkInputBounds(input);
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.g2d.Batch;
+import com.badlogic.gdx.scenes.scene2d.InputEvent;
+import com.badlogic.gdx.scenes.scene2d.InputListener;
+import com.badlogic.gdx.scenes.scene2d.ui.Button;
+import com.badlogic.gdx.scenes.scene2d.ui.Cell;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
+import com.badlogic.gdx.scenes.scene2d.ui.ImageButton;
+import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
+import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
+import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.utils.Scaling;
+import com.kotcrab.vis.ui.FocusManager;
+import com.kotcrab.vis.ui.Focusable;
+import com.kotcrab.vis.ui.VisUI;
+import com.kotcrab.vis.ui.util.BorderOwner;
+public class VisImageButton extends Button implements Focusable, BorderOwner {
+	private Image image;
+	private VisImageButtonStyle style;
+	private boolean drawBorder;
+	private boolean focusBorderEnabled = true;
+	private boolean generateDisabledImage = false;
+	public VisImageButton (Drawable imageUp) {
+		this(imageUp, null, null);
+	}
+	public VisImageButton (Drawable imageUp, String tooltipText) {
+		this(imageUp, null, null);
+		if (tooltipText != null) new Tooltip.Builder(tooltipText).target(this).build();
+	}
+	public VisImageButton (Drawable imageUp, Drawable imageDown) {
+		this(imageUp, imageDown, null);
+	}
+	public VisImageButton (Drawable imageUp, Drawable imageDown, Drawable imageChecked) {
+		this(imageUp, imageDown, imageChecked, "default");
+	}
+	public VisImageButton (Drawable imageUp, Drawable imageDown, Drawable imageChecked, String styleName) {
+		super(new VisImageButtonStyle(VisUI.getSkin().get(styleName, VisImageButtonStyle.class)));
+		style.imageUp = imageUp;
+		style.imageDown = imageDown;
+		style.imageChecked = imageChecked;
+		init();
+	}
+	public VisImageButton (String styleName) {
+		super(new VisImageButtonStyle(VisUI.getSkin().get(styleName, VisImageButtonStyle.class)));
+		init();
+	}
+	public VisImageButton (VisImageButtonStyle style) {
+		super(style);
+		init();
+	}
+	private void init () {
+		image = new Image();
+		image.setScaling(Scaling.fit);
+		add(image);
+		setSize(getPrefWidth(), getPrefHeight());
+		addListener(new InputListener() {
+			@Override
+			public boolean touchDown (InputEvent event, float x, float y, int pointer, int button) {
+				if (isDisabled() == false) FocusManager.switchFocus(getStage(), VisImageButton.this);
+				return false;
+			}
+		});
+		updateImage();
+	}
+	@Override
+	public VisImageButtonStyle getStyle () {
+		return style;
+	}
+	@Override
+	public void setStyle (ButtonStyle style) {
+		if (!(style instanceof VisImageButtonStyle))
+			throw new IllegalArgumentException("style must be an ImageButtonStyle.");
+		super.setStyle(style);
+		this.style = (VisImageButtonStyle) style;
+		if (image != null) updateImage();
+	}
+	private void updateImage () {
+		Drawable drawable = null;
+		if (isDisabled() && style.imageDisabled != null)
+			drawable = style.imageDisabled;
+		else if (isPressed() && style.imageDown != null)
+			drawable = style.imageDown;
+		else if (isChecked() && style.imageChecked != null)
+			drawable = (style.imageCheckedOver != null && isOver()) ? style.imageCheckedOver : style.imageChecked;
+		else if (isOver() && style.imageOver != null)
+			drawable = style.imageOver;
+		else if (style.imageUp != null)
+			drawable = style.imageUp;
+		image.setDrawable(drawable);
+		if (generateDisabledImage && style.imageDisabled == null) {
+			if (isDisabled()) {
+				image.setColor(Color.GRAY);
+			} else {
+				image.setColor(Color.WHITE);
+			}
+		}
+	}
+	@Override
+	public void draw (Batch batch, float parentAlpha) {
+		updateImage();
+		super.draw(batch, parentAlpha);
+		if (focusBorderEnabled && drawBorder && style.focusBorder != null)
+			style.focusBorder.draw(batch, getX(), getY(), getWidth(), getHeight());
+	}
+	public Image getImage () {
+		return image;
+	}
+	public Cell<?> getImageCell () {
+		return getCell(image);
+	}
+	@Override
+	public void setDisabled (boolean disabled) {
+		super.setDisabled(disabled);
+		if (disabled) FocusManager.resetFocus(getStage(), this);
+	}
+	@Override
+	public void focusLost () {
+		drawBorder = false;
+	}
+	@Override
+	public void focusGained () {
+		drawBorder = true;
+	}
+	@Override
+	public boolean isFocusBorderEnabled () {
+		return focusBorderEnabled;
+	}
+	@Override
+	public void setFocusBorderEnabled (boolean focusBorderEnabled) {
+		this.focusBorderEnabled = focusBorderEnabled;
+	}
+	public boolean isGenerateDisabledImage () {
+		return generateDisabledImage;
+	}
+	public void setGenerateDisabledImage (boolean generate) {
+		generateDisabledImage = generate;
+	}
+	static public class VisImageButtonStyle extends ButtonStyle {
+		public Drawable imageUp, imageDown, imageOver, imageChecked, imageCheckedOver, imageDisabled;
+		public Drawable focusBorder;
+		public VisImageButtonStyle () {
+		}
+		public VisImageButtonStyle (Drawable up, Drawable down, Drawable checked, Drawable imageUp, Drawable imageDown,
+									Drawable imageChecked) {
+			super(up, down, checked);
+			this.imageUp = imageUp;
+			this.imageDown = imageDown;
+			this.imageChecked = imageChecked;
+		}
+		public VisImageButtonStyle (VisImageButtonStyle style) {
+			super(style);
+			this.imageUp = style.imageUp;
+			this.imageDown = style.imageDown;
+			this.imageOver = style.imageOver;
+			this.imageChecked = style.imageChecked;
+			this.imageCheckedOver = style.imageCheckedOver;
+			this.imageDisabled = style.imageDisabled;
+			this.focusBorder = style.focusBorder;
+		}
+	}
+}
+package com.kotcrab.vis.ui;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Version;
+import com.badlogic.gdx.assets.AssetManager;
+import com.badlogic.gdx.files.FileHandle;
+import com.badlogic.gdx.scenes.scene2d.ui.Skin;
+import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.GdxRuntimeException;
+public class VisUI {
+	private static final String TARGET_GDX_VERSION = "1.13.1";
+	private static boolean skipGdxVersionCheck = false;
+	private static int defaultTitleAlign = Align.left;
+	private static SkinScale scale;
+	private static Skin skin;
+	public enum SkinScale {
+		X1("com/kotcrab/vis/ui/skin/x1/uiskin.json", "default"),
+		X2("com/kotcrab/vis/ui/skin/x2/uiskin.json", "x2");
+		private final String classpath;
+		private final String sizesName;
+		SkinScale (String classpath, String sizesName) {
+			this.classpath = classpath;
+			this.sizesName = sizesName;
+		}
+		public FileHandle getSkinFile () {
+			return Gdx.files.classpath(classpath);
+		}
+		public String getSizesName () {
+			return sizesName;
+		}
+	}
+	public static void load () {
+		load(SkinScale.X1);
+	}
+	public static void load (SkinScale scale) {
+		VisUI.scale = scale;
+		load(scale.getSkinFile());
+	}
+	public static void load (String internalVisSkinPath) {
+		load(Gdx.files.internal(internalVisSkinPath));
+	}
+	public static void load (FileHandle visSkinFile) {
+		checkBeforeLoad();
+		VisUI.skin = new Skin(visSkinFile);
+	}
+	public static void load (Skin skin) {
+		checkBeforeLoad();
+		VisUI.skin = skin;
+	}
+	private static void checkBeforeLoad () {
+		if (skin != null) throw new GdxRuntimeException("VisUI cannot be loaded twice");
+		if (!skipGdxVersionCheck && !Version.VERSION.equals(TARGET_GDX_VERSION)) {
+			Gdx.app.log("VisUI", "Warning, using invalid libGDX version.\n" +
+					"You are using libGDX " + Version.VERSION + " but you need " + TARGET_GDX_VERSION + ". This may cause " +
+					"unexpected problems and runtime exceptions.");
+		}
+	}
+	public static void dispose () {
+		dispose(true);
+	}
+	public static void dispose (boolean disposeSkin) {
+		if (skin != null) {
+			if (disposeSkin) skin.dispose();
+			skin = null;
+		}
+	}
+	public static Skin getSkin () {
+		if (skin == null) throw new IllegalStateException("VisUI is not loaded!");
+		return skin;
+	}
+	public static boolean isLoaded () {
+		return skin != null;
+	}
+	public static Sizes getSizes () {
+		if (scale == null)
+			return getSkin().get(Sizes.class);
+		else
+			return getSkin().get(scale.getSizesName(), Sizes.class);
+	}
+	public static int getDefaultTitleAlign () {
+		return defaultTitleAlign;
+	}
+	public static void setDefaultTitleAlign (int defaultTitleAlign) {
+		VisUI.defaultTitleAlign = defaultTitleAlign;
+	}
+	public static void setSkipGdxVersionCheck (boolean setSkipGdxVersionCheck) {
+		VisUI.skipGdxVersionCheck = setSkipGdxVersionCheck;
+	}
+}
+package com.kotcrab.vis.ui.widget;
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Input.Keys;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.Cursor.SystemCursor;
+import com.badlogic.gdx.graphics.g2d.Batch;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.graphics.g2d.BitmapFont.BitmapFontData;
+import com.badlogic.gdx.graphics.g2d.GlyphLayout;
+import com.badlogic.gdx.graphics.g2d.GlyphLayout.GlyphRun;
+import com.badlogic.gdx.math.MathUtils;
+import com.badlogic.gdx.math.Vector2;
+import com.badlogic.gdx.scenes.scene2d.*;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField.DefaultOnscreenKeyboard;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField.OnscreenKeyboard;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField.TextFieldStyle;
+import com.badlogic.gdx.scenes.scene2d.ui.Widget;
+import com.badlogic.gdx.scenes.scene2d.ui.Window;
+import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener.ChangeEvent;
+import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
+import com.badlogic.gdx.scenes.scene2d.utils.Disableable;
+import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.scenes.scene2d.utils.UIUtils;
+import com.badlogic.gdx.utils.*;
+import com.badlogic.gdx.utils.Timer.Task;
+import com.kotcrab.vis.ui.FocusManager;
+import com.kotcrab.vis.ui.Focusable;
+import com.kotcrab.vis.ui.VisUI;
+import com.kotcrab.vis.ui.util.BorderOwner;
+import com.kotcrab.vis.ui.util.CursorManager;
+import java.lang.StringBuilder;
+public class VisTextField extends Widget implements Disableable, Focusable, BorderOwner {
+	static private final char BACKSPACE = 8;
+	static protected final char ENTER_DESKTOP = '\r';
+	static protected final char ENTER_ANDROID = '\n';
+	static private final char TAB = '\t';
+	static private final char DELETE = 127;
+	static private final char BULLET = 8226;
+	static private final Vector2 tmp1 = new Vector2();
+	static private final Vector2 tmp2 = new Vector2();
+	static private final Vector2 tmp3 = new Vector2();
+	static public float keyRepeatInitialTime = 0.4f;
+	static public float keyRepeatTime = 0.04f;
+	protected String text;
+	protected int cursor, selectionStart;
+	protected boolean hasSelection;
+	protected boolean writeEnters;
+	protected final GlyphLayout layout = new GlyphLayout();
+	protected final FloatArray glyphPositions = new FloatArray();
+	private String messageText;
+	protected CharSequence displayText;
+	Clipboard clipboard;
+	InputListener inputListener;
+	TextFieldListener listener;
+	TextFieldFilter filter;
+	OnscreenKeyboard keyboard = new DefaultOnscreenKeyboard();
+	boolean focusTraversal = true, onlyFontChars = true, disabled;
+	boolean enterKeyFocusTraversal = false;
+	private int textHAlign = Align.left;
+	private float selectionX, selectionWidth;
+	String undoText = "";
+	int undoCursorPos = 0;
+	long lastChangeTime;
+	boolean passwordMode;
+	private StringBuilder passwordBuffer;
+	private char passwordCharacter = BULLET;
+	protected float fontOffset, textHeight, textOffset;
+	float renderOffset;
+	private int visibleTextStart, visibleTextEnd;
+	private int maxLength = 0;
+	private float blinkTime = 0.45f;
+	boolean cursorOn = true;
+	long lastBlink;
+	KeyRepeatTask keyRepeatTask = new KeyRepeatTask();
+	boolean programmaticChangeEvents;
+	VisTextFieldStyle style;
+	private ClickListener clickListener;
+	private boolean drawBorder;
+	private boolean focusBorderEnabled = true;
+	private boolean inputValid = true;
+	private boolean ignoreEqualsTextChange = true;
+	private boolean readOnly = false;
+	private float cursorPercentHeight = 0.8f;
+	public VisTextField () {
+		this("", VisUI.getSkin().get(VisTextFieldStyle.class));
+	}
+	public VisTextField (String text) {
+		this(text, VisUI.getSkin().get(VisTextFieldStyle.class));
+	}
+	public VisTextField (String text, String styleName) {
+		this(text, VisUI.getSkin().get(styleName, VisTextFieldStyle.class));
+	}
+	public VisTextField (String text, VisTextFieldStyle style) {
+		setStyle(style);
+		clipboard = Gdx.app.getClipboard();
+		initialize();
+		setText(text);
+		setSize(getPrefWidth(), getPrefHeight());
+	}
+	protected void initialize () {
+		addListener(inputListener = createInputListener());
+		addListener(clickListener = new ClickListener() {
+			@Override
+			public void enter (InputEvent event, float x, float y, int pointer, Actor fromActor) {
+				super.enter(event, x, y, pointer, fromActor);
+				if (pointer == -1 && isDisabled() == false) {
+					Gdx.graphics.setSystemCursor(SystemCursor.Ibeam);
+				}
+			}
+			@Override
+			public void exit (InputEvent event, float x, float y, int pointer, Actor toActor) {
+				super.exit(event, x, y, pointer, toActor);
+				if (pointer == -1) {
+					CursorManager.restoreDefaultCursor();
+				}
+			}
+		});
+	}
+	protected InputListener createInputListener () {
+		return new TextFieldClickListener();
+	}
+	protected int letterUnderCursor (float x) {
+		x -= textOffset + fontOffset - style.font.getData().cursorX - glyphPositions.get(visibleTextStart);
+		int n = this.glyphPositions.size;
+		float[] glyphPositions = this.glyphPositions.items;
+		for (int i = 1; i < n; i++) {
+			if (glyphPositions[i] > x) {
+				if (glyphPositions[i] - x <= x - glyphPositions[i - 1]) return i;
+				return i - 1;
+			}
+		}
+		return n - 1;
+	}
+	protected boolean isWordCharacter (char c) {
+		return Character.isLetterOrDigit(c);
+	}
+	protected int[] wordUnderCursor (int at) {
+		String text = this.text;
+		int start = Math.min(text.length(), at), right = text.length(), left = 0, index = start;
+		for (; index < right; index++) {
+			if (!isWordCharacter(text.charAt(index))) {
+				right = index;
+				break;
+			}
+		}
+		for (index = start - 1; index > -1; index--) {
+			if (!isWordCharacter(text.charAt(index))) {
+				left = index + 1;
+				break;
+			}
+		}
+		return new int[]{left, right};
+	}
+	int[] wordUnderCursor (float x) {
+		return wordUnderCursor(letterUnderCursor(x));
+	}
+	boolean withinMaxLength (int size) {
+		return maxLength <= 0 || size < maxLength;
+	}
+	public int getMaxLength () {
+		return this.maxLength;
+	}
+	public void setMaxLength (int maxLength) {
+		this.maxLength = maxLength;
+	}
+	public void setOnlyFontChars (boolean onlyFontChars) {
+		this.onlyFontChars = onlyFontChars;
+	}
+	public VisTextFieldStyle getStyle () {
+		return style;
+	}
+	public void setStyle (VisTextFieldStyle style) {
+		if (style == null) throw new IllegalArgumentException("style cannot be null.");
+		this.style = style;
+		textHeight = style.font.getCapHeight() - style.font.getDescent() * 2;
+		invalidateHierarchy();
+	}
+	@Override
+	public String toString () {
+		return getText();
+	}
+	protected void calculateOffsets () {
+		float visibleWidth = getWidth();
+		if (style.background != null)
+			visibleWidth -= style.background.getLeftWidth() + style.background.getRightWidth();
+		int glyphCount = glyphPositions.size;
+		float[] glyphPositions = this.glyphPositions.items;
+		float distance = glyphPositions[Math.max(0, cursor - 1)] + renderOffset;
+		if (distance <= 0)
+			renderOffset -= distance;
+		else {
+			int index = Math.min(glyphCount - 1, cursor + 1);
+			float minX = glyphPositions[index] - visibleWidth;
+			if (-renderOffset < minX) renderOffset = -minX;
+		}
+		float maxOffset = 0;
+		float width = glyphPositions[glyphCount - 1];
+		for (int i = glyphCount - 2; i >= 0; i--) {
+			float x = glyphPositions[i];
+			if (width - x > visibleWidth) break;
+			maxOffset = x;
+		}
+		if (-renderOffset > maxOffset) renderOffset = -maxOffset;
+		visibleTextStart = 0;
+		float startX = 0;
+		for (int i = 0; i < glyphCount; i++) {
+			if (glyphPositions[i] >= -renderOffset) {
+				visibleTextStart = Math.max(0, i);
+				startX = glyphPositions[i];
+				break;
+			}
+		}
+		int length = Math.min(displayText.length(), glyphPositions.length - 1);
+		visibleTextEnd = Math.min(length, cursor + 1);
+		for (; visibleTextEnd <= length; visibleTextEnd++)
+			if (glyphPositions[visibleTextEnd] > startX + visibleWidth) break;
+		visibleTextEnd = Math.max(0, visibleTextEnd - 1);
+		if ((textHAlign & Align.left) == 0) {
+			textOffset = visibleWidth - (glyphPositions[visibleTextEnd] - startX);
+			if ((textHAlign & Align.center) != 0) textOffset = Math.round(textOffset * 0.5f);
+		} else
+			textOffset = startX + renderOffset;
+		if (hasSelection) {
+			int minIndex = Math.min(cursor, selectionStart);
+			int maxIndex = Math.max(cursor, selectionStart);
+			float minX = Math.max(glyphPositions[minIndex] - glyphPositions[visibleTextStart], -textOffset);
+			float maxX = Math.min(glyphPositions[maxIndex] - glyphPositions[visibleTextStart], visibleWidth - textOffset);
+			selectionX = minX;
+			selectionWidth = maxX - minX - style.font.getData().cursorX;
+		}
+	}
+	@Override
+	public void draw (Batch batch, float parentAlpha) {
+		Stage stage = getStage();
+		boolean focused = stage != null && stage.getKeyboardFocus() == this;
+		if (!focused) keyRepeatTask.cancel();
+		final BitmapFont font = style.font;
+		final Color fontColor = (disabled && style.disabledFontColor != null) ? style.disabledFontColor
+				: ((focused && style.focusedFontColor != null) ? style.focusedFontColor : style.fontColor);
+		final Drawable selection = style.selection;
+		final Drawable cursorPatch = style.cursor;
+		Drawable background = (disabled && style.disabledBackground != null) ? style.disabledBackground
+				: ((focused && style.focusedBackground != null) ? style.focusedBackground : style.background);
+		if (!disabled && style.backgroundOver != null && (clickListener.isOver() || focused)) {
+			background = style.backgroundOver;
+		}
+		Color color = getColor();
+		float x = getX();
+		float y = getY();
+		float width = getWidth();
+		float height = getHeight();
+		batch.setColor(color.r, color.g, color.b, color.a * parentAlpha);
+		float bgLeftWidth = 0, bgRightWidth = 0;
+		if (background != null) {
+			background.draw(batch, x, y, width, height);
+			bgLeftWidth = background.getLeftWidth();
+			bgRightWidth = background.getRightWidth();
+		}
+		float textY = getTextY(font, background);
+		calculateOffsets();
+		if (focused && hasSelection && selection != null) {
+			drawSelection(selection, batch, font, x + bgLeftWidth, y + textY);
+		}
+		float yOffset = font.isFlipped() ? -textHeight : 0;
+		if (displayText.length() == 0) {
+			if (!focused && messageText != null) {
+				if (style.messageFontColor != null) {
+					font.setColor(style.messageFontColor.r, style.messageFontColor.g, style.messageFontColor.b,
+							style.messageFontColor.a * color.a * parentAlpha);
+				} else
+					font.setColor(0.7f, 0.7f, 0.7f, color.a * parentAlpha);
+				BitmapFont messageFont = style.messageFont != null ? style.messageFont : font;
+				messageFont.draw(batch, messageText, x + bgLeftWidth, y + textY + yOffset, 0, messageText.length(),
+						width - bgLeftWidth - bgRightWidth, textHAlign, false, "...");
+			}
+		} else {
+			font.setColor(fontColor.r, fontColor.g, fontColor.b, fontColor.a * color.a * parentAlpha);
+			drawText(batch, font, x + bgLeftWidth, y + textY + yOffset);
+		}
+		if (drawBorder && focused && !disabled) {
+			blink();
+			if (cursorOn && cursorPatch != null) {
+				drawCursor(cursorPatch, batch, font, x + bgLeftWidth, y + textY);
+			}
+		}
+		if (isDisabled() == false && inputValid == false && style.errorBorder != null)
+			style.errorBorder.draw(batch, getX(), getY(), getWidth(), getHeight());
+		else if (focusBorderEnabled && drawBorder && style.focusBorder != null)
+			style.focusBorder.draw(batch, getX(), getY(), getWidth(), getHeight());
+	}
+	protected float getTextY (BitmapFont font, Drawable background) {
+		float height = getHeight();
+		float textY = textHeight / 2 + font.getDescent();
+		if (background != null) {
+			float bottom = background.getBottomHeight();
+			textY = textY + (height - background.getTopHeight() - bottom) / 2 + bottom;
+		} else {
+			textY = textY + height / 2;
+		}
+		if (font.usesIntegerPositions()) textY = (int) textY;
+		return textY;
+	}
+	protected void drawSelection (Drawable selection, Batch batch, BitmapFont font, float x, float y) {
+		selection.draw(batch, x + selectionX + textOffset + fontOffset, y - textHeight - font.getDescent(), selectionWidth,
+				textHeight);
+	}
+	protected void drawText (Batch batch, BitmapFont font, float x, float y) {
+		font.draw(batch, displayText, x + textOffset, y, visibleTextStart, visibleTextEnd, 0, Align.left, false);
+	}
+	protected void drawCursor (Drawable cursorPatch, Batch batch, BitmapFont font, float x, float y) {
+		float cursorHeight = textHeight * cursorPercentHeight;
+		float cursorYPadding = (textHeight - cursorHeight) / 2;
+		cursorPatch.draw(batch,
+				x + textOffset + glyphPositions.get(cursor) - glyphPositions.get(visibleTextStart) + fontOffset + font.getData().cursorX,
+				y - textHeight - font.getDescent() + cursorYPadding, cursorPatch.getMinWidth(), cursorHeight);
+	}
+	void updateDisplayText () {
+		BitmapFont font = style.font;
+		BitmapFontData data = font.getData();
+		String text = this.text;
+		int textLength = text.length();
+		StringBuilder buffer = new StringBuilder();
+		for (int i = 0; i < textLength; i++) {
+			char c = text.charAt(i);
+			buffer.append(data.hasGlyph(c) ? c : ' ');
+		}
+		String newDisplayText = buffer.toString();
+		if (passwordMode && data.hasGlyph(passwordCharacter)) {
+			if (passwordBuffer == null) passwordBuffer = new StringBuilder(newDisplayText.length());
+			if (passwordBuffer.length() > textLength)
+				passwordBuffer.setLength(textLength);
+			else {
+				for (int i = passwordBuffer.length(); i < textLength; i++)
+					passwordBuffer.append(passwordCharacter);
+			}
+			displayText = passwordBuffer;
+		} else
+			displayText = newDisplayText;
+		layout.setText(font, displayText.toString().replace('\r', ' ').replace('\n', ' '));
+		glyphPositions.clear();
+		float x = 0;
+		if (layout.runs.size > 0) {
+			GlyphRun run = layout.runs.first();
+			fontOffset = run.xAdvances.first();
+			for (GlyphRun glyphRun : layout.runs) {
+				FloatArray xAdvances = glyphRun.xAdvances;
+				for (int i = 1, n = xAdvances.size; i < n; i++) {
+					glyphPositions.add(x);
+					x += xAdvances.get(i);
+				}
+				glyphPositions.add(x);
+			}
+		} else {
+			fontOffset = 0;
+		}
+		glyphPositions.add(x);
+		visibleTextStart = Math.min(visibleTextStart, glyphPositions.size);
+		visibleTextEnd = MathUtils.clamp(visibleTextEnd, visibleTextStart, glyphPositions.size);
+		if (selectionStart > newDisplayText.length()) selectionStart = textLength;
+	}
+	private void blink () {
+		if (!Gdx.graphics.isContinuousRendering()) {
+			cursorOn = true;
+			return;
+		}
+		long time = TimeUtils.nanoTime();
+		if ((time - lastBlink) / 1000000000.0f > blinkTime) {
+			cursorOn = !cursorOn;
+			lastBlink = time;
+		}
+	}
+	public void copy () {
+		if (hasSelection && !passwordMode) {
+			int beginIndex = Math.min(cursor, selectionStart);
+			int endIndex = Math.max(cursor, selectionStart);
+			clipboard.setContents(text.substring(Math.max(0, beginIndex), Math.min(text.length(), endIndex)));
+		}
+	}
+	public void cut () {
+		cut(programmaticChangeEvents);
+	}
+	void cut (boolean fireChangeEvent) {
+		if (hasSelection && !passwordMode) {
+			copy();
+			cursor = delete(fireChangeEvent);
+			updateDisplayText();
+		}
+	}
+	void paste (String content, boolean fireChangeEvent) {
+		if (content == null) return;
+		StringBuilder buffer = new StringBuilder();
+		int textLength = text.length();
+		if (hasSelection) textLength -= Math.abs(cursor - selectionStart);
+		BitmapFontData data = style.font.getData();
+		for (int i = 0, n = content.length(); i < n; i++) {
+			if (!withinMaxLength(textLength + buffer.length())) break;
+			char c = content.charAt(i);
+			if (!(writeEnters && (c == ENTER_ANDROID || c == ENTER_DESKTOP))) {
+				if (c == '\r' || c == '\n') continue;
+				if (onlyFontChars && !data.hasGlyph(c)) continue;
+				if (filter != null && !filter.acceptChar(this, c)) continue;
+			}
+			buffer.append(c);
+		}
+		content = buffer.toString();
+		if (hasSelection) cursor = delete(fireChangeEvent);
+		if (fireChangeEvent)
+			changeText(text, insert(cursor, content, text));
+		else
+			text = insert(cursor, content, text);
+		updateDisplayText();
+		cursor += content.length();
+	}
+	String insert (int position, CharSequence text, String to) {
+		if (to.length() == 0) return text.toString();
+		return to.substring(0, position) + text + to.substring(position, to.length());
+	}
+	int delete (boolean fireChangeEvent) {
+		int from = selectionStart;
+		int to = cursor;
+		int minIndex = Math.min(from, to);
+		int maxIndex = Math.max(from, to);
+		String newText = (minIndex > 0 ? text.substring(0, minIndex) : "")
+				+ (maxIndex < text.length() ? text.substring(maxIndex, text.length()) : "");
+		if (fireChangeEvent)
+			changeText(text, newText);
+		else
+			text = newText;
+		clearSelection();
+		return minIndex;
+	}
+	public void next (boolean up) {
+		Stage stage = getStage();
+		if (stage == null) return;
+		getParent().localToStageCoordinates(tmp1.set(getX(), getY()));
+		VisTextField textField = findNextTextField(stage.getActors(), null, tmp2, tmp1, up);
+		if (textField == null) { 
+			if (up)
+				tmp1.set(Float.MIN_VALUE, Float.MIN_VALUE);
+			else
+				tmp1.set(Float.MAX_VALUE, Float.MAX_VALUE);
+			textField = findNextTextField(getStage().getActors(), null, tmp2, tmp1, up);
+		}
+		if (textField != null) {
+			textField.focusField();
+			textField.setCursorPosition(textField.getText().length());
+		} else
+			keyboard.show(false);
+	}
+	private VisTextField findNextTextField (Array<Actor> actors, VisTextField best, Vector2 bestCoords, Vector2 currentCoords, boolean up) {
+		Window modalWindow = findModalWindow(this);
+		for (int i = 0, n = actors.size; i < n; i++) {
+			Actor actor = actors.get(i);
+			if (actor == this) continue;
+			if (actor instanceof VisTextField) {
+				VisTextField textField = (VisTextField) actor;
+				if (modalWindow != null) {
+					Window nextFieldModalWindow = findModalWindow(textField);
+					if (nextFieldModalWindow != modalWindow) continue;
+				}
+				if (textField.isDisabled() || !textField.focusTraversal || isActorVisibleInStage(textField) == false)
+					continue;
+				Vector2 actorCoords = actor.getParent().localToStageCoordinates(tmp3.set(actor.getX(), actor.getY()));
+				if ((actorCoords.y < currentCoords.y || (actorCoords.y == currentCoords.y && actorCoords.x > currentCoords.x)) ^ up) {
+					if (best == null
+							|| (actorCoords.y > bestCoords.y || (actorCoords.y == bestCoords.y && actorCoords.x < bestCoords.x)) ^ up) {
+						best = (VisTextField) actor;
+						bestCoords.set(actorCoords);
+					}
+				}
+			} else if (actor instanceof Group)
+				best = findNextTextField(((Group) actor).getChildren(), best, bestCoords, currentCoords, up);
+		}
+		return best;
+	}
+	private boolean isActorVisibleInStage (Actor actor) {
+		if (actor == null) return true;
+		if (actor.isVisible() == false) return false;
+		return isActorVisibleInStage(actor.getParent());
+	}
+	private Window findModalWindow (Actor actor) {
+		if (actor == null) return null;
+		if (actor instanceof Window && ((Window) actor).isModal()) return (Window) actor;
+		return findModalWindow(actor.getParent());
+	}
+	public InputListener getDefaultInputListener () {
+		return inputListener;
+	}
+	public void setTextFieldListener (TextFieldListener listener) {
+		this.listener = listener;
+	}
+	public void setTextFieldFilter (TextFieldFilter filter) {
+		this.filter = filter;
+	}
+	public TextFieldFilter getTextFieldFilter () {
+		return filter;
+	}
+	public void setFocusTraversal (boolean focusTraversal) {
+		this.focusTraversal = focusTraversal;
+	}
+	public void setEnterKeyFocusTraversal (boolean enterKeyFocusTraversal) {
+		this.enterKeyFocusTraversal = enterKeyFocusTraversal;
+	}
+	public String getMessageText () {
+		return messageText;
+	}
+	public void setMessageText (String messageText) {
+		this.messageText = messageText;
+	}
+	public void appendText (String str) {
+		if (str == null) str = "";
+		clearSelection();
+		cursor = text.length();
+		paste(str, programmaticChangeEvents);
+	}
+	public void setText (String str) {
+		if (str == null) str = "";
+		if (ignoreEqualsTextChange && str.equals(text)) return;
+		clearSelection();
+		String oldText = text;
+		text = "";
+		paste(str, false);
+		if (programmaticChangeEvents) changeText(oldText, text);
+		cursor = 0;
+	}
+	public String getText () {
+		return text;
+	}
+	boolean changeText (String oldText, String newText) {
+		if (ignoreEqualsTextChange && newText.equals(oldText)) return false;
+		text = newText;
+		beforeChangeEventFired();
+		ChangeEvent changeEvent = Pools.obtain(ChangeEvent.class);
+		boolean cancelled = fire(changeEvent);
+		text = cancelled ? oldText : newText;
+		Pools.free(changeEvent);
+		return !cancelled;
+	}
+	void beforeChangeEventFired () {
+	}
+	public boolean getProgrammaticChangeEvents () {
+		return programmaticChangeEvents;
+	}
+	public void setProgrammaticChangeEvents (boolean programmaticChangeEvents) {
+		this.programmaticChangeEvents = programmaticChangeEvents;
+	}
+	public int getSelectionStart () {
+		return selectionStart;
+	}
+	public String getSelection () {
+		return hasSelection ? text.substring(Math.min(selectionStart, cursor), Math.max(selectionStart, cursor)) : "";
+	}
+	public boolean isTextSelected () {
+		return hasSelection;
+	}
+	public void setSelection (int selectionStart, int selectionEnd) {
+		if (selectionStart < 0) throw new IllegalArgumentException("selectionStart must be >= 0");
+		if (selectionEnd < 0) throw new IllegalArgumentException("selectionEnd must be >= 0");
+		selectionStart = Math.min(text.length(), selectionStart);
+		selectionEnd = Math.min(text.length(), selectionEnd);
+		if (selectionEnd == selectionStart) {
+			clearSelection();
+			return;
+		}
+		if (selectionEnd < selectionStart) {
+			int temp = selectionEnd;
+			selectionEnd = selectionStart;
+			selectionStart = temp;
+		}
+		hasSelection = true;
+		this.selectionStart = selectionStart;
+		cursor = selectionEnd;
+	}
+	public void selectAll () {
+		setSelection(0, text.length());
+	}
+	public void clearSelection () {
+		hasSelection = false;
+	}
+	public void clearText () {
+		setText("");
+	}
+	public void setCursorPosition (int cursorPosition) {
+		if (cursorPosition < 0) throw new IllegalArgumentException("cursorPosition must be >= 0");
+		clearSelection();
+		cursor = Math.min(cursorPosition, text.length());
+	}
+	public int getCursorPosition () {
+		return cursor;
+	}
+	public void setCursorAtTextEnd () {
+		setCursorPosition(0);
+		calculateOffsets();
+		setCursorPosition(getText().length());
+	}
+	public void setCursorPercentHeight (float cursorPercentHeight) {
+		if (cursorPercentHeight < 0 || cursorPercentHeight > 1)
+			throw new IllegalArgumentException("cursorPercentHeight must be >= 0 and <= 1");
+		this.cursorPercentHeight = cursorPercentHeight;
+	}
+	public OnscreenKeyboard getOnscreenKeyboard () {
+		return keyboard;
+	}
+	public void setOnscreenKeyboard (OnscreenKeyboard keyboard) {
+		this.keyboard = keyboard;
+	}
+	public void setClipboard (Clipboard clipboard) {
+		this.clipboard = clipboard;
+	}
+	@Override
+	public float getPrefWidth () {
+		return 150;
+	}
+	@Override
+	public float getPrefHeight () {
+		float prefHeight = textHeight;
+		if (style.background != null) {
+			prefHeight = Math.max(prefHeight + style.background.getBottomHeight() + style.background.getTopHeight(),
+					style.background.getMinHeight());
+		}
+		return prefHeight;
+	}
+	public void setAlignment (int alignment) {
+		this.textHAlign = alignment;
+	}
+	public void setPasswordMode (boolean passwordMode) {
+		this.passwordMode = passwordMode;
+		updateDisplayText();
+	}
+	public boolean isPasswordMode () {
+		return passwordMode;
+	}
+	public void setPasswordCharacter (char passwordCharacter) {
+		this.passwordCharacter = passwordCharacter;
+		if (passwordMode) updateDisplayText();
+	}
+	public void setBlinkTime (float blinkTime) {
+		this.blinkTime = blinkTime;
+	}
+	public boolean isDisabled () {
+		return disabled;
+	}
+	@Override
+	public void setDisabled (boolean disabled) {
+		this.disabled = disabled;
+		if (disabled) {
+			FocusManager.resetFocus(getStage(), this);
+			keyRepeatTask.cancel();
+		}
+	}
+	public boolean isReadOnly () {
+		return readOnly;
+	}
+	public void setReadOnly (boolean readOnly) {
+		this.readOnly = readOnly;
+	}
+	protected void moveCursor (boolean forward, boolean jump) {
+		int limit = forward ? text.length() : 0;
+		int charOffset = forward ? 0 : -1;
+		while ((forward ? ++cursor < limit : --cursor > limit) && jump) {
+			if (!continueCursor(cursor, charOffset)) break;
+		}
+	}
+	protected boolean continueCursor (int index, int offset) {
+		char c = text.charAt(index + offset);
+		return isWordCharacter(c);
+	}
+	public void focusField () {
+		if (disabled) return;
+		Stage stage = getStage();
+		FocusManager.switchFocus(stage, VisTextField.this);
+		setCursorPosition(0);
+		selectionStart = 0;
+		calculateOffsets();
+		if (stage != null) stage.setKeyboardFocus(VisTextField.this);
+		keyboard.show(true);
+		hasSelection = true;
+	}
+	@Override
+	public void focusLost () {
+		drawBorder = false;
+	}
+	@Override
+	public void focusGained () {
+		drawBorder = true;
+	}
+	public boolean isEmpty () {
+		return text.length() == 0;
+	}
+	public boolean isInputValid () {
+		return inputValid;
+	}
+	public void setInputValid (boolean inputValid) {
+		this.inputValid = inputValid;
+	}
+	@Override
+	public boolean isFocusBorderEnabled () {
+		return focusBorderEnabled;
+	}
+	@Override
+	public void setFocusBorderEnabled (boolean focusBorderEnabled) {
+		this.focusBorderEnabled = focusBorderEnabled;
+	}
+	public boolean isIgnoreEqualsTextChange () {
+		return ignoreEqualsTextChange;
+	}
+	public void setIgnoreEqualsTextChange (boolean ignoreEqualsTextChange) {
+		this.ignoreEqualsTextChange = ignoreEqualsTextChange;
+	}
+	static public class VisTextFieldStyle extends TextFieldStyle {
+		public Drawable focusBorder;
+		public Drawable errorBorder;
+		public Drawable backgroundOver;
+		public VisTextFieldStyle () {
+		}
+		public VisTextFieldStyle (BitmapFont font, Color fontColor, Drawable cursor, Drawable selection, Drawable background) {
+			super(font, fontColor, cursor, selection, background);
+		}
+		public VisTextFieldStyle (VisTextFieldStyle style) {
+			super(style);
+			this.focusBorder = style.focusBorder;
+			this.errorBorder = style.errorBorder;
+			this.backgroundOver = style.backgroundOver;
+		}
+	}
+	static public interface TextFieldListener {
+		public void keyTyped (VisTextField textField, char c);
+	}
+	static public interface TextFieldFilter {
+		public boolean acceptChar (VisTextField textField, char c);
+		static public class DigitsOnlyFilter implements TextFieldFilter {
+			@Override
+			public boolean acceptChar (VisTextField textField, char c) {
+				return Character.isDigit(c);
+			}
+		}
+	}
+	class KeyRepeatTask extends Task {
+		int keycode;
+		@Override
+		public void run () {
+			inputListener.keyDown(null, keycode);
+		}
+	}
+	public class TextFieldClickListener extends ClickListener {
+		@Override
+		public void clicked (InputEvent event, float x, float y) {
+			int count = getTapCount() % 4;
+			if (count == 0) clearSelection();
+			if (count == 2) {
+				int[] array = wordUnderCursor(x);
+				setSelection(array[0], array[1]);
+			}
+			if (count == 3) selectAll();
+		}
+		@Override
+		public boolean touchDown (InputEvent event, float x, float y, int pointer, int button) {
+			if (!super.touchDown(event, x, y, pointer, button)) return false;
+			if (pointer == 0 && button != 0) return false;
+			if (disabled) return true;
+			Stage stage = getStage();
+			FocusManager.switchFocus(stage, VisTextField.this);
+			setCursorPosition(x, y);
+			selectionStart = cursor;
+			if (stage != null) stage.setKeyboardFocus(VisTextField.this);
+			if (readOnly == false) keyboard.show(true);
+			hasSelection = true;
+			return true;
+		}
+		@Override
+		public void touchDragged (InputEvent event, float x, float y, int pointer) {
+			super.touchDragged(event, x, y, pointer);
+			setCursorPosition(x, y);
+		}
+		@Override
+		public void touchUp (InputEvent event, float x, float y, int pointer, int button) {
+			if (selectionStart == cursor) hasSelection = false;
+			super.touchUp(event, x, y, pointer, button);
+		}
+		protected void setCursorPosition (float x, float y) {
+			lastBlink = 0;
+			cursorOn = false;
+			cursor = Math.min(letterUnderCursor(x), text.length());
+		}
+		protected void goHome (boolean jump) {
+			cursor = 0;
+		}
+		protected void goEnd (boolean jump) {
+			cursor = text.length();
+		}
+		@Override
+		public boolean keyDown (InputEvent event, int keycode) {
+			if (disabled) return false;
+			lastBlink = 0;
+			cursorOn = false;
+			Stage stage = getStage();
+			if (stage == null || stage.getKeyboardFocus() != VisTextField.this) return false;
+			if (drawBorder == false) return false;
+			boolean repeat = false;
+			boolean ctrl = UIUtils.ctrl();
+			boolean jump = ctrl && !passwordMode;
+			if (ctrl) {
+				if (keycode == Keys.V && readOnly == false) {
+					paste(clipboard.getContents(), true);
+					repeat = true;
+				}
+				if (keycode == Keys.C || keycode == Keys.INSERT) {
+					copy();
+					return true;
+				}
+				if (keycode == Keys.X && readOnly == false) {
+					cut(true);
+					return true;
+				}
+				if (keycode == Keys.A) {
+					selectAll();
+					return true;
+				}
+				if (keycode == Keys.Z && readOnly == false) {
+					String oldText = text;
+					int oldCursorPos = getCursorPosition();
+					setText(undoText);
+					VisTextField.this.setCursorPosition(MathUtils.clamp(cursor, 0, undoText.length()));
+					undoText = oldText;
+					undoCursorPos = oldCursorPos;
+					updateDisplayText();
+					return true;
+				}
+			}
+			if (UIUtils.shift()) {
+				if (keycode == Keys.INSERT && readOnly == false) paste(clipboard.getContents(), true);
+				if (keycode == Keys.FORWARD_DEL && readOnly == false) cut(true);
+				selection:
+				{
+					int temp = cursor;
+					keys:
+					{
+						if (keycode == Keys.LEFT) {
+							moveCursor(false, jump);
+							repeat = true;
+							break keys;
+						}
+						if (keycode == Keys.RIGHT) {
+							moveCursor(true, jump);
+							repeat = true;
+							break keys;
+						}
+						if (keycode == Keys.HOME) {
+							goHome(jump);
+							break keys;
+						}
+						if (keycode == Keys.END) {
+							goEnd(jump);
+							break keys;
+						}
+						break selection;
+					}
+					if (!hasSelection) {
+						selectionStart = temp;
+						hasSelection = true;
+					}
+				}
+			} else {
+				if (keycode == Keys.LEFT) {
+					moveCursor(false, jump);
+					clearSelection();
+					repeat = true;
+				}
+				if (keycode == Keys.RIGHT) {
+					moveCursor(true, jump);
+					clearSelection();
+					repeat = true;
+				}
+				if (keycode == Keys.HOME) {
+					goHome(jump);
+					clearSelection();
+				}
+				if (keycode == Keys.END) {
+					goEnd(jump);
+					clearSelection();
+				}
+			}
+			cursor = MathUtils.clamp(cursor, 0, text.length());
+			if (repeat) {
+				scheduleKeyRepeatTask(keycode);
+			}
+			return true;
+		}
+		protected void scheduleKeyRepeatTask (int keycode) {
+			if (!keyRepeatTask.isScheduled() || keyRepeatTask.keycode != keycode) {
+				keyRepeatTask.keycode = keycode;
+				keyRepeatTask.cancel();
+				if (Gdx.input.isKeyPressed(keyRepeatTask.keycode)) { 
+					Timer.schedule(keyRepeatTask, keyRepeatInitialTime, keyRepeatTime);
+				}
+			}
+		}
+		@Override
+		public boolean keyUp (InputEvent event, int keycode) {
+			if (disabled) return false;
+			keyRepeatTask.cancel();
+			return true;
+		}
+		@Override
+		public boolean keyTyped (InputEvent event, char character) {
+			if (disabled || readOnly) return false;
+			switch (character) {
+				case BACKSPACE:
+				case TAB:
+				case ENTER_ANDROID:
+				case ENTER_DESKTOP:
+					break;
+				default:
+					if (character < 32) return false;
+			}
+			Stage stage = getStage();
+			if (stage == null || stage.getKeyboardFocus() != VisTextField.this) return false;
+			if (UIUtils.isMac && Gdx.input.isKeyPressed(Keys.SYM)) return true;
+			if (focusTraversal && (character == TAB || (character == ENTER_ANDROID && enterKeyFocusTraversal))) {
+				next(UIUtils.shift());
+			} else {
+				boolean delete = character == DELETE;
+				boolean backspace = character == BACKSPACE;
+				boolean enter = character == ENTER_DESKTOP || character == ENTER_ANDROID;
+				boolean add = enter ? writeEnters : (!onlyFontChars || style.font.getData().hasGlyph(character));
+				boolean remove = backspace || delete;
+				if (add || remove) {
+					String oldText = text;
+					int oldCursor = cursor;
+					if (hasSelection)
+						cursor = delete(false);
+					else {
+						if (backspace && cursor > 0) {
+							text = text.substring(0, cursor - 1) + text.substring(cursor--);
+							renderOffset = 0;
+						}
+						if (delete && cursor < text.length()) {
+							text = text.substring(0, cursor) + text.substring(cursor + 1);
+						}
+					}
+					if (add && !remove) {
+						if (!enter && filter != null && !filter.acceptChar(VisTextField.this, character)) return true;
+						if (!withinMaxLength(text.length())) return true;
+						String insertion = enter ? "\n" : String.valueOf(character);
+						text = insert(cursor++, insertion, text);
+					}
+					if (changeText(oldText, text)) {
+						long time = System.currentTimeMillis();
+						if (time - 750 > lastChangeTime) {
+							undoText = oldText;
+							undoCursorPos = getCursorPosition() - 1;
+						}
+						lastChangeTime = time;
+					} else
+						cursor = oldCursor;
+					updateDisplayText();
+				}
+			}
+			if (listener != null) listener.keyTyped(VisTextField.this, character);
+			return true;
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget;
+import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.kotcrab.vis.ui.VisUI;
+public class VisLabel extends Label {
+	public VisLabel () {
+		super("", VisUI.getSkin());
+	}
+	public VisLabel (CharSequence text, Color textColor) {
+		super(text, VisUI.getSkin());
+		setColor(textColor);
+	}
+	public VisLabel (CharSequence text, int alignment) {
+		this(text);
+		setAlignment(alignment);
+	}
+	public VisLabel (CharSequence text) {
+		super(text, VisUI.getSkin());
+	}
+	public VisLabel (CharSequence text, LabelStyle style) {
+		super(text, style);
+	}
+	public VisLabel (CharSequence text, String styleName) {
+		super(text, VisUI.getSkin(), styleName);
+	}
+	public VisLabel (CharSequence text, String fontName, Color color) {
+		super(text, VisUI.getSkin(), fontName, color);
+	}
+	public VisLabel (CharSequence text, String fontName, String colorName) {
+		super(text, VisUI.getSkin(), fontName, colorName);
+	}
+}
+package com.kotcrab.vis.ui.widget.spinner;
+import com.badlogic.gdx.math.MathUtils;
+import com.badlogic.gdx.utils.Array;
+import com.kotcrab.vis.ui.util.InputValidator;
+import com.kotcrab.vis.ui.widget.VisValidatableTextField;
+public class ArraySpinnerModel<T> extends AbstractSpinnerModel {
+	private Array<T> items = new Array<T>();
+	private T current;
+	private int currentIndex;
+	public ArraySpinnerModel () {
+		super(false);
+	}
+	public ArraySpinnerModel (Array<T> items) {
+		super(false);
+		this.items.addAll(items);
+	}
+	@Override
+	public void bind (Spinner spinner) {
+		super.bind(spinner);
+		updateCurrentItem(0);
+		spinner.getTextField().addValidator(new InputValidator() {
+			@Override
+			public boolean validateInput (String input) {
+				return getItemIndexForText(input) != -1;
+			}
+		});
+		spinner.notifyValueChanged(true);
+	}
+	protected String itemToString (T item) {
+		if (item == null) return "";
+		return item.toString();
+	}
+	private int getItemIndexForText (String text) {
+		for (int i = 0; i < items.size; i++) {
+			T item = items.get(i);
+			if (itemToString(item).equals(text)) return i;
+		}
+		return -1;
+	}
+	@Override
+	public void textChanged () {
+		String text = spinner.getTextField().getText();
+		int index = getItemIndexForText(text);
+		if (index == -1) return;
+		updateCurrentItem(index);
+	}
+	@Override
+	public boolean incrementModel () {
+		if (currentIndex + 1 >= items.size) {
+			if (isWrap()) {
+				updateCurrentItem(0);
+				return true;
+			}
+			return false;
+		}
+		updateCurrentItem(currentIndex + 1);
+		return true;
+	}
+	@Override
+	public boolean decrementModel () {
+		if (currentIndex - 1 < 0) {
+			if (isWrap()) {
+				updateCurrentItem(items.size - 1);
+				return true;
+			}
+			return false;
+		}
+		updateCurrentItem(currentIndex - 1);
+		return true;
+	}
+	@Override
+	public String getText () {
+		return itemToString(current);
+	}
+	public void invalidateDataSet () {
+		updateCurrentItem(MathUtils.clamp(currentIndex, 0, items.size - 1));
+		spinner.notifyValueChanged(true);
+	}
+	public Array<T> getItems () {
+		return items;
+	}
+	public void setItems (Array<T> newItems) {
+		items.clear();
+		items.addAll(newItems);
+		currentIndex = 0;
+		invalidateDataSet();
+	}
+	public int getCurrentIndex () {
+		return currentIndex;
+	}
+	public T getCurrent () {
+		return current;
+	}
+	public void setCurrent (int newIndex) {
+		setCurrent(newIndex, spinner.isProgrammaticChangeEvents());
+	}
+	public void setCurrent (int newIndex, boolean fireEvent) {
+		updateCurrentItem(newIndex);
+		spinner.notifyValueChanged(fireEvent);
+	}
+	public void setCurrent (T item) {
+		setCurrent(item, spinner.isProgrammaticChangeEvents());
+	}
+	public void setCurrent (T item, boolean fireEvent) {
+		int index = items.indexOf(item, true);
+		if (index == -1) {
+			setCurrent(0, fireEvent);
+		} else {
+			setCurrent(index, fireEvent);
+		}
+	}
+	private void updateCurrentItem (int newIndex) {
+		if (items.size == 0) {
+			current = null;
+			currentIndex = -1;
+		} else {
+			currentIndex = newIndex;
+			current = items.get(newIndex);
+		}
+	}
+}
+package com.kotcrab.vis.ui.widget;
+import com.badlogic.gdx.scenes.scene2d.ui.Cell;
+import com.badlogic.gdx.scenes.scene2d.ui.Table;
+import com.kotcrab.vis.ui.VisUI;
+import com.kotcrab.vis.ui.util.TableUtils;
+public class VisTable extends Table {
+	public VisTable () {
+		super(VisUI.getSkin());
+	}
+	public VisTable (boolean setVisDefaults) {
+		super(VisUI.getSkin());
+		if (setVisDefaults) TableUtils.setSpacingDefaults(this);
+	}
+	public Cell<Separator> addSeparator (boolean vertical) {
+		Cell<Separator> cell = add(new Separator(vertical ? "vertical" : "default")).padTop(2).padBottom(2);
+		if (vertical)
+			cell.fillY().expandY();
+		else {
+			cell.fillX().expandX();
+			row();
+		}
+		return cell;
+	}
+	public Cell<Separator> addSeparator () {
+		return addSeparator(false);
+	}
+}
+package com.kotcrab.vis.ui.widget.spinner;
+import com.kotcrab.vis.ui.util.*;
+import com.kotcrab.vis.ui.widget.VisValidatableTextField;
+import java.math.BigDecimal;
+public class SimpleFloatSpinnerModel extends AbstractSpinnerModel {
+	private InputValidator boundsValidator = new BoundsValidator();
+	private NumberDigitsTextFieldFilter textFieldFilter;
+	private float max;
+	private float min;
+	private float step;
+	private float current;
+	private int precision = 0;
+	public SimpleFloatSpinnerModel (float initialValue, float min, float max) {
+		this(initialValue, min, max, 1, 1);
+	}
+	public SimpleFloatSpinnerModel (float initialValue, float min, float max, float step) {
+		this(initialValue, min, max, step, 1);
+	}
+	public SimpleFloatSpinnerModel (float initialValue, float min, float max, float step, int precision) {
+		super(false);
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		if (step <= 0) throw new IllegalArgumentException("step must be > 0");
+		if (precision < 0) throw new IllegalArgumentException("precision must be >= 0");
+		this.current = initialValue;
+		this.max = max;
+		this.min = min;
+		this.step = step;
+		this.precision = precision;
+	}
+	@Override
+	public void bind (Spinner spinner) {
+		super.bind(spinner);
+		setPrecision(precision, false);
+		spinner.notifyValueChanged(true);
+	}
+	@Override
+	public void textChanged () {
+		String text = spinner.getTextField().getText();
+		if (text.equals("")) {
+			current = min;
+		} else if (checkInputBounds(text)) {
+			current = Float.parseFloat(text);
+		}
+	}
+	@Override
+	public boolean incrementModel () {
+		if (current + step > max) {
+			if (current == max) {
+				if (isWrap()) {
+					current = min;
+					return true;
+				}
+				return false;
+			}
+			current = max;
+		} else {
+			current += step;
+		}
+		return true;
+	}
+	@Override
+	public boolean decrementModel () {
+		if (current - step < min) {
+			if (current == min) {
+				if (isWrap()) {
+					current = max;
+					return true;
+				}
+				return false;
+			}
+			current = min;
+		} else {
+			this.current -= step;
+		}
+		return true;
+	}
+	@Override
+	public String getText () {
+		if (precision >= 1) {
+			BigDecimal bd = new BigDecimal(String.valueOf(current));
+			bd = bd.setScale(precision, BigDecimal.ROUND_HALF_UP);
+			return String.valueOf(bd.floatValue());
+		} else {
+			return String.valueOf((int) current);
+		}
+	}
+	public int getPrecision () {
+		return precision;
+	}
+	public void setPrecision (final int precision) {
+		setPrecision(precision, true);
+	}
+	private void setPrecision (final int precision, boolean notifySpinner) {
+		if (precision < 0) throw new IllegalStateException("Precision can't be < 0");
+		this.precision = precision;
+		VisValidatableTextField valueText = spinner.getTextField();
+		valueText.getValidators().clear();
+		valueText.addValidator(boundsValidator); 
+		if (precision == 0) {
+			valueText.addValidator(Validators.INTEGERS);
+			valueText.setTextFieldFilter(textFieldFilter = new IntDigitsOnlyFilter(true));
+		} else {
+			valueText.addValidator(Validators.FLOATS);
+			valueText.addValidator(new InputValidator() {
+				@Override
+				public boolean validateInput (String input) {
+					int dotIndex = input.indexOf('.');
+					if (dotIndex == -1) return true;
+					return input.length() - input.indexOf('.') - 1 <= precision;
+				}
+			});
+			valueText.setTextFieldFilter(textFieldFilter = new FloatDigitsOnlyFilter(true));
+		}
+		textFieldFilter.setUseFieldCursorPosition(true);
+		if (min >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		if (notifySpinner) {
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public void setValue (float newValue) {
+		setValue(newValue, spinner.isProgrammaticChangeEvents());
+	}
+	public void setValue (float newValue, boolean fireEvent) {
+		if (newValue > max) {
+			current = max;
+		} else if (newValue < min) {
+			current = min;
+		} else {
+			current = newValue;
+		}
+		spinner.notifyValueChanged(fireEvent);
+	}
+	public float getValue () {
+		return current;
+	}
+	public float getMin () {
+		return min;
+	}
+	public void setMin (float min) {
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		this.min = min;
+		if (min >= 0) {
+			textFieldFilter.setAcceptNegativeValues(false);
+		} else {
+			textFieldFilter.setAcceptNegativeValues(true);
+		}
+		if (current < min) {
+			current = min;
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public float getMax () {
+		return max;
+	}
+	public void setMax (float max) {
+		if (min > max) throw new IllegalArgumentException("min can't be > max");
+		this.max = max;
+		if (current > max) {
+			current = max;
+			spinner.notifyValueChanged(spinner.isProgrammaticChangeEvents());
+		}
+	}
+	public float getStep () {
+		return step;
+	}
+	public void setStep (float step) {
+		if (step <= 0) throw new IllegalArgumentException("step must be > 0");
+		this.step = step;
+	}
+	private boolean checkInputBounds (String input) {
+		try {
+			float x = Float.parseFloat(input);
+			return x >= min && x <= max;
+		} catch (NumberFormatException e) {
+			return false;
+		}
+	}
+	private class BoundsValidator implements InputValidator {
+		@Override
+		public boolean validateInput (String input) {
+			return checkInputBounds(input);
+		}
+	}
+}

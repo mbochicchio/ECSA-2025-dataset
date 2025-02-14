@@ -1,0 +1,2402 @@
+package com.github.theholywaffle.teamspeak3;
+import com.github.theholywaffle.teamspeak3.api.*;
+import com.github.theholywaffle.teamspeak3.api.event.TS3EventType;
+import com.github.theholywaffle.teamspeak3.api.event.TS3Listener;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3CommandFailedException;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3Exception;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3FileTransferFailedException;
+import com.github.theholywaffle.teamspeak3.api.wrapper.*;
+import com.github.theholywaffle.teamspeak3.commands.*;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+public class TS3ApiAsync {
+	private final TS3Query query;
+	private final CommandQueue commandQueue;
+	TS3ApiAsync(TS3Query query, CommandQueue commandQueue) {
+		this.query = query;
+		this.commandQueue = commandQueue;
+	}
+	public CommandFuture<Integer> addBan(String ip, String name, String uid, long timeInSeconds, String reason) {
+		return addBan(ip, name, uid, null, timeInSeconds, reason);
+	}
+	public CommandFuture<Integer> addBan(String ip, String name, String uid, String myTSId, long timeInSeconds, String reason) {
+		Command cmd = BanCommands.banAdd(ip, name, uid, myTSId, timeInSeconds, reason);
+		return executeAndReturnIntProperty(cmd, "banid");
+	}
+	public CommandFuture<Void> addChannelClientPermission(int channelId, int clientDBId, String permName, int permValue) {
+		Command cmd = PermissionCommands.channelClientAddPerm(channelId, clientDBId, permName, permValue);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Integer> addChannelGroup(String name) {
+		return addChannelGroup(name, null);
+	}
+	public CommandFuture<Integer> addChannelGroup(String name, PermissionGroupDatabaseType type) {
+		Command cmd = ChannelGroupCommands.channelGroupAdd(name, type);
+		return executeAndReturnIntProperty(cmd, "cgid");
+	}
+	public CommandFuture<Void> addChannelGroupPermission(int groupId, String permName, int permValue) {
+		Command cmd = PermissionCommands.channelGroupAddPerm(groupId, permName, permValue);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addChannelPermission(int channelId, String permName, int permValue) {
+		Command cmd = PermissionCommands.channelAddPerm(channelId, permName, permValue);
+		return executeAndReturnError(cmd);
+	}
+	@Deprecated
+	public CommandFuture<Void> addClientPermission(int clientDBId, String permName, int value, boolean skipped) {
+		Command cmd = PermissionCommands.clientAddPerm(clientDBId, permName, value, skipped);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addClientPermission(int clientDBId, IPermissionType permName, int value, boolean skipped) {
+		Command cmd = PermissionCommands.clientAddPerm(clientDBId, permName.getName(), value, skipped);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addClientPermission(int clientDBId, BPermissionType permName, boolean value, boolean skipped) {
+		Command cmd = PermissionCommands.clientAddPerm(clientDBId, permName.getName(), value, skipped);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addClientToServerGroup(int groupId, int clientDatabaseId) {
+		Command cmd = ServerGroupCommands.serverGroupAddClient(groupId, clientDatabaseId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addComplaint(int clientDBId, String message) {
+		Command cmd = ComplaintCommands.complainAdd(clientDBId, message);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> addPermissionToAllServerGroups(ServerGroupType type, String permName, int value, boolean negated, boolean skipped) {
+		Command cmd = PermissionCommands.serverGroupAutoAddPerm(type, permName, value, negated, skipped);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<String> addPrivilegeKey(PrivilegeKeyType type, int groupId, int channelId, String description) {
+		Command cmd = PrivilegeKeyCommands.privilegeKeyAdd(type, groupId, channelId, description);
+		return executeAndReturnStringProperty(cmd, "token");
+	}
+	public CommandFuture<String> addPrivilegeKeyChannelGroup(int channelGroupId, int channelId, String description) {
+		return addPrivilegeKey(PrivilegeKeyType.CHANNEL_GROUP, channelGroupId, channelId, description);
+	}
+	public CommandFuture<String> addPrivilegeKeyServerGroup(int serverGroupId, String description) {
+		return addPrivilegeKey(PrivilegeKeyType.SERVER_GROUP, serverGroupId, 0, description);
+	}
+	public CommandFuture<Integer> addServerGroup(String name) {
+		return addServerGroup(name, PermissionGroupDatabaseType.REGULAR);
+	}
+	public CommandFuture<Integer> addServerGroup(String name, PermissionGroupDatabaseType type) {
+		Command cmd = ServerGroupCommands.serverGroupAdd(name, type);
+		return executeAndReturnIntProperty(cmd, "sgid");
+	}
+	public CommandFuture<Void> addServerGroupPermission(int groupId, String permName, int value, boolean negated, boolean skipped) {
+		Command cmd = PermissionCommands.serverGroupAddPerm(groupId, permName, value, negated, skipped);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<CreatedQueryLogin> addServerQueryLogin(String loginName, int clientDBId) {
+		Command cmd = QueryLoginCommands.queryLoginAdd(loginName, clientDBId);
+		return executeAndTransformFirst(cmd, CreatedQueryLogin::new);
+	}
+	public void addTS3Listeners(TS3Listener... listeners) {
+		query.getEventManager().addListeners(listeners);
+	}
+	public CommandFuture<int[]> banClient(int clientId, long timeInSeconds) {
+		return banClient(clientId, timeInSeconds, null);
+	}
+	public CommandFuture<int[]> banClient(int clientId, long timeInSeconds, String reason) {
+		Command cmd = BanCommands.banClient(new int[] {clientId}, timeInSeconds, reason, false);
+		return executeAndReturnIntArray(cmd, "banid");
+	}
+	public CommandFuture<int[]> banClient(int clientId, String reason) {
+		return banClient(clientId, 0, reason);
+	}
+	public CommandFuture<int[]> banClients(int[] clientIds, long timeInSeconds, String reason, boolean continueOnError) {
+		if (clientIds == null) throw new IllegalArgumentException("Client ID array was null");
+		if (clientIds.length == 0) return CommandFuture.immediate(new int[0]); 
+		Command cmd = BanCommands.banClient(clientIds, timeInSeconds, reason, continueOnError);
+		return executeAndReturnIntArray(cmd, "banid");
+	}
+	public CommandFuture<Void> broadcast(String message) {
+		Command cmd = ServerCommands.gm(message);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> copyChannelGroup(int sourceGroupId, int targetGroupId, PermissionGroupDatabaseType type) {
+		if (targetGroupId <= 0) {
+			throw new IllegalArgumentException("To create a new channel group, use the method with a String argument");
+		}
+		Command cmd = ChannelGroupCommands.channelGroupCopy(sourceGroupId, targetGroupId, type);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Integer> copyChannelGroup(int sourceGroupId, String targetName, PermissionGroupDatabaseType type) {
+		Command cmd = ChannelGroupCommands.channelGroupCopy(sourceGroupId, targetName, type);
+		return executeAndReturnIntProperty(cmd, "cgid");
+	}
+	public CommandFuture<Integer> copyServerGroup(int sourceGroupId, int targetGroupId, PermissionGroupDatabaseType type) {
+		if (targetGroupId <= 0) {
+			throw new IllegalArgumentException("To create a new server group, use the method with a String argument");
+		}
+		Command cmd = ServerGroupCommands.serverGroupCopy(sourceGroupId, targetGroupId, type);
+		return executeAndReturnIntProperty(cmd, "sgid");
+	}
+	public CommandFuture<Integer> copyServerGroup(int sourceGroupId, String targetName, PermissionGroupDatabaseType type) {
+		Command cmd = ServerGroupCommands.serverGroupCopy(sourceGroupId, targetName, type);
+		return executeAndReturnIntProperty(cmd, "sgid");
+	}
+	public CommandFuture<Integer> createChannel(String name, Map<ChannelProperty, String> options) {
+		Command cmd = ChannelCommands.channelCreate(name, options);
+		return executeAndReturnIntProperty(cmd, "cid");
+	}
+	public CommandFuture<Void> createFileDirectory(String directoryPath, int channelId) {
+		return createFileDirectory(directoryPath, channelId, null);
+	}
+	public CommandFuture<Void> createFileDirectory(String directoryPath, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftCreateDir(directoryPath, channelId, channelPassword);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<CreatedVirtualServer> createServer(String name, Map<VirtualServerProperty, String> options) {
+		Command cmd = VirtualServerCommands.serverCreate(name, options);
+		return executeAndTransformFirst(cmd, CreatedVirtualServer::new);
+	}
+	public CommandFuture<Snapshot> createServerSnapshot() {
+		Command cmd = VirtualServerCommands.serverSnapshotCreate();
+		CommandFuture<Snapshot> future = cmd.getFuture()
+				.map(result -> new Snapshot(result.getRawResponse()));
+		commandQueue.enqueueCommand(cmd);
+		return future;
+	}
+	public CommandFuture<Void> deleteAllBans() {
+		Command cmd = BanCommands.banDelAll();
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteAllComplaints(int clientDBId) {
+		Command cmd = ComplaintCommands.complainDelAll(clientDBId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteBan(int banId) {
+		Command cmd = BanCommands.banDel(banId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteChannel(int channelId) {
+		return deleteChannel(channelId, true);
+	}
+	public CommandFuture<Void> deleteChannel(int channelId, boolean force) {
+		Command cmd = ChannelCommands.channelDelete(channelId, force);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteChannelClientPermission(int channelId, int clientDBId, String permName) {
+		Command cmd = PermissionCommands.channelClientDelPerm(channelId, clientDBId, permName);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteChannelGroup(int groupId) {
+		return deleteChannelGroup(groupId, true);
+	}
+	public CommandFuture<Void> deleteChannelGroup(int groupId, boolean force) {
+		Command cmd = ChannelGroupCommands.channelGroupDel(groupId, force);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteChannelGroupPermission(int groupId, String permName) {
+		Command cmd = PermissionCommands.channelGroupDelPerm(groupId, permName);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteChannelPermission(int channelId, String permName) {
+		Command cmd = PermissionCommands.channelDelPerm(channelId, permName);
+		return executeAndReturnError(cmd);
+	}
+	@Deprecated
+	public CommandFuture<Void> deleteClientPermission(int clientDBId, String permName) {
+		Command cmd = PermissionCommands.clientDelPerm(clientDBId, permName);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteClientPermission(int clientDBId, IPermissionType permName) {
+		Command cmd = PermissionCommands.clientDelPerm(clientDBId, permName.getName());
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteClientPermission(int clientDBId, BPermissionType permName) {
+		Command cmd = PermissionCommands.clientDelPerm(clientDBId, permName.getName());
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteComplaint(int targetClientDBId, int fromClientDBId) {
+		Command cmd = ComplaintCommands.complainDel(targetClientDBId, fromClientDBId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteCustomClientProperty(int clientDBId, String key) {
+		if (key == null) throw new IllegalArgumentException("Key cannot be null");
+		Command cmd = CustomPropertyCommands.customDelete(clientDBId, key);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteDatabaseClientProperties(int clientDBId) {
+		Command cmd = DatabaseClientCommands.clientDBDelete(clientDBId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteFile(String filePath, int channelId) {
+		return deleteFile(filePath, channelId, null);
+	}
+	public CommandFuture<Void> deleteFile(String filePath, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftDeleteFile(channelId, channelPassword, filePath);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteFiles(String[] filePaths, int channelId) {
+		return deleteFiles(filePaths, channelId, null);
+	}
+	public CommandFuture<Void> deleteFiles(String[] filePaths, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftDeleteFile(channelId, channelPassword, filePaths);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteIcon(long iconId) {
+		String iconPath = "/icon_" + iconId;
+		return deleteFile(iconPath, 0);
+	}
+	public CommandFuture<Void> deleteIcons(long... iconIds) {
+		String[] iconPaths = new String[iconIds.length];
+		for (int i = 0; i < iconIds.length; ++i) {
+			iconPaths[i] = "/icon_" + iconIds[i];
+		}
+		return deleteFiles(iconPaths, 0);
+	}
+	public CommandFuture<Void> deleteOfflineMessage(int messageId) {
+		Command cmd = MessageCommands.messageDel(messageId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deletePermissionFromAllServerGroups(ServerGroupType type, String permName) {
+		Command cmd = PermissionCommands.serverGroupAutoDelPerm(type, permName);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deletePrivilegeKey(String token) {
+		Command cmd = PrivilegeKeyCommands.privilegeKeyDelete(token);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteServer(int serverId) {
+		Command cmd = VirtualServerCommands.serverDelete(serverId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteServerGroup(int groupId) {
+		return deleteServerGroup(groupId, true);
+	}
+	public CommandFuture<Void> deleteServerGroup(int groupId, boolean force) {
+		Command cmd = ServerGroupCommands.serverGroupDel(groupId, force);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteServerGroupPermission(int groupId, String permName) {
+		Command cmd = PermissionCommands.serverGroupDelPerm(groupId, permName);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deleteServerQueryLogin(int clientDBId) {
+		Command cmd = QueryLoginCommands.queryLoginDel(clientDBId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> deployServerSnapshot(Snapshot snapshot) {
+		return deployServerSnapshot(snapshot.get());
+	}
+	public CommandFuture<Void> deployServerSnapshot(String snapshot) {
+		Command cmd = VirtualServerCommands.serverSnapshotDeploy(snapshot);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Long> downloadFile(OutputStream dataOut, String filePath, int channelId) {
+		return downloadFile(dataOut, filePath, channelId, null);
+	}
+	public CommandFuture<Long> downloadFile(OutputStream dataOut, String filePath, int channelId, String channelPassword) {
+		FileTransferHelper helper = query.getFileTransferHelper();
+		int transferId = helper.getClientTransferId();
+		Command cmd = FileCommands.ftInitDownload(transferId, filePath, channelId, channelPassword);
+		CommandFuture<Long> future = new CommandFuture<>();
+		executeAndTransformFirst(cmd, FileTransferParameters::new).onSuccess(params -> {
+			QueryError error = params.getQueryError();
+			if (!error.isSuccessful()) {
+				future.fail(new TS3CommandFailedException(error, cmd.getName()));
+				return;
+			}
+			try {
+				query.getFileTransferHelper().downloadFile(dataOut, params);
+			} catch (IOException e) {
+				future.fail(new TS3FileTransferFailedException("Download failed", e));
+				return;
+			}
+			future.set(params.getFileSize());
+		}).forwardFailure(future);
+		return future;
+	}
+	public CommandFuture<byte[]> downloadFileDirect(String filePath, int channelId) {
+		return downloadFileDirect(filePath, channelId, null);
+	}
+	public CommandFuture<byte[]> downloadFileDirect(String filePath, int channelId, String channelPassword) {
+		FileTransferHelper helper = query.getFileTransferHelper();
+		int transferId = helper.getClientTransferId();
+		Command cmd = FileCommands.ftInitDownload(transferId, filePath, channelId, channelPassword);
+		CommandFuture<byte[]> future = new CommandFuture<>();
+		executeAndTransformFirst(cmd, FileTransferParameters::new).onSuccess(params -> {
+			QueryError error = params.getQueryError();
+			if (!error.isSuccessful()) {
+				future.fail(new TS3CommandFailedException(error, cmd.getName()));
+				return;
+			}
+			long fileSize = params.getFileSize();
+			if (fileSize > Integer.MAX_VALUE) {
+				future.fail(new TS3FileTransferFailedException("File too big for byte array"));
+				return;
+			}
+			ByteArrayOutputStream dataOut = new ByteArrayOutputStream((int) fileSize);
+			try {
+				query.getFileTransferHelper().downloadFile(dataOut, params);
+			} catch (IOException e) {
+				future.fail(new TS3FileTransferFailedException("Download failed", e));
+				return;
+			}
+			future.set(dataOut.toByteArray());
+		}).forwardFailure(future);
+		return future;
+	}
+	public CommandFuture<Long> downloadIcon(OutputStream dataOut, long iconId) {
+		String iconPath = "/icon_" + iconId;
+		return downloadFile(dataOut, iconPath, 0);
+	}
+	public CommandFuture<byte[]> downloadIconDirect(long iconId) {
+		String iconPath = "/icon_" + iconId;
+		return downloadFileDirect(iconPath, 0);
+	}
+	public CommandFuture<Void> editChannel(int channelId, Map<ChannelProperty, String> options) {
+		Command cmd = ChannelCommands.channelEdit(channelId, options);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> editChannel(int channelId, ChannelProperty property, String value) {
+		return editChannel(channelId, Collections.singletonMap(property, value));
+	}
+	public CommandFuture<Void> editClient(int clientId, Map<ClientProperty, String> options) {
+		Command cmd = ClientCommands.clientEdit(clientId, options);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> editClient(int clientId, ClientProperty property, String value) {
+		return editClient(clientId, Collections.singletonMap(property, value));
+	}
+	public CommandFuture<Void> editDatabaseClient(int clientDBId, Map<ClientProperty, String> options) {
+		Command cmd = DatabaseClientCommands.clientDBEdit(clientDBId, options);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> editInstance(ServerInstanceProperty property, String value) {
+		Command cmd = ServerCommands.instanceEdit(Collections.singletonMap(property, value));
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> editServer(Map<VirtualServerProperty, String> options) {
+		Command cmd = VirtualServerCommands.serverEdit(options);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<List<Ban>> getBans() {
+		Command cmd = BanCommands.banList();
+		return executeAndTransform(cmd, Ban::new);
+	}
+	public CommandFuture<List<Binding>> getBindings() {
+		Command cmd = ServerCommands.bindingList();
+		return executeAndTransform(cmd, Binding::new);
+	}
+	public CommandFuture<Channel> getChannelByNameExact(String name, boolean ignoreCase) {
+		String caseName = ignoreCase ? name.toLowerCase(Locale.ROOT) : name;
+		return getChannels().map(allChannels -> {
+			for (Channel c : allChannels) {
+				String channelName = ignoreCase ? c.getName().toLowerCase(Locale.ROOT) : c.getName();
+				if (caseName.equals(channelName)) return c;
+			}
+			return null; 
+		});
+	}
+	public CommandFuture<List<Channel>> getChannelsByName(String name) {
+		Command cmd = ChannelCommands.channelFind(name);
+		CommandFuture<List<Channel>> future = new CommandFuture<>();
+		CommandFuture<List<Integer>> channelIds = executeAndMap(cmd, response -> response.getInt("cid"));
+		CommandFuture<List<Channel>> allChannels = getChannels();
+		findByKey(channelIds, allChannels, Channel::getId)
+				.forwardSuccess(future)
+				.onFailure(transformError(future, 768, Collections.emptyList()));
+		return future;
+	}
+	public CommandFuture<List<Permission>> getChannelClientPermissions(int channelId, int clientDBId) {
+		Command cmd = PermissionCommands.channelClientPermList(channelId, clientDBId);
+		return executeAndTransform(cmd, Permission::new);
+	}
+	public CommandFuture<List<ChannelGroupClient>> getChannelGroupClients(int channelId, int clientDBId, int groupId) {
+		Command cmd = ChannelGroupCommands.channelGroupClientList(channelId, clientDBId, groupId);
+		return executeAndTransform(cmd, ChannelGroupClient::new);
+	}
+	public CommandFuture<List<ChannelGroupClient>> getChannelGroupClientsByChannelGroupId(int groupId) {
+		return getChannelGroupClients(-1, -1, groupId);
+	}
+	public CommandFuture<List<ChannelGroupClient>> getChannelGroupClientsByChannelId(int channelId) {
+		return getChannelGroupClients(channelId, -1, -1);
+	}
+	public CommandFuture<List<ChannelGroupClient>> getChannelGroupClientsByClientDBId(int clientDBId) {
+		return getChannelGroupClients(-1, clientDBId, -1);
+	}
+	public CommandFuture<List<Permission>> getChannelGroupPermissions(int groupId) {
+		Command cmd = PermissionCommands.channelGroupPermList(groupId);
+		return executeAndTransform(cmd, Permission::new);
+	}
+	public CommandFuture<List<ChannelGroup>> getChannelGroups() {
+		Command cmd = ChannelGroupCommands.channelGroupList();
+		return executeAndTransform(cmd, ChannelGroup::new);
+	}
+	public CommandFuture<ChannelInfo> getChannelInfo(int channelId) {
+		Command cmd = ChannelCommands.channelInfo(channelId);
+		return executeAndTransformFirst(cmd, map -> new ChannelInfo(channelId, map));
+	}
+	public CommandFuture<List<Permission>> getChannelPermissions(int channelId) {
+		Command cmd = PermissionCommands.channelPermList(channelId);
+		return executeAndTransform(cmd, Permission::new);
+	}
+	public CommandFuture<List<Channel>> getChannels() {
+		Command cmd = ChannelCommands.channelList();
+		return executeAndTransform(cmd, Channel::new);
+	}
+	public CommandFuture<Client> getClientByNameExact(String name, boolean ignoreCase) {
+		String caseName = ignoreCase ? name.toLowerCase(Locale.ROOT) : name;
+		return getClients().map(allClients -> {
+			for (Client c : allClients) {
+				String clientName = ignoreCase ? c.getNickname().toLowerCase(Locale.ROOT) : c.getNickname();
+				if (caseName.equals(clientName)) return c;
+			}
+			return null; 
+		});
+	}
+	public CommandFuture<List<Client>> getClientsByName(String name) {
+		Command cmd = ClientCommands.clientFind(name);
+		CommandFuture<List<Client>> future = new CommandFuture<>();
+		CommandFuture<List<Integer>> clientIds = executeAndMap(cmd, response -> response.getInt("clid"));
+		CommandFuture<List<Client>> allClients = getClients();
+		findByKey(clientIds, allClients, Client::getId)
+				.forwardSuccess(future)
+				.onFailure(transformError(future, 512, Collections.emptyList()));
+		return future;
+	}
+	public CommandFuture<ClientInfo> getClientByUId(String clientUId) {
+		Command cmd = ClientCommands.clientGetIds(clientUId);
+		return executeAndReturnIntProperty(cmd, "clid")
+				.then(this::getClientInfo);
+	}
+	public CommandFuture<ClientInfo> getClientInfo(int clientId) {
+		Command cmd = ClientCommands.clientInfo(clientId);
+		return executeAndTransformFirst(cmd, map -> new ClientInfo(clientId, map));
+	}
+	public CommandFuture<List<Permission>> getClientPermissions(int clientDBId) {
+		Command cmd = PermissionCommands.clientPermList(clientDBId);
+		return executeAndTransform(cmd, Permission::new);
+	}
+	public CommandFuture<List<Client>> getClients() {
+		Command cmd = ClientCommands.clientList();
+		return executeAndTransform(cmd, Client::new);
+	}
+	public CommandFuture<List<Complaint>> getComplaints() {
+		return getComplaints(-1);
+	}
+	public CommandFuture<List<Complaint>> getComplaints(int clientDBId) {
+		Command cmd = ComplaintCommands.complainList(clientDBId);
+		return executeAndTransform(cmd, Complaint::new);
+	}
+	public CommandFuture<ConnectionInfo> getConnectionInfo() {
+		Command cmd = VirtualServerCommands.serverRequestConnectionInfo();
+		return executeAndTransformFirst(cmd, ConnectionInfo::new);
+	}
+	public CommandFuture<Map<String, String>> getCustomClientProperties(int clientDBId) {
+		Command cmd = CustomPropertyCommands.customInfo(clientDBId);
+		CommandFuture<Map<String, String>> future = cmd.getFuture()
+				.map(result -> {
+					List<Wrapper> response = result.getResponses();
+					Map<String, String> properties = new HashMap<>(response.size());
+					for (Wrapper wrapper : response) {
+						properties.put(wrapper.get("ident"), wrapper.get("value"));
+					}
+					return properties;
+				});
+		commandQueue.enqueueCommand(cmd);
+		return future;
+	}
+	public CommandFuture<List<DatabaseClientInfo>> getDatabaseClientsByName(String name) {
+		Command cmd = DatabaseClientCommands.clientDBFind(name, false);
+		return executeAndMap(cmd, response -> response.getInt("cldbid"))
+				.then(dbClientIds -> {
+					Collection<CommandFuture<DatabaseClientInfo>> infoFutures = new ArrayList<>(dbClientIds.size());
+					for (int dbClientId : dbClientIds) {
+						infoFutures.add(getDatabaseClientInfo(dbClientId));
+					}
+					return CommandFuture.ofAll(infoFutures);
+				});
+	}
+	public CommandFuture<DatabaseClientInfo> getDatabaseClientByUId(String clientUId) {
+		Command cmd = DatabaseClientCommands.clientDBFind(clientUId, true);
+		CommandFuture<DatabaseClientInfo> future = cmd.getFuture()
+				.then(result -> {
+					if (result.getResponses().isEmpty()) {
+						return null;
+					} else {
+						int databaseId = result.getFirstResponse().getInt("cldbid");
+						return getDatabaseClientInfo(databaseId);
+					}
+				});
+		commandQueue.enqueueCommand(cmd);
+		return future;
+	}
+	public CommandFuture<DatabaseClientInfo> getDatabaseClientInfo(int clientDBId) {
+		Command cmd = DatabaseClientCommands.clientDBInfo(clientDBId);
+		return executeAndTransformFirst(cmd, DatabaseClientInfo::new);
+	}
+	public CommandFuture<List<DatabaseClient>> getDatabaseClients() {
+		Command cmd = DatabaseClientCommands.clientDBList(0, 1, true);
+		return executeAndReturnIntProperty(cmd, "count")
+				.then(count -> {
+					Collection<CommandFuture<List<DatabaseClient>>> futures = new ArrayList<>((count + 199) / 200);
+					for (int i = 0; i < count; i += 200) {
+						futures.add(getDatabaseClients(i, 200));
+					}
+					return CommandFuture.ofAll(futures);
+				}).map(listOfLists -> listOfLists.stream()
+						.flatMap(List::stream)
+						.collect(Collectors.toList()));
+	}
+	public CommandFuture<List<DatabaseClient>> getDatabaseClients(int offset, int count) {
+		Command cmd = DatabaseClientCommands.clientDBList(offset, count, false);
+		return executeAndTransform(cmd, DatabaseClient::new);
+	}
+	public CommandFuture<FileInfo> getFileInfo(String filePath, int channelId) {
+		return getFileInfo(filePath, channelId, null);
+	}
+	public CommandFuture<FileInfo> getFileInfo(String filePath, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftGetFileInfo(channelId, channelPassword, filePath);
+		return executeAndTransformFirst(cmd, FileInfo::new);
+	}
+	public CommandFuture<List<FileInfo>> getFileInfos(String[] filePaths, int channelId) {
+		return getFileInfos(filePaths, channelId, null);
+	}
+	public CommandFuture<List<FileInfo>> getFileInfos(String[] filePaths, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftGetFileInfo(channelId, channelPassword, filePaths);
+		return executeAndTransform(cmd, FileInfo::new);
+	}
+	public CommandFuture<List<FileInfo>> getFileInfos(String[] filePaths, int[] channelIds, String[] channelPasswords) {
+		Command cmd = FileCommands.ftGetFileInfo(channelIds, channelPasswords, filePaths);
+		return executeAndTransform(cmd, FileInfo::new);
+	}
+	public CommandFuture<List<FileListEntry>> getFileList(String directoryPath, int channelId) {
+		return getFileList(directoryPath, channelId, null);
+	}
+	public CommandFuture<List<FileListEntry>> getFileList(String directoryPath, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftGetFileList(directoryPath, channelId, channelPassword);
+		return executeAndTransform(cmd, FileListEntry::new);
+	}
+	public CommandFuture<List<FileTransfer>> getFileTransfers() {
+		Command cmd = FileCommands.ftList();
+		return executeAndTransform(cmd, FileTransfer::new);
+	}
+	public CommandFuture<HostInfo> getHostInfo() {
+		Command cmd = ServerCommands.hostInfo();
+		return executeAndTransformFirst(cmd, HostInfo::new);
+	}
+	public CommandFuture<List<IconFile>> getIconList() {
+		return getFileList("/icons/", 0)
+				.map(result -> {
+					List<IconFile> icons = new ArrayList<>(result.size());
+					for (FileListEntry file : result) {
+						if (file.isDirectory() || file.isStillUploading()) continue;
+						icons.add(new IconFile(file.getMap()));
+					}
+					return icons;
+				});
+	}
+	public CommandFuture<InstanceInfo> getInstanceInfo() {
+		Command cmd = ServerCommands.instanceInfo();
+		return executeAndTransformFirst(cmd, InstanceInfo::new);
+	}
+	public CommandFuture<List<String>> getInstanceLogEntries(int lines) {
+		Command cmd = ServerCommands.logView(lines, true);
+		return executeAndMap(cmd, response -> response.get("l"));
+	}
+	public CommandFuture<List<String>> getInstanceLogEntries() {
+		return getInstanceLogEntries(100);
+	}
+	public CommandFuture<String> getOfflineMessage(int messageId) {
+		Command cmd = MessageCommands.messageGet(messageId);
+		return executeAndReturnStringProperty(cmd, "message");
+	}
+	public CommandFuture<String> getOfflineMessage(Message message) {
+		return getOfflineMessage(message.getId());
+	}
+	public CommandFuture<List<Message>> getOfflineMessages() {
+		Command cmd = MessageCommands.messageList();
+		return executeAndTransform(cmd, Message::new);
+	}
+	public CommandFuture<List<PermissionAssignment>> getPermissionAssignments(String permName) {
+		Command cmd = PermissionCommands.permFind(permName);
+		CommandFuture<List<PermissionAssignment>> future = new CommandFuture<>();
+		executeAndTransform(cmd, PermissionAssignment::new)
+				.forwardSuccess(future)
+				.onFailure(transformError(future, 2562, Collections.emptyList()));
+		return future;
+	}
+	public CommandFuture<Integer> getPermissionIdByName(String permName) {
+		Command cmd = PermissionCommands.permIdGetByName(permName);
+		return executeAndReturnIntProperty(cmd, "permid");
+	}
+	public CommandFuture<int[]> getPermissionIdsByName(String... permNames) {
+		Command cmd = PermissionCommands.permIdGetByName(permNames);
+		return executeAndReturnIntArray(cmd, "permid");
+	}
+	public CommandFuture<List<PermissionAssignment>> getPermissionOverview(int channelId, int clientDBId) {
+		Command cmd = PermissionCommands.permOverview(channelId, clientDBId);
+		return executeAndTransform(cmd, PermissionAssignment::new);
+	}
+	public CommandFuture<List<PermissionInfo>> getPermissions() {
+		Command cmd = PermissionCommands.permissionList();
+		return executeAndTransform(cmd, PermissionInfo::new);
+	}
+	public CommandFuture<Integer> getPermissionValue(String permName) {
+		Command cmd = PermissionCommands.permGet(permName);
+		return executeAndReturnIntProperty(cmd, "permvalue");
+	}
+	public CommandFuture<int[]> getPermissionValues(String... permNames) {
+		Command cmd = PermissionCommands.permGet(permNames);
+		return executeAndReturnIntArray(cmd, "permvalue");
+	}
+	public CommandFuture<List<PrivilegeKey>> getPrivilegeKeys() {
+		Command cmd = PrivilegeKeyCommands.privilegeKeyList();
+		return executeAndTransform(cmd, PrivilegeKey::new);
+	}
+	public CommandFuture<List<ServerGroupClient>> getServerGroupClients(int serverGroupId) {
+		Command cmd = ServerGroupCommands.serverGroupClientList(serverGroupId);
+		return executeAndTransform(cmd, ServerGroupClient::new);
+	}
+	public CommandFuture<List<ServerGroupClient>> getServerGroupClients(ServerGroup serverGroup) {
+		return getServerGroupClients(serverGroup.getId());
+	}
+	public CommandFuture<List<Permission>> getServerGroupPermissions(int serverGroupId) {
+		Command cmd = PermissionCommands.serverGroupPermList(serverGroupId);
+		return executeAndTransform(cmd, Permission::new);
+	}
+	public CommandFuture<List<Permission>> getServerGroupPermissions(ServerGroup serverGroup) {
+		return getServerGroupPermissions(serverGroup.getId());
+	}
+	public CommandFuture<List<ServerGroup>> getServerGroups() {
+		Command cmd = ServerGroupCommands.serverGroupList();
+		return executeAndTransform(cmd, ServerGroup::new);
+	}
+	public CommandFuture<List<ServerGroup>> getServerGroupsByClientId(int clientDatabaseId) {
+		Command cmd = ServerGroupCommands.serverGroupsByClientId(clientDatabaseId);
+		CommandFuture<List<Integer>> serverGroupIds = executeAndMap(cmd, response -> response.getInt("sgid"));
+		CommandFuture<List<ServerGroup>> allServerGroups = getServerGroups();
+		return findByKey(serverGroupIds, allServerGroups, ServerGroup::getId);
+	}
+	public CommandFuture<List<ServerGroup>> getServerGroupsByClient(Client client) {
+		return getServerGroupsByClientId(client.getDatabaseId());
+	}
+	public CommandFuture<Integer> getServerIdByPort(int port) {
+		Command cmd = VirtualServerCommands.serverIdGetByPort(port);
+		return executeAndReturnIntProperty(cmd, "server_id");
+	}
+	public CommandFuture<VirtualServerInfo> getServerInfo() {
+		Command cmd = VirtualServerCommands.serverInfo();
+		return executeAndTransformFirst(cmd, VirtualServerInfo::new);
+	}
+	public CommandFuture<List<QueryLogin>> getServerQueryLogins() {
+		return getServerQueryLoginsByName(null);
+	}
+	public CommandFuture<List<QueryLogin>> getServerQueryLoginsByName(String pattern) {
+		Command cmd = QueryLoginCommands.queryLoginList(pattern);
+		return executeAndTransform(cmd, QueryLogin::new);
+	}
+	public CommandFuture<Version> getVersion() {
+		Command cmd = ServerCommands.version();
+		return executeAndTransformFirst(cmd, Version::new);
+	}
+	public CommandFuture<List<VirtualServer>> getVirtualServers() {
+		Command cmd = VirtualServerCommands.serverList();
+		return executeAndTransform(cmd, VirtualServer::new);
+	}
+	public CommandFuture<List<String>> getVirtualServerLogEntries(int lines) {
+		Command cmd = ServerCommands.logView(lines, false);
+		return executeAndMap(cmd, response -> response.get("l"));
+	}
+	public CommandFuture<List<String>> getVirtualServerLogEntries() {
+		return getVirtualServerLogEntries(100);
+	}
+	public CommandFuture<Boolean> isClientOnline(int clientId) {
+		Command cmd = ClientCommands.clientInfo(clientId);
+		CommandFuture<Boolean> future = new CommandFuture<>();
+		cmd.getFuture()
+				.onSuccess(__ -> future.set(true))
+				.onFailure(transformError(future, 512, false));
+		commandQueue.enqueueCommand(cmd);
+		return future;
+	}
+	public CommandFuture<Boolean> isClientOnline(String clientUId) {
+		Command cmd = ClientCommands.clientGetIds(clientUId);
+		CommandFuture<Boolean> future = cmd.getFuture()
+				.map(result -> !result.getResponses().isEmpty());
+		commandQueue.enqueueCommand(cmd);
+		return future;
+	}
+	public CommandFuture<Void> kickClientFromChannel(int... clientIds) {
+		return kickClients(ReasonIdentifier.REASON_KICK_CHANNEL, null, clientIds);
+	}
+	public CommandFuture<Void> kickClientFromChannel(Client... clients) {
+		return kickClients(ReasonIdentifier.REASON_KICK_CHANNEL, null, clients);
+	}
+	public CommandFuture<Void> kickClientFromChannel(String message, int... clientIds) {
+		return kickClients(ReasonIdentifier.REASON_KICK_CHANNEL, message, clientIds);
+	}
+	public CommandFuture<Void> kickClientFromChannel(String message, Client... clients) {
+		return kickClients(ReasonIdentifier.REASON_KICK_CHANNEL, message, clients);
+	}
+	public CommandFuture<Void> kickClientFromServer(int... clientIds) {
+		return kickClients(ReasonIdentifier.REASON_KICK_SERVER, null, clientIds);
+	}
+	public CommandFuture<Void> kickClientFromServer(Client... clients) {
+		return kickClients(ReasonIdentifier.REASON_KICK_SERVER, null, clients);
+	}
+	public CommandFuture<Void> kickClientFromServer(String message, int... clientIds) {
+		return kickClients(ReasonIdentifier.REASON_KICK_SERVER, message, clientIds);
+	}
+	public CommandFuture<Void> kickClientFromServer(String message, Client... clients) {
+		return kickClients(ReasonIdentifier.REASON_KICK_SERVER, message, clients);
+	}
+	private CommandFuture<Void> kickClients(ReasonIdentifier reason, String message, Client... clients) {
+		int[] clientIds = new int[clients.length];
+		for (int i = 0; i < clients.length; ++i) {
+			clientIds[i] = clients[i].getId();
+		}
+		return kickClients(reason, message, clientIds);
+	}
+	private CommandFuture<Void> kickClients(ReasonIdentifier reason, String message, int... clientIds) {
+		Command cmd = ClientCommands.clientKick(reason, message, clientIds);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> login(String username, String password) {
+		Command cmd = QueryCommands.logIn(username, password);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> logout() {
+		Command cmd = QueryCommands.logOut();
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveChannel(int channelId, int channelTargetId) {
+		return moveChannel(channelId, channelTargetId, 0);
+	}
+	public CommandFuture<Void> moveChannel(int channelId, int channelTargetId, int order) {
+		Command cmd = ChannelCommands.channelMove(channelId, channelTargetId, order);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveClient(int clientId, int channelId) {
+		return moveClient(clientId, channelId, null);
+	}
+	public CommandFuture<Void> moveClients(int[] clientIds, int channelId) {
+		return moveClients(clientIds, channelId, null);
+	}
+	public CommandFuture<Void> moveClient(Client client, ChannelBase channel) {
+		return moveClient(client, channel, null);
+	}
+	public CommandFuture<Void> moveClients(Client[] clients, ChannelBase channel) {
+		return moveClients(clients, channel, null);
+	}
+	public CommandFuture<Void> moveClient(int clientId, int channelId, String channelPassword) {
+		Command cmd = ClientCommands.clientMove(clientId, channelId, channelPassword);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveClients(int[] clientIds, int channelId, String channelPassword) {
+		if (clientIds == null) throw new IllegalArgumentException("Client ID array was null");
+		if (clientIds.length == 0) return CommandFuture.immediate(null); 
+		Command cmd = ClientCommands.clientMove(clientIds, channelId, channelPassword);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveClient(Client client, ChannelBase channel, String channelPassword) {
+		if (client == null) throw new IllegalArgumentException("Client cannot be null");
+		if (channel == null) throw new IllegalArgumentException("Channel cannot be null");
+		return moveClient(client.getId(), channel.getId(), channelPassword);
+	}
+	public CommandFuture<Void> moveClients(Client[] clients, ChannelBase channel, String channelPassword) {
+		if (clients == null) throw new IllegalArgumentException("Client array cannot be null");
+		if (channel == null) throw new IllegalArgumentException("Channel cannot be null");
+		int[] clientIds = new int[clients.length];
+		for (int i = 0; i < clients.length; i++) {
+			clientIds[i] = clients[i].getId();
+		}
+		return moveClients(clientIds, channel.getId(), channelPassword);
+	}
+	public CommandFuture<Void> moveFile(String oldPath, String newPath, int channelId) {
+		return moveFile(oldPath, newPath, channelId, null);
+	}
+	public CommandFuture<Void> moveFile(String oldPath, String newPath, int oldChannelId, int newChannelId) {
+		return moveFile(oldPath, newPath, oldChannelId, null, newChannelId, null);
+	}
+	public CommandFuture<Void> moveFile(String oldPath, String newPath, int channelId, String channelPassword) {
+		Command cmd = FileCommands.ftRenameFile(oldPath, newPath, channelId, channelPassword);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveFile(String oldPath, String newPath, int oldChannelId, String oldPassword, int newChannelId, String newPassword) {
+		Command cmd = FileCommands.ftRenameFile(oldPath, newPath, oldChannelId, oldPassword, newChannelId, newPassword);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> moveQuery(int channelId) {
+		return moveClient(0, channelId, null);
+	}
+	public CommandFuture<Void> moveQuery(ChannelBase channel) {
+		if (channel == null) throw new IllegalArgumentException("Channel cannot be null");
+		return moveClient(0, channel.getId(), null);
+	}
+	public CommandFuture<Void> moveQuery(int channelId, String channelPassword) {
+		return moveClient(0, channelId, channelPassword);
+	}
+	public CommandFuture<Void> moveQuery(ChannelBase channel, String channelPassword) {
+		if (channel == null) throw new IllegalArgumentException("Channel cannot be null");
+		return moveClient(0, channel.getId(), channelPassword);
+	}
+	public CommandFuture<Void> pokeClient(int clientId, String message) {
+		Command cmd = ClientCommands.clientPoke(clientId, message);
+		return executeAndReturnError(cmd);
+	}
+	CommandFuture<Void> quit() {
+		Command cmd = QueryCommands.quit();
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> registerAllEvents() {
+		Collection<CommandFuture<Void>> eventFutures = Arrays.asList(
+				registerEvent(TS3EventType.SERVER),
+				registerEvent(TS3EventType.TEXT_SERVER),
+				registerEvent(TS3EventType.CHANNEL, 0),
+				registerEvent(TS3EventType.TEXT_CHANNEL, 0),
+				registerEvent(TS3EventType.TEXT_PRIVATE),
+				registerEvent(TS3EventType.PRIVILEGE_KEY_USED)
+		);
+		return CommandFuture.ofAll(eventFutures)
+				.map(__ -> null); 
+	}
+	public CommandFuture<Void> registerEvent(TS3EventType eventType) {
+		if (eventType == TS3EventType.CHANNEL || eventType == TS3EventType.TEXT_CHANNEL) {
+			return registerEvent(eventType, 0);
+		} else {
+			return registerEvent(eventType, -1);
+		}
+	}
+	public CommandFuture<Void> registerEvent(TS3EventType eventType, int channelId) {
+		Command cmd = QueryCommands.serverNotifyRegister(eventType, channelId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> registerEvents(TS3EventType... eventTypes) {
+		if (eventTypes.length == 0) return CommandFuture.immediate(null); 
+		Collection<CommandFuture<Void>> registerFutures = new ArrayList<>(eventTypes.length);
+		for (TS3EventType type : eventTypes) {
+			registerFutures.add(registerEvent(type));
+		}
+		return CommandFuture.ofAll(registerFutures)
+				.map(__ -> null); 
+	}
+	public CommandFuture<Void> removeClientFromServerGroup(int serverGroupId, int clientDatabaseId) {
+		Command cmd = ServerGroupCommands.serverGroupDelClient(serverGroupId, clientDatabaseId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> removeClientFromServerGroup(ServerGroup serverGroup, Client client) {
+		return removeClientFromServerGroup(serverGroup.getId(), client.getDatabaseId());
+	}
+	public void removeTS3Listeners(TS3Listener... listeners) {
+		query.getEventManager().removeListeners(listeners);
+	}
+	public CommandFuture<Void> renameChannelGroup(int channelGroupId, String name) {
+		Command cmd = ChannelGroupCommands.channelGroupRename(channelGroupId, name);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> renameChannelGroup(ChannelGroup channelGroup, String name) {
+		return renameChannelGroup(channelGroup.getId(), name);
+	}
+	public CommandFuture<Void> renameServerGroup(int serverGroupId, String name) {
+		Command cmd = ServerGroupCommands.serverGroupRename(serverGroupId, name);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> renameServerGroup(ServerGroup serverGroup, String name) {
+		return renameServerGroup(serverGroup.getId(), name);
+	}
+	public CommandFuture<String> resetPermissions() {
+		Command cmd = PermissionCommands.permReset();
+		return executeAndReturnStringProperty(cmd, "token");
+	}
+	public CommandFuture<List<CustomPropertyAssignment>> searchCustomClientProperty(String key) {
+		return searchCustomClientProperty(key, "%");
+	}
+	public CommandFuture<List<CustomPropertyAssignment>> searchCustomClientProperty(String key, String valuePattern) {
+		if (key == null) throw new IllegalArgumentException("Key cannot be null");
+		Command cmd = CustomPropertyCommands.customSearch(key, valuePattern);
+		return executeAndTransform(cmd, CustomPropertyAssignment::new);
+	}
+	public CommandFuture<Void> selectVirtualServerById(int id) {
+		return selectVirtualServerById(id, null);
+	}
+	public CommandFuture<Void> selectVirtualServerById(int id, String nickname) {
+		Command cmd = QueryCommands.useId(id, nickname);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> selectVirtualServerByPort(int port) {
+		return selectVirtualServerByPort(port, null);
+	}
+	public CommandFuture<Void> selectVirtualServerByPort(int port, String nickname) {
+		Command cmd = QueryCommands.usePort(port, nickname);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> selectVirtualServer(VirtualServer server) {
+		return selectVirtualServerById(server.getId());
+	}
+	public CommandFuture<Void> selectVirtualServer(VirtualServer server, String nickname) {
+		return selectVirtualServerById(server.getId(), nickname);
+	}
+	public CommandFuture<Void> sendOfflineMessage(String clientUId, String subject, String message) {
+		Command cmd = MessageCommands.messageAdd(clientUId, subject, message);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> sendTextMessage(TextMessageTargetMode targetMode, int targetId, String message) {
+		Command cmd = ClientCommands.sendTextMessage(targetMode.getIndex(), targetId, message);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> sendChannelMessage(int channelId, String message) {
+		return moveQuery(channelId)
+				.then(__ -> sendTextMessage(TextMessageTargetMode.CHANNEL, 0, message));
+	}
+	public CommandFuture<Void> sendChannelMessage(String message) {
+		return sendTextMessage(TextMessageTargetMode.CHANNEL, 0, message);
+	}
+	public CommandFuture<Void> sendServerMessage(int serverId, String message) {
+		return selectVirtualServerById(serverId)
+				.then(__ -> sendTextMessage(TextMessageTargetMode.SERVER, 0, message));
+	}
+	public CommandFuture<Void> sendServerMessage(String message) {
+		return sendTextMessage(TextMessageTargetMode.SERVER, 0, message);
+	}
+	public CommandFuture<Void> sendPrivateMessage(int clientId, String message) {
+		return sendTextMessage(TextMessageTargetMode.CLIENT, clientId, message);
+	}
+	public CommandFuture<Void> setClientChannelGroup(int groupId, int channelId, int clientDBId) {
+		Command cmd = ChannelGroupCommands.setClientChannelGroup(groupId, channelId, clientDBId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> setCustomClientProperties(int clientDBId, Map<String, String> properties) {
+		Collection<CommandFuture<Void>> futures = new ArrayList<>(properties.size());
+		for (Map.Entry<String, String> entry : properties.entrySet()) {
+			String key = entry.getKey();
+			String value = entry.getValue();
+			if (key != null) {
+				futures.add(setCustomClientProperty(clientDBId, key, value));
+			}
+		}
+		return CommandFuture.ofAll(futures)
+				.map(__ -> null); 
+	}
+	public CommandFuture<Void> setCustomClientProperty(int clientDBId, String key, String value) {
+		if (key == null) throw new IllegalArgumentException("Key cannot be null");
+		Command cmd = CustomPropertyCommands.customSet(clientDBId, key, value);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> setMessageRead(int messageId) {
+		return setMessageReadFlag(messageId, true);
+	}
+	public CommandFuture<Void> setMessageRead(Message message) {
+		return setMessageReadFlag(message.getId(), true);
+	}
+	public CommandFuture<Void> setMessageReadFlag(int messageId, boolean read) {
+		Command cmd = MessageCommands.messageUpdateFlag(messageId, read);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> setMessageReadFlag(Message message, boolean read) {
+		return setMessageReadFlag(message.getId(), read);
+	}
+	public CommandFuture<Void> setNickname(String nickname) {
+		Map<ClientProperty, String> options = Collections.singletonMap(ClientProperty.CLIENT_NICKNAME, nickname);
+		return updateClient(options);
+	}
+	public CommandFuture<Void> startServer(int serverId) {
+		Command cmd = VirtualServerCommands.serverStart(serverId);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> startServer(VirtualServer virtualServer) {
+		return startServer(virtualServer.getId());
+	}
+	public CommandFuture<Void> stopServer(int serverId) {
+		return stopServer(serverId, null);
+	}
+	public CommandFuture<Void> stopServer(int serverId, String reason) {
+		Command cmd = VirtualServerCommands.serverStop(serverId, reason);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> stopServer(VirtualServer virtualServer) {
+		return stopServer(virtualServer.getId(), null);
+	}
+	public CommandFuture<Void> stopServer(VirtualServer virtualServer, String reason) {
+		return stopServer(virtualServer.getId(), reason);
+	}
+	public CommandFuture<Void> stopServerProcess() {
+		return stopServerProcess(null);
+	}
+	public CommandFuture<Void> stopServerProcess(String reason) {
+		Command cmd = ServerCommands.serverProcessStop(reason);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> unregisterAllEvents() {
+		Command cmd = QueryCommands.serverNotifyUnregister();
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> updateClient(Map<ClientProperty, String> options) {
+		Command cmd = ClientCommands.clientUpdate(options);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> updateClient(ClientProperty property, String value) {
+		return updateClient(Collections.singletonMap(property, value));
+	}
+	public CommandFuture<String> updateServerQueryLogin(String loginName) {
+		Command cmd = ClientCommands.clientSetServerQueryLogin(loginName);
+		return executeAndReturnStringProperty(cmd, "client_login_password");
+	}
+	public CommandFuture<Void> uploadFile(InputStream dataIn, long dataLength, String filePath, boolean overwrite, int channelId) {
+		return uploadFile(dataIn, dataLength, filePath, overwrite, channelId, null);
+	}
+	public CommandFuture<Void> uploadFile(InputStream dataIn, long dataLength, String filePath, boolean overwrite, int channelId, String channelPassword) {
+		FileTransferHelper helper = query.getFileTransferHelper();
+		int transferId = helper.getClientTransferId();
+		Command cmd = FileCommands.ftInitUpload(transferId, filePath, channelId, channelPassword, dataLength, overwrite);
+		CommandFuture<Void> future = new CommandFuture<>();
+		executeAndTransformFirst(cmd, FileTransferParameters::new).onSuccess(params -> {
+			QueryError error = params.getQueryError();
+			if (!error.isSuccessful()) {
+				future.fail(new TS3CommandFailedException(error, cmd.getName()));
+				return;
+			}
+			try {
+				query.getFileTransferHelper().uploadFile(dataIn, dataLength, params);
+			} catch (IOException e) {
+				future.fail(new TS3FileTransferFailedException("Upload failed", e));
+				return;
+			}
+			future.set(null); 
+		}).forwardFailure(future);
+		return future;
+	}
+	public CommandFuture<Void> uploadFileDirect(byte[] data, String filePath, boolean overwrite, int channelId) {
+		return uploadFileDirect(data, filePath, overwrite, channelId, null);
+	}
+	public CommandFuture<Void> uploadFileDirect(byte[] data, String filePath, boolean overwrite, int channelId, String channelPassword) {
+		return uploadFile(new ByteArrayInputStream(data), data.length, filePath, overwrite, channelId, channelPassword);
+	}
+	public CommandFuture<Long> uploadIcon(InputStream dataIn, long dataLength) {
+		byte[] data;
+		try {
+			data = FileTransferHelper.readFully(dataIn, dataLength);
+		} catch (IOException e) {
+			throw new TS3FileTransferFailedException("Reading stream failed", e);
+		}
+		return uploadIconDirect(data);
+	}
+	public CommandFuture<Long> uploadIconDirect(byte[] data) {
+		CommandFuture<Long> future = new CommandFuture<>();
+		long iconId = FileTransferHelper.getIconId(data);
+		String path = "/icon_" + iconId;
+		uploadFileDirect(data, path, false, 0)
+				.onSuccess(__ -> future.set(iconId))
+				.onFailure(transformError(future, 2050, iconId));
+		return future;
+	}
+	public CommandFuture<Void> usePrivilegeKey(String token) {
+		Command cmd = PrivilegeKeyCommands.privilegeKeyUse(token);
+		return executeAndReturnError(cmd);
+	}
+	public CommandFuture<Void> usePrivilegeKey(PrivilegeKey privilegeKey) {
+		return usePrivilegeKey(privilegeKey.getToken());
+	}
+	public CommandFuture<ServerQueryInfo> whoAmI() {
+		Command cmd = QueryCommands.whoAmI();
+		return executeAndTransformFirst(cmd, ServerQueryInfo::new);
+	}
+	private static boolean isQueryError(TS3Exception exception, int errorId) {
+		if (exception instanceof TS3CommandFailedException) {
+			TS3CommandFailedException cfe = (TS3CommandFailedException) exception;
+			return (cfe.getError().getId() == errorId);
+		} else {
+			return false;
+		}
+	}
+	private static <T> CommandFuture.FailureListener transformError(CommandFuture<T> future, int errorId, T replacement) {
+		return exception -> {
+			if (isQueryError(exception, errorId)) {
+				future.set(replacement);
+			} else {
+				future.fail(exception);
+			}
+		};
+	}
+	private CommandFuture<Void> executeAndReturnError(Command command) {
+		CommandFuture<Void> future = command.getFuture()
+				.map(__ -> null); 
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private CommandFuture<String> executeAndReturnStringProperty(Command command, String property) {
+		CommandFuture<String> future = command.getFuture()
+				.map(result -> result.getFirstResponse().get(property));
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private CommandFuture<Integer> executeAndReturnIntProperty(Command command, String property) {
+		CommandFuture<Integer> future = command.getFuture()
+				.map(result -> result.getFirstResponse().getInt(property));
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private CommandFuture<int[]> executeAndReturnIntArray(Command command, String property) {
+		CommandFuture<int[]> future = command.getFuture()
+				.map(result -> {
+					List<Wrapper> responses = result.getResponses();
+					int[] values = new int[responses.size()];
+					int i = 0;
+					for (Wrapper response : responses) {
+						values[i++] = response.getInt(property);
+					}
+					return values;
+				});
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private <T extends Wrapper> CommandFuture<T> executeAndTransformFirst(Command command, Function<Map<String, String>, T> fn) {
+		return executeAndMapFirst(command, wrapper -> fn.apply(wrapper.getMap()));
+	}
+	private <T> CommandFuture<T> executeAndMapFirst(Command command, Function<Wrapper, T> fn) {
+		CommandFuture<T> future = command.getFuture()
+				.map(result -> fn.apply(result.getFirstResponse()));
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private <T extends Wrapper> CommandFuture<List<T>> executeAndTransform(Command command, Function<Map<String, String>, T> fn) {
+		return executeAndMap(command, wrapper -> fn.apply(wrapper.getMap()));
+	}
+	private <T> CommandFuture<List<T>> executeAndMap(Command command, Function<Wrapper, T> fn) {
+		CommandFuture<List<T>> future = command.getFuture()
+				.map(result -> {
+					List<Wrapper> response = result.getResponses();
+					List<T> transformed = new ArrayList<>(response.size());
+					for (Wrapper wrapper : response) {
+						transformed.add(fn.apply(wrapper));
+					}
+					return transformed;
+				});
+		commandQueue.enqueueCommand(command);
+		return future;
+	}
+	private static <K, V> CommandFuture<List<V>> findByKey(CommandFuture<List<K>> keysFuture, CommandFuture<List<V>> valuesFuture,
+	                                                       Function<? super V, ? extends K> keyMapper) {
+		CommandFuture<List<V>> future = new CommandFuture<>();
+		keysFuture.onSuccess(keys ->
+				valuesFuture.onSuccess(values -> {
+					Map<K, V> valueMap = values.stream().collect(Collectors.toMap(keyMapper, Function.identity(), (l, r) -> l));
+					List<V> foundValues = new ArrayList<>(keys.size());
+					for (K key : keys) {
+						if (key == null) continue;
+						V value = valueMap.get(key);
+						if (value == null) continue;
+						foundValues.add(value);
+					}
+					future.set(foundValues);
+				}).forwardFailure(future)
+		).forwardFailure(future);
+		return future;
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+public interface TS3Listener {
+	void onTextMessage(TextMessageEvent e);
+	void onClientJoin(ClientJoinEvent e);
+	void onClientLeave(ClientLeaveEvent e);
+	void onServerEdit(ServerEditedEvent e);
+	void onChannelEdit(ChannelEditedEvent e);
+	void onChannelDescriptionChanged(ChannelDescriptionEditedEvent e);
+	void onClientMoved(ClientMovedEvent e);
+	void onChannelCreate(ChannelCreateEvent e);
+	void onChannelDeleted(ChannelDeletedEvent e);
+	void onChannelMoved(ChannelMovedEvent e);
+	void onChannelPasswordChanged(ChannelPasswordChangedEvent e);
+	void onPrivilegeKeyUsed(PrivilegeKeyUsedEvent e);
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+public abstract class TS3EventAdapter implements TS3Listener {
+	@Override
+	public void onTextMessage(TextMessageEvent e) {}
+	@Override
+	public void onClientJoin(ClientJoinEvent e) {}
+	@Override
+	public void onClientLeave(ClientLeaveEvent e) {}
+	@Override
+	public void onServerEdit(ServerEditedEvent e) {}
+	@Override
+	public void onChannelEdit(ChannelEditedEvent e) {}
+	@Override
+	public void onChannelDescriptionChanged(ChannelDescriptionEditedEvent e) {}
+	@Override
+	public void onClientMoved(ClientMovedEvent e) {}
+	@Override
+	public void onChannelCreate(ChannelCreateEvent e) {}
+	@Override
+	public void onChannelDeleted(ChannelDeletedEvent e) {}
+	@Override
+	public void onChannelMoved(ChannelMovedEvent e) {}
+	@Override
+	public void onChannelPasswordChanged(ChannelPasswordChangedEvent e) {}
+	@Override
+	public void onPrivilegeKeyUsed(PrivilegeKeyUsedEvent e) {}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelCreateEvent extends BaseEvent {
+	public ChannelCreateEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelCreate(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelDeletedEvent extends BaseEvent {
+	public ChannelDeletedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelDeleted(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ServerEditedEvent extends BaseEvent {
+	public ServerEditedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onServerEdit(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelDescriptionEditedEvent extends BaseEvent {
+	public ChannelDescriptionEditedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelDescriptionChanged(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelPasswordChangedEvent extends BaseEvent {
+	public ChannelPasswordChangedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelPasswordChanged(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ClientProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ClientJoinEvent extends BaseEvent {
+	public ClientJoinEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getClientFromId() {
+		return getInt("cfid");
+	}
+	public int getClientTargetId() {
+		return getInt("ctid");
+	}
+	public int getClientId() {
+		return getInt("clid");
+	}
+	public String getUniqueClientIdentifier() {
+		return get(ClientProperty.CLIENT_UNIQUE_IDENTIFIER);
+	}
+	public String getClientNickname() {
+		return get(ClientProperty.CLIENT_NICKNAME);
+	}
+	public boolean isClientInputMuted() {
+		return getBoolean(ClientProperty.CLIENT_INPUT_MUTED);
+	}
+	public boolean isClientOutputMuted() {
+		return getBoolean(ClientProperty.CLIENT_OUTPUT_MUTED);
+	}
+	public boolean isClientOutputOnlyMuted() {
+		return getBoolean(ClientProperty.CLIENT_OUTPUTONLY_MUTED);
+	}
+	public boolean isClientUsingHardwareInput() {
+		return getBoolean(ClientProperty.CLIENT_INPUT_HARDWARE);
+	}
+	public boolean isClientUsingHardwareOutput() {
+		return getBoolean(ClientProperty.CLIENT_OUTPUT_HARDWARE);
+	}
+	public String getClientMetadata() {
+		return get(ClientProperty.CLIENT_META_DATA);
+	}
+	public boolean isClientRecording() {
+		return getBoolean(ClientProperty.CLIENT_IS_RECORDING);
+	}
+	public int getClientDatabaseId() {
+		return getInt(ClientProperty.CLIENT_DATABASE_ID);
+	}
+	public int getClientChannelGroupId() {
+		return getInt(ClientProperty.CLIENT_CHANNEL_GROUP_ID);
+	}
+	public int getAmountOfServerGroups() {
+		String[] split = get(ClientProperty.CLIENT_SERVERGROUPS).split(",");
+		return split.length;
+	}
+	public String getClientServerGroups() {
+		return get(ClientProperty.CLIENT_SERVERGROUPS);
+	}
+	public boolean isClientAway() {
+		return getBoolean(ClientProperty.CLIENT_AWAY);
+	}
+	public String getClientAwayMessage() {
+		return get(ClientProperty.CLIENT_AWAY_MESSAGE);
+	}
+	public int getClientType() {
+		return getInt(ClientProperty.CLIENT_TYPE);
+	}
+	public String getClientFlagAvatarId() {
+		return get(ClientProperty.CLIENT_FLAG_AVATAR);
+	}
+	public int getClientTalkPower() {
+		return getInt(ClientProperty.CLIENT_TALK_POWER);
+	}
+	public boolean isClientRequestingToTalk() {
+		return getBoolean(ClientProperty.CLIENT_TALK_REQUEST);
+	}
+	public String getClientTalkRequestMessage() {
+		return get(ClientProperty.CLIENT_TALK_REQUEST_MSG);
+	}
+	public String getClientDescription() {
+		return get(ClientProperty.CLIENT_DESCRIPTION);
+	}
+	public boolean isClientTalking() {
+		return getBoolean(ClientProperty.CLIENT_IS_TALKER);
+	}
+	public boolean isClientPrioritySpeaker() {
+		return getBoolean(ClientProperty.CLIENT_IS_PRIORITY_SPEAKER);
+	}
+	public int getClientUnreadMessages() {
+		return getInt(ClientProperty.CLIENT_UNREAD_MESSAGES);
+	}
+	public String getClientPhoneticNickname() {
+		return get(ClientProperty.CLIENT_NICKNAME_PHONETIC);
+	}
+	public int getClientNeededServerQueryViewPower() {
+		return getInt(ClientProperty.CLIENT_NEEDED_SERVERQUERY_VIEW_POWER);
+	}
+	public long getClientIconId() {
+		return getLong(ClientProperty.CLIENT_ICON_ID);
+	}
+	public boolean isClientChannelCommander() {
+		return getBoolean(ClientProperty.CLIENT_IS_CHANNEL_COMMANDER);
+	}
+	public String getClientCountry() {
+		return get(ClientProperty.CLIENT_COUNTRY);
+	}
+	public int getClientInheritedChannelGroupId() {
+		return getInt(ClientProperty.CLIENT_CHANNEL_GROUP_INHERITED_CHANNEL_ID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onClientJoin(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ClientLeaveEvent extends BaseEvent {
+	public ClientLeaveEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getClientFromId() {
+		return getInt("cfid");
+	}
+	public int getClientTargetId() {
+		return getInt("ctid");
+	}
+	public int getClientId() {
+		return getInt("clid");
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onClientLeave(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelMovedEvent extends BaseEvent {
+	public ChannelMovedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	public int getChannelParentId() {
+		return getInt(ChannelProperty.CPID);
+	}
+	public int getChannelOrder() {
+		return getInt(ChannelProperty.CHANNEL_ORDER);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelMoved(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.ChannelProperty;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ChannelEditedEvent extends BaseEvent {
+	public ChannelEditedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getChannelId() {
+		return getInt(ChannelProperty.CID);
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onChannelEdit(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.TextMessageTargetMode;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class TextMessageEvent extends BaseEvent {
+	public TextMessageEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public TextMessageTargetMode getTargetMode() {
+		int mode = getInt("targetmode");
+		for (TextMessageTargetMode m : TextMessageTargetMode.values()) {
+			if (m.getIndex() == mode) {
+				return m;
+			}
+		}
+		return null;
+	}
+	public String getMessage() {
+		return get("msg");
+	}
+	public int getTargetClientId() {
+		return getInt("target");
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onTextMessage(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.PrivilegeKeyType;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class PrivilegeKeyUsedEvent extends BaseEvent {
+	public PrivilegeKeyUsedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getClientId() {
+		return getInt("clid");
+	}
+	public int getClientDatabaseId() {
+		return getInt("cldbid");
+	}
+	public String getClientUniqueIdentifier() {
+		return get("cluid");
+	}
+	public String getPrivilegeKey() {
+		return get("token");
+	}
+	public PrivilegeKeyType getPrivilegeKeyType() {
+		if (getPrivilegeKeyChannelId() == 0) {
+			return PrivilegeKeyType.SERVER_GROUP;
+		} else {
+			return PrivilegeKeyType.CHANNEL_GROUP;
+		}
+	}
+	public int getPrivilegeKeyGroupId() {
+		return getInt("token1");
+	}
+	public int getPrivilegeKeyChannelId() {
+		return getInt("token2");
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onPrivilegeKeyUsed(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3;
+import com.github.theholywaffle.teamspeak3.api.event.*;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3UnknownEventException;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+import com.github.theholywaffle.teamspeak3.commands.response.DefaultArrayResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
+class EventManager {
+	private static final Logger log = LoggerFactory.getLogger(EventManager.class);
+	private static final Map<String, Function<Wrapper, TS3Event>> eventByName = new HashMap<>(12);
+	static {
+		eventByName.put("notifytextmessage", TextMessageEvent::new);
+		eventByName.put("notifycliententerview", ClientJoinEvent::new);
+		eventByName.put("notifyclientleftview", ClientLeaveEvent::new);
+		eventByName.put("notifyserveredited", ServerEditedEvent::new);
+		eventByName.put("notifychanneledited", ChannelEditedEvent::new);
+		eventByName.put("notifychanneldescriptionchanged", ChannelDescriptionEditedEvent::new);
+		eventByName.put("notifyclientmoved", ClientMovedEvent::new);
+		eventByName.put("notifychannelcreated", ChannelCreateEvent::new);
+		eventByName.put("notifychanneldeleted", ChannelDeletedEvent::new);
+		eventByName.put("notifychannelmoved", ChannelMovedEvent::new);
+		eventByName.put("notifychannelpasswordchanged", ChannelPasswordChangedEvent::new);
+		eventByName.put("notifytokenused", PrivilegeKeyUsedEvent::new);
+	}
+	private final Collection<ListenerTask> tasks = new CopyOnWriteArrayList<>();
+	private final TS3Query ts3;
+	EventManager(TS3Query query) {
+		ts3 = query;
+	}
+	void addListeners(TS3Listener... listeners) {
+		for (TS3Listener listener : listeners) {
+			if (listener == null) throw new IllegalArgumentException("A listener was null");
+			ListenerTask task = new ListenerTask(listener);
+			tasks.add(task);
+		}
+	}
+	void removeListeners(TS3Listener... listeners) {
+		List<TS3Listener> listenersToRemove = Arrays.asList(listeners);
+		tasks.removeIf(listenerTask -> listenersToRemove.contains(listenerTask.listener));
+	}
+	void fireEvent(String notifyName, String notifyBody) {
+		final DefaultArrayResponse response = DefaultArrayResponse.parse(notifyBody);
+		for (Wrapper eventData : response.getResponses()) {
+			TS3Event event = createEvent(notifyName, eventData);
+			fireEvent(event);
+		}
+	}
+	void fireEvent(TS3Event event) {
+		if (event == null) throw new IllegalArgumentException("TS3Event was null");
+		for (ListenerTask task : tasks) {
+			task.enqueueEvent(event);
+		}
+	}
+	private static TS3Event createEvent(String notifyName, Wrapper eventData) {
+		Function<Wrapper, TS3Event> constructor = eventByName.get(notifyName);
+		if (constructor == null) throw new TS3UnknownEventException(notifyName + " " + eventData);
+		return constructor.apply(eventData);
+	}
+	private class ListenerTask implements Runnable {
+		private static final int START_QUEUE_SIZE = 16;
+		private final TS3Listener listener;
+		private final Queue<TS3Event> eventQueue;
+		ListenerTask(TS3Listener ts3Listener) {
+			listener = ts3Listener;
+			eventQueue = new ArrayDeque<>(START_QUEUE_SIZE);
+		}
+		TS3Listener getListener() {
+			return listener;
+		}
+		synchronized void enqueueEvent(TS3Event event) {
+			if (eventQueue.isEmpty()) {
+				eventQueue.add(event);
+				ts3.submitUserTask("Event listener task", this);
+			} else {
+				eventQueue.add(event);
+			}
+		}
+		@Override
+		public void run() {
+			TS3Event currentEvent;
+			synchronized (this) {
+				currentEvent = eventQueue.peek();
+				if (currentEvent == null) throw new IllegalStateException("Task started without events");
+			}
+			do {
+				try {
+					currentEvent.fire(listener);
+				} catch (Throwable throwable) {
+					log.error("Event listener threw an exception", throwable);
+				}
+				synchronized (this) {
+					eventQueue.remove();
+					currentEvent = eventQueue.peek();
+				}
+			} while (currentEvent != null);
+		}
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Channel;
+import com.github.theholywaffle.teamspeak3.api.wrapper.Wrapper;
+public class ClientMovedEvent extends BaseEvent {
+	public ClientMovedEvent(Wrapper wrapper) {
+		super(wrapper);
+	}
+	public int getTargetChannelId() {
+		return getInt("ctid");
+	}
+	public int getClientId() {
+		return getInt("clid");
+	}
+	@Override
+	public void fire(TS3Listener listener) {
+		listener.onClientMoved(this);
+	}
+}
+package com.github.theholywaffle.teamspeak3.api.event;
+public interface TS3Event {
+	void fire(TS3Listener listener);
+}
+package com.github.theholywaffle.teamspeak3;
+import com.github.theholywaffle.teamspeak3.api.*;
+import com.github.theholywaffle.teamspeak3.api.event.TS3EventType;
+import com.github.theholywaffle.teamspeak3.api.event.TS3Listener;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3CommandFailedException;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3ConnectionFailedException;
+import com.github.theholywaffle.teamspeak3.api.exception.TS3FileTransferFailedException;
+import com.github.theholywaffle.teamspeak3.api.wrapper.*;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+public class TS3Api {
+	private final TS3ApiAsync asyncApi;
+	TS3Api(TS3ApiAsync asyncApi) {
+		this.asyncApi = asyncApi;
+	}
+	public int addBan(String ip, String name, String uid, long timeInSeconds, String reason) {
+		return asyncApi.addBan(ip, name, uid, timeInSeconds, reason).getUninterruptibly();
+	}
+	public int addBan(String ip, String name, String uid, String myTSId, long timeInSeconds, String reason) {
+		return asyncApi.addBan(ip, name, uid, myTSId, timeInSeconds, reason).getUninterruptibly();
+	}
+	public void addChannelClientPermission(int channelId, int clientDBId, String permName, int permValue) {
+		asyncApi.addChannelClientPermission(channelId, clientDBId, permName, permValue).getUninterruptibly();
+	}
+	public int addChannelGroup(String name) {
+		return asyncApi.addChannelGroup(name).getUninterruptibly();
+	}
+	public int addChannelGroup(String name, PermissionGroupDatabaseType type) {
+		return asyncApi.addChannelGroup(name, type).getUninterruptibly();
+	}
+	public void addChannelGroupPermission(int groupId, String permName, int permValue) {
+		asyncApi.addChannelGroupPermission(groupId, permName, permValue).getUninterruptibly();
+	}
+	public void addChannelPermission(int channelId, String permName, int permValue) {
+		asyncApi.addChannelPermission(channelId, permName, permValue).getUninterruptibly();
+	}
+	@Deprecated
+	public void addClientPermission(int clientDBId, String permName, int value, boolean skipped) {
+		asyncApi.addClientPermission(clientDBId, permName, value, skipped).getUninterruptibly();
+	}
+	public void addClientPermission(int clientDBId, IPermissionType permName, int value, boolean skipped) {
+		asyncApi.addClientPermission(clientDBId, permName, value, skipped).getUninterruptibly();
+	}
+	public void addClientPermission(int clientDBId, BPermissionType permName, boolean value, boolean skipped) {
+		asyncApi.addClientPermission(clientDBId, permName, value, skipped).getUninterruptibly();
+	}
+	public void addClientToServerGroup(int groupId, int clientDatabaseId) {
+		asyncApi.addClientToServerGroup(groupId, clientDatabaseId).getUninterruptibly();
+	}
+	public void addComplaint(int clientDBId, String message) {
+		asyncApi.addComplaint(clientDBId, message).getUninterruptibly();
+	}
+	public void addPermissionToAllServerGroups(ServerGroupType type, String permName, int value, boolean negated, boolean skipped) {
+		asyncApi.addPermissionToAllServerGroups(type, permName, value, negated, skipped).getUninterruptibly();
+	}
+	public String addPrivilegeKey(PrivilegeKeyType type, int groupId, int channelId, String description) {
+		return asyncApi.addPrivilegeKey(type, groupId, channelId, description).getUninterruptibly();
+	}
+	public String addPrivilegeKeyChannelGroup(int channelGroupId, int channelId, String description) {
+		return asyncApi.addPrivilegeKeyChannelGroup(channelGroupId, channelId, description).getUninterruptibly();
+	}
+	public String addPrivilegeKeyServerGroup(int serverGroupId, String description) {
+		return asyncApi.addPrivilegeKeyServerGroup(serverGroupId, description).getUninterruptibly();
+	}
+	public int addServerGroup(String name) {
+		return asyncApi.addServerGroup(name).getUninterruptibly();
+	}
+	public int addServerGroup(String name, PermissionGroupDatabaseType type) {
+		return asyncApi.addServerGroup(name, type).getUninterruptibly();
+	}
+	public void addServerGroupPermission(int groupId, String permName, int value, boolean negated, boolean skipped) {
+		asyncApi.addServerGroupPermission(groupId, permName, value, negated, skipped).getUninterruptibly();
+	}
+	public CreatedQueryLogin addServerQueryLogin(String loginName, int clientDBId) {
+		return asyncApi.addServerQueryLogin(loginName, clientDBId).getUninterruptibly();
+	}
+	public void addTS3Listeners(TS3Listener... listeners) {
+		asyncApi.addTS3Listeners(listeners);
+	}
+	public int[] banClient(int clientId, long timeInSeconds) {
+		return asyncApi.banClient(clientId, timeInSeconds).getUninterruptibly();
+	}
+	public int[] banClient(int clientId, long timeInSeconds, String reason) {
+		return asyncApi.banClient(clientId, timeInSeconds, reason).getUninterruptibly();
+	}
+	public int[] banClient(int clientId, String reason) {
+		return asyncApi.banClient(clientId, reason).getUninterruptibly();
+	}
+	public int[] banClients(int[] clientIds, long timeInSeconds, String reason, boolean continueOnError) {
+		return asyncApi.banClients(clientIds, timeInSeconds, reason, continueOnError).getUninterruptibly();
+	}
+	public void broadcast(String message) {
+		asyncApi.broadcast(message).getUninterruptibly();
+	}
+	public void copyChannelGroup(int sourceGroupId, int targetGroupId, PermissionGroupDatabaseType type) {
+		asyncApi.copyChannelGroup(sourceGroupId, targetGroupId, type).getUninterruptibly();
+	}
+	public int copyChannelGroup(int sourceGroupId, String targetName, PermissionGroupDatabaseType type) {
+		return asyncApi.copyChannelGroup(sourceGroupId, targetName, type).getUninterruptibly();
+	}
+	public int copyServerGroup(int sourceGroupId, int targetGroupId, PermissionGroupDatabaseType type) {
+		return asyncApi.copyServerGroup(sourceGroupId, targetGroupId, type).getUninterruptibly();
+	}
+	public int copyServerGroup(int sourceGroupId, String targetName, PermissionGroupDatabaseType type) {
+		return asyncApi.copyServerGroup(sourceGroupId, targetName, type).getUninterruptibly();
+	}
+	public int createChannel(String name, Map<ChannelProperty, String> options) {
+		return asyncApi.createChannel(name, options).getUninterruptibly();
+	}
+	public void createFileDirectory(String directoryPath, int channelId) {
+		asyncApi.createFileDirectory(directoryPath, channelId).getUninterruptibly();
+	}
+	public void createFileDirectory(String directoryPath, int channelId, String channelPassword) {
+		asyncApi.createFileDirectory(directoryPath, channelId, channelPassword).getUninterruptibly();
+	}
+	public CreatedVirtualServer createServer(String name, Map<VirtualServerProperty, String> options) {
+		return asyncApi.createServer(name, options).getUninterruptibly();
+	}
+	public Snapshot createServerSnapshot() {
+		return asyncApi.createServerSnapshot().getUninterruptibly();
+	}
+	public void deleteAllBans() {
+		asyncApi.deleteAllBans().getUninterruptibly();
+	}
+	public void deleteAllComplaints(int clientDBId) {
+		asyncApi.deleteAllComplaints(clientDBId).getUninterruptibly();
+	}
+	public void deleteBan(int banId) {
+		asyncApi.deleteBan(banId).getUninterruptibly();
+	}
+	public void deleteChannel(int channelId) {
+		asyncApi.deleteChannel(channelId).getUninterruptibly();
+	}
+	public void deleteChannel(int channelId, boolean force) {
+		asyncApi.deleteChannel(channelId, force).getUninterruptibly();
+	}
+	public void deleteChannelClientPermission(int channelId, int clientDBId, String permName) {
+		asyncApi.deleteChannelClientPermission(channelId, clientDBId, permName).getUninterruptibly();
+	}
+	public void deleteChannelGroup(int groupId) {
+		asyncApi.deleteChannelGroup(groupId).getUninterruptibly();
+	}
+	public void deleteChannelGroup(int groupId, boolean force) {
+		asyncApi.deleteChannelGroup(groupId, force).getUninterruptibly();
+	}
+	public void deleteChannelGroupPermission(int groupId, String permName) {
+		asyncApi.deleteChannelGroupPermission(groupId, permName).getUninterruptibly();
+	}
+	public void deleteChannelPermission(int channelId, String permName) {
+		asyncApi.deleteChannelPermission(channelId, permName).getUninterruptibly();
+	}
+	@Deprecated
+	public void deleteClientPermission(int clientDBId, String permName) {
+		asyncApi.deleteClientPermission(clientDBId, permName).getUninterruptibly();
+	}
+	public void deleteClientPermission(int clientDBId, IPermissionType permName) {
+		asyncApi.deleteClientPermission(clientDBId, permName).getUninterruptibly();
+	}
+	public void deleteClientPermission(int clientDBId, BPermissionType permName) {
+		asyncApi.deleteClientPermission(clientDBId, permName).getUninterruptibly();
+	}
+	public void deleteComplaint(int targetClientDBId, int fromClientDBId) {
+		asyncApi.deleteComplaint(targetClientDBId, fromClientDBId).getUninterruptibly();
+	}
+	public void deleteCustomClientProperty(int clientDBId, String key) {
+		asyncApi.deleteCustomClientProperty(clientDBId, key).getUninterruptibly();
+	}
+	public void deleteDatabaseClientProperties(int clientDBId) {
+		asyncApi.deleteDatabaseClientProperties(clientDBId).getUninterruptibly();
+	}
+	public void deleteFile(String filePath, int channelId) {
+		asyncApi.deleteFile(filePath, channelId).getUninterruptibly();
+	}
+	public void deleteFile(String filePath, int channelId, String channelPassword) {
+		asyncApi.deleteFile(filePath, channelId, channelPassword).getUninterruptibly();
+	}
+	public void deleteFiles(String[] filePaths, int channelId) {
+		asyncApi.deleteFiles(filePaths, channelId).getUninterruptibly();
+	}
+	public void deleteFiles(String[] filePaths, int channelId, String channelPassword) {
+		asyncApi.deleteFiles(filePaths, channelId, channelPassword).getUninterruptibly();
+	}
+	public void deleteIcon(long iconId) {
+		asyncApi.deleteIcon(iconId).getUninterruptibly();
+	}
+	public void deleteIcons(long... iconIds) {
+		asyncApi.deleteIcons(iconIds).getUninterruptibly();
+	}
+	public void deleteOfflineMessage(int messageId) {
+		asyncApi.deleteOfflineMessage(messageId).getUninterruptibly();
+	}
+	public void deletePermissionFromAllServerGroups(ServerGroupType type, String permName) {
+		asyncApi.deletePermissionFromAllServerGroups(type, permName).getUninterruptibly();
+	}
+	public void deletePrivilegeKey(String token) {
+		asyncApi.deletePrivilegeKey(token).getUninterruptibly();
+	}
+	public void deleteServer(int serverId) {
+		asyncApi.deleteServer(serverId).getUninterruptibly();
+	}
+	public void deleteServerGroup(int groupId) {
+		asyncApi.deleteServerGroup(groupId).getUninterruptibly();
+	}
+	public void deleteServerGroup(int groupId, boolean force) {
+		asyncApi.deleteServerGroup(groupId, force).getUninterruptibly();
+	}
+	public void deleteServerGroupPermission(int groupId, String permName) {
+		asyncApi.deleteServerGroupPermission(groupId, permName).getUninterruptibly();
+	}
+	public void deleteServerQueryLogin(int clientDBId) {
+		asyncApi.deleteServerQueryLogin(clientDBId).getUninterruptibly();
+	}
+	public void deployServerSnapshot(Snapshot snapshot) {
+		asyncApi.deployServerSnapshot(snapshot).getUninterruptibly();
+	}
+	public void deployServerSnapshot(String snapshot) {
+		asyncApi.deployServerSnapshot(snapshot).getUninterruptibly();
+	}
+	public long downloadFile(OutputStream dataOut, String filePath, int channelId) {
+		return asyncApi.downloadFile(dataOut, filePath, channelId).getUninterruptibly();
+	}
+	public long downloadFile(OutputStream dataOut, String filePath, int channelId, String channelPassword) {
+		return asyncApi.downloadFile(dataOut, filePath, channelId, channelPassword).getUninterruptibly();
+	}
+	public byte[] downloadFileDirect(String filePath, int channelId) {
+		return asyncApi.downloadFileDirect(filePath, channelId).getUninterruptibly();
+	}
+	public byte[] downloadFileDirect(String filePath, int channelId, String channelPassword) {
+		return asyncApi.downloadFileDirect(filePath, channelId, channelPassword).getUninterruptibly();
+	}
+	public long downloadIcon(OutputStream dataOut, long iconId) {
+		return asyncApi.downloadIcon(dataOut, iconId).getUninterruptibly();
+	}
+	public byte[] downloadIconDirect(long iconId) {
+		return asyncApi.downloadIconDirect(iconId).getUninterruptibly();
+	}
+	public void editChannel(int channelId, Map<ChannelProperty, String> options) {
+		asyncApi.editChannel(channelId, options).getUninterruptibly();
+	}
+	public void editChannel(int channelId, ChannelProperty property, String value) {
+		asyncApi.editChannel(channelId, property, value).getUninterruptibly();
+	}
+	public void editClient(int clientId, Map<ClientProperty, String> options) {
+		asyncApi.editClient(clientId, options).getUninterruptibly();
+	}
+	public void editClient(int clientId, ClientProperty property, String value) {
+		asyncApi.editClient(clientId, property, value).getUninterruptibly();
+	}
+	public void editDatabaseClient(int clientDBId, Map<ClientProperty, String> options) {
+		asyncApi.editDatabaseClient(clientDBId, options).getUninterruptibly();
+	}
+	public void editInstance(ServerInstanceProperty property, String value) {
+		asyncApi.editInstance(property, value).getUninterruptibly();
+	}
+	public void editServer(Map<VirtualServerProperty, String> options) {
+		asyncApi.editServer(options).getUninterruptibly();
+	}
+	public List<Ban> getBans() {
+		return asyncApi.getBans().getUninterruptibly();
+	}
+	public List<Binding> getBindings() {
+		return asyncApi.getBindings().getUninterruptibly();
+	}
+	public Channel getChannelByNameExact(String name, boolean ignoreCase) {
+		return asyncApi.getChannelByNameExact(name, ignoreCase).getUninterruptibly();
+	}
+	public List<Channel> getChannelsByName(String name) {
+		return asyncApi.getChannelsByName(name).getUninterruptibly();
+	}
+	public List<Permission> getChannelClientPermissions(int channelId, int clientDBId) {
+		return asyncApi.getChannelClientPermissions(channelId, clientDBId).getUninterruptibly();
+	}
+	public List<ChannelGroupClient> getChannelGroupClients(int channelId, int clientDBId, int groupId) {
+		return asyncApi.getChannelGroupClients(channelId, clientDBId, groupId).getUninterruptibly();
+	}
+	public List<ChannelGroupClient> getChannelGroupClientsByChannelGroupId(int groupId) {
+		return asyncApi.getChannelGroupClientsByChannelGroupId(groupId).getUninterruptibly();
+	}
+	public List<ChannelGroupClient> getChannelGroupClientsByChannelId(int channelId) {
+		return asyncApi.getChannelGroupClientsByChannelId(channelId).getUninterruptibly();
+	}
+	public List<ChannelGroupClient> getChannelGroupClientsByClientDBId(int clientDBId) {
+		return asyncApi.getChannelGroupClientsByClientDBId(clientDBId).getUninterruptibly();
+	}
+	public List<Permission> getChannelGroupPermissions(int groupId) {
+		return asyncApi.getChannelGroupPermissions(groupId).getUninterruptibly();
+	}
+	public List<ChannelGroup> getChannelGroups() {
+		return asyncApi.getChannelGroups().getUninterruptibly();
+	}
+	public ChannelInfo getChannelInfo(int channelId) {
+		return asyncApi.getChannelInfo(channelId).getUninterruptibly();
+	}
+	public List<Permission> getChannelPermissions(int channelId) {
+		return asyncApi.getChannelPermissions(channelId).getUninterruptibly();
+	}
+	public List<Channel> getChannels() {
+		return asyncApi.getChannels().getUninterruptibly();
+	}
+	public Client getClientByNameExact(String name, boolean ignoreCase) {
+		return asyncApi.getClientByNameExact(name, ignoreCase).getUninterruptibly();
+	}
+	public List<Client> getClientsByName(String name) {
+		return asyncApi.getClientsByName(name).getUninterruptibly();
+	}
+	public ClientInfo getClientByUId(String clientUId) {
+		return asyncApi.getClientByUId(clientUId).getUninterruptibly();
+	}
+	public ClientInfo getClientInfo(int clientId) {
+		return asyncApi.getClientInfo(clientId).getUninterruptibly();
+	}
+	public List<Permission> getClientPermissions(int clientDBId) {
+		return asyncApi.getClientPermissions(clientDBId).getUninterruptibly();
+	}
+	public List<Client> getClients() {
+		return asyncApi.getClients().getUninterruptibly();
+	}
+	public List<Complaint> getComplaints() {
+		return asyncApi.getComplaints().getUninterruptibly();
+	}
+	public List<Complaint> getComplaints(int clientDBId) {
+		return asyncApi.getComplaints(clientDBId).getUninterruptibly();
+	}
+	public ConnectionInfo getConnectionInfo() {
+		return asyncApi.getConnectionInfo().getUninterruptibly();
+	}
+	public Map<String, String> getCustomClientProperties(int clientDBId) {
+		return asyncApi.getCustomClientProperties(clientDBId).getUninterruptibly();
+	}
+	public List<DatabaseClientInfo> getDatabaseClientsByName(String name) {
+		return asyncApi.getDatabaseClientsByName(name).getUninterruptibly();
+	}
+	public DatabaseClientInfo getDatabaseClientByUId(String clientUId) {
+		return asyncApi.getDatabaseClientByUId(clientUId).getUninterruptibly();
+	}
+	public DatabaseClientInfo getDatabaseClientInfo(int clientDBId) {
+		return asyncApi.getDatabaseClientInfo(clientDBId).getUninterruptibly();
+	}
+	public List<DatabaseClient> getDatabaseClients() {
+		return asyncApi.getDatabaseClients().getUninterruptibly();
+	}
+	public List<DatabaseClient> getDatabaseClients(int offset, int count) {
+		return asyncApi.getDatabaseClients(offset, count).getUninterruptibly();
+	}
+	public FileInfo getFileInfo(String filePath, int channelId) {
+		return asyncApi.getFileInfo(filePath, channelId).getUninterruptibly();
+	}
+	public FileInfo getFileInfo(String filePath, int channelId, String channelPassword) {
+		return asyncApi.getFileInfo(filePath, channelId, channelPassword).getUninterruptibly();
+	}
+	public List<FileInfo> getFileInfos(String[] filePaths, int channelId) {
+		return asyncApi.getFileInfos(filePaths, channelId).getUninterruptibly();
+	}
+	public List<FileInfo> getFileInfos(String[] filePaths, int channelId, String channelPassword) {
+		return asyncApi.getFileInfos(filePaths, channelId, channelPassword).getUninterruptibly();
+	}
+	public List<FileInfo> getFileInfos(String[] filePaths, int[] channelIds, String[] channelPasswords) {
+		return asyncApi.getFileInfos(filePaths, channelIds, channelPasswords).getUninterruptibly();
+	}
+	public List<FileListEntry> getFileList(String directoryPath, int channelId) {
+		return asyncApi.getFileList(directoryPath, channelId).getUninterruptibly();
+	}
+	public List<FileListEntry> getFileList(String directoryPath, int channelId, String channelPassword) {
+		return asyncApi.getFileList(directoryPath, channelId, channelPassword).getUninterruptibly();
+	}
+	public List<FileTransfer> getFileTransfers() {
+		return asyncApi.getFileTransfers().getUninterruptibly();
+	}
+	public HostInfo getHostInfo() {
+		return asyncApi.getHostInfo().getUninterruptibly();
+	}
+	public List<IconFile> getIconList() {
+		return asyncApi.getIconList().getUninterruptibly();
+	}
+	public InstanceInfo getInstanceInfo() {
+		return asyncApi.getInstanceInfo().getUninterruptibly();
+	}
+	public List<String> getInstanceLogEntries(int lines) {
+		return asyncApi.getInstanceLogEntries(lines).getUninterruptibly();
+	}
+	public List<String> getInstanceLogEntries() {
+		return asyncApi.getInstanceLogEntries().getUninterruptibly();
+	}
+	public String getOfflineMessage(int messageId) {
+		return asyncApi.getOfflineMessage(messageId).getUninterruptibly();
+	}
+	public String getOfflineMessage(Message message) {
+		return asyncApi.getOfflineMessage(message).getUninterruptibly();
+	}
+	public List<Message> getOfflineMessages() {
+		return asyncApi.getOfflineMessages().getUninterruptibly();
+	}
+	public List<PermissionAssignment> getPermissionAssignments(String permName) {
+		return asyncApi.getPermissionAssignments(permName).getUninterruptibly();
+	}
+	public int getPermissionIdByName(String permName) {
+		return asyncApi.getPermissionIdByName(permName).getUninterruptibly();
+	}
+	public int[] getPermissionIdsByName(String... permNames) {
+		return asyncApi.getPermissionIdsByName(permNames).getUninterruptibly();
+	}
+	public List<PermissionAssignment> getPermissionOverview(int channelId, int clientDBId) {
+		return asyncApi.getPermissionOverview(channelId, clientDBId).getUninterruptibly();
+	}
+	public List<PermissionInfo> getPermissions() {
+		return asyncApi.getPermissions().getUninterruptibly();
+	}
+	public int getPermissionValue(String permName) {
+		return asyncApi.getPermissionValue(permName).getUninterruptibly();
+	}
+	public int[] getPermissionValues(String... permNames) {
+		return asyncApi.getPermissionValues(permNames).getUninterruptibly();
+	}
+	public List<PrivilegeKey> getPrivilegeKeys() {
+		return asyncApi.getPrivilegeKeys().getUninterruptibly();
+	}
+	public List<ServerGroupClient> getServerGroupClients(int serverGroupId) {
+		return asyncApi.getServerGroupClients(serverGroupId).getUninterruptibly();
+	}
+	public List<ServerGroupClient> getServerGroupClients(ServerGroup serverGroup) {
+		return asyncApi.getServerGroupClients(serverGroup).getUninterruptibly();
+	}
+	public List<Permission> getServerGroupPermissions(int serverGroupId) {
+		return asyncApi.getServerGroupPermissions(serverGroupId).getUninterruptibly();
+	}
+	public List<Permission> getServerGroupPermissions(ServerGroup serverGroup) {
+		return asyncApi.getServerGroupPermissions(serverGroup).getUninterruptibly();
+	}
+	public List<ServerGroup> getServerGroups() {
+		return asyncApi.getServerGroups().getUninterruptibly();
+	}
+	public List<ServerGroup> getServerGroupsByClientId(int clientDatabaseId) {
+		return asyncApi.getServerGroupsByClientId(clientDatabaseId).getUninterruptibly();
+	}
+	public List<ServerGroup> getServerGroupsByClient(Client client) {
+		return asyncApi.getServerGroupsByClient(client).getUninterruptibly();
+	}
+	public int getServerIdByPort(int port) {
+		return asyncApi.getServerIdByPort(port).getUninterruptibly();
+	}
+	public VirtualServerInfo getServerInfo() {
+		return asyncApi.getServerInfo().getUninterruptibly();
+	}
+	public List<QueryLogin> getServerQueryLogins() {
+		return asyncApi.getServerQueryLogins().getUninterruptibly();
+	}
+	public List<QueryLogin> getServerQueryLoginsByName(String pattern) {
+		return asyncApi.getServerQueryLoginsByName(pattern).getUninterruptibly();
+	}
+	public Version getVersion() {
+		return asyncApi.getVersion().getUninterruptibly();
+	}
+	public List<VirtualServer> getVirtualServers() {
+		return asyncApi.getVirtualServers().getUninterruptibly();
+	}
+	public List<String> getVirtualServerLogEntries(int lines) {
+		return asyncApi.getVirtualServerLogEntries(lines).getUninterruptibly();
+	}
+	public List<String> getVirtualServerLogEntries() {
+		return asyncApi.getVirtualServerLogEntries().getUninterruptibly();
+	}
+	public boolean isClientOnline(int clientId) {
+		return asyncApi.isClientOnline(clientId).getUninterruptibly();
+	}
+	public boolean isClientOnline(String clientUId) {
+		return asyncApi.isClientOnline(clientUId).getUninterruptibly();
+	}
+	public void kickClientFromChannel(int... clientIds) {
+		asyncApi.kickClientFromChannel(clientIds).getUninterruptibly();
+	}
+	public void kickClientFromChannel(Client... clients) {
+		asyncApi.kickClientFromChannel(clients).getUninterruptibly();
+	}
+	public void kickClientFromChannel(String message, int... clientIds) {
+		asyncApi.kickClientFromChannel(message, clientIds).getUninterruptibly();
+	}
+	public void kickClientFromChannel(String message, Client... clients) {
+		asyncApi.kickClientFromChannel(message, clients).getUninterruptibly();
+	}
+	public void kickClientFromServer(int... clientIds) {
+		asyncApi.kickClientFromServer(clientIds).getUninterruptibly();
+	}
+	public void kickClientFromServer(Client... clients) {
+		asyncApi.kickClientFromServer(clients).getUninterruptibly();
+	}
+	public void kickClientFromServer(String message, int... clientIds) {
+		asyncApi.kickClientFromServer(message, clientIds).getUninterruptibly();
+	}
+	public void kickClientFromServer(String message, Client... clients) {
+		asyncApi.kickClientFromServer(message, clients).getUninterruptibly();
+	}
+	public void login(String username, String password) {
+		asyncApi.login(username, password).getUninterruptibly();
+	}
+	public void logout() {
+		asyncApi.logout().getUninterruptibly();
+	}
+	public void moveChannel(int channelId, int channelTargetId) {
+		asyncApi.moveChannel(channelId, channelTargetId).getUninterruptibly();
+	}
+	public void moveChannel(int channelId, int channelTargetId, int order) {
+		asyncApi.moveChannel(channelId, channelTargetId, order).getUninterruptibly();
+	}
+	public void moveClient(int clientId, int channelId) {
+		asyncApi.moveClient(clientId, channelId).getUninterruptibly();
+	}
+	public void moveClients(int[] clientIds, int channelId) {
+		asyncApi.moveClients(clientIds, channelId).getUninterruptibly();
+	}
+	public void moveClient(Client client, ChannelBase channel) {
+		asyncApi.moveClient(client, channel).getUninterruptibly();
+	}
+	public void moveClients(Client[] clients, ChannelBase channel) {
+		asyncApi.moveClients(clients, channel).getUninterruptibly();
+	}
+	public void moveClient(int clientId, int channelId, String channelPassword) {
+		asyncApi.moveClient(clientId, channelId, channelPassword).getUninterruptibly();
+	}
+	public void moveClients(int[] clientIds, int channelId, String channelPassword) {
+		asyncApi.moveClients(clientIds, channelId, channelPassword).getUninterruptibly();
+	}
+	public void moveClient(Client client, ChannelBase channel, String channelPassword) {
+		asyncApi.moveClient(client, channel, channelPassword).getUninterruptibly();
+	}
+	public void moveClients(Client[] clients, ChannelBase channel, String channelPassword) {
+		asyncApi.moveClients(clients, channel, channelPassword).getUninterruptibly();
+	}
+	public void moveFile(String oldPath, String newPath, int channelId) {
+		asyncApi.moveFile(oldPath, newPath, channelId).getUninterruptibly();
+	}
+	public void moveFile(String oldPath, String newPath, int oldChannelId, int newChannelId) {
+		asyncApi.moveFile(oldPath, newPath, oldChannelId, newChannelId).getUninterruptibly();
+	}
+	public void moveFile(String oldPath, String newPath, int channelId, String channelPassword) {
+		asyncApi.moveFile(oldPath, newPath, channelId, channelPassword).getUninterruptibly();
+	}
+	public void moveFile(String oldPath, String newPath, int oldChannelId, String oldPassword, int newChannelId, String newPassword) {
+		asyncApi.moveFile(oldPath, newPath, oldChannelId, oldPassword, newChannelId, newPassword).getUninterruptibly();
+	}
+	public void moveQuery(int channelId) {
+		asyncApi.moveQuery(channelId).getUninterruptibly();
+	}
+	public void moveQuery(ChannelBase channel) {
+		asyncApi.moveQuery(channel).getUninterruptibly();
+	}
+	public void moveQuery(int channelId, String channelPassword) {
+		asyncApi.moveQuery(channelId, channelPassword).getUninterruptibly();
+	}
+	public void moveQuery(ChannelBase channel, String channelPassword) {
+		asyncApi.moveQuery(channel, channelPassword).getUninterruptibly();
+	}
+	public void pokeClient(int clientId, String message) {
+		asyncApi.pokeClient(clientId, message).getUninterruptibly();
+	}
+	void quit() {
+		asyncApi.quit().getUninterruptibly();
+	}
+	public void registerAllEvents() {
+		asyncApi.registerAllEvents().getUninterruptibly();
+	}
+	public void registerEvent(TS3EventType eventType) {
+		asyncApi.registerEvent(eventType).getUninterruptibly();
+	}
+	public void registerEvent(TS3EventType eventType, int channelId) {
+		asyncApi.registerEvent(eventType, channelId).getUninterruptibly();
+	}
+	public void registerEvents(TS3EventType... eventTypes) {
+		asyncApi.registerEvents(eventTypes).getUninterruptibly();
+	}
+	public void removeClientFromServerGroup(int serverGroupId, int clientDatabaseId) {
+		asyncApi.removeClientFromServerGroup(serverGroupId, clientDatabaseId).getUninterruptibly();
+	}
+	public void removeClientFromServerGroup(ServerGroup serverGroup, Client client) {
+		asyncApi.removeClientFromServerGroup(serverGroup, client).getUninterruptibly();
+	}
+	public void removeTS3Listeners(TS3Listener... listeners) {
+		asyncApi.removeTS3Listeners(listeners);
+	}
+	public void renameChannelGroup(int channelGroupId, String name) {
+		asyncApi.renameChannelGroup(channelGroupId, name).getUninterruptibly();
+	}
+	public void renameChannelGroup(ChannelGroup channelGroup, String name) {
+		asyncApi.renameChannelGroup(channelGroup, name).getUninterruptibly();
+	}
+	public void renameServerGroup(int serverGroupId, String name) {
+		asyncApi.renameServerGroup(serverGroupId, name).getUninterruptibly();
+	}
+	public void renameServerGroup(ServerGroup serverGroup, String name) {
+		asyncApi.renameServerGroup(serverGroup, name).getUninterruptibly();
+	}
+	public String resetPermissions() {
+		return asyncApi.resetPermissions().getUninterruptibly();
+	}
+	public List<CustomPropertyAssignment> searchCustomClientProperty(String key) {
+		return asyncApi.searchCustomClientProperty(key).getUninterruptibly();
+	}
+	public List<CustomPropertyAssignment> searchCustomClientProperty(String key, String valuePattern) {
+		return asyncApi.searchCustomClientProperty(key, valuePattern).getUninterruptibly();
+	}
+	public void selectVirtualServerById(int id) {
+		asyncApi.selectVirtualServerById(id).getUninterruptibly();
+	}
+	public void selectVirtualServerById(int id, String nickname) {
+		asyncApi.selectVirtualServerById(id, nickname).getUninterruptibly();
+	}
+	public void selectVirtualServerByPort(int port) {
+		asyncApi.selectVirtualServerByPort(port).getUninterruptibly();
+	}
+	public void selectVirtualServerByPort(int port, String nickname) {
+		asyncApi.selectVirtualServerByPort(port, nickname).getUninterruptibly();
+	}
+	public void selectVirtualServer(VirtualServer server) {
+		asyncApi.selectVirtualServer(server).getUninterruptibly();
+	}
+	public void selectVirtualServer(VirtualServer server, String nickname) {
+		asyncApi.selectVirtualServer(server, nickname).getUninterruptibly();
+	}
+	public void sendOfflineMessage(String clientUId, String subject, String message) {
+		asyncApi.sendOfflineMessage(clientUId, subject, message).getUninterruptibly();
+	}
+	public void sendTextMessage(TextMessageTargetMode targetMode, int targetId, String message) {
+		asyncApi.sendTextMessage(targetMode, targetId, message).getUninterruptibly();
+	}
+	public void sendChannelMessage(int channelId, String message) {
+		asyncApi.sendChannelMessage(channelId, message).getUninterruptibly();
+	}
+	public void sendChannelMessage(String message) {
+		asyncApi.sendChannelMessage(message).getUninterruptibly();
+	}
+	public void sendServerMessage(int serverId, String message) {
+		asyncApi.sendServerMessage(serverId, message).getUninterruptibly();
+	}
+	public void sendServerMessage(String message) {
+		asyncApi.sendServerMessage(message).getUninterruptibly();
+	}
+	public void sendPrivateMessage(int clientId, String message) {
+		asyncApi.sendPrivateMessage(clientId, message).getUninterruptibly();
+	}
+	public void setClientChannelGroup(int groupId, int channelId, int clientDBId) {
+		asyncApi.setClientChannelGroup(groupId, channelId, clientDBId).getUninterruptibly();
+	}
+	public void setCustomClientProperties(int clientDBId, Map<String, String> properties) {
+		asyncApi.setCustomClientProperties(clientDBId, properties).getUninterruptibly();
+	}
+	public void setCustomClientProperty(int clientDBId, String key, String value) {
+		asyncApi.setCustomClientProperty(clientDBId, key, value).getUninterruptibly();
+	}
+	public void setMessageRead(int messageId) {
+		asyncApi.setMessageRead(messageId).getUninterruptibly();
+	}
+	public void setMessageRead(Message message) {
+		asyncApi.setMessageRead(message).getUninterruptibly();
+	}
+	public void setMessageReadFlag(int messageId, boolean read) {
+		asyncApi.setMessageReadFlag(messageId, read).getUninterruptibly();
+	}
+	public void setMessageReadFlag(Message message, boolean read) {
+		asyncApi.setMessageReadFlag(message, read).getUninterruptibly();
+	}
+	public void setNickname(String nickname) {
+		asyncApi.setNickname(nickname).getUninterruptibly();
+	}
+	public void startServer(int serverId) {
+		asyncApi.startServer(serverId).getUninterruptibly();
+	}
+	public void startServer(VirtualServer virtualServer) {
+		asyncApi.startServer(virtualServer).getUninterruptibly();
+	}
+	public void stopServer(int serverId) {
+		asyncApi.stopServer(serverId).getUninterruptibly();
+	}
+	public void stopServer(int serverId, String reason) {
+		asyncApi.stopServer(serverId, reason).getUninterruptibly();
+	}
+	public void stopServer(VirtualServer virtualServer) {
+		asyncApi.stopServer(virtualServer).getUninterruptibly();
+	}
+	public void stopServer(VirtualServer virtualServer, String reason) {
+		asyncApi.stopServer(virtualServer, reason).getUninterruptibly();
+	}
+	public void stopServerProcess() {
+		asyncApi.stopServerProcess().getUninterruptibly();
+	}
+	public void stopServerProcess(String reason) {
+		asyncApi.stopServerProcess(reason).getUninterruptibly();
+	}
+	public void unregisterAllEvents() {
+		asyncApi.unregisterAllEvents().getUninterruptibly();
+	}
+	public void updateClient(Map<ClientProperty, String> options) {
+		asyncApi.updateClient(options).getUninterruptibly();
+	}
+	public void updateClient(ClientProperty property, String value) {
+		asyncApi.updateClient(property, value).getUninterruptibly();
+	}
+	public String updateServerQueryLogin(String loginName) {
+		return asyncApi.updateServerQueryLogin(loginName).getUninterruptibly();
+	}
+	public void uploadFile(InputStream dataIn, long dataLength, String filePath, boolean overwrite, int channelId) {
+		asyncApi.uploadFile(dataIn, dataLength, filePath, overwrite, channelId).getUninterruptibly();
+	}
+	public void uploadFile(InputStream dataIn, long dataLength, String filePath, boolean overwrite, int channelId, String channelPassword) {
+		asyncApi.uploadFile(dataIn, dataLength, filePath, overwrite, channelId, channelPassword).getUninterruptibly();
+	}
+	public void uploadFileDirect(byte[] data, String filePath, boolean overwrite, int channelId) {
+		asyncApi.uploadFileDirect(data, filePath, overwrite, channelId).getUninterruptibly();
+	}
+	public void uploadFileDirect(byte[] data, String filePath, boolean overwrite, int channelId, String channelPassword) {
+		asyncApi.uploadFileDirect(data, filePath, overwrite, channelId, channelPassword).getUninterruptibly();
+	}
+	public long uploadIcon(InputStream dataIn, long dataLength) {
+		return asyncApi.uploadIcon(dataIn, dataLength).getUninterruptibly();
+	}
+	public long uploadIconDirect(byte[] data) {
+		return asyncApi.uploadIconDirect(data).getUninterruptibly();
+	}
+	public void usePrivilegeKey(String token) {
+		asyncApi.usePrivilegeKey(token).getUninterruptibly();
+	}
+	public void usePrivilegeKey(PrivilegeKey privilegeKey) {
+		asyncApi.usePrivilegeKey(privilegeKey).getUninterruptibly();
+	}
+	public ServerQueryInfo whoAmI() {
+		return asyncApi.whoAmI().getUninterruptibly();
+	}
+}

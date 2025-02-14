@@ -1,0 +1,2119 @@
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class VectorPTRef extends java.util.AbstractList<PTRef> implements java.util.RandomAccess {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected VectorPTRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(VectorPTRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(VectorPTRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_VectorPTRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public VectorPTRef(PTRef[] initialElements) {
+    this();
+    reserve(initialElements.length);
+    for (PTRef element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorPTRef(Iterable<PTRef> initialElements) {
+    this();
+    for (PTRef element : initialElements) {
+      add(element);
+    }
+  }
+  public PTRef get(int index) {
+    return doGet(index);
+  }
+  public PTRef set(int index, PTRef e) {
+    return doSet(index, e);
+  }
+  public boolean add(PTRef e) {
+    modCount++;
+    doAdd(e);
+    return true;
+  }
+  public void add(int index, PTRef e) {
+    modCount++;
+    doAdd(index, e);
+  }
+  public PTRef remove(int index) {
+    modCount++;
+    return doRemove(index);
+  }
+  protected void removeRange(int fromIndex, int toIndex) {
+    modCount++;
+    doRemoveRange(fromIndex, toIndex);
+  }
+  public int size() {
+    return doSize();
+  }
+  public VectorPTRef() {
+    this(OsmtNativeJNI.new_VectorPTRef__SWIG_0(), true);
+  }
+  public VectorPTRef(VectorPTRef other) {
+    this(OsmtNativeJNI.new_VectorPTRef__SWIG_1(VectorPTRef.getCPtr(other), other), true);
+  }
+  public long capacity() {
+    return OsmtNativeJNI.VectorPTRef_capacity(swigCPtr, this);
+  }
+  public void reserve(long n) {
+    OsmtNativeJNI.VectorPTRef_reserve(swigCPtr, this, n);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.VectorPTRef_isEmpty(swigCPtr, this);
+  }
+  public void clear() {
+    OsmtNativeJNI.VectorPTRef_clear(swigCPtr, this);
+  }
+  public VectorPTRef(int count, PTRef value) {
+    this(OsmtNativeJNI.new_VectorPTRef__SWIG_2(count, PTRef.getCPtr(value), value), true);
+  }
+  private int doSize() {
+    return OsmtNativeJNI.VectorPTRef_doSize(swigCPtr, this);
+  }
+  private void doAdd(PTRef x) {
+    OsmtNativeJNI.VectorPTRef_doAdd__SWIG_0(swigCPtr, this, PTRef.getCPtr(x), x);
+  }
+  private void doAdd(int index, PTRef x) {
+    OsmtNativeJNI.VectorPTRef_doAdd__SWIG_1(swigCPtr, this, index, PTRef.getCPtr(x), x);
+  }
+  private PTRef doRemove(int index) {
+    return new PTRef(OsmtNativeJNI.VectorPTRef_doRemove(swigCPtr, this, index), true);
+  }
+  private PTRef doGet(int index) {
+    return new PTRef(OsmtNativeJNI.VectorPTRef_doGet(swigCPtr, this, index), false);
+  }
+  private PTRef doSet(int index, PTRef val) {
+    return new PTRef(OsmtNativeJNI.VectorPTRef_doSet(swigCPtr, this, index, PTRef.getCPtr(val), val), true);
+  }
+  private void doRemoveRange(int fromIndex, int toIndex) {
+    OsmtNativeJNI.VectorPTRef_doRemoveRange(swigCPtr, this, fromIndex, toIndex);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class OsmtNativeJNI {
+  public final static native long new_VectorInt__SWIG_0();
+  public final static native long new_VectorInt__SWIG_1(long jarg1, VectorInt jarg1_);
+  public final static native long VectorInt_capacity(long jarg1, VectorInt jarg1_);
+  public final static native void VectorInt_reserve(long jarg1, VectorInt jarg1_, long jarg2);
+  public final static native boolean VectorInt_isEmpty(long jarg1, VectorInt jarg1_);
+  public final static native void VectorInt_clear(long jarg1, VectorInt jarg1_);
+  public final static native long new_VectorInt__SWIG_2(int jarg1, int jarg2);
+  public final static native int VectorInt_doSize(long jarg1, VectorInt jarg1_);
+  public final static native void VectorInt_doAdd__SWIG_0(long jarg1, VectorInt jarg1_, int jarg2);
+  public final static native void VectorInt_doAdd__SWIG_1(long jarg1, VectorInt jarg1_, int jarg2, int jarg3);
+  public final static native int VectorInt_doRemove(long jarg1, VectorInt jarg1_, int jarg2);
+  public final static native int VectorInt_doGet(long jarg1, VectorInt jarg1_, int jarg2);
+  public final static native int VectorInt_doSet(long jarg1, VectorInt jarg1_, int jarg2, int jarg3);
+  public final static native void VectorInt_doRemoveRange(long jarg1, VectorInt jarg1_, int jarg2, int jarg3);
+  public final static native void delete_VectorInt(long jarg1);
+  public final static native long new_VectorPTRef__SWIG_0();
+  public final static native long new_VectorPTRef__SWIG_1(long jarg1, VectorPTRef jarg1_);
+  public final static native long VectorPTRef_capacity(long jarg1, VectorPTRef jarg1_);
+  public final static native void VectorPTRef_reserve(long jarg1, VectorPTRef jarg1_, long jarg2);
+  public final static native boolean VectorPTRef_isEmpty(long jarg1, VectorPTRef jarg1_);
+  public final static native void VectorPTRef_clear(long jarg1, VectorPTRef jarg1_);
+  public final static native long new_VectorPTRef__SWIG_2(int jarg1, long jarg2, PTRef jarg2_);
+  public final static native int VectorPTRef_doSize(long jarg1, VectorPTRef jarg1_);
+  public final static native void VectorPTRef_doAdd__SWIG_0(long jarg1, VectorPTRef jarg1_, long jarg2, PTRef jarg2_);
+  public final static native void VectorPTRef_doAdd__SWIG_1(long jarg1, VectorPTRef jarg1_, int jarg2, long jarg3, PTRef jarg3_);
+  public final static native long VectorPTRef_doRemove(long jarg1, VectorPTRef jarg1_, int jarg2);
+  public final static native long VectorPTRef_doGet(long jarg1, VectorPTRef jarg1_, int jarg2);
+  public final static native long VectorPTRef_doSet(long jarg1, VectorPTRef jarg1_, int jarg2, long jarg3, PTRef jarg3_);
+  public final static native void VectorPTRef_doRemoveRange(long jarg1, VectorPTRef jarg1_, int jarg2, int jarg3);
+  public final static native void delete_VectorPTRef(long jarg1);
+  public final static native long new_VectorSRef__SWIG_0();
+  public final static native long new_VectorSRef__SWIG_1(long jarg1, VectorSRef jarg1_);
+  public final static native long VectorSRef_capacity(long jarg1, VectorSRef jarg1_);
+  public final static native void VectorSRef_reserve(long jarg1, VectorSRef jarg1_, long jarg2);
+  public final static native boolean VectorSRef_isEmpty(long jarg1, VectorSRef jarg1_);
+  public final static native void VectorSRef_clear(long jarg1, VectorSRef jarg1_);
+  public final static native long new_VectorSRef__SWIG_2(int jarg1, long jarg2, SRef jarg2_);
+  public final static native int VectorSRef_doSize(long jarg1, VectorSRef jarg1_);
+  public final static native void VectorSRef_doAdd__SWIG_0(long jarg1, VectorSRef jarg1_, long jarg2, SRef jarg2_);
+  public final static native void VectorSRef_doAdd__SWIG_1(long jarg1, VectorSRef jarg1_, int jarg2, long jarg3, SRef jarg3_);
+  public final static native long VectorSRef_doRemove(long jarg1, VectorSRef jarg1_, int jarg2);
+  public final static native long VectorSRef_doGet(long jarg1, VectorSRef jarg1_, int jarg2);
+  public final static native long VectorSRef_doSet(long jarg1, VectorSRef jarg1_, int jarg2, long jarg3, SRef jarg3_);
+  public final static native void VectorSRef_doRemoveRange(long jarg1, VectorSRef jarg1_, int jarg2, int jarg3);
+  public final static native void delete_VectorSRef(long jarg1);
+  public final static native long new_VectorSymRef__SWIG_0();
+  public final static native long new_VectorSymRef__SWIG_1(long jarg1, VectorSymRef jarg1_);
+  public final static native long VectorSymRef_capacity(long jarg1, VectorSymRef jarg1_);
+  public final static native void VectorSymRef_reserve(long jarg1, VectorSymRef jarg1_, long jarg2);
+  public final static native boolean VectorSymRef_isEmpty(long jarg1, VectorSymRef jarg1_);
+  public final static native void VectorSymRef_clear(long jarg1, VectorSymRef jarg1_);
+  public final static native long new_VectorSymRef__SWIG_2(int jarg1, long jarg2, SymRef jarg2_);
+  public final static native int VectorSymRef_doSize(long jarg1, VectorSymRef jarg1_);
+  public final static native void VectorSymRef_doAdd__SWIG_0(long jarg1, VectorSymRef jarg1_, long jarg2, SymRef jarg2_);
+  public final static native void VectorSymRef_doAdd__SWIG_1(long jarg1, VectorSymRef jarg1_, int jarg2, long jarg3, SymRef jarg3_);
+  public final static native long VectorSymRef_doRemove(long jarg1, VectorSymRef jarg1_, int jarg2);
+  public final static native long VectorSymRef_doGet(long jarg1, VectorSymRef jarg1_, int jarg2);
+  public final static native long VectorSymRef_doSet(long jarg1, VectorSymRef jarg1_, int jarg2, long jarg3, SymRef jarg3_);
+  public final static native void VectorSymRef_doRemoveRange(long jarg1, VectorSymRef jarg1_, int jarg2, int jarg3);
+  public final static native void delete_VectorSymRef(long jarg1);
+  public final static native long new_VectorVectorInt__SWIG_0();
+  public final static native long new_VectorVectorInt__SWIG_1(long jarg1, VectorVectorInt jarg1_);
+  public final static native long VectorVectorInt_capacity(long jarg1, VectorVectorInt jarg1_);
+  public final static native void VectorVectorInt_reserve(long jarg1, VectorVectorInt jarg1_, long jarg2);
+  public final static native boolean VectorVectorInt_isEmpty(long jarg1, VectorVectorInt jarg1_);
+  public final static native void VectorVectorInt_clear(long jarg1, VectorVectorInt jarg1_);
+  public final static native long new_VectorVectorInt__SWIG_2(int jarg1, long jarg2, VectorInt jarg2_);
+  public final static native int VectorVectorInt_doSize(long jarg1, VectorVectorInt jarg1_);
+  public final static native void VectorVectorInt_doAdd__SWIG_0(long jarg1, VectorVectorInt jarg1_, long jarg2, VectorInt jarg2_);
+  public final static native void VectorVectorInt_doAdd__SWIG_1(long jarg1, VectorVectorInt jarg1_, int jarg2, long jarg3, VectorInt jarg3_);
+  public final static native long VectorVectorInt_doRemove(long jarg1, VectorVectorInt jarg1_, int jarg2);
+  public final static native long VectorVectorInt_doGet(long jarg1, VectorVectorInt jarg1_, int jarg2);
+  public final static native long VectorVectorInt_doSet(long jarg1, VectorVectorInt jarg1_, int jarg2, long jarg3, VectorInt jarg3_);
+  public final static native void VectorVectorInt_doRemoveRange(long jarg1, VectorVectorInt jarg1_, int jarg2, int jarg3);
+  public final static native void delete_VectorVectorInt(long jarg1);
+  public final static native void PTRef_x_set(long jarg1, PTRef jarg1_, long jarg2);
+  public final static native long PTRef_x_get(long jarg1, PTRef jarg1_);
+  public final static native long PTRef_Undef_get();
+  public final static native void delete_PTRef(long jarg1);
+  public final static native void SSymRef_x_set(long jarg1, SSymRef jarg1_, long jarg2);
+  public final static native long SSymRef_x_get(long jarg1, SSymRef jarg1_);
+  public final static native void delete_SSymRef(long jarg1);
+  public final static native boolean SortSymbol_isInternal(long jarg1, SortSymbol jarg1_);
+  public final static native long SortSymbol_getArity(long jarg1, SortSymbol jarg1_);
+  public final static native String SortSymbol_getName(long jarg1, SortSymbol jarg1_);
+  public final static native void delete_SortSymbol(long jarg1);
+  public final static native void SRef_x_set(long jarg1, SRef jarg1_, long jarg2);
+  public final static native long SRef_x_get(long jarg1, SRef jarg1_);
+  public final static native void delete_SRef(long jarg1);
+  public final static native long Sort_getSymRef(long jarg1, Sort jarg1_);
+  public final static native long Sort_getSize(long jarg1, Sort jarg1_);
+  public final static native long Sort_getArgs(long jarg1, Sort jarg1_);
+  public final static native void delete_Sort(long jarg1);
+  public final static native int Symbol_size(long jarg1, Symbol jarg1_);
+  public final static native long Symbol_rsort(long jarg1, Symbol jarg1_);
+  public final static native boolean Symbol_isInterpreted(long jarg1, Symbol jarg1_);
+  public final static native long Symbol_getArgTypes(long jarg1, Symbol jarg1_);
+  public final static native void delete_Symbol(long jarg1);
+  public final static native void SymRef_x_set(long jarg1, SymRef jarg1_, long jarg2);
+  public final static native long SymRef_x_get(long jarg1, SymRef jarg1_);
+  public final static native void delete_SymRef(long jarg1);
+  public final static native void delete_InterpolationContext(long jarg1);
+  public final static native long InterpolationContext_getSingleInterpolant(long jarg1, InterpolationContext jarg1_, long jarg2, VectorInt jarg2_);
+  public final static native long InterpolationContext_getPathInterpolants(long jarg1, InterpolationContext jarg1_, long jarg2, VectorVectorInt jarg2_);
+  public final static native int getLogicFromString(long jarg1);
+  public final static native long LogicFactory_getInstance(int jarg1);
+  public final static native long LogicFactory_getLAInstance(int jarg1);
+  public final static native long LogicFactory_getLRAInstance();
+  public final static native long LogicFactory_getLIAInstance();
+  public final static native String LogicFactory_getVersion();
+  public final static native void delete_LogicFactory(long jarg1);
+  public final static native long new_SMTOption__SWIG_0(int jarg1);
+  public final static native long new_SMTOption__SWIG_1(double jarg1);
+  public final static native long new_SMTOption__SWIG_2(String jarg1);
+  public final static native boolean SMTOption_isEmpty(long jarg1, SMTOption jarg1_);
+  public final static native String SMTOption_toString(long jarg1, SMTOption jarg1_);
+  public final static native long new_SMTOption__SWIG_3(boolean jarg1);
+  public final static native void delete_SMTOption(long jarg1);
+  public final static native void SMTConfig_o_produce_unsat_cores_set(String jarg1);
+  public final static native String SMTConfig_o_produce_unsat_cores_get();
+  public final static native void SMTConfig_o_minimal_unsat_cores_set(String jarg1);
+  public final static native String SMTConfig_o_minimal_unsat_cores_get();
+  public final static native void SMTConfig_o_print_cores_full_set(String jarg1);
+  public final static native String SMTConfig_o_print_cores_full_get();
+  public final static native long new_SMTConfig__SWIG_0();
+  public final static native void delete_SMTConfig(long jarg1);
+  public final static native long new_SMTConfig__SWIG_1(long jarg1, SMTConfig jarg1_);
+  public final static native void SMTConfig_setProduceProofs(long jarg1, SMTConfig jarg1_);
+  public final static native boolean SMTConfig_produce_unsat_cores(long jarg1, SMTConfig jarg1_);
+  public final static native boolean SMTConfig_minimal_unsat_cores(long jarg1, SMTConfig jarg1_);
+  public final static native boolean SMTConfig_print_cores_full(long jarg1, SMTConfig jarg1_);
+  public final static native boolean SMTConfig_produce_proof(long jarg1, SMTConfig jarg1_);
+  public final static native void SMTConfig_setOption(long jarg1, SMTConfig jarg1_, String jarg2, long jarg3, SMTOption jarg3_);
+  public final static native String TemplateFunction_getName(long jarg1, TemplateFunction jarg1_);
+  public final static native long TemplateFunction_getRetSort(long jarg1, TemplateFunction jarg1_);
+  public final static native long TemplateFunction_getBody(long jarg1, TemplateFunction jarg1_);
+  public final static native long new_TemplateFunction(String jarg1, long jarg2, VectorPTRef jarg2_, long jarg3, SRef jarg3_, long jarg4, PTRef jarg4_);
+  public final static native long TemplateFunction_getArgs(long jarg1, TemplateFunction jarg1_);
+  public final static native void delete_TemplateFunction(long jarg1);
+  public final static native int Pterm_size(long jarg1, Pterm jarg1_);
+  public final static native long Pterm_symb(long jarg1, Pterm jarg1_);
+  public final static native long Pterm_at(long jarg1, Pterm jarg1_, int jarg2);
+  public final static native void delete_Pterm(long jarg1);
+  public final static native long Model_evaluate(long jarg1, Model jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Model_getDefinition(long jarg1, Model jarg1_, long jarg2, SymRef jarg2_);
+  public final static native void delete_Model(long jarg1);
+  public final static native char sstat_getValue(long jarg1, sstat jarg1_);
+  public final static native long sstat_True();
+  public final static native long sstat_False();
+  public final static native long sstat_Undef();
+  public final static native long sstat_Error();
+  public final static native void delete_sstat(long jarg1);
+  public final static native long new_MainSolver__SWIG_0(long jarg1, Logic jarg1_, long jarg2, SMTConfig jarg2_, String jarg3);
+  public final static native void delete_MainSolver(long jarg1);
+  public final static native long new_MainSolver__SWIG_1(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getConfig(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getLogic(long jarg1, MainSolver jarg1_);
+  public final static native void MainSolver_push(long jarg1, MainSolver jarg1_);
+  public final static native boolean MainSolver_pop(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getAssertionLevel(long jarg1, MainSolver jarg1_);
+  public final static native void MainSolver_insertFormula(long jarg1, MainSolver jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long MainSolver_getInsertedFormulasCount(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_check(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_solve(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getStatus(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getModel(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getInterpolationContext(long jarg1, MainSolver jarg1_);
+  public final static native void MainSolver_stop(long jarg1, MainSolver jarg1_);
+  public final static native long MainSolver_getUnsatCore(long jarg1, MainSolver jarg1_);
+  public final static native long new_Logic__SWIG_0(int jarg1);
+  public final static native void delete_Logic(long jarg1);
+  public final static native long new_Logic__SWIG_1(long jarg1, Logic jarg1_);
+  public final static native long Logic_getSortDefinition(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_);
+  public final static native long Logic_getSortSymbol(long jarg1, Logic jarg1_, long jarg2, SSymRef jarg2_);
+  public final static native long Logic_getSortRef(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native String Logic_printSort(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_);
+  public final static native long Logic_declareUninterpretedSort(long jarg1, Logic jarg1_, String jarg2);
+  public final static native boolean Logic_isArraySort(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_);
+  public final static native long Logic_getArraySort(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_, long jarg3, SRef jarg3_);
+  public final static native boolean Logic_isArrayStore(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isArraySelect(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Logic_getSym(long jarg1, Logic jarg1_, long jarg2, SymRef jarg2_);
+  public final static native long Logic_getSymRef(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native String Logic_getSymName(long jarg1, Logic jarg1_, long jarg2, SymRef jarg2_);
+  public final static native long Logic_getPterm(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Logic_mkAnd__SWIG_0(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_mkOr__SWIG_0(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_mkXor(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_mkImpl__SWIG_0(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_mkNot(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Logic_mkIte(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_, long jarg4, PTRef jarg4_);
+  public final static native long Logic_mkEq__SWIG_0(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_mkVar__SWIG_0(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_, String jarg3, boolean jarg4);
+  public final static native long Logic_mkVar__SWIG_1(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_, String jarg3);
+  public final static native long Logic_mkConst(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_, String jarg3);
+  public final static native long Logic_mkBoolVar(long jarg1, Logic jarg1_, String jarg2);
+  public final static native String Logic_dumpWithLets(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Logic_parseFormula(long jarg1, Logic jarg1_, String jarg2);
+  public final static native long Logic_getSort_bool(long jarg1, Logic jarg1_);
+  public final static native long Logic_getTerm_true(long jarg1, Logic jarg1_);
+  public final static native long Logic_getTerm_false(long jarg1, Logic jarg1_);
+  public final static native boolean Logic_isEquality(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isDisequality(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isIte(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isConstant(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isVar(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isUF(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isAnd(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isOr(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isNot(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isXor(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isImplies(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isTrue(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isFalse(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean Logic_isIff(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native String Logic_protectName(long jarg1, Logic jarg1_, long jarg2, SymRef jarg2_);
+  public final static native String Logic_pp(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long Logic_mkStore(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_, long jarg4, PTRef jarg4_);
+  public final static native long Logic_mkSelect(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_getDefaultValue(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_);
+  public final static native long Logic_mkUninterpFun(long jarg1, Logic jarg1_, long jarg2, SymRef jarg2_, long jarg3, VectorPTRef jarg3_);
+  public final static native long Logic_mkAnd__SWIG_1(long jarg1, Logic jarg1_, long jarg2, VectorPTRef jarg2_);
+  public final static native long Logic_mkOr__SWIG_1(long jarg1, Logic jarg1_, long jarg2, VectorPTRef jarg2_);
+  public final static native long Logic_mkImpl__SWIG_1(long jarg1, Logic jarg1_, long jarg2, VectorPTRef jarg2_);
+  public final static native long Logic_mkEq__SWIG_1(long jarg1, Logic jarg1_, long jarg2, VectorPTRef jarg2_);
+  public final static native long Logic_mkDistinct__SWIG_0(long jarg1, Logic jarg1_, long jarg2, VectorPTRef jarg2_);
+  public final static native long Logic_mkDistinct__SWIG_1(long jarg1, Logic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long Logic_declareFun(long jarg1, Logic jarg1_, String jarg2, long jarg3, SRef jarg3_, long jarg4, VectorSRef jarg4_);
+  public final static native long Logic_instantiateFunctionTemplate(long jarg1, Logic jarg1_, long jarg2, TemplateFunction jarg2_, long jarg3, VectorPTRef jarg3_);
+  public final static native boolean Logic_isSortBool(long jarg1, Logic jarg1_, long jarg2, SRef jarg2_);
+  public final static native long Logic_insertTerm(long jarg1, Logic jarg1_, long jarg2, SymRef jarg2_, long jarg3, VectorPTRef jarg3_);
+  public final static native void delete_ArithLogic(long jarg1);
+  public final static native long new_ArithLogic(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getSort_real(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getSort_int(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_mkConst(long jarg1, ArithLogic jarg1_, long jarg2, SRef jarg2_, String jarg3);
+  public final static native long ArithLogic_mkIntVar(long jarg1, ArithLogic jarg1_, String jarg2);
+  public final static native long ArithLogic_mkRealVar(long jarg1, ArithLogic jarg1_, String jarg2);
+  public final static native boolean ArithLogic_isNumConst(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isIntConst(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isRealConst(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isSortInt(long jarg1, ArithLogic jarg1_, long jarg2, SRef jarg2_);
+  public final static native boolean ArithLogic_isSortReal(long jarg1, ArithLogic jarg1_, long jarg2, SRef jarg2_);
+  public final static native boolean ArithLogic_isPlus(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isNeg(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isTimes(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isLeq(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isLt(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isGeq(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isGt(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long ArithLogic_getTerm_IntZero(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getTerm_RealZero(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getTerm_IntOne(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getTerm_RealOne(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getTerm_IntMinusOne(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_getTerm_RealMinusOne(long jarg1, ArithLogic jarg1_);
+  public final static native long ArithLogic_mkNeg(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long ArithLogic_mkMinus(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkPlus(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkTimes(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkIntDiv(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkRealDiv(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkMod(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkLeq(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkGeq(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkLt(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkGt(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_, long jarg3, PTRef jarg3_);
+  public final static native long ArithLogic_mkIntConst(long jarg1, ArithLogic jarg1_, String jarg2);
+  public final static native long ArithLogic_mkRealConst(long jarg1, ArithLogic jarg1_, String jarg2);
+  public final static native String ArithLogic_getNumConst(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isMinus(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isDiv(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native boolean ArithLogic_isMod(long jarg1, ArithLogic jarg1_, long jarg2, PTRef jarg2_);
+  public final static native long ArithLogic_SWIGUpcast(long jarg1);
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SMTOption {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SMTOption(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SMTOption obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SMTOption obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SMTOption(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public SMTOption(int i) {
+    this(OsmtNativeJNI.new_SMTOption__SWIG_0(i), true);
+  }
+  public SMTOption(double i) {
+    this(OsmtNativeJNI.new_SMTOption__SWIG_1(i), true);
+  }
+  public SMTOption(String s) {
+    this(OsmtNativeJNI.new_SMTOption__SWIG_2(s), true);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.SMTOption_isEmpty(swigCPtr, this);
+  }
+  public String toString() {
+    return OsmtNativeJNI.SMTOption_toString(swigCPtr, this);
+  }
+  public SMTOption(boolean b) {
+    this(OsmtNativeJNI.new_SMTOption__SWIG_3(b), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SymRef {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SymRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SymRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SymRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SymRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean equals(Object object) {
+    if(object instanceof SymRef) {
+      SymRef that = (SymRef) object;
+      return this.getX() == that.getX();
+    }
+    return false;
+  }
+  public int hashCode() {
+    return Long.hashCode(this.getX());
+  }
+  public void setX(long value) {
+    OsmtNativeJNI.SymRef_x_set(swigCPtr, this, value);
+  }
+  public long getX() {
+    return OsmtNativeJNI.SymRef_x_get(swigCPtr, this);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class Sort {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected Sort(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(Sort obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(Sort obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_Sort(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public SSymRef getSymRef() {
+    return new SSymRef(OsmtNativeJNI.Sort_getSymRef(swigCPtr, this), true);
+  }
+  public long getSize() {
+    return OsmtNativeJNI.Sort_getSize(swigCPtr, this);
+  }
+  public VectorSRef getArgs() {
+    return new VectorSRef(OsmtNativeJNI.Sort_getArgs(swigCPtr, this), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class PTRef {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected PTRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(PTRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(PTRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_PTRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean equals(Object object) {
+    if(object instanceof PTRef) {
+      PTRef that = (PTRef) object;
+      return this.getX() == that.getX();
+    }
+    return false;
+  }
+  public int hashCode() {
+    return Long.hashCode(this.getX());
+  }
+  public void setX(long value) {
+    OsmtNativeJNI.PTRef_x_set(swigCPtr, this, value);
+  }
+  public long getX() {
+    return OsmtNativeJNI.PTRef_x_get(swigCPtr, this);
+  }
+  public static PTRef getUndef() {
+    long cPtr = OsmtNativeJNI.PTRef_Undef_get();
+    return (cPtr == 0) ? null : new PTRef(cPtr, false);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SortSymbol {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SortSymbol(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SortSymbol obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SortSymbol obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SortSymbol(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean isInternal() {
+    return OsmtNativeJNI.SortSymbol_isInternal(swigCPtr, this);
+  }
+  public long getArity() {
+    return OsmtNativeJNI.SortSymbol_getArity(swigCPtr, this);
+  }
+  public String getName() {
+    return OsmtNativeJNI.SortSymbol_getName(swigCPtr, this);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SRef {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean equals(Object object) {
+    if(object instanceof SRef) {
+      SRef that = (SRef) object;
+      return this.getX() == that.getX();
+    }
+    return false;
+  }
+  public int hashCode() {
+    return Long.hashCode(this.getX());
+  }
+  public void setX(long value) {
+    OsmtNativeJNI.SRef_x_set(swigCPtr, this, value);
+  }
+  public long getX() {
+    return OsmtNativeJNI.SRef_x_get(swigCPtr, this);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class VectorInt extends java.util.AbstractList<Integer> implements java.util.RandomAccess {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected VectorInt(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(VectorInt obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(VectorInt obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_VectorInt(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public VectorInt(int[] initialElements) {
+    this();
+    reserve(initialElements.length);
+    for (int element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorInt(Iterable<Integer> initialElements) {
+    this();
+    for (int element : initialElements) {
+      add(element);
+    }
+  }
+  public Integer get(int index) {
+    return doGet(index);
+  }
+  public Integer set(int index, Integer e) {
+    return doSet(index, e);
+  }
+  public boolean add(Integer e) {
+    modCount++;
+    doAdd(e);
+    return true;
+  }
+  public void add(int index, Integer e) {
+    modCount++;
+    doAdd(index, e);
+  }
+  public Integer remove(int index) {
+    modCount++;
+    return doRemove(index);
+  }
+  protected void removeRange(int fromIndex, int toIndex) {
+    modCount++;
+    doRemoveRange(fromIndex, toIndex);
+  }
+  public int size() {
+    return doSize();
+  }
+  public VectorInt() {
+    this(OsmtNativeJNI.new_VectorInt__SWIG_0(), true);
+  }
+  public VectorInt(VectorInt other) {
+    this(OsmtNativeJNI.new_VectorInt__SWIG_1(VectorInt.getCPtr(other), other), true);
+  }
+  public long capacity() {
+    return OsmtNativeJNI.VectorInt_capacity(swigCPtr, this);
+  }
+  public void reserve(long n) {
+    OsmtNativeJNI.VectorInt_reserve(swigCPtr, this, n);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.VectorInt_isEmpty(swigCPtr, this);
+  }
+  public void clear() {
+    OsmtNativeJNI.VectorInt_clear(swigCPtr, this);
+  }
+  public VectorInt(int count, int value) {
+    this(OsmtNativeJNI.new_VectorInt__SWIG_2(count, value), true);
+  }
+  private int doSize() {
+    return OsmtNativeJNI.VectorInt_doSize(swigCPtr, this);
+  }
+  private void doAdd(int x) {
+    OsmtNativeJNI.VectorInt_doAdd__SWIG_0(swigCPtr, this, x);
+  }
+  private void doAdd(int index, int x) {
+    OsmtNativeJNI.VectorInt_doAdd__SWIG_1(swigCPtr, this, index, x);
+  }
+  private int doRemove(int index) {
+    return OsmtNativeJNI.VectorInt_doRemove(swigCPtr, this, index);
+  }
+  private int doGet(int index) {
+    return OsmtNativeJNI.VectorInt_doGet(swigCPtr, this, index);
+  }
+  private int doSet(int index, int val) {
+    return OsmtNativeJNI.VectorInt_doSet(swigCPtr, this, index, val);
+  }
+  private void doRemoveRange(int fromIndex, int toIndex) {
+    OsmtNativeJNI.VectorInt_doRemoveRange(swigCPtr, this, fromIndex, toIndex);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class TemplateFunction {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected TemplateFunction(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(TemplateFunction obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(TemplateFunction obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_TemplateFunction(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public String getName() {
+    return OsmtNativeJNI.TemplateFunction_getName(swigCPtr, this);
+  }
+  public SRef getRetSort() {
+    return new SRef(OsmtNativeJNI.TemplateFunction_getRetSort(swigCPtr, this), true);
+  }
+  public PTRef getBody() {
+    return new PTRef(OsmtNativeJNI.TemplateFunction_getBody(swigCPtr, this), true);
+  }
+  public TemplateFunction(String name, VectorPTRef args_, SRef ret_sort, PTRef tr_body) {
+    this(OsmtNativeJNI.new_TemplateFunction(name, VectorPTRef.getCPtr(args_), args_, SRef.getCPtr(ret_sort), ret_sort, PTRef.getCPtr(tr_body), tr_body), true);
+  }
+  public VectorPTRef getArgs() {
+    return new VectorPTRef(OsmtNativeJNI.TemplateFunction_getArgs(swigCPtr, this), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class Symbol {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected Symbol(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(Symbol obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(Symbol obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_Symbol(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public int size() {
+    return OsmtNativeJNI.Symbol_size(swigCPtr, this);
+  }
+  public SRef rsort() {
+    return new SRef(OsmtNativeJNI.Symbol_rsort(swigCPtr, this), true);
+  }
+  public boolean isInterpreted() {
+    return OsmtNativeJNI.Symbol_isInterpreted(swigCPtr, this);
+  }
+  public VectorSRef getArgTypes() {
+    return new VectorSRef(OsmtNativeJNI.Symbol_getArgTypes(swigCPtr, this), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class ArithLogic extends Logic {
+  private transient long swigCPtr;
+  protected ArithLogic(long cPtr, boolean cMemoryOwn) {
+    super(OsmtNativeJNI.ArithLogic_SWIGUpcast(cPtr), cMemoryOwn);
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(ArithLogic obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(ArithLogic obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_ArithLogic(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+    super.delete();
+  }
+  public ArithLogic(ArithLogic arg0) {
+    this(OsmtNativeJNI.new_ArithLogic(ArithLogic.swigRelease(arg0), arg0), true);
+  }
+  public SRef getSort_real() {
+    return new SRef(OsmtNativeJNI.ArithLogic_getSort_real(swigCPtr, this), true);
+  }
+  public SRef getSort_int() {
+    return new SRef(OsmtNativeJNI.ArithLogic_getSort_int(swigCPtr, this), true);
+  }
+  public PTRef mkConst(SRef s, String name) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkConst(swigCPtr, this, SRef.getCPtr(s), s, name), true);
+  }
+  public PTRef mkIntVar(String name) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkIntVar(swigCPtr, this, name), true);
+  }
+  public PTRef mkRealVar(String name) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkRealVar(swigCPtr, this, name), true);
+  }
+  public boolean isNumConst(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isNumConst(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isIntConst(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isIntConst(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isRealConst(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isRealConst(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isSortInt(SRef sr) {
+    return OsmtNativeJNI.ArithLogic_isSortInt(swigCPtr, this, SRef.getCPtr(sr), sr);
+  }
+  public boolean isSortReal(SRef sr) {
+    return OsmtNativeJNI.ArithLogic_isSortReal(swigCPtr, this, SRef.getCPtr(sr), sr);
+  }
+  public boolean isPlus(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isPlus(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isNeg(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isNeg(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isTimes(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isTimes(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isLeq(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isLeq(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isLt(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isLt(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isGeq(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isGeq(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isGt(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isGt(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public PTRef getTerm_IntZero() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_IntZero(swigCPtr, this), true);
+  }
+  public PTRef getTerm_RealZero() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_RealZero(swigCPtr, this), true);
+  }
+  public PTRef getTerm_IntOne() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_IntOne(swigCPtr, this), true);
+  }
+  public PTRef getTerm_RealOne() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_RealOne(swigCPtr, this), true);
+  }
+  public PTRef getTerm_IntMinusOne() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_IntMinusOne(swigCPtr, this), true);
+  }
+  public PTRef getTerm_RealMinusOne() {
+    return new PTRef(OsmtNativeJNI.ArithLogic_getTerm_RealMinusOne(swigCPtr, this), true);
+  }
+  public PTRef mkNeg(PTRef tr) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkNeg(swigCPtr, this, PTRef.getCPtr(tr), tr), true);
+  }
+  public PTRef mkMinus(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkMinus(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkPlus(PTRef p1, PTRef p2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkPlus(swigCPtr, this, PTRef.getCPtr(p1), p1, PTRef.getCPtr(p2), p2), true);
+  }
+  public PTRef mkTimes(PTRef p1, PTRef p2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkTimes(swigCPtr, this, PTRef.getCPtr(p1), p1, PTRef.getCPtr(p2), p2), true);
+  }
+  public PTRef mkIntDiv(PTRef nom, PTRef den) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkIntDiv(swigCPtr, this, PTRef.getCPtr(nom), nom, PTRef.getCPtr(den), den), true);
+  }
+  public PTRef mkRealDiv(PTRef nom, PTRef den) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkRealDiv(swigCPtr, this, PTRef.getCPtr(nom), nom, PTRef.getCPtr(den), den), true);
+  }
+  public PTRef mkMod(PTRef first, PTRef second) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkMod(swigCPtr, this, PTRef.getCPtr(first), first, PTRef.getCPtr(second), second), true);
+  }
+  public PTRef mkLeq(PTRef arg1, PTRef arg2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkLeq(swigCPtr, this, PTRef.getCPtr(arg1), arg1, PTRef.getCPtr(arg2), arg2), true);
+  }
+  public PTRef mkGeq(PTRef arg1, PTRef arg2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkGeq(swigCPtr, this, PTRef.getCPtr(arg1), arg1, PTRef.getCPtr(arg2), arg2), true);
+  }
+  public PTRef mkLt(PTRef arg1, PTRef arg2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkLt(swigCPtr, this, PTRef.getCPtr(arg1), arg1, PTRef.getCPtr(arg2), arg2), true);
+  }
+  public PTRef mkGt(PTRef arg1, PTRef arg2) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkGt(swigCPtr, this, PTRef.getCPtr(arg1), arg1, PTRef.getCPtr(arg2), arg2), true);
+  }
+  public PTRef mkIntConst(String c) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkIntConst(swigCPtr, this, c), true);
+  }
+  public PTRef mkRealConst(String c) {
+    return new PTRef(OsmtNativeJNI.ArithLogic_mkRealConst(swigCPtr, this, c), true);
+  }
+  public String getNumConst(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_getNumConst(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isMinus(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isMinus(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isDiv(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isDiv(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isMod(PTRef tr) {
+    return OsmtNativeJNI.ArithLogic_isMod(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class Model {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected Model(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(Model obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(Model obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_Model(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public PTRef evaluate(PTRef term) {
+    return new PTRef(OsmtNativeJNI.Model_evaluate(swigCPtr, this, PTRef.getCPtr(term), term), true);
+  }
+  public TemplateFunction getDefinition(SymRef arg0) {
+    return new TemplateFunction(OsmtNativeJNI.Model_getDefinition(swigCPtr, this, SymRef.getCPtr(arg0), arg0), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class Logic {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected Logic(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(Logic obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(Logic obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_Logic(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public Logic(Logic_t type) {
+    this(OsmtNativeJNI.new_Logic__SWIG_0(type.swigValue()), true);
+  }
+  public Logic(Logic arg0) {
+    this(OsmtNativeJNI.new_Logic__SWIG_1(Logic.swigRelease(arg0), arg0), true);
+  }
+  public Sort getSortDefinition(SRef s) {
+    return new Sort(OsmtNativeJNI.Logic_getSortDefinition(swigCPtr, this, SRef.getCPtr(s), s), false);
+  }
+  public SortSymbol getSortSymbol(SSymRef ss) {
+    return new SortSymbol(OsmtNativeJNI.Logic_getSortSymbol(swigCPtr, this, SSymRef.getCPtr(ss), ss), false);
+  }
+  public SRef getSortRef(PTRef tr) {
+    return new SRef(OsmtNativeJNI.Logic_getSortRef(swigCPtr, this, PTRef.getCPtr(tr), tr), true);
+  }
+  public String printSort(SRef s) {
+    return OsmtNativeJNI.Logic_printSort(swigCPtr, this, SRef.getCPtr(s), s);
+  }
+  public SRef declareUninterpretedSort(String arg0) {
+    return new SRef(OsmtNativeJNI.Logic_declareUninterpretedSort(swigCPtr, this, arg0), true);
+  }
+  public boolean isArraySort(SRef sref) {
+    return OsmtNativeJNI.Logic_isArraySort(swigCPtr, this, SRef.getCPtr(sref), sref);
+  }
+  public SRef getArraySort(SRef domain, SRef codomain) {
+    return new SRef(OsmtNativeJNI.Logic_getArraySort(swigCPtr, this, SRef.getCPtr(domain), domain, SRef.getCPtr(codomain), codomain), true);
+  }
+  public boolean isArrayStore(PTRef arg0) {
+    return OsmtNativeJNI.Logic_isArrayStore(swigCPtr, this, PTRef.getCPtr(arg0), arg0);
+  }
+  public boolean isArraySelect(PTRef arg0) {
+    return OsmtNativeJNI.Logic_isArraySelect(swigCPtr, this, PTRef.getCPtr(arg0), arg0);
+  }
+  public Symbol getSym(SymRef s) {
+    return new Symbol(OsmtNativeJNI.Logic_getSym(swigCPtr, this, SymRef.getCPtr(s), s), false);
+  }
+  public SymRef getSymRef(PTRef tr) {
+    return new SymRef(OsmtNativeJNI.Logic_getSymRef(swigCPtr, this, PTRef.getCPtr(tr), tr), true);
+  }
+  public String getSymName(SymRef s) {
+    return OsmtNativeJNI.Logic_getSymName(swigCPtr, this, SymRef.getCPtr(s), s);
+  }
+  public Pterm getPterm(PTRef tr) {
+    return new Pterm(OsmtNativeJNI.Logic_getPterm(swigCPtr, this, PTRef.getCPtr(tr), tr), false);
+  }
+  public PTRef mkAnd(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.Logic_mkAnd__SWIG_0(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkOr(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.Logic_mkOr__SWIG_0(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkXor(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.Logic_mkXor(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkImpl(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.Logic_mkImpl__SWIG_0(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkNot(PTRef arg0) {
+    return new PTRef(OsmtNativeJNI.Logic_mkNot(swigCPtr, this, PTRef.getCPtr(arg0), arg0), true);
+  }
+  public PTRef mkIte(PTRef c, PTRef t, PTRef e) {
+    return new PTRef(OsmtNativeJNI.Logic_mkIte(swigCPtr, this, PTRef.getCPtr(c), c, PTRef.getCPtr(t), t, PTRef.getCPtr(e), e), true);
+  }
+  public PTRef mkEq(PTRef a1, PTRef a2) {
+    return new PTRef(OsmtNativeJNI.Logic_mkEq__SWIG_0(swigCPtr, this, PTRef.getCPtr(a1), a1, PTRef.getCPtr(a2), a2), true);
+  }
+  public PTRef mkVar(SRef arg0, String arg1, boolean isInterpreted) {
+    return new PTRef(OsmtNativeJNI.Logic_mkVar__SWIG_0(swigCPtr, this, SRef.getCPtr(arg0), arg0, arg1, isInterpreted), true);
+  }
+  public PTRef mkVar(SRef arg0, String arg1) {
+    return new PTRef(OsmtNativeJNI.Logic_mkVar__SWIG_1(swigCPtr, this, SRef.getCPtr(arg0), arg0, arg1), true);
+  }
+  public PTRef mkConst(SRef arg0, String arg1) {
+    return new PTRef(OsmtNativeJNI.Logic_mkConst(swigCPtr, this, SRef.getCPtr(arg0), arg0, arg1), true);
+  }
+  public PTRef mkBoolVar(String name) {
+    return new PTRef(OsmtNativeJNI.Logic_mkBoolVar(swigCPtr, this, name), true);
+  }
+  public String dumpWithLets(PTRef formula) {
+    return OsmtNativeJNI.Logic_dumpWithLets(swigCPtr, this, PTRef.getCPtr(formula), formula);
+  }
+  public PTRef parseFormula(String input) {
+    return new PTRef(OsmtNativeJNI.Logic_parseFormula(swigCPtr, this, input), true);
+  }
+  public SRef getSort_bool() {
+    return new SRef(OsmtNativeJNI.Logic_getSort_bool(swigCPtr, this), true);
+  }
+  public PTRef getTerm_true() {
+    return new PTRef(OsmtNativeJNI.Logic_getTerm_true(swigCPtr, this), true);
+  }
+  public PTRef getTerm_false() {
+    return new PTRef(OsmtNativeJNI.Logic_getTerm_false(swigCPtr, this), true);
+  }
+  public boolean isEquality(PTRef tr) {
+    return OsmtNativeJNI.Logic_isEquality(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isDisequality(PTRef tr) {
+    return OsmtNativeJNI.Logic_isDisequality(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isIte(PTRef tr) {
+    return OsmtNativeJNI.Logic_isIte(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isConstant(PTRef tr) {
+    return OsmtNativeJNI.Logic_isConstant(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isVar(PTRef tr) {
+    return OsmtNativeJNI.Logic_isVar(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isUF(PTRef arg0) {
+    return OsmtNativeJNI.Logic_isUF(swigCPtr, this, PTRef.getCPtr(arg0), arg0);
+  }
+  public boolean isAnd(PTRef tr) {
+    return OsmtNativeJNI.Logic_isAnd(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isOr(PTRef tr) {
+    return OsmtNativeJNI.Logic_isOr(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isNot(PTRef tr) {
+    return OsmtNativeJNI.Logic_isNot(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isXor(PTRef tr) {
+    return OsmtNativeJNI.Logic_isXor(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isImplies(PTRef tr) {
+    return OsmtNativeJNI.Logic_isImplies(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isTrue(PTRef tr) {
+    return OsmtNativeJNI.Logic_isTrue(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isFalse(PTRef tr) {
+    return OsmtNativeJNI.Logic_isFalse(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public boolean isIff(PTRef tr) {
+    return OsmtNativeJNI.Logic_isIff(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public String protectName(SymRef sr) {
+    return OsmtNativeJNI.Logic_protectName(swigCPtr, this, SymRef.getCPtr(sr), sr);
+  }
+  public String pp(PTRef tr) {
+    return OsmtNativeJNI.Logic_pp(swigCPtr, this, PTRef.getCPtr(tr), tr);
+  }
+  public PTRef mkStore(PTRef array, PTRef index, PTRef value) {
+    return new PTRef(OsmtNativeJNI.Logic_mkStore(swigCPtr, this, PTRef.getCPtr(array), array, PTRef.getCPtr(index), index, PTRef.getCPtr(value), value), true);
+  }
+  public PTRef mkSelect(PTRef array, PTRef index) {
+    return new PTRef(OsmtNativeJNI.Logic_mkSelect(swigCPtr, this, PTRef.getCPtr(array), array, PTRef.getCPtr(index), index), true);
+  }
+  public PTRef getDefaultValue(SRef sref) {
+    return new PTRef(OsmtNativeJNI.Logic_getDefaultValue(swigCPtr, this, SRef.getCPtr(sref), sref), true);
+  }
+  public PTRef mkUninterpFun(SymRef f, VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkUninterpFun(swigCPtr, this, SymRef.getCPtr(f), f, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkAnd(VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkAnd__SWIG_1(swigCPtr, this, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkOr(VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkOr__SWIG_1(swigCPtr, this, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkImpl(VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkImpl__SWIG_1(swigCPtr, this, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkEq(VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkEq__SWIG_1(swigCPtr, this, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkDistinct(VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_mkDistinct__SWIG_0(swigCPtr, this, VectorPTRef.getCPtr(args), args), true);
+  }
+  public PTRef mkDistinct(PTRef a, PTRef b) {
+    return new PTRef(OsmtNativeJNI.Logic_mkDistinct__SWIG_1(swigCPtr, this, PTRef.getCPtr(a), a, PTRef.getCPtr(b), b), true);
+  }
+  public SymRef declareFun(String fname, SRef rsort, VectorSRef args) {
+    return new SymRef(OsmtNativeJNI.Logic_declareFun(swigCPtr, this, fname, SRef.getCPtr(rsort), rsort, VectorSRef.getCPtr(args), args), true);
+  }
+  public PTRef instantiateFunctionTemplate(TemplateFunction tmplt, VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_instantiateFunctionTemplate(swigCPtr, this, TemplateFunction.getCPtr(tmplt), tmplt, VectorPTRef.getCPtr(args), args), true);
+  }
+  public boolean isSortBool(SRef sort) {
+    return OsmtNativeJNI.Logic_isSortBool(swigCPtr, this, SRef.getCPtr(sort), sort);
+  }
+  public PTRef insertTerm(SymRef sym, VectorPTRef args) {
+    return new PTRef(OsmtNativeJNI.Logic_insertTerm(swigCPtr, this, SymRef.getCPtr(sym), sym, VectorPTRef.getCPtr(args), args), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class Pterm {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected Pterm(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(Pterm obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(Pterm obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_Pterm(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public int size() {
+    return OsmtNativeJNI.Pterm_size(swigCPtr, this);
+  }
+  public SymRef symb() {
+    return new SymRef(OsmtNativeJNI.Pterm_symb(swigCPtr, this), true);
+  }
+  public PTRef at(int i) {
+    return new PTRef(OsmtNativeJNI.Pterm_at(swigCPtr, this, i), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class VectorSymRef extends java.util.AbstractList<SymRef> implements java.util.RandomAccess {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected VectorSymRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(VectorSymRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(VectorSymRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_VectorSymRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public VectorSymRef(SymRef[] initialElements) {
+    this();
+    reserve(initialElements.length);
+    for (SymRef element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorSymRef(Iterable<SymRef> initialElements) {
+    this();
+    for (SymRef element : initialElements) {
+      add(element);
+    }
+  }
+  public SymRef get(int index) {
+    return doGet(index);
+  }
+  public SymRef set(int index, SymRef e) {
+    return doSet(index, e);
+  }
+  public boolean add(SymRef e) {
+    modCount++;
+    doAdd(e);
+    return true;
+  }
+  public void add(int index, SymRef e) {
+    modCount++;
+    doAdd(index, e);
+  }
+  public SymRef remove(int index) {
+    modCount++;
+    return doRemove(index);
+  }
+  protected void removeRange(int fromIndex, int toIndex) {
+    modCount++;
+    doRemoveRange(fromIndex, toIndex);
+  }
+  public int size() {
+    return doSize();
+  }
+  public VectorSymRef() {
+    this(OsmtNativeJNI.new_VectorSymRef__SWIG_0(), true);
+  }
+  public VectorSymRef(VectorSymRef other) {
+    this(OsmtNativeJNI.new_VectorSymRef__SWIG_1(VectorSymRef.getCPtr(other), other), true);
+  }
+  public long capacity() {
+    return OsmtNativeJNI.VectorSymRef_capacity(swigCPtr, this);
+  }
+  public void reserve(long n) {
+    OsmtNativeJNI.VectorSymRef_reserve(swigCPtr, this, n);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.VectorSymRef_isEmpty(swigCPtr, this);
+  }
+  public void clear() {
+    OsmtNativeJNI.VectorSymRef_clear(swigCPtr, this);
+  }
+  public VectorSymRef(int count, SymRef value) {
+    this(OsmtNativeJNI.new_VectorSymRef__SWIG_2(count, SymRef.getCPtr(value), value), true);
+  }
+  private int doSize() {
+    return OsmtNativeJNI.VectorSymRef_doSize(swigCPtr, this);
+  }
+  private void doAdd(SymRef x) {
+    OsmtNativeJNI.VectorSymRef_doAdd__SWIG_0(swigCPtr, this, SymRef.getCPtr(x), x);
+  }
+  private void doAdd(int index, SymRef x) {
+    OsmtNativeJNI.VectorSymRef_doAdd__SWIG_1(swigCPtr, this, index, SymRef.getCPtr(x), x);
+  }
+  private SymRef doRemove(int index) {
+    return new SymRef(OsmtNativeJNI.VectorSymRef_doRemove(swigCPtr, this, index), true);
+  }
+  private SymRef doGet(int index) {
+    return new SymRef(OsmtNativeJNI.VectorSymRef_doGet(swigCPtr, this, index), false);
+  }
+  private SymRef doSet(int index, SymRef val) {
+    return new SymRef(OsmtNativeJNI.VectorSymRef_doSet(swigCPtr, this, index, SymRef.getCPtr(val), val), true);
+  }
+  private void doRemoveRange(int fromIndex, int toIndex) {
+    OsmtNativeJNI.VectorSymRef_doRemoveRange(swigCPtr, this, fromIndex, toIndex);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class VectorSRef extends java.util.AbstractList<SRef> implements java.util.RandomAccess {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected VectorSRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(VectorSRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(VectorSRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_VectorSRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public VectorSRef(SRef[] initialElements) {
+    this();
+    reserve(initialElements.length);
+    for (SRef element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorSRef(Iterable<SRef> initialElements) {
+    this();
+    for (SRef element : initialElements) {
+      add(element);
+    }
+  }
+  public SRef get(int index) {
+    return doGet(index);
+  }
+  public SRef set(int index, SRef e) {
+    return doSet(index, e);
+  }
+  public boolean add(SRef e) {
+    modCount++;
+    doAdd(e);
+    return true;
+  }
+  public void add(int index, SRef e) {
+    modCount++;
+    doAdd(index, e);
+  }
+  public SRef remove(int index) {
+    modCount++;
+    return doRemove(index);
+  }
+  protected void removeRange(int fromIndex, int toIndex) {
+    modCount++;
+    doRemoveRange(fromIndex, toIndex);
+  }
+  public int size() {
+    return doSize();
+  }
+  public VectorSRef() {
+    this(OsmtNativeJNI.new_VectorSRef__SWIG_0(), true);
+  }
+  public VectorSRef(VectorSRef other) {
+    this(OsmtNativeJNI.new_VectorSRef__SWIG_1(VectorSRef.getCPtr(other), other), true);
+  }
+  public long capacity() {
+    return OsmtNativeJNI.VectorSRef_capacity(swigCPtr, this);
+  }
+  public void reserve(long n) {
+    OsmtNativeJNI.VectorSRef_reserve(swigCPtr, this, n);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.VectorSRef_isEmpty(swigCPtr, this);
+  }
+  public void clear() {
+    OsmtNativeJNI.VectorSRef_clear(swigCPtr, this);
+  }
+  public VectorSRef(int count, SRef value) {
+    this(OsmtNativeJNI.new_VectorSRef__SWIG_2(count, SRef.getCPtr(value), value), true);
+  }
+  private int doSize() {
+    return OsmtNativeJNI.VectorSRef_doSize(swigCPtr, this);
+  }
+  private void doAdd(SRef x) {
+    OsmtNativeJNI.VectorSRef_doAdd__SWIG_0(swigCPtr, this, SRef.getCPtr(x), x);
+  }
+  private void doAdd(int index, SRef x) {
+    OsmtNativeJNI.VectorSRef_doAdd__SWIG_1(swigCPtr, this, index, SRef.getCPtr(x), x);
+  }
+  private SRef doRemove(int index) {
+    return new SRef(OsmtNativeJNI.VectorSRef_doRemove(swigCPtr, this, index), true);
+  }
+  private SRef doGet(int index) {
+    return new SRef(OsmtNativeJNI.VectorSRef_doGet(swigCPtr, this, index), false);
+  }
+  private SRef doSet(int index, SRef val) {
+    return new SRef(OsmtNativeJNI.VectorSRef_doSet(swigCPtr, this, index, SRef.getCPtr(val), val), true);
+  }
+  private void doRemoveRange(int fromIndex, int toIndex) {
+    OsmtNativeJNI.VectorSRef_doRemoveRange(swigCPtr, this, fromIndex, toIndex);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class InterpolationContext {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected InterpolationContext(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(InterpolationContext obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(InterpolationContext obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_InterpolationContext(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public PTRef getSingleInterpolant(VectorInt partition) {
+    return new PTRef(OsmtNativeJNI.InterpolationContext_getSingleInterpolant(swigCPtr, this, VectorInt.getCPtr(partition), partition), true);
+  }
+  public VectorPTRef getPathInterpolants(VectorVectorInt partitions) {
+    return new VectorPTRef(OsmtNativeJNI.InterpolationContext_getPathInterpolants(swigCPtr, this, VectorVectorInt.getCPtr(partitions), partitions), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class MainSolver {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected MainSolver(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(MainSolver obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(MainSolver obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_MainSolver(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public MainSolver(Logic logic, SMTConfig conf, String name) {
+    this(OsmtNativeJNI.new_MainSolver__SWIG_0(Logic.getCPtr(logic), logic, SMTConfig.getCPtr(conf), conf, name), true);
+  }
+  public MainSolver(MainSolver arg0) {
+    this(OsmtNativeJNI.new_MainSolver__SWIG_1(MainSolver.swigRelease(arg0), arg0), true);
+  }
+  public SMTConfig getConfig() {
+    return new SMTConfig(OsmtNativeJNI.MainSolver_getConfig(swigCPtr, this), false);
+  }
+  public Logic getLogic() {
+    return new Logic(OsmtNativeJNI.MainSolver_getLogic(swigCPtr, this), false);
+  }
+  public void push() {
+    OsmtNativeJNI.MainSolver_push(swigCPtr, this);
+  }
+  public boolean pop() {
+    return OsmtNativeJNI.MainSolver_pop(swigCPtr, this);
+  }
+  public long getAssertionLevel() {
+    return OsmtNativeJNI.MainSolver_getAssertionLevel(swigCPtr, this);
+  }
+  public void insertFormula(PTRef fla) {
+    OsmtNativeJNI.MainSolver_insertFormula(swigCPtr, this, PTRef.getCPtr(fla), fla);
+  }
+  public long getInsertedFormulasCount() {
+    return OsmtNativeJNI.MainSolver_getInsertedFormulasCount(swigCPtr, this);
+  }
+  public sstat check() {
+    return new sstat(OsmtNativeJNI.MainSolver_check(swigCPtr, this), true);
+  }
+  public sstat solve() {
+    return new sstat(OsmtNativeJNI.MainSolver_solve(swigCPtr, this), true);
+  }
+  public sstat getStatus() {
+    return new sstat(OsmtNativeJNI.MainSolver_getStatus(swigCPtr, this), true);
+  }
+  public Model getModel() {
+    long cPtr = OsmtNativeJNI.MainSolver_getModel(swigCPtr, this);
+    return (cPtr == 0) ? null : new Model(cPtr, true);
+  }
+  public InterpolationContext getInterpolationContext() {
+    long cPtr = OsmtNativeJNI.MainSolver_getInterpolationContext(swigCPtr, this);
+    return (cPtr == 0) ? null : new InterpolationContext(cPtr, true);
+  }
+  public void stop() {
+    OsmtNativeJNI.MainSolver_stop(swigCPtr, this);
+  }
+  public VectorPTRef getUnsatCore() {
+    return new VectorPTRef(OsmtNativeJNI.MainSolver_getUnsatCore(swigCPtr, this), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class sstat {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected sstat(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(sstat obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(sstat obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_sstat(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean equals(Object object) {
+    if(object instanceof sstat) {
+      sstat that = (sstat) object;
+      return this.getValue() == that.getValue();
+    }
+    return false;
+  }
+  public int hashCode() {
+    return Long.hashCode(this.getValue());
+  }
+  public String toString() {
+    if (this.equals(sstat.True())) {
+      return "true";
+    }
+    if (this.equals(sstat.False())) {
+      return "false";
+    }
+    if (this.equals(sstat.Undef())) {
+      return "undef";
+    }
+    if (this.equals(sstat.Error())) {
+      return "error";
+    }
+    throw new RuntimeException();
+  }
+  public char getValue() {
+    return OsmtNativeJNI.sstat_getValue(swigCPtr, this);
+  }
+  public static sstat True() {
+    return new sstat(OsmtNativeJNI.sstat_True(), true);
+  }
+  public static sstat False() {
+    return new sstat(OsmtNativeJNI.sstat_False(), true);
+  }
+  public static sstat Undef() {
+    return new sstat(OsmtNativeJNI.sstat_Undef(), true);
+  }
+  public static sstat Error() {
+    return new sstat(OsmtNativeJNI.sstat_Error(), true);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SMTConfig {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SMTConfig(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SMTConfig obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SMTConfig obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SMTConfig(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public static void setO_produce_unsat_cores(String value) {
+    OsmtNativeJNI.SMTConfig_o_produce_unsat_cores_set(value);
+  }
+  public static String getO_produce_unsat_cores() {
+    return OsmtNativeJNI.SMTConfig_o_produce_unsat_cores_get();
+  }
+  public static void setO_minimal_unsat_cores(String value) {
+    OsmtNativeJNI.SMTConfig_o_minimal_unsat_cores_set(value);
+  }
+  public static String getO_minimal_unsat_cores() {
+    return OsmtNativeJNI.SMTConfig_o_minimal_unsat_cores_get();
+  }
+  public static void setO_print_cores_full(String value) {
+    OsmtNativeJNI.SMTConfig_o_print_cores_full_set(value);
+  }
+  public static String getO_print_cores_full() {
+    return OsmtNativeJNI.SMTConfig_o_print_cores_full_get();
+  }
+  public SMTConfig() {
+    this(OsmtNativeJNI.new_SMTConfig__SWIG_0(), true);
+  }
+  public SMTConfig(SMTConfig arg0) {
+    this(OsmtNativeJNI.new_SMTConfig__SWIG_1(SMTConfig.swigRelease(arg0), arg0), true);
+  }
+  public void setProduceProofs() {
+    OsmtNativeJNI.SMTConfig_setProduceProofs(swigCPtr, this);
+  }
+  public boolean produce_unsat_cores() {
+    return OsmtNativeJNI.SMTConfig_produce_unsat_cores(swigCPtr, this);
+  }
+  public boolean minimal_unsat_cores() {
+    return OsmtNativeJNI.SMTConfig_minimal_unsat_cores(swigCPtr, this);
+  }
+  public boolean print_cores_full() {
+    return OsmtNativeJNI.SMTConfig_print_cores_full(swigCPtr, this);
+  }
+  public boolean produce_proof() {
+    return OsmtNativeJNI.SMTConfig_produce_proof(swigCPtr, this);
+  }
+  public void setOption(String option, SMTOption value) {
+    OsmtNativeJNI.SMTConfig_setOption(swigCPtr, this, option, SMTOption.getCPtr(value), value);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class SSymRef {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected SSymRef(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(SSymRef obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(SSymRef obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_SSymRef(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public boolean equals(Object object) {
+    if(object instanceof SSymRef) {
+      SSymRef that = (SSymRef) object;
+      return this.getX() == that.getX();
+    }
+    return false;
+  }
+  public int hashCode() {
+    return Long.hashCode(this.getX());
+  }
+  public void setX(long value) {
+    OsmtNativeJNI.SSymRef_x_set(swigCPtr, this, value);
+  }
+  public long getX() {
+    return OsmtNativeJNI.SSymRef_x_get(swigCPtr, this);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class VectorVectorInt extends java.util.AbstractList<VectorInt> implements java.util.RandomAccess {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected VectorVectorInt(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(VectorVectorInt obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(VectorVectorInt obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_VectorVectorInt(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public VectorVectorInt(VectorInt[] initialElements) {
+    this();
+    reserve(initialElements.length);
+    for (VectorInt element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorVectorInt(Iterable<VectorInt> initialElements) {
+    this();
+    for (VectorInt element : initialElements) {
+      add(element);
+    }
+  }
+  public VectorInt get(int index) {
+    return doGet(index);
+  }
+  public VectorInt set(int index, VectorInt e) {
+    return doSet(index, e);
+  }
+  public boolean add(VectorInt e) {
+    modCount++;
+    doAdd(e);
+    return true;
+  }
+  public void add(int index, VectorInt e) {
+    modCount++;
+    doAdd(index, e);
+  }
+  public VectorInt remove(int index) {
+    modCount++;
+    return doRemove(index);
+  }
+  protected void removeRange(int fromIndex, int toIndex) {
+    modCount++;
+    doRemoveRange(fromIndex, toIndex);
+  }
+  public int size() {
+    return doSize();
+  }
+  public VectorVectorInt() {
+    this(OsmtNativeJNI.new_VectorVectorInt__SWIG_0(), true);
+  }
+  public VectorVectorInt(VectorVectorInt other) {
+    this(OsmtNativeJNI.new_VectorVectorInt__SWIG_1(VectorVectorInt.getCPtr(other), other), true);
+  }
+  public long capacity() {
+    return OsmtNativeJNI.VectorVectorInt_capacity(swigCPtr, this);
+  }
+  public void reserve(long n) {
+    OsmtNativeJNI.VectorVectorInt_reserve(swigCPtr, this, n);
+  }
+  public boolean isEmpty() {
+    return OsmtNativeJNI.VectorVectorInt_isEmpty(swigCPtr, this);
+  }
+  public void clear() {
+    OsmtNativeJNI.VectorVectorInt_clear(swigCPtr, this);
+  }
+  public VectorVectorInt(int count, VectorInt value) {
+    this(OsmtNativeJNI.new_VectorVectorInt__SWIG_2(count, VectorInt.getCPtr(value), value), true);
+  }
+  private int doSize() {
+    return OsmtNativeJNI.VectorVectorInt_doSize(swigCPtr, this);
+  }
+  private void doAdd(VectorInt x) {
+    OsmtNativeJNI.VectorVectorInt_doAdd__SWIG_0(swigCPtr, this, VectorInt.getCPtr(x), x);
+  }
+  private void doAdd(int index, VectorInt x) {
+    OsmtNativeJNI.VectorVectorInt_doAdd__SWIG_1(swigCPtr, this, index, VectorInt.getCPtr(x), x);
+  }
+  private VectorInt doRemove(int index) {
+    return new VectorInt(OsmtNativeJNI.VectorVectorInt_doRemove(swigCPtr, this, index), true);
+  }
+  private VectorInt doGet(int index) {
+    return new VectorInt(OsmtNativeJNI.VectorVectorInt_doGet(swigCPtr, this, index), false);
+  }
+  private VectorInt doSet(int index, VectorInt val) {
+    return new VectorInt(OsmtNativeJNI.VectorVectorInt_doSet(swigCPtr, this, index, VectorInt.getCPtr(val), val), true);
+  }
+  private void doRemoveRange(int fromIndex, int toIndex) {
+    OsmtNativeJNI.VectorVectorInt_doRemoveRange(swigCPtr, this, fromIndex, toIndex);
+  }
+}
+package org.sosy_lab.java_smt.solvers.opensmt.api;
+public class LogicFactory {
+  private transient long swigCPtr;
+  protected transient boolean swigCMemOwn;
+  protected LogicFactory(long cPtr, boolean cMemoryOwn) {
+    swigCMemOwn = cMemoryOwn;
+    swigCPtr = cPtr;
+  }
+  protected static long getCPtr(LogicFactory obj) {
+    return (obj == null) ? 0 : obj.swigCPtr;
+  }
+  protected static long swigRelease(LogicFactory obj) {
+    long ptr = 0;
+    if (obj != null) {
+      if (!obj.swigCMemOwn)
+        throw new RuntimeException("Cannot release ownership as memory is not owned");
+      ptr = obj.swigCPtr;
+      obj.swigCMemOwn = false;
+      obj.delete();
+    }
+    return ptr;
+  }
+  @SuppressWarnings("deprecation")
+  protected void finalize() {
+    delete();
+  }
+  public synchronized void delete() {
+    if (swigCPtr != 0) {
+      if (swigCMemOwn) {
+        swigCMemOwn = false;
+        OsmtNativeJNI.delete_LogicFactory(swigCPtr);
+      }
+      swigCPtr = 0;
+    }
+  }
+  public static Logic getInstance(Logic_t arg0) {
+    long cPtr = OsmtNativeJNI.LogicFactory_getInstance(arg0.swigValue());
+    return (cPtr == 0) ? null : new Logic(cPtr, true);
+  }
+  public static ArithLogic getLAInstance(Logic_t arg0) {
+    long cPtr = OsmtNativeJNI.LogicFactory_getLAInstance(arg0.swigValue());
+    return (cPtr == 0) ? null : new ArithLogic(cPtr, true);
+  }
+  public static ArithLogic getLRAInstance() {
+    long cPtr = OsmtNativeJNI.LogicFactory_getLRAInstance();
+    return (cPtr == 0) ? null : new ArithLogic(cPtr, true);
+  }
+  public static ArithLogic getLIAInstance() {
+    long cPtr = OsmtNativeJNI.LogicFactory_getLIAInstance();
+    return (cPtr == 0) ? null : new ArithLogic(cPtr, true);
+  }
+  public static String getVersion() {
+    return OsmtNativeJNI.LogicFactory_getVersion();
+  }
+}

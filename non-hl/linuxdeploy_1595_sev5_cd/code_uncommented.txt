@@ -1,0 +1,960 @@
+package ru.meefik.linuxdeploy;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.res.Configuration;
+import android.graphics.Point;
+import android.os.Environment;
+import android.text.TextUtils;
+import android.view.Display;
+import android.view.WindowManager;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.TaskStackBuilder;
+import java.io.File;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Locale;
+import ru.meefik.linuxdeploy.activity.MainActivity;
+import static ru.meefik.linuxdeploy.App.SERVICE_CHANNEL_ID;
+public class PrefStore {
+    private final static SettingsStore SETTINGS = new SettingsStore();
+    private final static PropertiesStore PROPERTIES = new PropertiesStore();
+    private final static int NOTIFY_ID = 1;
+    public static String getVersion() {
+        return BuildConfig.VERSION_NAME + "-" + BuildConfig.VERSION_CODE;
+    }
+    public static String getEnvDir(Context c) {
+        String envDir = SETTINGS.get(c, "env_dir");
+        if (envDir.isEmpty()) {
+            envDir = c.getFilesDir().getAbsolutePath();
+        }
+        return envDir;
+    }
+    static String getConfigDir(Context c) {
+        return getEnvDir(c) + "/config";
+    }
+    static String getBinDir(Context c) {
+        return getEnvDir(c) + "/bin";
+    }
+    static String getTmpDir(Context c) {
+        return getEnvDir(c) + "/tmp";
+    }
+    static String getWebDir(Context c) {
+        return getEnvDir(c) + "/web";
+    }
+    public static boolean dumpSettings(Context c) {
+        return SETTINGS.dump(c, getSettingsConfFile(c));
+    }
+    public static boolean restoreSettings(Context c) {
+        return SETTINGS.restore(c, getSettingsConfFile(c));
+    }
+    public static boolean dumpProperties(Context c) {
+        return PROPERTIES.dump(c, getPropertiesConfFile(c));
+    }
+    public static boolean restoreProperties(Context c) {
+        PROPERTIES.clear(c, true);
+        return PROPERTIES.restore(c, getPropertiesConfFile(c));
+    }
+    public static String getSettingsSharedName() {
+        return SettingsStore.name;
+    }
+    public static String getPropertiesSharedName() {
+        return PropertiesStore.name;
+    }
+    private static String getLanguage(Context c) {
+        String language = SETTINGS.get(c, "language");
+        if (language.length() == 0) {
+            String countryCode = Locale.getDefault().getLanguage();
+            switch (countryCode) {
+                case "de":
+                case "es":
+                case "fr":
+                case "in":
+                case "it":
+                case "ko":
+                case "pl":
+                case "pt":
+                case "ru":
+                case "sk":
+                case "vi":
+                case "zh":
+                    language = countryCode;
+                    break;
+                default:
+                    language = "en";
+            }
+            SETTINGS.set(c, "language", language);
+        }
+        return language;
+    }
+    public static int getTheme(Context c) {
+        String theme = SETTINGS.get(c, "theme");
+        int themeId = R.style.DarkTheme;
+        switch (theme) {
+            case "dark":
+                themeId = R.style.DarkTheme;
+                break;
+            case "light":
+                themeId = R.style.LightTheme;
+                break;
+        }
+        return themeId;
+    }
+    public static int getFontSize(Context c) {
+        int fontSizeInt;
+        String fontSize = SETTINGS.get(c, "fontsize");
+        try {
+            fontSizeInt = Integer.parseInt(fontSize);
+        } catch (Exception e) {
+            fontSize = c.getString(R.string.fontsize);
+            fontSizeInt = Integer.parseInt(fontSize);
+            SETTINGS.set(c, "fontsize", fontSize);
+        }
+        return fontSizeInt;
+    }
+    static int getMaxLines(Context c) {
+        int maxLinesInt;
+        String maxLines = SETTINGS.get(c, "maxlines");
+        try {
+            maxLinesInt = Integer.parseInt(maxLines);
+        } catch (Exception e) {
+            maxLines = c.getString(R.string.maxlines);
+            maxLinesInt = Integer.parseInt(maxLines);
+            SETTINGS.set(c, "maxlines", maxLines);
+        }
+        return maxLinesInt;
+    }
+    static Boolean isTimestamp(Context c) {
+        return SETTINGS.get(c, "timestamp").equals("true");
+    }
+    static Boolean isDebugMode(Context c) {
+        return SETTINGS.get(c, "debug_mode").equals("true");
+    }
+    static Boolean isTraceMode(Context c) {
+        return SETTINGS.get(c, "trace_mode").equals("true");
+    }
+    static Boolean isLogger(Context c) {
+        return SETTINGS.get(c, "logger").equals("true");
+    }
+    public static String getLogFile(Context c) {
+        String logFile = SETTINGS.get(c, "logfile");
+        if (!logFile.contains("/")) {
+            String storageDir = Environment.getExternalStorageDirectory().getAbsolutePath();
+            logFile = storageDir + "/" + logFile;
+        }
+        return logFile;
+    }
+    public static Boolean isScreenLock(Context c) {
+        return SETTINGS.get(c, "screenlock").equals("true");
+    }
+    public static Boolean isWifiLock(Context c) {
+        return SETTINGS.get(c, "wifilock").equals("true");
+    }
+    public static Boolean isWakeLock(Context c) {
+        return SETTINGS.get(c, "wakelock").equals("true");
+    }
+    public static Boolean isAutostart(Context c) {
+        return SETTINGS.get(c, "autostart").equals("true");
+    }
+    public static Integer getAutostartDelay(Context c) {
+        try {
+            return Integer.parseInt(SETTINGS.get(c, "autostart_delay"));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+    public static Boolean isNetTrack(Context c) {
+        return SETTINGS.get(c, "nettrack").equals("true");
+    }
+    public static Boolean isPowerTrack(Context c) {
+        return SETTINGS.get(c, "powertrack").equals("true");
+    }
+    private static Boolean isNotification(Context c) {
+        return SETTINGS.get(c, "appicon").equals("true");
+    }
+    public static Boolean isStealth(Context c) {
+        return SETTINGS.get(c, "stealth").equals("true");
+    }
+    static String getPath(Context c) {
+        String path = SETTINGS.get(c, "path");
+        if (path.isEmpty()) path = getBinDir(c);
+        return path;
+    }
+    static String getShell(Context c) {
+        String[] path = getPath(c).split(":");
+        String shell = "/system/bin/sh";
+        for (String p : path) {
+            shell = p + "/sh";
+            File f = new File(shell);
+            if (f.exists()) break;
+        }
+        return shell;
+    }
+    public static String getRepositoryUrl(Context c) {
+        return SETTINGS.get(c, "repository_url");
+    }
+    public static void setRepositoryUrl(Context c, String url) {
+        SETTINGS.set(c, "repository_url", url);
+    }
+    static Boolean isTelnet(Context c) {
+        return SETTINGS.get(c, "is_telnet").equals("true");
+    }
+    static String getTelnetPort(Context c) {
+        return SETTINGS.get(c, "telnet_port");
+    }
+    static boolean isTelnetLocalhost(Context c) {
+        return SETTINGS.get(c, "telnet_localhost").equals("true");
+    }
+    static Boolean isHttp(Context c) {
+        return SETTINGS.get(c, "is_http").equals("true");
+    }
+    public static String getHttpPort(Context c) {
+        return SETTINGS.get(c, "http_port");
+    }
+    public static String getHttpConf(Context c) {
+        String auth = SETTINGS.get(c, "http_conf");
+        if (auth.isEmpty()) auth = "/:android:" + generatePassword();
+        return auth;
+    }
+    public static boolean isXserver(Context c) {
+        return PROPERTIES.get(c, "is_gui").equals("true") &&
+                PROPERTIES.get(c, "graphics").equals("x11");
+    }
+    public static boolean isFramebuffer(Context c) {
+        return PROPERTIES.get(c, "is_gui").equals("true") &&
+                PROPERTIES.get(c, "graphics").equals("fb");
+    }
+    public static boolean isXsdl(Context c) {
+        return PROPERTIES.get(c, "x11_sdl").equals("true");
+    }
+    public static int getXsdlDelay(Context c) {
+        int deplayInt;
+        String delay = PROPERTIES.get(c, "x11_sdl_delay");
+        try {
+            deplayInt = Integer.parseInt(delay);
+        } catch (Exception e) {
+            delay = c.getString(R.string.x11_sdl_delay);
+            deplayInt = Integer.parseInt(delay);
+            PROPERTIES.set(c, "x11_sdl_delay", delay);
+        }
+        return deplayInt * 1000;
+    }
+    static File getSettingsConfFile(Context c) {
+        return new File(getEnvDir(c) + "/cli.conf");
+    }
+    static File getPropertiesConfFile(Context c) {
+        return new File(getConfigDir(c) + "/" + getProfileName(c) + ".conf");
+    }
+    public static String getProfileName(Context c) {
+        return SETTINGS.get(c, "profile");
+    }
+    public static void changeProfile(Context c, String profile) {
+        SETTINGS.set(c, "profile", profile);
+        dumpSettings(c);
+        File confFile = getPropertiesConfFile(c);
+        if (!confFile.exists()) {
+            PROPERTIES.clear(c, true);
+            PROPERTIES.dump(c, confFile);
+        }
+    }
+    public static void setLocale(Context c) {
+        String language = getLanguage(c);
+        Locale locale = new Locale(language);
+        Locale.setDefault(locale);
+        Configuration config = new Configuration();
+        config.locale = locale;
+        c.getResources().updateConfiguration(config, c.getResources().getDisplayMetrics());
+    }
+    public static List<String> getMountsList(Context c) {
+        String str = PROPERTIES.get(c, "mounts");
+        List<String> list = new ArrayList<>();
+        if (!str.isEmpty()) Collections.addAll(list, str.split(" "));
+        return list;
+    }
+    public static void setMountsList(Context c, List<String> list) {
+        PROPERTIES.set(c, "mounts", TextUtils.join(" ", list));
+    }
+    public static String generatePassword() {
+        return Long.toHexString(Double.doubleToLongBits(Math.random())).substring(8);
+    }
+    public static String getArch(String arch) {
+        String march = "unknown";
+        if (arch.length() > 0) {
+            char a = arch.toLowerCase().charAt(0);
+            switch (a) {
+                case 'a':
+                    if (arch.equals("amd64")) march = "x86_64";
+                    else if (arch.contains("64")) march = "arm_64";
+                    else march = "arm";
+                    break;
+                case 'i':
+                case 'x':
+                    if (arch.contains("64")) march = "x86_64";
+                    else march = "x86";
+                    break;
+            }
+        }
+        return march;
+    }
+    public static String getArch() {
+        return getArch(System.getProperty("os.arch"));
+    }
+    static int getScreenWidth(Context c) {
+        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+        Display display = wm.getDefaultDisplay();
+        Point size = new Point();
+        display.getSize(size);
+        return size.x;
+    }
+    static int getScreenHeight(Context c) {
+        WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+        Display display = wm.getDefaultDisplay();
+        Point size = new Point();
+        display.getSize(size);
+        return size.y;
+    }
+    public static String getLocalIpAddress() {
+        String ip = "127.0.0.1";
+        try {
+            for (Enumeration<NetworkInterface> en = NetworkInterface
+                    .getNetworkInterfaces(); en.hasMoreElements(); ) {
+                NetworkInterface intf = en.nextElement();
+                for (Enumeration<InetAddress> enumIpAddr = intf
+                        .getInetAddresses(); enumIpAddr.hasMoreElements(); ) {
+                    InetAddress inetAddress = enumIpAddr.nextElement();
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
+                        ip = inetAddress.getHostAddress();
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            e.printStackTrace();
+        }
+        return ip;
+    }
+    public static int getResourceId(Context c, String resourceName, String resourceType) {
+        try {
+            return c.getResources().getIdentifier(resourceName, resourceType, c.getPackageName());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+    public static void showNotification(Context context, Intent intent) {
+        NotificationManager notificationManager = (NotificationManager) context
+                .getSystemService(Context.NOTIFICATION_SERVICE);
+        if (isNotification(context)) {
+            setLocale(context);
+            NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(context, SERVICE_CHANNEL_ID)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle(context.getString(R.string.app_name))
+                    .setContentText(context.getString(R.string.notification_current_profile)
+                            + ": " + getProfileName(context));
+            if (isStealth(context)) {
+                Intent stealthReceive = new Intent();
+                stealthReceive.setAction("ru.meefik.linuxdeploy.BROADCAST_ACTION");
+                stealthReceive.putExtra("show", true);
+                PendingIntent pendingIntentStealth = PendingIntent.getBroadcast(context, 2, stealthReceive, PendingIntent.FLAG_UPDATE_CURRENT);
+                notificationBuilder.setContentIntent(pendingIntentStealth);
+            } else {
+                Intent resultIntent = intent;
+                if (resultIntent == null) resultIntent = new Intent(context, MainActivity.class);
+                TaskStackBuilder stackBuilder = TaskStackBuilder.create(context);
+                stackBuilder.addParentStack(MainActivity.class);
+                stackBuilder.addNextIntent(resultIntent);
+                PendingIntent resultPendingIntent = stackBuilder.getPendingIntent(1, PendingIntent.FLAG_UPDATE_CURRENT);
+                notificationBuilder.setContentIntent(resultPendingIntent);
+                Intent startReceive = new Intent();
+                startReceive.setAction("ru.meefik.linuxdeploy.BROADCAST_ACTION");
+                startReceive.putExtra("start", true);
+                PendingIntent pendingIntentStart = PendingIntent.getBroadcast(context, 3, startReceive, PendingIntent.FLAG_UPDATE_CURRENT);
+                notificationBuilder.addAction(R.drawable.ic_play_arrow_24dp, context.getString(R.string.menu_start), pendingIntentStart);
+                Intent stopReceive = new Intent();
+                stopReceive.setAction("ru.meefik.linuxdeploy.BROADCAST_ACTION");
+                stopReceive.putExtra("stop", true);
+                PendingIntent pendingIntentStop = PendingIntent.getBroadcast(context, 4, stopReceive, PendingIntent.FLAG_UPDATE_CURRENT);
+                notificationBuilder.addAction(R.drawable.ic_stop_24dp, context.getString(R.string.menu_stop), pendingIntentStop);
+            }
+            notificationBuilder.setOngoing(true);
+            notificationBuilder.setWhen(0);
+            notificationManager.notify(NOTIFY_ID, notificationBuilder.build());
+        } else {
+            notificationManager.cancel(NOTIFY_ID);
+        }
+    }
+    public static void hideNotification(Context context) {
+        NotificationManager notificationManager = (NotificationManager) context
+                .getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager.cancel(NOTIFY_ID);
+    }
+}
+_________
+package ru.meefik.linuxdeploy.activity;
+import android.content.Context;
+import android.os.Bundle;
+import android.view.GestureDetector;
+import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.View.OnTouchListener;
+import android.widget.ArrayAdapter;
+import android.widget.EditText;
+import android.widget.ListView;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import ru.meefik.linuxdeploy.PrefStore;
+import ru.meefik.linuxdeploy.R;
+public class ProfilesActivity extends AppCompatActivity implements OnTouchListener {
+    private ListView listView;
+    private List<String> listItems = new ArrayList<>();
+    private ArrayAdapter<String> adapter;
+    private GestureDetector gd;
+    public static boolean renameConf(Context c, String oldName, String newName) {
+        File oldFile = new File(PrefStore.getEnvDir(c) + "/config/" + oldName + ".conf");
+        File newFile = new File(PrefStore.getEnvDir(c) + "/config/" + newName + ".conf");
+        return oldFile.renameTo(newFile);
+    }
+    public static boolean removeConf(Context c, String name) {
+        File confFile = new File(PrefStore.getEnvDir(c) + "/config/" + name + ".conf");
+        return confFile.exists() && confFile.delete();
+    }
+    public static List<String> getProfiles(Context c) {
+        List<String> profiles = new ArrayList<>();
+        File confDir = new File(PrefStore.getEnvDir(c) + "/config");
+        File[] profileFiles = confDir.listFiles();
+        if (profileFiles != null) {
+            for (File profileFile : profileFiles) {
+                if (profileFile.isFile()) {
+                    String filename = profileFile.getName();
+                    int index = filename.lastIndexOf('.');
+                    if (index != -1) filename = filename.substring(0, index);
+                    profiles.add(filename);
+                }
+            }
+        }
+        return profiles;
+    }
+    private int getPosition(String key) {
+        for (int i = 0; i < listItems.size(); i++) {
+            if (listItems.get(i).equals(key))
+                return i;
+        }
+        return -1;
+    }
+    private void addDialog() {
+        View view = LayoutInflater.from(this).inflate(R.layout.edit_text_dialog, null);
+        EditText input = view.findViewById(R.id.edit_text);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.new_profile_title)
+                .setView(view)
+                .setPositiveButton(android.R.string.ok,
+                        (dialog, whichButton) -> {
+                            String text = input.getText().toString();
+                            if (!text.isEmpty()) {
+                                listItems.add(text.replaceAll("[^A-Za-z0-9_\\-]", "_"));
+                                adapter.notifyDataSetChanged();
+                            }
+                        })
+                .setNegativeButton(android.R.string.cancel,
+                        (dialog, whichButton) -> dialog.cancel())
+                .show();
+    }
+    private void editDialog() {
+        int pos = listView.getCheckedItemPosition();
+        if (pos >= 0 && pos < listItems.size()) {
+            String profileOld = listItems.get(pos);
+            View view = LayoutInflater.from(this).inflate(R.layout.edit_text_dialog, null);
+            EditText input = view.findViewById(R.id.edit_text);
+            input.setText(profileOld);
+            input.setSelection(input.getText().length());
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.edit_profile_title)
+                    .setView(view)
+                    .setPositiveButton(android.R.string.ok,
+                            (dialog, whichButton) -> {
+                                String text = input.getText().toString();
+                                if (!text.isEmpty()) {
+                                    String profileNew = text.replaceAll("[^A-Za-z0-9_\\-]", "_");
+                                    if (!profileOld.equals(profileNew)) {
+                                        renameConf(getApplicationContext(), profileOld, profileNew);
+                                        listItems.set(pos, profileNew);
+                                        adapter.notifyDataSetChanged();
+                                    }
+                                }
+                            })
+                    .setNegativeButton(android.R.string.cancel,
+                            (dialog, whichButton) -> dialog.cancel())
+                    .show();
+        }
+    }
+    private void deleteDialog() {
+        final int pos = listView.getCheckedItemPosition();
+        if (pos >= 0 && pos < listItems.size()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.confirm_profile_discard_title)
+                    .setMessage(R.string.confirm_profile_discard_message)
+                    .setIcon(R.drawable.ic_warning_24dp)
+                    .setPositiveButton(android.R.string.yes,
+                            (dialog, whichButton) -> {
+                                String key = listItems.remove(pos);
+                                int last = listItems.size() - 1;
+                                if (last < 0) listItems.add(getString(R.string.profile));
+                                if (last >= 0 && pos > last)
+                                    listView.setItemChecked(last, true);
+                                adapter.notifyDataSetChanged();
+                                removeConf(getApplicationContext(), key);
+                            })
+                    .setNegativeButton(android.R.string.no,
+                            (dialog, whichButton) -> dialog.cancel())
+                    .show();
+        }
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        PrefStore.setLocale(this);
+        setContentView(R.layout.activity_profiles);
+        listView = findViewById(R.id.profilesView);
+        adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice, listItems);
+        listView.setAdapter(adapter);
+        listView.setOnTouchListener(this);
+        gd = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDoubleTap(MotionEvent e) {
+                        finish();
+                        return false;
+                    }
+                });
+    }
+    @Override
+    public void setTheme(int resId) {
+        super.setTheme(PrefStore.getTheme(this));
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        PrefStore.setLocale(this);
+        getMenuInflater().inflate(R.menu.activity_profiles, menu);
+        return super.onCreateOptionsMenu(menu);
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_add:
+                addDialog();
+                break;
+            case R.id.menu_edit:
+                editDialog();
+                break;
+            case R.id.menu_delete:
+                deleteDialog();
+                break;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
+        return true;
+    }
+    @Override
+    public void onPause() {
+        super.onPause();
+        int pos = listView.getCheckedItemPosition();
+        if (pos >= 0 && pos < listItems.size()) {
+            String profile = listItems.get(pos);
+            PrefStore.changeProfile(this, profile);
+        }
+    }
+    @Override
+    public void onResume() {
+        super.onResume();
+        setTitle(R.string.title_activity_profiles);
+        listItems.clear();
+        listItems.addAll(getProfiles(this));
+        Collections.sort(listItems);
+        String profile = PrefStore.getProfileName(this);
+        if (listItems.size() == 0) listItems.add(profile);
+        adapter.notifyDataSetChanged();
+        listView.setItemChecked(getPosition(profile), true);
+    }
+    @Override
+    public boolean onTouch(View v, MotionEvent event) {
+        gd.onTouchEvent(event);
+        return false;
+    }
+}
+_______
+package ru.meefik.linuxdeploy.activity;
+import android.Manifest;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.net.ConnectivityManager;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
+import android.net.wifi.WifiManager.WifiLock;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.PowerManager;
+import android.text.method.LinkMovementMethod;
+import android.util.TypedValue;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.EditText;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.view.GravityCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
+import com.google.android.material.navigation.NavigationView;
+import ru.meefik.linuxdeploy.EnvUtils;
+import ru.meefik.linuxdeploy.Logger;
+import ru.meefik.linuxdeploy.PrefStore;
+import ru.meefik.linuxdeploy.R;
+import ru.meefik.linuxdeploy.UpdateEnvTask;
+import ru.meefik.linuxdeploy.receiver.NetworkReceiver;
+import ru.meefik.linuxdeploy.receiver.PowerReceiver;
+public class MainActivity extends AppCompatActivity implements
+        NavigationView.OnNavigationItemSelectedListener {
+    private static final int REQUEST_WRITE_STORAGE = 112;
+    private static TextView output;
+    private static ScrollView scroll;
+    private static WifiLock wifiLock;
+    private static PowerManager.WakeLock wakeLock;
+    private DrawerLayout drawer;
+    private NetworkReceiver networkReceiver;
+    private PowerReceiver powerReceiver;
+    private NetworkReceiver getNetworkReceiver() {
+        if (networkReceiver == null)
+            networkReceiver = new NetworkReceiver();
+        return networkReceiver;
+    }
+    private PowerReceiver getPowerReceiver() {
+        if (powerReceiver == null)
+            powerReceiver = new PowerReceiver();
+        return powerReceiver;
+    }
+    public static void showLog(final String log) {
+        if (output == null || scroll == null) return;
+        output.post(() -> {
+            output.setText(log);
+            scroll.post(() -> {
+                scroll.fullScroll(View.FOCUS_DOWN);
+                scroll.clearFocus();
+            });
+        });
+    }
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        PrefStore.setLocale(this);
+        setContentView(R.layout.activity_main);
+        ActionBar actionBar = getSupportActionBar();
+        if (actionBar != null) {
+            actionBar.setDisplayHomeAsUpEnabled(true);
+        }
+        drawer = findViewById(R.id.drawer_layout);
+        ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
+                this, drawer, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
+        drawer.addDrawerListener(toggle);
+        toggle.syncState();
+        NavigationView navigationView = findViewById(R.id.nav_view);
+        navigationView.setNavigationItemSelectedListener(this);
+        output = findViewById(R.id.outputView);
+        scroll = findViewById(R.id.scrollView);
+        output.setMovementMethod(LinkMovementMethod.getInstance());
+        WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(android.content.Context.WIFI_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, getPackageName());
+        } else {
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL, getPackageName());
+        }
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getPackageName());
+        if (PrefStore.isNetTrack(this)) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
+            registerReceiver(getNetworkReceiver(), filter);
+        } else if (networkReceiver != null) {
+            unregisterReceiver(networkReceiver);
+        }
+        if (PrefStore.isPowerTrack(this)) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_ON);
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            registerReceiver(getPowerReceiver(), filter);
+        } else if (powerReceiver != null) {
+            unregisterReceiver(powerReceiver);
+        }
+        if (EnvUtils.isLatestVersion(this)) {
+            EnvUtils.execServices(getBaseContext(), new String[]{"telnetd", "httpd"}, "start");
+        } else {
+            PrefStore.setRepositoryUrl(this, getString(R.string.repository_url));
+            updateEnvWithRequestPermissions();
+        }
+    }
+    @Override
+    public void setTheme(int resId) {
+        super.setTheme(PrefStore.getTheme(this));
+    }
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        PrefStore.setLocale(this);
+        int orientation = getResources().getConfiguration().orientation;
+        if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            getMenuInflater().inflate(R.menu.activity_main_landscape, menu);
+        } else {
+            getMenuInflater().inflate(R.menu.activity_main_portrait, menu);
+        }
+        return super.onCreateOptionsMenu(menu);
+    }
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_start:
+                containerStart(null);
+                break;
+            case R.id.menu_stop:
+                containerStop(null);
+                break;
+            case R.id.menu_properties:
+                containerProperties(null);
+                break;
+            case R.id.menu_install:
+                containerDeploy();
+                break;
+            case R.id.menu_configure:
+                containerConfigure();
+                break;
+            case R.id.menu_export:
+                containerExport();
+                break;
+            case R.id.menu_status:
+                containerStatus();
+                break;
+            case R.id.menu_clear:
+                clearLog();
+                break;
+            case android.R.id.home:
+                if (drawer.isDrawerOpen(GravityCompat.START)) {
+                    drawer.closeDrawer(GravityCompat.START);
+                } else {
+                    drawer.openDrawer(GravityCompat.START);
+                }
+                break;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
+        return true;
+    }
+    @Override
+    public void onBackPressed() {
+        if (drawer != null && drawer.isDrawerOpen(GravityCompat.START)) {
+            drawer.closeDrawer(GravityCompat.START);
+        } else {
+            super.onBackPressed();
+        }
+    }
+    @Override
+    public boolean onNavigationItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.nav_profiles:
+                Intent intent_profiles = new Intent(this, ProfilesActivity.class);
+                startActivity(intent_profiles);
+                break;
+            case R.id.nav_repository:
+                openRepository();
+                break;
+            case R.id.nav_terminal:
+                String uri = "http:
+                        "/cgi-bin/terminal?size=" + PrefStore.getFontSize(this);
+                CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
+                if (PrefStore.getTheme(this) == R.style.LightTheme) {
+                    builder.setToolbarColor(Color.LTGRAY);
+                } else {
+                    builder.setToolbarColor(Color.DKGRAY);
+                }
+                CustomTabsIntent customTabsIntent = builder.build();
+                customTabsIntent.launchUrl(this, Uri.parse(uri));
+                break;
+            case R.id.nav_settings:
+                Intent intent_settings = new Intent(this, SettingsActivity.class);
+                startActivity(intent_settings);
+                break;
+            case R.id.nav_about:
+                Intent intent_about = new Intent(this, AboutActivity.class);
+                startActivity(intent_about);
+                break;
+            case R.id.nav_exit:
+                if (wifiLock.isHeld()) wifiLock.release();
+                if (wakeLock.isHeld()) wakeLock.release();
+                EnvUtils.execServices(getBaseContext(), new String[]{"telnetd", "httpd"}, "stop");
+                PrefStore.hideNotification(getBaseContext());
+                finish();
+                break;
+        }
+        drawer.closeDrawer(GravityCompat.START);
+        return true;
+    }
+    @Override
+    public void onResume() {
+        super.onResume();
+        String profileName = PrefStore.getProfileName(this);
+        String ipAddress = PrefStore.getLocalIpAddress();
+        setTitle(profileName + "  [ " + ipAddress + " ]");
+        PrefStore.showNotification(getBaseContext(), getIntent());
+        output.setTextSize(TypedValue.COMPLEX_UNIT_SP, PrefStore.getFontSize(this));
+        if (Logger.size() == 0) output.setText(R.string.help_text);
+        else Logger.show();
+        if (PrefStore.isScreenLock(this))
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (PrefStore.isWifiLock(this)) {
+            if (!wifiLock.isHeld()) wifiLock.acquire();
+        } else {
+            if (wifiLock.isHeld()) wifiLock.release();
+        }
+        if (PrefStore.isWakeLock(this)) {
+            if (!wakeLock.isHeld()) wakeLock.acquire(60 * 60 * 1000L );
+        } else {
+            if (wakeLock.isHeld()) wakeLock.release();
+        }
+    }
+    private void clearLog() {
+        Logger.clear(this);
+        output.setText(R.string.help_text);
+    }
+    public void containerStart(View view) {
+        new AlertDialog.Builder(this).setTitle(R.string.confirm_start_title)
+                .setMessage(R.string.confirm_start_message)
+                .setIcon(android.R.drawable.ic_dialog_alert)
+                .setCancelable(false)
+                .setPositiveButton(android.R.string.yes,
+                        (dialog, id) -> {
+                            Handler h = new Handler();
+                            if (PrefStore.isXserver(getApplicationContext())
+                                    && PrefStore.isXsdl(getApplicationContext())) {
+                                PackageManager pm = getPackageManager();
+                                Intent intent = pm.getLaunchIntentForPackage("x.org.server");
+                                if (intent != null) startActivity(intent);
+                                h.postDelayed(() -> EnvUtils.execService(getBaseContext(), "start", "-m"), PrefStore.getXsdlDelay(getApplicationContext()));
+                            } else if (PrefStore.isFramebuffer(getApplicationContext())) {
+                                EnvUtils.execService(getBaseContext(), "start", "-m");
+                                h.postDelayed(() -> {
+                                    Intent intent = new Intent(getApplicationContext(),
+                                            FullscreenActivity.class);
+                                    startActivity(intent);
+                                }, 1500);
+                            } else {
+                                EnvUtils.execService(getBaseContext(), "start", "-m");
+                            }
+                        })
+                .setNegativeButton(android.R.string.no,
+                        (dialog, id) -> dialog.cancel())
+                .show();
+    }
+    public void containerStop(View view) {
+        new AlertDialog.Builder(this).setTitle(R.string.confirm_stop_title)
+                .setMessage(R.string.confirm_stop_message)
+                .setIcon(android.R.drawable.ic_dialog_alert)
+                .setCancelable(false)
+                .setPositiveButton(android.R.string.yes,
+                        (dialog, id) -> EnvUtils.execService(getBaseContext(), "stop", "-u"))
+                .setNegativeButton(android.R.string.no,
+                        (dialog, id) -> dialog.cancel())
+                .show();
+    }
+    public void containerProperties(View view) {
+        Intent intent = new Intent(this, PropertiesActivity.class);
+        intent.putExtra("restore", true);
+        startActivity(intent);
+    }
+    private void containerDeploy() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.title_install_dialog)
+                .setMessage(R.string.message_install_dialog)
+                .setCancelable(false)
+                .setPositiveButton(android.R.string.yes,
+                        (dialog, id) -> EnvUtils.execService(getApplicationContext(), "deploy", null))
+                .setNegativeButton(android.R.string.no,
+                        (dialog, id) -> dialog.cancel())
+                .show();
+    }
+    private void containerConfigure() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.title_configure_dialog)
+                .setMessage(R.string.message_configure_dialog)
+                .setCancelable(false)
+                .setPositiveButton(android.R.string.yes,
+                        (dialog, id) -> EnvUtils.execService(getBaseContext(), "deploy", "-m -n bootstrap"))
+                .setNegativeButton(android.R.string.no,
+                        (dialog, id) -> dialog.cancel())
+                .show();
+    }
+    private void containerExport() {
+        final EditText input = new EditText(this);
+        final String rootfsArchive = getString(R.string.rootfs_archive);
+        input.setText(rootfsArchive);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.title_export_dialog)
+                .setCancelable(false)
+                .setView(input)
+                .setPositiveButton(android.R.string.yes,
+                        (dialog, id) -> EnvUtils.execService(getBaseContext(), "export", input.getText().toString()))
+                .setNegativeButton(android.R.string.no,
+                        (dialog, id) -> dialog.cancel())
+                .show();
+    }
+    private void containerStatus() {
+        EnvUtils.execService(getBaseContext(), "status", null);
+    }
+    private void openRepository() {
+        Intent intent = new Intent(this, RepositoryActivity.class);
+        startActivity(intent);
+    }
+    private void updateEnvWithRequestPermissions() {
+        boolean hasPermission = (ContextCompat.checkSelfPermission(this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED);
+        if (!hasPermission) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_WRITE_STORAGE);
+        } else {
+            new UpdateEnvTask(this).execute();
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_WRITE_STORAGE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                new UpdateEnvTask(this).execute();
+            } else {
+                Toast.makeText(this, getString(R.string.write_permissions_disallow), Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+}

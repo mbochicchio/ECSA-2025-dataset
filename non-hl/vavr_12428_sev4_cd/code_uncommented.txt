@@ -1,0 +1,1055 @@
+package io.vavr.control;
+import io.vavr.*;
+import io.vavr.collection.Seq;
+import io.vavr.collection.Iterator;
+import io.vavr.collection.Vector;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+import static io.vavr.API.Match;
+import static io.vavr.control.TryModule.isFatal;
+import static io.vavr.control.TryModule.sneakyThrow;
+public interface Try<T> extends Value<T>, Serializable {
+    long serialVersionUID = 1L;
+    static <T> Try<T> of(CheckedFunction0<? extends T> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        try {
+            return new Success<>(supplier.apply());
+        } catch (Throwable t) {
+            return new Failure<>(t);
+        }
+    }
+    static <T> Try<T> ofSupplier(Supplier<? extends T> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        return of(supplier::get);
+    }
+    static <T> Try<T> ofCallable(Callable<? extends T> callable) {
+        Objects.requireNonNull(callable, "callable is null");
+        return of(callable::call);
+    }
+    static Try<Void> run(CheckedRunnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        try {
+            runnable.run();
+            return new Success<>(null); 
+        } catch (Throwable t) {
+            return new Failure<>(t);
+        }
+    }
+    static Try<Void> runRunnable(Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        return run(runnable::run);
+    }
+    static <T> Try<Seq<T>> sequence(Iterable<? extends Try<? extends T>> values) {
+        Objects.requireNonNull(values, "values is null");
+        Vector<T> vector = Vector.empty();
+        for (Try<? extends T> value : values) {
+            if (value.isFailure()) {
+                return Try.failure(value.getCause());
+            }
+            vector = vector.append(value.get());
+        }
+        return Try.success(vector);
+    }
+    static <T, U> Try<Seq<U>> traverse(Iterable<? extends T> values, Function<? super T, ? extends Try<? extends U>> mapper) {
+        Objects.requireNonNull(values, "values is null");
+        Objects.requireNonNull(mapper, "mapper is null");
+        return sequence(Iterator.ofAll(values).map(mapper));
+    }
+    static <T> Try<T> success(T value) {
+        return new Success<>(value);
+    }
+    static <T> Try<T> failure(Throwable exception) {
+        return new Failure<>(exception);
+    }
+    @SuppressWarnings("unchecked")
+    static <T> Try<T> narrow(Try<? extends T> t) {
+        return (Try<T>) t;
+    }
+    default Try<T> andThen(Consumer<? super T> consumer) {
+        Objects.requireNonNull(consumer, "consumer is null");
+        return andThenTry(consumer::accept);
+    }
+    default Try<T> andThenTry(CheckedConsumer<? super T> consumer) {
+        Objects.requireNonNull(consumer, "consumer is null");
+        if (isFailure()) {
+            return this;
+        } else {
+            try {
+                consumer.accept(get());
+                return this;
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        }
+    }
+    default Try<T> andThen(Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        return andThenTry(runnable::run);
+    }
+    default Try<T> andThenTry(CheckedRunnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        if (isFailure()) {
+            return this;
+        } else {
+            try {
+                runnable.run();
+                return this;
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        }
+    }
+    @SuppressWarnings("unchecked")
+    default <R> Try<R> collect(PartialFunction<? super T, ? extends R> partialFunction){
+        Objects.requireNonNull(partialFunction, "partialFunction is null");
+        return filter(partialFunction::isDefinedAt).map(partialFunction::apply);
+    }
+    default Try<Throwable> failed() {
+        if (isFailure()) {
+            return new Success<>(getCause());
+        } else {
+            return new Failure<>(new NoSuchElementException("Success.failed()"));
+        }
+    }
+    default Try<T> filter(Predicate<? super T> predicate, Supplier<? extends Throwable> throwableSupplier) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        Objects.requireNonNull(throwableSupplier, "throwableSupplier is null");
+        return filterTry(predicate::test, throwableSupplier);
+    }
+    default Try<T> filter(Predicate<? super T> predicate, Function<? super T, ? extends Throwable> errorProvider) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        Objects.requireNonNull(errorProvider, "errorProvider is null");
+        return filterTry(predicate::test, errorProvider::apply);
+    }
+    default Try<T> filter(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return filterTry(predicate::test);
+    }
+    default Try<T> filterTry(CheckedPredicate<? super T> predicate, Supplier<? extends Throwable> throwableSupplier) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        Objects.requireNonNull(throwableSupplier, "throwableSupplier is null");
+        if (isFailure()) {
+            return this;
+        } else {
+            try {
+                if (predicate.test(get())) {
+                    return this;
+                } else {
+                    return new Failure<>(throwableSupplier.get());
+                }
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        }
+    }
+    default Try<T> filterTry(CheckedPredicate<? super T> predicate, CheckedFunction1<? super T, ? extends Throwable> errorProvider) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        Objects.requireNonNull(errorProvider, "errorProvider is null");
+        return flatMapTry(t -> predicate.test(t) ? this : failure(errorProvider.apply(t)));
+    }
+    default Try<T> filterTry(CheckedPredicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return filterTry(predicate, () -> new NoSuchElementException("Predicate does not hold for " + get()));
+    }
+    default <U> Try<U> flatMap(Function<? super T, ? extends Try<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        return flatMapTry((CheckedFunction1<T, Try<? extends U>>) mapper::apply);
+    }
+    @SuppressWarnings("unchecked")
+    default <U> Try<U> flatMapTry(CheckedFunction1<? super T, ? extends Try<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isFailure()) {
+            return (Failure<U>) this;
+        } else {
+            try {
+                return (Try<U>) mapper.apply(get());
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        }
+    }
+    @Override
+    T get();
+    Throwable getCause();
+    @Override
+    default boolean isAsync() {
+        return false;
+    }
+    @Override
+    boolean isEmpty();
+    boolean isFailure();
+    @Override
+    default boolean isLazy() {
+        return false;
+    }
+    @Override
+    default boolean isSingleValued() {
+        return true;
+    }
+    boolean isSuccess();
+    @Override
+    default Iterator<T> iterator() {
+        return isSuccess() ? Iterator.of(get()) : Iterator.empty();
+    }
+    @Override
+    default <U> Try<U> map(Function<? super T, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        return mapTry(mapper::apply);
+    }
+    @GwtIncompatible
+    @SuppressWarnings({ "unchecked", "varargs" })
+    default Try<T> mapFailure(Match.Case<? extends Throwable, ? extends Throwable>... cases) {
+        if (isSuccess()) {
+            return this;
+        } else {
+            final Option<Throwable> x = Match(getCause()).option(cases);
+            return x.isEmpty() ? this : failure(x.get());
+        }
+    }
+    @SuppressWarnings("unchecked")
+    default <U> Try<U> mapTry(CheckedFunction1<? super T, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        if (isFailure()) {
+            return (Failure<U>) this;
+        } else {
+            try {
+                return new Success<>(mapper.apply(get()));
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        }
+    }
+    default Try<T> onFailure(Consumer<? super Throwable> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isFailure()) {
+            action.accept(getCause());
+        }
+        return this;
+    }
+    @GwtIncompatible
+    @SuppressWarnings("unchecked")
+    default <X extends Throwable> Try<T> onFailure(Class<X> exceptionType, Consumer<? super X> action) {
+        Objects.requireNonNull(exceptionType, "exceptionType is null");
+        Objects.requireNonNull(action, "action is null");
+        if (isFailure() && exceptionType.isAssignableFrom(getCause().getClass())) {
+            action.accept((X) getCause());
+        }
+        return this;
+    }
+    default Try<T> onSuccess(Consumer<? super T> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isSuccess()) {
+            action.accept(get());
+        }
+        return this;
+    }
+    @SuppressWarnings("unchecked")
+    default Try<T> orElse(Try<? extends T> other) {
+        Objects.requireNonNull(other, "other is null");
+        return isSuccess() ? this : (Try<T>) other;
+    }
+    @SuppressWarnings("unchecked")
+    default Try<T> orElse(Supplier<? extends Try<? extends T>> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        return isSuccess() ? this : (Try<T>) supplier.get();
+    }
+    default T getOrElseGet(Function<? super Throwable, ? extends T> other) {
+        Objects.requireNonNull(other, "other is null");
+        if (isFailure()) {
+            return other.apply(getCause());
+        } else {
+            return get();
+        }
+    }
+    default void orElseRun(Consumer<? super Throwable> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isFailure()) {
+            action.accept(getCause());
+        }
+    }
+    default <X extends Throwable> T getOrElseThrow(Function<? super Throwable, X> exceptionProvider) throws X {
+        Objects.requireNonNull(exceptionProvider, "exceptionProvider is null");
+        if (isFailure()) {
+            throw exceptionProvider.apply(getCause());
+        } else {
+            return get();
+        }
+    }
+    default <X> X fold(Function<? super Throwable, ? extends X> ifFail, Function<? super T, ? extends X> f) {
+        if (isFailure()) {
+            return ifFail.apply(getCause());
+        } else {
+            return f.apply(get());
+        }
+    }
+    @Override
+    default Try<T> peek(Consumer<? super T> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isSuccess()) {
+            action.accept(get());
+        }
+        return this;
+    }
+    @GwtIncompatible
+    @SuppressWarnings("unchecked")
+    default <X extends Throwable> Try<T> recover(Class<X> exceptionType, Function<? super X, ? extends T> f) {
+        Objects.requireNonNull(exceptionType, "exceptionType is null");
+        Objects.requireNonNull(f, "f is null");
+        if (isFailure()) {
+            final Throwable cause = getCause();
+            if (exceptionType.isAssignableFrom(cause.getClass())) {
+                return Try.of(() -> f.apply((X) cause));
+            }
+        }
+        return this;
+    }
+    @GwtIncompatible
+    @SuppressWarnings("unchecked")
+    default <X extends Throwable> Try<T> recoverWith(Class<X> exceptionType, Function<? super X, Try<? extends T>> f){
+        Objects.requireNonNull(exceptionType, "exceptionType is null");
+        Objects.requireNonNull(f, "f is null");
+        if(isFailure()){
+            final Throwable cause = getCause();
+            if (exceptionType.isAssignableFrom(cause.getClass())) {
+                try {
+                    return narrow(f.apply((X) cause));
+                } catch (Throwable t) {
+                    return new Failure<>(t);
+                }
+            }
+        }
+        return this;
+    }
+    @GwtIncompatible
+    default <X extends Throwable> Try<T> recoverWith(Class<X> exceptionType,  Try<? extends T> recovered){
+        Objects.requireNonNull(exceptionType, "exeptionType is null");
+        Objects.requireNonNull(recovered, "recovered is null");
+        return (isFailure() && exceptionType.isAssignableFrom(getCause().getClass()))
+                ? narrow(recovered)
+                : this;
+    }
+    @GwtIncompatible
+    default <X extends Throwable> Try<T> recover(Class<X> exceptionType, T value) {
+        Objects.requireNonNull(exceptionType, "exceptionType is null");
+        return (isFailure() && exceptionType.isAssignableFrom(getCause().getClass()))
+               ? Try.success(value)
+               : this;
+    }
+    default Try<T> recover(Function<? super Throwable, ? extends T> f) {
+        Objects.requireNonNull(f, "f is null");
+        if (isFailure()) {
+            return Try.of(() -> f.apply(getCause()));
+        } else {
+            return this;
+        }
+    }
+    @SuppressWarnings("unchecked")
+    default Try<T> recoverWith(Function<? super Throwable, ? extends Try<? extends T>> f) {
+        Objects.requireNonNull(f, "f is null");
+        if (isFailure()) {
+            try {
+                return (Try<T>) f.apply(getCause());
+            } catch (Throwable t) {
+                return new Failure<>(t);
+            }
+        } else {
+            return this;
+        }
+    }
+    default Either<Throwable, T> toEither() {
+        if (isFailure()) {
+            return Either.left(getCause());
+        } else {
+            return Either.right(get());
+        }
+    }
+    default Validation<Throwable, T> toValidation() {
+        return toValidation(Function.identity());
+    }
+    default <U> Validation<U, T> toValidation(Function<? super Throwable, ? extends U> throwableMapper) {
+        Objects.requireNonNull(throwableMapper, "throwableMapper is null");
+        if (isFailure()) {
+            return Validation.invalid(throwableMapper.apply(getCause()));
+        } else {
+            return Validation.valid(get());
+        }
+    }
+    default <U> U transform(Function<? super Try<T>, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        return f.apply(this);
+    }
+    default Try<T> andFinally(Runnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        return andFinallyTry(runnable::run);
+    }
+    default Try<T> andFinallyTry(CheckedRunnable runnable) {
+        Objects.requireNonNull(runnable, "runnable is null");
+        try {
+            runnable.run();
+            return this;
+        } catch (Throwable t) {
+            return new Failure<>(t);
+        }
+    }
+    @Override
+    boolean equals(Object o);
+    @Override
+    int hashCode();
+    @Override
+    String toString();
+    final class Success<T> implements Try<T>, Serializable {
+        private static final long serialVersionUID = 1L;
+        @SuppressWarnings("serial") 
+        private final T value;
+        private Success(T value) {
+            this.value = value;
+        }
+        @Override
+        public T get() {
+            return value;
+        }
+        @Override
+        public Throwable getCause() {
+            throw new UnsupportedOperationException("getCause on Success");
+        }
+        @Override
+        public boolean isEmpty() {
+            return false;
+        }
+        @Override
+        public boolean isFailure() {
+            return false;
+        }
+        @Override
+        public boolean isSuccess() {
+            return true;
+        }
+        @Override
+        public boolean equals(Object obj) {
+            return (obj == this) || (obj instanceof Success && Objects.equals(value, ((Success<?>) obj).value));
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hashCode(value);
+        }
+        @Override
+        public String stringPrefix() {
+            return "Success";
+        }
+        @Override
+        public String toString() {
+            return stringPrefix() + "(" + value + ")";
+        }
+    }
+    final class Failure<T> implements Try<T>, Serializable {
+        private static final long serialVersionUID = 1L;
+        private final Throwable cause;
+        private Failure(Throwable cause) {
+            Objects.requireNonNull(cause, "cause is null");
+            if (isFatal(cause)) {
+                sneakyThrow(cause);
+            }
+            this.cause = cause;
+        }
+        @Override
+        public T get() {
+            return sneakyThrow(cause);
+        }
+        @Override
+        public Throwable getCause() {
+            return cause;
+        }
+        @Override
+        public boolean isEmpty() {
+            return true;
+        }
+        @Override
+        public boolean isFailure() {
+            return true;
+        }
+        @Override
+        public boolean isSuccess() {
+            return false;
+        }
+        @Override
+        public boolean equals(Object obj) {
+            return (obj == this) || (obj instanceof Failure && Arrays.deepEquals(cause.getStackTrace(), ((Failure<?>) obj).cause.getStackTrace()));
+        }
+        @Override
+        public String stringPrefix() {
+            return "Failure";
+        }
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(cause.getStackTrace());
+        }
+        @Override
+        public String toString() {
+            return stringPrefix() + "(" + cause + ")";
+        }
+    }
+    static <T1 extends AutoCloseable> WithResources1<T1> withResources(CheckedFunction0<? extends T1> t1Supplier) {
+        return new WithResources1<>(t1Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable> WithResources2<T1, T2> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier) {
+        return new WithResources2<>(t1Supplier, t2Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable> WithResources3<T1, T2, T3> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier) {
+        return new WithResources3<>(t1Supplier, t2Supplier, t3Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable> WithResources4<T1, T2, T3, T4> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier) {
+        return new WithResources4<>(t1Supplier, t2Supplier, t3Supplier, t4Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable> WithResources5<T1, T2, T3, T4, T5> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier) {
+        return new WithResources5<>(t1Supplier, t2Supplier, t3Supplier, t4Supplier, t5Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable> WithResources6<T1, T2, T3, T4, T5, T6> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier) {
+        return new WithResources6<>(t1Supplier, t2Supplier, t3Supplier, t4Supplier, t5Supplier, t6Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable, T7 extends AutoCloseable> WithResources7<T1, T2, T3, T4, T5, T6, T7> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier, CheckedFunction0<? extends T7> t7Supplier) {
+        return new WithResources7<>(t1Supplier, t2Supplier, t3Supplier, t4Supplier, t5Supplier, t6Supplier, t7Supplier);
+    }
+    static <T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable, T7 extends AutoCloseable, T8 extends AutoCloseable> WithResources8<T1, T2, T3, T4, T5, T6, T7, T8> withResources(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier, CheckedFunction0<? extends T7> t7Supplier, CheckedFunction0<? extends T8> t8Supplier) {
+        return new WithResources8<>(t1Supplier, t2Supplier, t3Supplier, t4Supplier, t5Supplier, t6Supplier, t7Supplier, t8Supplier);
+    }
+    final class WithResources1<T1 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private WithResources1(CheckedFunction0<? extends T1> t1Supplier) {
+            this.t1Supplier = t1Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction1<? super T1, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply()) {
+                    return f.apply(t1);
+                }
+            });
+        }
+    }
+    final class WithResources2<T1 extends AutoCloseable, T2 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private WithResources2(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction2<? super T1, ? super T2, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply()) {
+                    return f.apply(t1, t2);
+                }
+            });
+        }
+    }
+    final class WithResources3<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private WithResources3(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction3<? super T1, ? super T2, ? super T3, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply()) {
+                    return f.apply(t1, t2, t3);
+                }
+            });
+        }
+    }
+    final class WithResources4<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private final CheckedFunction0<? extends T4> t4Supplier;
+        private WithResources4(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+            this.t4Supplier = t4Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction4<? super T1, ? super T2, ? super T3, ? super T4, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply(); T4 t4 = t4Supplier.apply()) {
+                    return f.apply(t1, t2, t3, t4);
+                }
+            });
+        }
+    }
+    final class WithResources5<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private final CheckedFunction0<? extends T4> t4Supplier;
+        private final CheckedFunction0<? extends T5> t5Supplier;
+        private WithResources5(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+            this.t4Supplier = t4Supplier;
+            this.t5Supplier = t5Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply(); T4 t4 = t4Supplier.apply(); T5 t5 = t5Supplier.apply()) {
+                    return f.apply(t1, t2, t3, t4, t5);
+                }
+            });
+        }
+    }
+    final class WithResources6<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private final CheckedFunction0<? extends T4> t4Supplier;
+        private final CheckedFunction0<? extends T5> t5Supplier;
+        private final CheckedFunction0<? extends T6> t6Supplier;
+        private WithResources6(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+            this.t4Supplier = t4Supplier;
+            this.t5Supplier = t5Supplier;
+            this.t6Supplier = t6Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction6<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? super T6, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply(); T4 t4 = t4Supplier.apply(); T5 t5 = t5Supplier.apply(); T6 t6 = t6Supplier.apply()) {
+                    return f.apply(t1, t2, t3, t4, t5, t6);
+                }
+            });
+        }
+    }
+    final class WithResources7<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable, T7 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private final CheckedFunction0<? extends T4> t4Supplier;
+        private final CheckedFunction0<? extends T5> t5Supplier;
+        private final CheckedFunction0<? extends T6> t6Supplier;
+        private final CheckedFunction0<? extends T7> t7Supplier;
+        private WithResources7(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier, CheckedFunction0<? extends T7> t7Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+            this.t4Supplier = t4Supplier;
+            this.t5Supplier = t5Supplier;
+            this.t6Supplier = t6Supplier;
+            this.t7Supplier = t7Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction7<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? super T6, ? super T7, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply(); T4 t4 = t4Supplier.apply(); T5 t5 = t5Supplier.apply(); T6 t6 = t6Supplier.apply(); T7 t7 = t7Supplier.apply()) {
+                    return f.apply(t1, t2, t3, t4, t5, t6, t7);
+                }
+            });
+        }
+    }
+    final class WithResources8<T1 extends AutoCloseable, T2 extends AutoCloseable, T3 extends AutoCloseable, T4 extends AutoCloseable, T5 extends AutoCloseable, T6 extends AutoCloseable, T7 extends AutoCloseable, T8 extends AutoCloseable> {
+        private final CheckedFunction0<? extends T1> t1Supplier;
+        private final CheckedFunction0<? extends T2> t2Supplier;
+        private final CheckedFunction0<? extends T3> t3Supplier;
+        private final CheckedFunction0<? extends T4> t4Supplier;
+        private final CheckedFunction0<? extends T5> t5Supplier;
+        private final CheckedFunction0<? extends T6> t6Supplier;
+        private final CheckedFunction0<? extends T7> t7Supplier;
+        private final CheckedFunction0<? extends T8> t8Supplier;
+        private WithResources8(CheckedFunction0<? extends T1> t1Supplier, CheckedFunction0<? extends T2> t2Supplier, CheckedFunction0<? extends T3> t3Supplier, CheckedFunction0<? extends T4> t4Supplier, CheckedFunction0<? extends T5> t5Supplier, CheckedFunction0<? extends T6> t6Supplier, CheckedFunction0<? extends T7> t7Supplier, CheckedFunction0<? extends T8> t8Supplier) {
+            this.t1Supplier = t1Supplier;
+            this.t2Supplier = t2Supplier;
+            this.t3Supplier = t3Supplier;
+            this.t4Supplier = t4Supplier;
+            this.t5Supplier = t5Supplier;
+            this.t6Supplier = t6Supplier;
+            this.t7Supplier = t7Supplier;
+            this.t8Supplier = t8Supplier;
+        }
+        @SuppressWarnings("try")
+        public <R> Try<R> of(CheckedFunction8<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? super T6, ? super T7, ? super T8, ? extends R> f) {
+            return Try.of(() -> {
+                try (T1 t1 = t1Supplier.apply(); T2 t2 = t2Supplier.apply(); T3 t3 = t3Supplier.apply(); T4 t4 = t4Supplier.apply(); T5 t5 = t5Supplier.apply(); T6 t6 = t6Supplier.apply(); T7 t7 = t7Supplier.apply(); T8 t8 = t8Supplier.apply()) {
+                    return f.apply(t1, t2, t3, t4, t5, t6, t7, t8);
+                }
+            });
+        }
+    }
+}
+interface TryModule {
+    static boolean isFatal(Throwable throwable) {
+        return throwable instanceof InterruptedException
+                || throwable instanceof LinkageError
+                || ThreadDeathResolver.isThreadDeath(throwable)
+                || throwable instanceof VirtualMachineError;
+    }
+    @SuppressWarnings("unchecked")
+    static <T extends Throwable, R> R sneakyThrow(Throwable t) throws T {
+        throw (T) t;
+    }
+    static class ThreadDeathResolver {
+        static final Class<?> THREAD_DEATH_CLASS = resolve();
+        static boolean isThreadDeath(Throwable throwable) {
+            return THREAD_DEATH_CLASS != null && THREAD_DEATH_CLASS.isInstance(throwable);
+        }
+        private static Class<?> resolve() {
+            try {
+                return Class.forName("java.lang.ThreadDeath");
+            } catch (ClassNotFoundException e) {
+                return null;
+            }
+        }
+    }
+}
+package io.vavr.control;
+import io.vavr.CheckedFunction1;
+import io.vavr.PartialFunction;
+import io.vavr.Tuple;
+import io.vavr.Value;
+import io.vavr.collection.Iterator;
+import io.vavr.collection.Seq;
+import io.vavr.collection.Vector;
+import java.io.Serializable;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+public interface Option<T> extends Value<T>, Serializable {
+    long serialVersionUID = 1L;
+    static <T> Option<T> of(T value) {
+        return (value == null) ? none() : some(value);
+    }
+    static <T> Option<Seq<T>> sequence(Iterable<? extends Option<? extends T>> values) {
+        Objects.requireNonNull(values, "values is null");
+        Vector<T> vector = Vector.empty();
+        for (Option<? extends T> value : values) {
+            if (value.isEmpty()) {
+                return Option.none();
+            }
+            vector = vector.append(value.get());
+        }
+        return Option.some(vector);
+    }
+    static <T, U> Option<Seq<U>> traverse(Iterable<? extends T> values, Function<? super T, ? extends Option<? extends U>> mapper) {
+        Objects.requireNonNull(values, "values is null");
+        Objects.requireNonNull(mapper, "mapper is null");
+        return sequence(Iterator.ofAll(values).map(mapper));
+    }
+    static <T> Option<T> some(T value) {
+        return new Some<>(value);
+    }
+    static <T> Option<T> none() {
+        @SuppressWarnings("unchecked")
+        final None<T> none = (None<T>) None.INSTANCE;
+        return none;
+    }
+    @SuppressWarnings("unchecked")
+    static <T> Option<T> narrow(Option<? extends T> option) {
+        return (Option<T>) option;
+    }
+    static <T> Option<T> when(boolean condition, Supplier<? extends T> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        return condition ? some(supplier.get()) : none();
+    }
+    static <T> Option<T> when(boolean condition, T value) {
+        return condition ? some(value) : none();
+    }
+    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
+    static <T> Option<T> ofOptional(Optional<? extends T> optional) {
+        Objects.requireNonNull(optional, "optional is null");
+        return optional.<Option<T>>map(Option::of).orElseGet(Option::none);
+    }
+    default <R> Option<R> collect(PartialFunction<? super T, ? extends R> partialFunction) {
+        Objects.requireNonNull(partialFunction, "partialFunction is null");
+        return flatMap(partialFunction.lift()::apply);
+    }
+    @Override
+    boolean isEmpty();
+    default Option<T> onEmpty(Runnable action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isEmpty()) {
+            action.run();
+        }
+        return this;
+    }
+    @Override
+    default boolean isAsync() {
+        return false;
+    }
+    default boolean isDefined() {
+        return !isEmpty();
+    }
+    @Override
+    default boolean isLazy() {
+        return false;
+    }
+    @Override
+    default boolean isSingleValued() {
+        return true;
+    }
+    @Override
+    T get();
+    @Override
+    default T getOrElse(T other) {
+        return isEmpty() ? other : get();
+    }
+    @SuppressWarnings("unchecked")
+    default Option<T> orElse(Option<? extends T> other) {
+        Objects.requireNonNull(other, "other is null");
+        return isEmpty() ? (Option<T>) other : this;
+    }
+    @SuppressWarnings("unchecked")
+    default Option<T> orElse(Supplier<? extends Option<? extends T>> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        return isEmpty() ? (Option<T>) supplier.get() : this;
+    }
+    @Override
+    default T getOrElse(Supplier<? extends T> supplier) {
+        Objects.requireNonNull(supplier, "supplier is null");
+        return isEmpty() ? supplier.get() : get();
+    }
+    @Override
+    default <X extends Throwable> T getOrElseThrow(Supplier<X> exceptionSupplier) throws X {
+        Objects.requireNonNull(exceptionSupplier, "exceptionSupplier is null");
+        if (isEmpty()) {
+            throw exceptionSupplier.get();
+        } else {
+            return get();
+        }
+    }
+    default Option<T> filter(Predicate<? super T> predicate) {
+        Objects.requireNonNull(predicate, "predicate is null");
+        return isEmpty() || predicate.test(get()) ? this : none();
+    }
+    @SuppressWarnings("unchecked")
+    default <U> Option<U> flatMap(Function<? super T, ? extends Option<? extends U>> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        return isEmpty() ? none() : (Option<U>) mapper.apply(get());
+    }
+    @Override
+    default <U> Option<U> map(Function<? super T, ? extends U> mapper) {
+        Objects.requireNonNull(mapper, "mapper is null");
+        return isEmpty() ? none() : some(mapper.apply(get()));
+    }
+    default <U> Try<U> mapTry(CheckedFunction1<? super T, ? extends U> mapper) {
+        return toTry().mapTry(mapper);
+    }
+    default <U> U fold(Supplier<? extends U> ifNone, Function<? super T, ? extends U> f) {
+        return this.<U>map(f).getOrElse(ifNone);
+    }
+    @Override
+    default Option<T> peek(Consumer<? super T> action) {
+        Objects.requireNonNull(action, "action is null");
+        if (isDefined()) {
+            action.accept(get());
+        }
+        return this;
+    }
+    default <U> U transform(Function<? super Option<T>, ? extends U> f) {
+        Objects.requireNonNull(f, "f is null");
+        return f.apply(this);
+    }
+    @Override
+    default Iterator<T> iterator() {
+        return isEmpty() ? Iterator.empty() : Iterator.of(get());
+    }
+    @Override
+    boolean equals(Object o);
+    @Override
+    int hashCode();
+    @Override
+    String toString();
+    final class Some<T> implements Option<T>, Serializable {
+        private static final long serialVersionUID = 1L;
+        @SuppressWarnings("serial") 
+        private final T value;
+        private Some(T value) {
+            this.value = value;
+        }
+        @Override
+        public T get() {
+            return value;
+        }
+        @Override
+        public boolean isEmpty() {
+            return false;
+        }
+        @Override
+        public boolean equals(Object obj) {
+            return (obj == this) || (obj instanceof Some && Objects.equals(value, ((Some<?>) obj).value));
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hashCode(value);
+        }
+        @Override
+        public String stringPrefix() {
+            return "Some";
+        }
+        @Override
+        public String toString() {
+            return stringPrefix() + "(" + value + ")";
+        }
+    }
+    final class None<T> implements Option<T>, Serializable {
+        private static final long serialVersionUID = 1L;
+        private static final None<?> INSTANCE = new None<>();
+        private None() {
+        }
+        @Override
+        public T get() {
+            throw new NoSuchElementException("No value present");
+        }
+        @Override
+        public boolean isEmpty() {
+            return true;
+        }
+        @Override
+        public boolean equals(Object o) {
+            return o == this;
+        }
+        @Override
+        public int hashCode() {
+            return 1;
+        }
+        @Override
+        public String stringPrefix() {
+            return "None";
+        }
+        @Override
+        public String toString() {
+            return stringPrefix();
+        }
+        private Object readResolve() {
+            return INSTANCE;
+        }
+    }
+}
+package io.vavr;
+import static io.vavr.CheckedFunction5Module.sneakyThrow;
+import io.vavr.control.Option;
+import io.vavr.control.Try;
+import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
+@FunctionalInterface
+public interface CheckedFunction5<T1, T2, T3, T4, T5, R> extends Serializable {
+    long serialVersionUID = 1L;
+    static <T1, T2, T3, T4, T5, R> CheckedFunction5<T1, T2, T3, T4, T5, R> constant(R value) {
+        return (t1, t2, t3, t4, t5) -> value;
+    }
+    static <T1, T2, T3, T4, T5, R> CheckedFunction5<T1, T2, T3, T4, T5, R> of(CheckedFunction5<T1, T2, T3, T4, T5, R> methodReference) {
+        return methodReference;
+    }
+    @SuppressWarnings("RedundantTypeArguments")
+    static <T1, T2, T3, T4, T5, R> Function5<T1, T2, T3, T4, T5, Option<R>> lift(CheckedFunction5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R> partialFunction) {
+        return (t1, t2, t3, t4, t5) -> Try.<R>of(() -> partialFunction.apply(t1, t2, t3, t4, t5)).toOption();
+    }
+    static <T1, T2, T3, T4, T5, R> Function5<T1, T2, T3, T4, T5, Try<R>> liftTry(CheckedFunction5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R> partialFunction) {
+        return (t1, t2, t3, t4, t5) -> Try.of(() -> partialFunction.apply(t1, t2, t3, t4, t5));
+    }
+    @SuppressWarnings("unchecked")
+    static <T1, T2, T3, T4, T5, R> CheckedFunction5<T1, T2, T3, T4, T5, R> narrow(CheckedFunction5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R> f) {
+        return (CheckedFunction5<T1, T2, T3, T4, T5, R>) f;
+    }
+    R apply(T1 t1, T2 t2, T3 t3, T4 t4, T5 t5) throws Throwable;
+    default CheckedFunction4<T2, T3, T4, T5, R> apply(T1 t1) {
+        return (T2 t2, T3 t3, T4 t4, T5 t5) -> apply(t1, t2, t3, t4, t5);
+    }
+    default CheckedFunction3<T3, T4, T5, R> apply(T1 t1, T2 t2) {
+        return (T3 t3, T4 t4, T5 t5) -> apply(t1, t2, t3, t4, t5);
+    }
+    default CheckedFunction2<T4, T5, R> apply(T1 t1, T2 t2, T3 t3) {
+        return (T4 t4, T5 t5) -> apply(t1, t2, t3, t4, t5);
+    }
+    default CheckedFunction1<T5, R> apply(T1 t1, T2 t2, T3 t3, T4 t4) {
+        return (T5 t5) -> apply(t1, t2, t3, t4, t5);
+    }
+    default int arity() {
+        return 5;
+    }
+    default Function1<T1, Function1<T2, Function1<T3, Function1<T4, CheckedFunction1<T5, R>>>>> curried() {
+        return t1 -> t2 -> t3 -> t4 -> t5 -> apply(t1, t2, t3, t4, t5);
+    }
+    default CheckedFunction1<Tuple5<T1, T2, T3, T4, T5>, R> tupled() {
+        return t -> apply(t._1, t._2, t._3, t._4, t._5);
+    }
+    default CheckedFunction5<T5, T4, T3, T2, T1, R> reversed() {
+        return (t5, t4, t3, t2, t1) -> apply(t1, t2, t3, t4, t5);
+    }
+    default CheckedFunction5<T1, T2, T3, T4, T5, R> memoized() {
+        if (isMemoized()) {
+            return this;
+        } else {
+            final Map<Tuple5<T1, T2, T3, T4, T5>, R> cache = new HashMap<>();
+            final ReentrantLock lock = new ReentrantLock();
+            return (CheckedFunction5<T1, T2, T3, T4, T5, R> & Memoized) (t1, t2, t3, t4, t5) -> {
+                final Tuple5<T1, T2, T3, T4, T5> key = Tuple.of(t1, t2, t3, t4, t5);
+                lock.lock();
+                try {
+                    if (cache.containsKey(key)) {
+                        return cache.get(key);
+                    } else {
+                        final R value = tupled().apply(key);
+                        cache.put(key, value);
+                        return value;
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            };
+        }
+    }
+    default boolean isMemoized() {
+        return this instanceof Memoized;
+    }
+    default Function5<T1, T2, T3, T4, T5, R> recover(Function<? super Throwable, ? extends Function5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R>> recover) {
+        Objects.requireNonNull(recover, "recover is null");
+        return (t1, t2, t3, t4, t5) -> {
+            try {
+                return this.apply(t1, t2, t3, t4, t5);
+            } catch (Throwable throwable) {
+                final Function5<? super T1, ? super T2, ? super T3, ? super T4, ? super T5, ? extends R> func = recover.apply(throwable);
+                Objects.requireNonNull(func, () -> "recover return null for " + throwable.getClass() + ": " + throwable.getMessage());
+                return func.apply(t1, t2, t3, t4, t5);
+            }
+        };
+    }
+    default Function5<T1, T2, T3, T4, T5, R> unchecked() {
+        return (t1, t2, t3, t4, t5) -> {
+            try {
+                return apply(t1, t2, t3, t4, t5);
+            } catch(Throwable t) {
+                return sneakyThrow(t);
+            }
+        };
+    }
+    default <V> CheckedFunction5<T1, T2, T3, T4, T5, V> andThen(CheckedFunction1<? super R, ? extends V> after) {
+        Objects.requireNonNull(after, "after is null");
+        return (t1, t2, t3, t4, t5) -> after.apply(apply(t1, t2, t3, t4, t5));
+    }
+}
+interface CheckedFunction5Module {
+    @SuppressWarnings("unchecked")
+    static <T extends Throwable, R> R sneakyThrow(Throwable t) throws T {
+        throw (T) t;
+    }
+}

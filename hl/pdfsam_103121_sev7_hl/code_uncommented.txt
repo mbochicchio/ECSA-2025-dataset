@@ -1,0 +1,1552 @@
+package org.pdfsam.core.context;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ObservableValue;
+import org.pdfsam.persistence.PersistenceException;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.Arrays;
+import java.util.Optional;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.empty;
+import static java.util.Optional.of;
+import static java.util.Optional.ofNullable;
+import static org.sejda.commons.util.RequireUtils.requireNotNullArg;
+public class ApplicationPersistentSettings {
+    private static final Logger LOG = LoggerFactory.getLogger(ApplicationPersistentSettings.class);
+    private final PreferencesRepository repo;
+    private final SimpleObjectProperty<PersistentPropertyChange<String>> stringSettingsChanges = new SimpleObjectProperty<>();
+    private final SimpleObjectProperty<PersistentPropertyChange<Integer>> intSettingsChanges = new SimpleObjectProperty<>();
+    private final SimpleObjectProperty<PersistentPropertyChange<Boolean>> boolSettingsChanges = new SimpleObjectProperty<>();
+    ApplicationPersistentSettings(PreferencesRepository repo) {
+        this.repo = repo;
+    }
+    public Optional<String> get(StringPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return ofNullable(this.repo.getString(prop.key(), prop.defaultSupplier()));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return ofNullable(prop.defaultSupplier().get());
+    }
+    public int get(IntegerPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return this.repo.getInt(prop.key(), prop.defaultSupplier());
+        } catch (PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return prop.defaultSupplier().get();
+    }
+    public boolean get(BooleanPersistentProperty prop) {
+        requireNotNullArg(prop, "Cannot get value for a null property");
+        try {
+            return this.repo.getBoolean(prop.key(), prop.defaultSupplier());
+        } catch (NumberFormatException | PersistenceException e) {
+            LOG.error("Unable to get persistent property: " + prop, e);
+        }
+        return prop.defaultSupplier().get();
+    }
+    public void set(StringPersistentProperty prop, String value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveString(prop.key(), value);
+            stringSettingsChanges.set(new PersistentPropertyChange<>(prop, ofNullable(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public void set(IntegerPersistentProperty prop, int value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveInt(prop.key(), value);
+            intSettingsChanges.set(new PersistentPropertyChange<>(prop, of(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public void set(BooleanPersistentProperty prop, boolean value) {
+        requireNotNullArg(prop, "Cannot set value for a null property");
+        try {
+            this.repo.saveBoolean(prop.key(), value);
+            boolSettingsChanges.set(new PersistentPropertyChange<>(prop, of(value)));
+        } catch (PersistenceException e) {
+            LOG.error("Unable to save persistent property", e);
+        }
+    }
+    public boolean hasValueFor(PersistentProperty<?> property) {
+        if (nonNull(property)) {
+            return Arrays.stream(this.repo.keys()).anyMatch(k -> k.equals(property.key()));
+        }
+        return false;
+    }
+    public void delete(PersistentProperty<?> property) {
+        if (nonNull(property)) {
+            this.repo.delete(property.key());
+        }
+    }
+    public ObservableValue<Optional<String>> settingsChanges(StringPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<String>>(empty());
+        stringSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public ObservableValue<Optional<Integer>> settingsChanges(IntegerPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<Integer>>(empty());
+        intSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public ObservableValue<Optional<Boolean>> settingsChanges(BooleanPersistentProperty prop) {
+        var value = new SimpleObjectProperty<Optional<Boolean>>(empty());
+        boolSettingsChanges.subscribe((old, c) -> {
+            if (c.property().equals(prop)) {
+                value.set(c.value());
+            }
+        });
+        return value;
+    }
+    public void clean() {
+        try {
+            this.repo.clean();
+            LOG.info("Persistent application settings deleted");
+        } catch (PersistenceException e) {
+            LOG.error("Unable to clear application settings", e);
+        }
+    }
+}
+package org.pdfsam.persistence;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.util.function.Supplier;
+import java.util.prefs.BackingStoreException;
+import java.util.prefs.Preferences;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.sejda.commons.util.RequireUtils.requireNotBlank;
+public class PreferencesRepository implements Repository {
+    private static final Logger LOG = LoggerFactory.getLogger(PreferencesRepository.class);
+    final String path;
+    public PreferencesRepository(String path) {
+        requireNotBlank(path, "Preferences path cannot be blank");
+        this.path = path;
+    }
+    @Override
+    public int getInt(String key, int defaultValue) {
+        try {
+            return Preferences.userRoot().node(path).getInt(key, defaultValue);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to get value: [key '%s']", key), e);
+        }
+    }
+    @Override
+    public long getLong(String key, long defaultValue) {
+        try {
+            return Preferences.userRoot().node(path).getLong(key, defaultValue);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to get value: [key '%s']", key), e);
+        }
+    }
+    @Override
+    public String getString(String key, Supplier<String> supplier) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            return ofNullable(Preferences.userRoot().node(path).get(key, null)).orElseGet(supplier);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to get value: [key '%s']", key), e);
+        }
+    }
+    @Override
+    public boolean getBoolean(String key, boolean defaultValue) {
+        try {
+            return Preferences.userRoot().node(path).getBoolean(key, defaultValue);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to get value: [key '%s']", key), e);
+        }
+    }
+    @Override
+    public void saveInt(String key, int value) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            Preferences.userRoot().node(path).putInt(key, value);
+            LOG.trace("Saved entity [key '{}', value '{}']", key, value);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to store value: [key '%s', value '%s']", key, value),
+                    e);
+        }
+    }
+    @Override
+    public void saveLong(String key, long value) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            Preferences.userRoot().node(path).putLong(key, value);
+            LOG.trace("Saved entity [key '{}', value '{}']", key, value);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to store value: [key '%s', value '%s']", key, value),
+                    e);
+        }
+    }
+    @Override
+    public void saveString(String key, String value) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            if (nonNull(value)) {
+                Preferences.userRoot().node(path).put(key, value);
+                LOG.trace("Saved entity [key '{}', value '{}']", key, value);
+            } else {
+                delete(key);
+            }
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to store value: [key '%s', value '%s']", key, value),
+                    e);
+        }
+    }
+    @Override
+    public void saveBoolean(String key, boolean value) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            Preferences.userRoot().node(path).putBoolean(key, value);
+            LOG.trace("Saved entity [key '{}', value '{}']", key, value);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to store value: [key '%s', value '%s']", key, value),
+                    e);
+        }
+    }
+    @Override
+    public String[] keys() {
+        try {
+            return Preferences.userRoot().node(path).keys();
+        } catch (IllegalStateException | BackingStoreException e) {
+            throw new PersistenceException("Unable to retrieve key values", e);
+        }
+    }
+    @Override
+    public void delete(String key) {
+        requireNotBlank(key, "Key cannot be blank");
+        try {
+            Preferences.userRoot().node(path).remove(key);
+            LOG.trace("Deleted entity key '{}'", key);
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            throw new PersistenceException(String.format("Unable to delete value: [key '%s']", key), e);
+        }
+    }
+    @Override
+    public void clean() {
+        var prefs = Preferences.userRoot().node(path);
+        try {
+            prefs.removeNode();
+            prefs.flush();
+        } catch (IllegalStateException | BackingStoreException e) {
+            throw new PersistenceException(String.format("Unable to clear preferences: [path '%s']", path), e);
+        }
+    }
+}
+package org.pdfsam.gui.components.notification;
+import jakarta.inject.Inject;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.scene.shape.SVGPath;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.kordamp.ikonli.unicons.UniconsLine;
+import org.pdfsam.core.AppBrand;
+import org.pdfsam.core.BrandableProperty;
+import org.pdfsam.core.context.BooleanPersistentProperty;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.gui.components.content.log.LogContentItem;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.model.news.NewImportantNewsEvent;
+import org.pdfsam.model.ui.SetActiveContentItemRequest;
+import org.pdfsam.model.update.NoUpdateAvailable;
+import org.pdfsam.model.update.UpdateAvailableEvent;
+import org.pdfsam.service.tool.UsageService;
+import org.pdfsam.ui.components.commons.UrlButton;
+import org.pdfsam.ui.components.notification.AddNotificationRequest;
+import org.pdfsam.ui.components.notification.NotificationType;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.exception.InvalidTaskParametersException;
+import org.sejda.model.notification.event.TaskExecutionCompletedEvent;
+import org.sejda.model.notification.event.TaskExecutionFailedEvent;
+import java.nio.file.AccessDeniedException;
+import java.security.SecureRandom;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+@Auto
+public class NotificationsController {
+    private static final int TIMES_BEFORE_DONATION_NOTICE = 5;
+    private final NotificationsContainer container;
+    private final UsageService service;
+    private final AppBrand appBrand;
+    private final SecureRandom random = new SecureRandom();
+    @Inject
+    NotificationsController(NotificationsContainer container, UsageService service, AppBrand appBrand) {
+        this.container = container;
+        this.service = service;
+        this.appBrand = appBrand;
+        eventStudio().addAnnotatedListeners(this);
+    }
+    @EventListener
+    public void onAddRequest(AddNotificationRequest event) {
+        container.addNotification(event.title(), buildLabel(event.message(), event.type()));
+    }
+    private Label buildLabel(String message, NotificationType type) {
+        Label textLabel = new Label(message);
+        textLabel.getStyleClass().add("notification-text");
+        if (type != null) {
+            textLabel.getStyleClass().add(type.getStyleClass());
+            textLabel.setGraphic(type.getGraphic());
+        }
+        return textLabel;
+    }
+    @EventListener
+    public void onTaskFailed(TaskExecutionFailedEvent e) {
+        if (e.getFailingCause() instanceof InvalidTaskParametersException) {
+            var showErrors = new Button(i18n().tr("Show errors"));
+            showErrors.setOnAction(
+                    event -> eventStudio().broadcast(new SetActiveContentItemRequest(LogContentItem.ID)));
+            showErrors.getStyleClass().addAll(Style.BUTTON.css());
+            var content = new VBox(buildLabel(i18n().tr("Input parameters are invalid"), NotificationType.ERROR),
+                    showErrors);
+            content.getStyleClass().add("notification-container");
+            container.addNotification(i18n().tr("Invalid parameters"), content);
+        }
+        Throwable root = ExceptionUtils.getRootCause(e.getFailingCause());
+        if (root instanceof AccessDeniedException) {
+            container.addNotification(i18n().tr("Access denied"), buildLabel(i18n().tr(
+                    "Unable to access \"{0}\", please make sure you have write permissions or open the application messages for details.",
+                    ((AccessDeniedException) root).getFile()), NotificationType.ERROR));
+        }
+    }
+    @EventListener
+    public void onTaskCompleted(TaskExecutionCompletedEvent e) {
+        long usages = service.getTotalUsages();
+        if ((usages % TIMES_BEFORE_DONATION_NOTICE) == 0 && app().persistentSettings()
+                .get(BooleanPersistentProperty.DONATION_NOTIFICATION)) {
+            if ((random.nextInt() % 2) == 0) {
+                addDonationNotification(usages);
+            } else {
+                addShareNotification(usages);
+            }
+        }
+    }
+    private void addDonationNotification(long usages) {
+        var content = new VBox(
+                buildLabel(i18n().tr("You performed {0} tasks with PDFsam, did it help?", Long.toString(usages)),
+                        NotificationType.SUPPORT), UrlButton.styledUrlButton(i18n().tr("Give something back"),
+                appBrand.property(BrandableProperty.DONATE_URL), null));
+        content.getStyleClass().add("notification-container");
+        container.addStickyNotification(i18n().tr("PDFsam worked hard!"), content);
+    }
+    private void addShareNotification(long usages) {
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        var bskyButton = UrlButton.styledUrlButton(i18n().tr("Spread the word!"),
+                appBrand.property(BrandableProperty.BLUESKY_SHARE_URL), null);
+        var bskySvg = new SVGPath();
+        bskySvg.setContent(
+                "M12 10.8c-1.087-2.114-4.046-6.053-6.798-7.995C2.566.944 1.561 1.266.902 1.565C.139 1.908 0 3.08 0 3.768c0 .69.378 5.65.624 6.479c.815 2.736 3.713 3.66 6.383 3.364q.204-.03.415-.056q-.207.033-.415.056c-3.912.58-7.387 2.005-2.83 7.078c5.013 5.19 6.87-1.113 7.823-4.308c.953 3.195 2.05 9.271 7.733 4.308c4.267-4.308 1.172-6.498-2.74-7.078a9 9 0 0 1-.415-.056q.21.026.415.056c2.67.297 5.568-.628 6.383-3.364c.246-.828.624-5.79.624-6.478c0-.69-.139-1.861-.902-2.206c-.659-.298-1.664-.62-4.3 1.24C16.046 4.748 13.087 8.687 12 10.8");
+        bskySvg.getStyleClass().add("svg-icon");
+        bskyButton.setGraphic(bskySvg);
+        var content = new VBox(
+                buildLabel(i18n().tr("You performed {0} tasks with PDFsam, did it help?", Long.toString(usages)),
+                        NotificationType.SHARE), new HBox(3, spacer,
+                UrlButton.styledUrlButton(null, appBrand.property(BrandableProperty.FACEBOOK_SHARE_URL),
+                        UniconsLine.FACEBOOK), bskyButton));
+        content.getStyleClass().add("notification-container");
+        container.addStickyNotification(i18n().tr("PDFsam worked hard!"), content);
+    }
+    @EventListener
+    public void onRemoveRequest(RemoveNotificationRequest event) {
+        container.removeNotification(event.id());
+    }
+    @EventListener
+    public void onUpdateAvailable(UpdateAvailableEvent event) {
+        var content = new VBox(buildLabel(i18n().tr("PDFsam {0} is available for download", event.availableVersion()),
+                NotificationType.INFO),
+                UrlButton.styledUrlButton(i18n().tr("Download"), appBrand.property(BrandableProperty.DOWNLOAD_URL),
+                        null));
+        content.getStyleClass().add("notification-container");
+        container.addStickyNotification(i18n().tr("New version available"), content);
+    }
+    @EventListener
+    public void onNoUpdateAvailable(NoUpdateAvailable event) {
+        var content = new VBox(
+                buildLabel(i18n().tr("You are running the latest version of PDFsam Basic"), NotificationType.INFO));
+        content.getStyleClass().add("notification-container");
+        container.addNotification(i18n().tr("No update"), content);
+    }
+    @EventListener
+    public void onNewImportantNews(NewImportantNewsEvent event) {
+        var content = new VBox(buildLabel(event.news().content(), null),
+                UrlButton.styledUrlButton(i18n().tr("Open"), event.news().link(), UniconsLine.EXTERNAL_LINK_ALT));
+        content.getStyleClass().add("notification-container");
+        container.addStickyNotification(event.news().title(), content);
+    }
+}
+package org.pdfsam.core.context;
+import java.util.function.Supplier;
+import static org.pdfsam.core.ConfigurableSystemProperty.CHECK_FOR_NEWS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.CHECK_FOR_UPDATES_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.DISCARD_BOOKMARKS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.DONATE_NOTIFICATION_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.FETCH_PREMIUM_MODULES_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.OVERWRITE_OUTPUT_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PDF_COMPRESSION_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PLAY_SOUNDS_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.SMART_OUTPUT_PROP;
+public enum BooleanPersistentProperty implements PersistentProperty<Boolean> {
+    PLAY_SOUNDS(() -> Boolean.parseBoolean(System.getProperty(PLAY_SOUNDS_PROP, Boolean.TRUE.toString()))),
+    DONATION_NOTIFICATION(
+            () -> Boolean.parseBoolean(System.getProperty(DONATE_NOTIFICATION_PROP, Boolean.TRUE.toString()))),
+    PREMIUM_MODULES(
+            () -> Boolean.parseBoolean(System.getProperty(FETCH_PREMIUM_MODULES_PROP, Boolean.TRUE.toString()))),
+    SMART_OUTPUT(() -> Boolean.parseBoolean(System.getProperty(SMART_OUTPUT_PROP, Boolean.TRUE.toString()))),
+    CHECK_UPDATES(() -> Boolean.parseBoolean(System.getProperty(CHECK_FOR_UPDATES_PROP, Boolean.TRUE.toString()))),
+    CHECK_FOR_NEWS(() -> Boolean.parseBoolean(System.getProperty(CHECK_FOR_NEWS_PROP, Boolean.TRUE.toString()))),
+    OVERWRITE_OUTPUT(() -> Boolean.parseBoolean(System.getProperty(OVERWRITE_OUTPUT_PROP, Boolean.FALSE.toString()))),
+    PDF_COMPRESSION_ENABLED(
+            () -> Boolean.parseBoolean(System.getProperty(PDF_COMPRESSION_PROP, Boolean.TRUE.toString()))),
+    CLEAR_CONFIRMATION(() -> Boolean.TRUE),
+    SAVE_WORKSPACE_ON_EXIT(() -> Boolean.FALSE),
+    SAVE_PWD_IN_WORKSPACE(() -> Boolean.FALSE),
+    SIDEBAR_EXPANDED_STATE(() -> Boolean.TRUE),
+    DISCARD_BOOKMARKS(() -> Boolean.parseBoolean(System.getProperty(DISCARD_BOOKMARKS_PROP, Boolean.FALSE.toString())));
+    private final Supplier<Boolean> defaultSupplier;
+    BooleanPersistentProperty(Supplier<Boolean> supplier) {
+        this.defaultSupplier = supplier;
+    }
+    @Override
+    public String key() {
+        return this.name().toLowerCase();
+    }
+    @Override
+    public Supplier<Boolean> defaultSupplier() {
+        return defaultSupplier;
+    }
+}
+package org.pdfsam.core.context;
+import javafx.application.ConditionalFeature;
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import org.apache.commons.lang3.StringUtils;
+import org.pdfsam.injector.Injector;
+import org.pdfsam.injector.Key;
+import org.pdfsam.persistence.PreferencesRepository;
+import java.io.Closeable;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Objects;
+import java.util.Optional;
+import static java.util.function.Predicate.not;
+import static org.pdfsam.core.context.StringPersistentProperty.FONT_SIZE;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+public class ApplicationContext implements Closeable {
+    private static final ApplicationContext CONTEXT = new ApplicationContext();
+    private final ApplicationPersistentSettings persistentSettings;
+    private ApplicationRuntimeState runtimeState;
+    private Optional<Injector> injector = Optional.empty();
+    private ApplicationContext() {
+        this(new ApplicationPersistentSettings(new PreferencesRepository("/org/pdfsam/user/conf")), null);
+    }
+    @Deprecated
+    ApplicationContext(ApplicationPersistentSettings persistentSettings, ApplicationRuntimeState runtimeState) {
+        this.persistentSettings = persistentSettings;
+        this.runtimeState = runtimeState;
+    }
+    public static ApplicationContext app() {
+        return CONTEXT;
+    }
+    public ApplicationPersistentSettings persistentSettings() {
+        return this.persistentSettings;
+    }
+    public ApplicationRuntimeState runtimeState() {
+        synchronized (this) {
+            if (Objects.isNull(this.runtimeState)) {
+                this.runtimeState = new ApplicationRuntimeState();
+                this.persistentSettings().settingsChanges(WORKING_PATH).subscribe(path -> {
+                    this.runtimeState.defaultWorkingPath(
+                            path.filter(StringUtils::isNotBlank).map(Paths::get).filter(Files::isDirectory)
+                                    .orElse(null));
+                });
+                var workingPath = persistentSettings().get(WORKING_PATH).filter(StringUtils::isNotBlank).map(Paths::get)
+                        .filter(Files::isDirectory).orElse(null);
+                this.runtimeState.defaultWorkingPath(workingPath);
+            }
+        }
+        return this.runtimeState;
+    }
+    public void registerScene(Scene scene) {
+        this.runtimeState().theme().subscribe(t -> {
+            if (Objects.nonNull(t)) {
+                Platform.runLater(() -> {
+                    scene.getStylesheets().setAll(t.stylesheets());
+                    if (!Platform.isSupported(ConditionalFeature.TRANSPARENT_WINDOW)) {
+                        scene.getStylesheets().addAll(t.transparentIncapableStylesheets());
+                    }
+                });
+            }
+        });
+        this.persistentSettings().settingsChanges(FONT_SIZE).subscribe(size -> {
+            size.filter(StringUtils::isNotBlank).map(s -> String.format("-fx-font-size: %s;", s))
+                    .ifPresentOrElse(scene.getRoot()::setStyle, () -> scene.getRoot().setStyle(""));
+        });
+        this.persistentSettings().get(FONT_SIZE).filter(not(String::isBlank))
+                .ifPresent(size -> scene.getRoot().setStyle(String.format("-fx-font-size: %s;", size)));
+    }
+    public void injector(Injector injector) {
+        this.injector = Optional.ofNullable(injector);
+    }
+    public <T> T instance(Class<T> type) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(type);
+    }
+    public <T> T instance(Key<T> key) {
+        return injector.orElseThrow(() -> new IllegalStateException("Injector not set for this application"))
+                .instance(key);
+    }
+    public void clean() {
+        persistentSettings.clean();
+    }
+    @Override
+    public void close() {
+        injector.ifPresent(Injector::close);
+    }
+}
+package org.pdfsam.gui;
+import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.event.Event;
+import javafx.geometry.Pos;
+import javafx.scene.Scene;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.layout.StackPane;
+import javafx.stage.Stage;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.time.DurationFormatUtils;
+import org.apache.commons.lang3.time.StopWatch;
+import org.pdfsam.core.AppBrand;
+import org.pdfsam.core.BrandableProperty;
+import org.pdfsam.core.context.BooleanPersistentProperty;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.gui.components.content.home.HomeContentItem;
+import org.pdfsam.gui.components.content.preference.PreferenceConfig;
+import org.pdfsam.gui.components.notification.NotificationsContainer;
+import org.pdfsam.gui.configuration.PdfsamConfig;
+import org.pdfsam.gui.configuration.PersistenceConfig;
+import org.pdfsam.gui.configuration.ServicesConfig;
+import org.pdfsam.gui.theme.Themes;
+import org.pdfsam.i18n.SetLocaleRequest;
+import org.pdfsam.injector.Injector;
+import org.pdfsam.injector.Key;
+import org.pdfsam.model.lifecycle.CleanupRequest;
+import org.pdfsam.model.lifecycle.ShutdownEvent;
+import org.pdfsam.model.lifecycle.StartupEvent;
+import org.pdfsam.model.news.FetchLatestNewsRequest;
+import org.pdfsam.model.premium.FetchPremiumModulesRequest;
+import org.pdfsam.model.ui.SetActiveContentItemRequest;
+import org.pdfsam.model.ui.SetLatestStageStatusRequest;
+import org.pdfsam.model.ui.StageMode;
+import org.pdfsam.model.ui.StageStatus;
+import org.pdfsam.model.ui.workspace.LoadWorkspaceRequest;
+import org.pdfsam.model.ui.workspace.SaveWorkspaceRequest;
+import org.pdfsam.model.update.UpdateCheckRequest;
+import org.pdfsam.ui.components.tool.RunButtonTriggerRequest;
+import org.sejda.core.Sejda;
+import org.sejda.impl.sambox.component.PDDocumentHandler;
+import org.sejda.model.util.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.awt.SplashScreen;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.core.context.StringPersistentProperty.THEME;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+public class PdfsamApp extends Application {
+    private static final Logger LOG = LoggerFactory.getLogger(PdfsamApp.class);
+    private static final StopWatch STOPWATCH = new StopWatch();
+    private Stage primaryStage;
+    private List<String> rawParameters;
+    private boolean clean;
+    @Override
+    public void init() {
+        STOPWATCH.start();
+        Thread.setDefaultUncaughtExceptionHandler(new UncaughtExceptionLogger());
+        rawParameters = getParameters().getRaw();
+        System.setProperty(PDDocumentHandler.SAMBOX_USE_ASYNC_WRITER, Boolean.TRUE.toString());
+        System.setProperty(Sejda.UNETHICAL_READ_PROPERTY_NAME, Boolean.TRUE.toString());
+        System.setProperty(IOUtils.TMP_BUFFER_PREFIX_PROPERTY_NAME, "pdfsam");
+        LOG.info("Starting...");
+        clean = rawParameters.contains("--clean") || rawParameters.contains("-clean") || rawParameters.contains("-c");
+        if (clean) {
+            app().clean();
+        }
+        app().persistentSettings().get(StringPersistentProperty.LOCALE)
+                .ifPresent(l -> eventStudio().broadcast(new SetLocaleRequest(l)));
+    }
+    @Override
+    public void start(Stage primaryStage) {
+        this.primaryStage = primaryStage;
+        initInjector(primaryStage);
+        cleanIfRequired();
+        primaryStage.setScene(initScene());
+        primaryStage.getIcons().addAll(app().instance(Key.of(List.class, "icons")));
+        primaryStage.setOnCloseRequest(e -> Platform.exit());
+        app().instance(WindowStatusController.class).setStage(primaryStage);
+        app().instance(ApplicationTitleController.class).setStage(primaryStage);
+        requestPremiumModulesDescriptionIfRequired();
+        initStartupContentItem();
+        loadWorkspaceIfRequired();
+        escapeMnemonicsOnFocusLost();
+        primaryStage.show();
+        requestCheckForUpdateIfRequired();
+        requestLatestNewsIfRequired();
+        initSejda();
+        closeSplash();
+        STOPWATCH.stop();
+        eventStudio().broadcast(new StartupEvent());
+        LOG.info(i18n().tr("Started in {0}",
+                DurationFormatUtils.formatDurationWords(STOPWATCH.getDuration().toMillis(), true, true)));
+        new InputPdfArgumentsConsumer().accept(rawParameters);
+    }
+    private void initInjector(Stage primaryStage) {
+        Injector.addConfig(new PdfsamConfig(getHostServices(), primaryStage));
+        Injector.addConfig(new PersistenceConfig(), new ServicesConfig(), new PreferenceConfig());
+        app().injector(Injector.start());
+    }
+    private void cleanIfRequired() {
+        if (clean) {
+            LOG.debug("Cleaning...");
+            eventStudio().broadcast(new CleanupRequest());
+        }
+    }
+    private void initSejda() {
+        var appBrand = app().instance(AppBrand.class);
+        Sejda.CREATOR = appBrand.property(BrandableProperty.SHORT_NAME, "PDFsam Basic") + " v" + appBrand.property(
+                BrandableProperty.VERSION, "UNKNOWN");
+    }
+    private void closeSplash() {
+        ofNullable(SplashScreen.getSplashScreen()).ifPresent(SplashScreen::close);
+    }
+    private Scene initScene() {
+        var appContainer = app().instance(AppContainer.class);
+        var notifications = app().instance(NotificationsContainer.class);
+        StackPane main = new StackPane();
+        StackPane.setAlignment(notifications, Pos.BOTTOM_RIGHT);
+        StackPane.setAlignment(appContainer, Pos.TOP_LEFT);
+        main.getChildren().addAll(appContainer, notifications);
+        Scene mainScene = new Scene(main);
+        initTheme(mainScene);
+        mainScene.getAccelerators()
+                .put(new KeyCodeCombination(KeyCode.Q, KeyCombination.SHORTCUT_DOWN), Platform::exit);
+        mainScene.getAccelerators().put(RunButtonTriggerRequest.KEY_CODE_COMBINATION,
+                () -> eventStudio().broadcast(RunButtonTriggerRequest.INSTANCE));
+        return mainScene;
+    }
+    private void initTheme(Scene scene) {
+        app().registerScene(scene);
+        var theme = app().persistentSettings().get(THEME).orElse(null);
+        app().runtimeState().theme(Themes.getOrDefault(theme));
+    }
+    private void requestCheckForUpdateIfRequired() {
+        if (app().persistentSettings().get(BooleanPersistentProperty.CHECK_UPDATES)) {
+            eventStudio().broadcast(new UpdateCheckRequest(false));
+        }
+    }
+    private void requestLatestNewsIfRequired() {
+        if (app().persistentSettings().get(BooleanPersistentProperty.CHECK_FOR_NEWS)) {
+            eventStudio().broadcast(FetchLatestNewsRequest.INSTANCE);
+        }
+    }
+    private void escapeMnemonicsOnFocusLost() {
+        primaryStage.focusedProperty().addListener((obs, oldVal, newVal) -> {
+            if (!newVal) {
+                Event.fireEvent(primaryStage.getScene(),
+                        new KeyEvent(KeyEvent.KEY_PRESSED, KeyEvent.CHAR_UNDEFINED, KeyCode.ESCAPE.getName(),
+                                KeyCode.ESCAPE, false, false, false, false));
+            }
+        });
+    }
+    private void initStartupContentItem() {
+        var contentItemId = app().persistentSettings().get(StringPersistentProperty.STARTUP_MODULE)
+                .filter(StringUtils::isNotBlank).orElse(HomeContentItem.ID);
+        LOG.trace("Activating startup content item '{}'", contentItemId);
+        eventStudio().broadcast(new SetActiveContentItemRequest(contentItemId));
+    }
+    private void requestPremiumModulesDescriptionIfRequired() {
+        if (app().persistentSettings().get(BooleanPersistentProperty.PREMIUM_MODULES)) {
+            eventStudio().broadcast(FetchPremiumModulesRequest.INSTANCE);
+        }
+    }
+    private void loadWorkspaceIfRequired() {
+        ofNullable(getParameters().getNamed().get("workspace")).filter(StringUtils::isNotBlank)
+                .or(() -> app().persistentSettings().get(StringPersistentProperty.WORKSPACE_PATH)
+                        .filter(StringUtils::isNotBlank)).map(Paths::get).filter(Files::exists).map(Path::toFile)
+                .map(LoadWorkspaceRequest::new).ifPresent(eventStudio()::broadcast);
+    }
+    @Override
+    public void stop() {
+        LOG.info(i18n().tr("Closing PDFsam..."));
+        var status = new StageStatus(this.primaryStage.getX(), this.primaryStage.getY(), this.primaryStage.getWidth(),
+                this.primaryStage.getHeight(), StageMode.valueFor(this.primaryStage));
+        eventStudio().broadcast(new SetLatestStageStatusRequest(status));
+        saveWorkspaceIfRequired();
+        eventStudio().broadcast(new ShutdownEvent());
+        app().close();
+    }
+    private void saveWorkspaceIfRequired() {
+        if (app().persistentSettings().get(BooleanPersistentProperty.SAVE_WORKSPACE_ON_EXIT)) {
+            app().persistentSettings().get(StringPersistentProperty.WORKSPACE_PATH).filter(StringUtils::isNotBlank)
+                    .map(Paths::get).filter(Files::exists).map(Path::toFile).map(SaveWorkspaceRequest::new)
+                    .ifPresent(eventStudio()::broadcast);
+        }
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.VBox;
+import org.pdfsam.core.context.BooleanPersistentProperty;
+import org.pdfsam.core.support.params.AbstractPdfOutputParametersBuilder;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.SetDestinationRequest;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.ui.components.support.Style;
+import org.pdfsam.ui.components.support.Views;
+import org.sejda.model.output.ExistingOutputPolicy;
+import org.sejda.model.parameter.base.AbstractPdfOutputParameters;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static java.util.Arrays.asList;
+import static java.util.Optional.empty;
+import static java.util.Optional.ofNullable;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+public class PdfDestinationPane extends DestinationPane implements ToolBound, RestorableView, ResettableView,
+        TaskParametersBuildStep<AbstractPdfOutputParametersBuilder<? extends AbstractPdfOutputParameters>> {
+    private final PdfVersionCombo version;
+    private final PdfVersionConstrainedCheckBox compress;
+    private Optional<CheckBox> discardBookmarks = empty();
+    private final String toolBinding;
+    public PdfDestinationPane(BrowsableField destination, String toolBinding,
+            DestinationPanelFields... optionalFields) {
+        this(destination, toolBinding, false, optionalFields);
+    }
+    public PdfDestinationPane(BrowsableField destination, String toolBinding, boolean expandAdvanced,
+            DestinationPanelFields... optionalFields) {
+        super(destination);
+        destination.setId(toolBinding + ".destination");
+        overwrite().setSelected(app().persistentSettings().get(BooleanPersistentProperty.OVERWRITE_OUTPUT));
+        this.toolBinding = defaultString(toolBinding);
+        VBox advancedPanel = new VBox();
+        advancedPanel.getStyleClass().addAll(Style.CONTAINER.css());
+        version = new PdfVersionCombo(toolBinding);
+        compress = new PdfVersionConstrainedCheckBox(PdfVersion.VERSION_1_5, toolBinding);
+        compress.setText(i18n().tr("Compress output file/files"));
+        compress.setSelected(app().persistentSettings().get(BooleanPersistentProperty.PDF_COMPRESSION_ENABLED));
+        compress.setId("compressField");
+        compress.getStyleClass().addAll(Style.VITEM.css());
+        if (asList(optionalFields).contains(DestinationPanelFields.DISCARD_BOOKMARKS)) {
+            CheckBox discardBookmarksField = new CheckBox(i18n().tr("Discard bookmarks"));
+            discardBookmarksField.setGraphic(helpIcon(
+                    i18n().tr("Tick the box if you don't want to retain any bookmark from the original PDF document")));
+            discardBookmarksField.getStyleClass().addAll(Style.WITH_HELP.css());
+            discardBookmarksField.getStyleClass().addAll(Style.VITEM.css());
+            discardBookmarksField.setId("discardBookmarksField");
+            discardBookmarksField.setSelected(
+                    app().persistentSettings().get(BooleanPersistentProperty.DISCARD_BOOKMARKS));
+            discardBookmarks = Optional.of(discardBookmarksField);
+        }
+        HBox versionPane = new HBox(new Label(i18n().tr("Output PDF version:")), version);
+        versionPane.getStyleClass().addAll(Style.VITEM.css());
+        versionPane.getStyleClass().addAll(Style.HCONTAINER.css());
+        advancedPanel.getChildren().add(compress);
+        discardBookmarks.ifPresent(advancedPanel.getChildren()::add);
+        advancedPanel.getChildren().add(versionPane);
+        TitledPane titledAdvanced = Views.titledPane(i18n().tr("Show advanced settings"), advancedPanel,
+                "advanced-destination-pane");
+        titledAdvanced.setExpanded(expandAdvanced);
+        titledAdvanced.expandedProperty().addListener((o, oldval, newVal) -> {
+            if (newVal) {
+                titledAdvanced.setText(i18n().tr("Hide advanced settings"));
+            } else {
+                titledAdvanced.setText(i18n().tr("Show advanced settings"));
+            }
+        });
+        getChildren().add(titledAdvanced);
+        eventStudio().addAnnotatedListeners(this);
+    }
+    public void enableSameAsSourceItem() {
+        version.enableSameAsSourceItem();
+    }
+    @Override
+    @EventStation
+    public String toolBinding() {
+        return toolBinding;
+    }
+    @EventListener
+    public void setDestination(SetDestinationRequest event) {
+        if (!event.fallback() || (isBlank(destination().getTextField().getText()) && app().persistentSettings()
+                .get(BooleanPersistentProperty.SMART_OUTPUT))) {
+            destination().setTextFromFile(event.footprint());
+        }
+    }
+    @Override
+    public void resetView() {
+        super.resetView();
+        version.resetView();
+        compress.setSelected(false);
+        compress.setSelected(app().persistentSettings().get(BooleanPersistentProperty.PDF_COMPRESSION_ENABLED));
+        overwrite().setSelected(app().persistentSettings().get(BooleanPersistentProperty.OVERWRITE_OUTPUT));
+        discardBookmarks.ifPresent(
+                c -> c.setSelected(app().persistentSettings().get(BooleanPersistentProperty.DISCARD_BOOKMARKS)));
+    }
+    @Override
+    public void apply(AbstractPdfOutputParametersBuilder<? extends AbstractPdfOutputParameters> builder,
+            Consumer<String> onError) {
+        builder.compress(compress.isSelected());
+        if (overwrite().isSelected()) {
+            builder.existingOutput(ExistingOutputPolicy.OVERWRITE);
+        }
+        builder.version(version.getSelectionModel().getSelectedItem().getVersion());
+        discardBookmarks.ifPresent(d -> builder.discardBookmarks(d.isSelected()));
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put("compress", Boolean.toString(compress.isSelected()));
+        data.put("overwrite", Boolean.toString(overwrite().isSelected()));
+        discardBookmarks.ifPresent(d -> data.put("discardBookmarks", Boolean.toString(d.isSelected())));
+        data.put("version", version.getSelectionModel().getSelectedItem().getVersion().toString());
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        version.resetView();
+        compress.setSelected(Boolean.parseBoolean(data.get("compress")));
+        overwrite().setSelected(Boolean.parseBoolean(data.get("overwrite")));
+        discardBookmarks.ifPresent(d -> d.setSelected(Boolean.parseBoolean(data.get("discardBookmarks"))));
+        ofNullable(data.get("version")).map(PdfVersion::valueOf).map(DefaultPdfVersionComboItem::new)
+                .ifPresent(v -> this.version.getSelectionModel().select(v));
+    }
+    PdfVersionCombo getVersion() {
+        return version;
+    }
+    PdfVersionConstrainedCheckBox getCompress() {
+        return compress;
+    }
+    public enum DestinationPanelFields {
+        DISCARD_BOOKMARKS
+    }
+}
+package org.pdfsam.ui.components.io;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.scene.control.ComboBox;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.eventstudio.annotation.EventStation;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.AddPdfVersionConstraintEvent;
+import org.pdfsam.model.ui.ChangedSelectedPdfVersionEvent;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.model.ui.PdfVersionComboItem;
+import org.pdfsam.model.ui.RemovePdfVersionConstraintEvent;
+import org.pdfsam.model.ui.ResettableView;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Arrays;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+class PdfVersionCombo extends ComboBox<PdfVersionComboItem> implements ToolBound, ResettableView {
+    private final String toolBinding;
+    private final ObservableList<PdfVersionComboItem> unfilteredItems = FXCollections.observableArrayList();
+    private final PdfVersionFilter versionsFilter = new PdfVersionFilter();
+    private final SameAsSourceComboItem sameAsSource = new SameAsSourceComboItem();
+    public PdfVersionCombo(String toolBinding) {
+        this.toolBinding = toolBinding;
+        Arrays.stream(PdfVersion.values()).filter(v -> v.getVersion() > PdfVersion.VERSION_1_2.getVersion())
+                .map(DefaultPdfVersionComboItem::new).forEach(unfilteredItems::add);
+        versionsFilter.requiredProperty().addListener((observable, oldVal, newVal) -> setFilteredItems(newVal));
+        resetView();
+        eventStudio().addAnnotatedListeners(this);
+    }
+    private void setFilteredItems(PdfVersion required) {
+        if (nonNull(required)) {
+            PdfVersionComboItem selected = getSelectionModel().getSelectedItem();
+            setItems(unfilteredItems.filtered(t -> t.isHigherOrEqual(required)));
+            int selectedIndex = getItems().indexOf(selected);
+            if (selectedIndex != -1) {
+                getSelectionModel().select(selectedIndex);
+            } else {
+                getSelectionModel().selectFirst();
+            }
+        }
+    }
+    @EventListener
+    public void onAddPdfVersionConstraint(final AddPdfVersionConstraintEvent event) {
+        versionsFilter.addFilter(event.pdfVersion());
+    }
+    @EventListener
+    public void onRemovePdfVersionConstraint(final RemovePdfVersionConstraintEvent event) {
+        versionsFilter.removeFilter(event.pdfVersion());
+    }
+    @EventListener
+    public void onChangedSelectedPdfVersion(final ChangedSelectedPdfVersionEvent event) {
+        sameAsSource.setVersion(event.pdfVersion());
+        setFilteredItems(versionsFilter.requiredProperty().get());
+    }
+    @Override
+    @EventStation
+    public String toolBinding() {
+        return this.toolBinding;
+    }
+    @Override
+    public void resetView() {
+        versionsFilter.reset();
+        versionsFilter.addFilter(PdfVersion.VERSION_1_2);
+        app().persistentSettings().get(StringPersistentProperty.PDF_VERSION).map(PdfVersion::valueOf)
+                .flatMap(v -> getItems().stream().filter(i -> i.getVersion() == v).findFirst())
+                .ifPresent(i -> getSelectionModel().select(i));
+    }
+    public void enableSameAsSourceItem() {
+        unfilteredItems.add(0, sameAsSource);
+        if (!app().persistentSettings().hasValueFor(StringPersistentProperty.PDF_VERSION)) {
+            getSelectionModel().selectFirst();
+        }
+    }
+    private static class SameAsSourceComboItem implements PdfVersionComboItem {
+        private PdfVersion version = PdfVersion.VERSION_1_5;
+        void setVersion(PdfVersion version) {
+            this.version = ofNullable(version).orElse(PdfVersion.VERSION_1_5);
+        }
+        @Override
+        public PdfVersion getVersion() {
+            return version;
+        }
+        @Override
+        public boolean isHigherOrEqual(PdfVersion other) {
+            return this.version.getVersion() >= other.getVersion();
+        }
+        @Override
+        public String toString() {
+            return i18n().tr("Same as the input document");
+        }
+    }
+}
+package org.pdfsam.core.context;
+import java.util.function.Supplier;
+public enum IntegerPersistentProperty implements PersistentProperty<Integer> {
+    LOGVIEW_ROWS_NUMBER(() -> 200);
+    private final Supplier<Integer> defaultSupplier;
+    IntegerPersistentProperty(Supplier<Integer> supplier) {
+        this.defaultSupplier = supplier;
+    }
+    @Override
+    public String key() {
+        return this.name().toLowerCase();
+    }
+    @Override
+    public Supplier<Integer> defaultSupplier() {
+        return defaultSupplier;
+    }
+}
+package org.pdfsam.core.context;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.function.Supplier;
+import static org.pdfsam.core.ConfigurableSystemProperty.LOCALE_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PDFVERSION_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.PREFIX_PROP;
+import static org.pdfsam.core.ConfigurableSystemProperty.THEME_PROP;
+public enum StringPersistentProperty implements PersistentProperty<String> {
+    WORKSPACE_PATH(() -> ""),
+    WORKING_PATH(() -> ""),
+    STARTUP_MODULE(() -> ""),
+    LOCALE(() -> System.getProperty(LOCALE_PROP)),
+    THEME(() -> System.getProperty(THEME_PROP)),
+    FONT_SIZE(() -> ""),
+    PDF_VERSION(() -> {
+        var version = System.getProperty(PDFVERSION_PROP, PdfVersion.VERSION_1_5.name());
+        try {
+            PdfVersion.valueOf(version);
+            return version;
+        } catch (IllegalArgumentException e) {
+            return PdfVersion.VERSION_1_5.name();
+        }
+    }),
+    PREFIX(() -> System.getProperty(PREFIX_PROP, "PDFsam_"));
+    private final Supplier<String> defaultSupplier;
+    StringPersistentProperty(Supplier<String> supplier) {
+        this.defaultSupplier = supplier;
+    }
+    @Override
+    public String key() {
+        return this.name().toLowerCase();
+    }
+    @Override
+    public Supplier<String> defaultSupplier() {
+        return defaultSupplier;
+    }
+}
+package org.pdfsam.core.context;
+import java.util.Optional;
+public record PersistentPropertyChange<T>(PersistentProperty<T> property, Optional<T> value) {
+}
+package org.pdfsam.ui.components.io;
+import org.pdfsam.core.context.ApplicationContext;
+import org.pdfsam.core.support.params.MultipleOutputTaskParametersBuilder;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.model.ui.NonExistingOutputDirectoryEvent;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.sejda.model.parameter.base.SingleOrMultipleOutputTaskParameters;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.function.Consumer;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+import static org.pdfsam.core.support.validation.Validators.and;
+import static org.pdfsam.core.support.validation.Validators.nonBlank;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.sejda.model.output.FileOrDirectoryTaskOutput.directory;
+public class BrowsableOutputDirectoryField extends BrowsableDirectoryField
+        implements TaskParametersBuildStep<MultipleOutputTaskParametersBuilder<?>> {
+    public BrowsableOutputDirectoryField() {
+        this(app());
+    }
+    BrowsableOutputDirectoryField(ApplicationContext context) {
+        context.persistentSettings().get(WORKING_PATH).ifPresent(getTextField()::setText);
+        getTextField().setValidator(and(nonBlank(), v -> !Files.isRegularFile(Paths.get(v))));
+    }
+    @Override
+    public void apply(MultipleOutputTaskParametersBuilder<? extends SingleOrMultipleOutputTaskParameters> builder,
+            Consumer<String> onError) {
+        getTextField().validate();
+        if (getTextField().getValidationState() == FXValidationSupport.ValidationState.VALID) {
+            var output = Paths.get(getTextField().getText());
+            if (!Files.exists(output)) {
+                eventStudio().broadcast(new NonExistingOutputDirectoryEvent(output));
+            }
+            if (Files.isDirectory(output)) {
+                builder.output(directory(output.toFile()));
+            } else {
+                onError.accept(i18n().tr("An existing output directory is required"));
+            }
+        } else {
+            onError.accept(i18n().tr("The output directory is required"));
+        }
+    }
+}
+package org.pdfsam.gui.components.content.log;
+import jakarta.inject.Inject;
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.SelectionMode;
+import javafx.stage.Window;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.ui.components.support.CircularObservableList;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.core.context.IntegerPersistentProperty.LOGVIEW_ROWS_NUMBER;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+class LogListView extends ListView<LogMessage> {
+    @Inject
+    public LogListView() {
+        CircularObservableList<LogMessage> items = new CircularObservableList<>(
+                app().persistentSettings().get(LOGVIEW_ROWS_NUMBER));
+        eventStudio().add(MaxLogRowsChangedEvent.class,
+                e -> items.setMaxCapacity(app().persistentSettings().get(LOGVIEW_ROWS_NUMBER)));
+        setId("log-view");
+        setItems(items);
+        getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+        setCellFactory(list -> new TextCell());
+        eventStudio().addAnnotatedListeners(this);
+    }
+    static class TextCell extends ListCell<LogMessage> {
+        @Override
+        public void updateItem(LogMessage item, boolean empty) {
+            super.updateItem(item, empty);
+            for (LogLevel current : LogLevel.values()) {
+                getStyleClass().remove(current.style());
+            }
+            if (nonNull(item)) {
+                setText(item.message());
+                getStyleClass().add(item.level().style());
+            } else {
+                setText("");
+            }
+        }
+    }
+    @EventListener
+    public void onEvent(LogMessage event) {
+        Platform.runLater(() -> {
+            getItems().add(event);
+            scrollToBottomIfShowing();
+        });
+    }
+    public void scrollToBottomIfShowing() {
+        if (!getItems().isEmpty()
+                && ofNullable(this.getScene()).map(Scene::getWindow).map(Window::isShowing).orElse(Boolean.TRUE)) {
+            scrollTo(getItems().size() - 1);
+        }
+    }
+}
+package org.pdfsam.gui.components.dialog;
+import jakarta.inject.Inject;
+import jakarta.inject.Provider;
+import org.pdfsam.core.context.BooleanPersistentProperty;
+import org.pdfsam.eventstudio.annotation.EventListener;
+import org.pdfsam.injector.Auto;
+import org.pdfsam.model.tool.ClearToolRequest;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+@Auto
+public class ClearToolConfirmationDialogController {
+    private final Provider<ClearToolConfirmationDialog> dialog;
+    @Inject
+    public ClearToolConfirmationDialogController(Provider<ClearToolConfirmationDialog> dialog) {
+        this.dialog = dialog;
+        eventStudio().addAnnotatedListeners(this);
+    }
+    @EventListener
+    public void request(ClearToolRequest event) {
+        if (!app().persistentSettings().get(BooleanPersistentProperty.CLEAR_CONFIRMATION) || !event.askConfirmation()
+                || dialog.get().clearEverything(event.clearEverything()).response()) {
+            eventStudio().broadcast(event, event.toolBinding());
+        }
+    }
+}
+package org.pdfsam.gui.components.content.preference;
+import jakarta.inject.Named;
+import javafx.util.Subscription;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.core.support.validation.Validators;
+import org.pdfsam.gui.components.content.log.MaxLogRowsChangedEvent;
+import org.pdfsam.gui.theme.Themes;
+import org.pdfsam.injector.Provides;
+import org.pdfsam.model.io.FileType;
+import org.pdfsam.model.io.OpenType;
+import org.pdfsam.model.ui.ComboItem;
+import org.pdfsam.model.ui.DefaultPdfVersionComboItem;
+import org.pdfsam.ui.components.support.FXValidationSupport;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.pdf.PdfVersion;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.stream.IntStream;
+import static java.util.Comparator.comparing;
+import static java.util.Objects.nonNull;
+import static java.util.Optional.ofNullable;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CHECK_FOR_NEWS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CHECK_UPDATES;
+import static org.pdfsam.core.context.BooleanPersistentProperty.CLEAR_CONFIRMATION;
+import static org.pdfsam.core.context.BooleanPersistentProperty.DISCARD_BOOKMARKS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.DONATION_NOTIFICATION;
+import static org.pdfsam.core.context.BooleanPersistentProperty.OVERWRITE_OUTPUT;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PDF_COMPRESSION_ENABLED;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PLAY_SOUNDS;
+import static org.pdfsam.core.context.BooleanPersistentProperty.PREMIUM_MODULES;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SAVE_PWD_IN_WORKSPACE;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SAVE_WORKSPACE_ON_EXIT;
+import static org.pdfsam.core.context.BooleanPersistentProperty.SMART_OUTPUT;
+import static org.pdfsam.core.context.IntegerPersistentProperty.LOGVIEW_ROWS_NUMBER;
+import static org.pdfsam.core.context.StringPersistentProperty.FONT_SIZE;
+import static org.pdfsam.core.context.StringPersistentProperty.PDF_VERSION;
+import static org.pdfsam.core.context.StringPersistentProperty.STARTUP_MODULE;
+import static org.pdfsam.core.context.StringPersistentProperty.THEME;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKING_PATH;
+import static org.pdfsam.core.context.StringPersistentProperty.WORKSPACE_PATH;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.model.ui.ComboItem.keyWithEmptyValue;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+public class PreferenceConfig {
+    @Provides
+    @Named("localeCombo")
+    public PreferenceComboBox<ComboItem<String>> localeCombo() {
+        return new PreferenceComboBox<>(StringPersistentProperty.LOCALE);
+    }
+    @Provides
+    @Named("startupToolCombo")
+    public PreferenceComboBox<ComboItem<String>> startupToolCombo() {
+        PreferenceComboBox<ComboItem<String>> startupToolCombo = new PreferenceComboBox<>(STARTUP_MODULE);
+        startupToolCombo.setId("startupModuleCombo");
+        startupToolCombo.getItems().add(new ComboItem<>("", i18n().tr("Home")));
+        app().runtimeState().tools().values().stream().map(tool -> new ComboItem<>(tool.id(), tool.descriptor().name()))
+                .sorted(comparing(ComboItem::description)).forEach(startupToolCombo.getItems()::add);
+        startupToolCombo.setValue(keyWithEmptyValue(app().persistentSettings().get(STARTUP_MODULE).orElse("")));
+        return startupToolCombo;
+    }
+    @Provides
+    @Named("themeCombo")
+    public PreferenceComboBox<ComboItem<String>> themeCombo() {
+        PreferenceComboBox<ComboItem<String>> themeCombo = new PreferenceComboBox<>(THEME);
+        themeCombo.setId("themeCombo");
+        Themes.themes().entrySet().stream().sorted(Comparator.comparing(e -> e.getValue().name()))
+                .map(entry -> new ComboItem<>(entry.getKey(), entry.getValue().name()))
+                .forEach(themeCombo.getItems()::add);
+        final Subscription[] subscription = new Subscription[1];
+        subscription[0] = app().runtimeState().theme().subscribe(t -> {
+            if (nonNull(t)) {
+                themeCombo.setValue(new ComboItem<>(t.id(), t.name()));
+                themeCombo.valueProperty().addListener(
+                        (observable, oldVal, newVal) -> ofNullable(Themes.get(newVal.key())).ifPresent(
+                                theme -> app().runtimeState().theme(theme)));
+                ofNullable(subscription[0]).ifPresent(Subscription::unsubscribe);
+            }
+        });
+        return themeCombo;
+    }
+    @Provides
+    @Named("fontSizeCombo")
+    public PreferenceComboBox<ComboItem<String>> fontSizeCombo() {
+        PreferenceComboBox<ComboItem<String>> fontSizeCombo = new PreferenceComboBox<>(FONT_SIZE);
+        fontSizeCombo.setId("fontSizeCombo");
+        fontSizeCombo.getItems().add(new ComboItem<>("", i18n().tr("System default")));
+        IntStream.range(9, 22).forEach(i -> fontSizeCombo.getItems().add(new ComboItem<>(i + "px", i + "px")));
+        fontSizeCombo.setValue(keyWithEmptyValue(app().persistentSettings().get(FONT_SIZE).orElse("")));
+        return fontSizeCombo;
+    }
+    @Provides
+    @Named("pdfVersionCombo")
+    public PreferenceComboBox<ComboItem<PdfVersion>> pdfVersionCombo() {
+        PreferenceComboBox<ComboItem<PdfVersion>> pdfVersionCombo = new PreferenceComboBox<>(PDF_VERSION);
+        pdfVersionCombo.setId("pdfVersionCombo");
+        pdfVersionCombo.getItems().addAll(Arrays.stream(PdfVersion.values())
+                .filter(v -> v.getVersion() > PdfVersion.VERSION_1_2.getVersion()).map(DefaultPdfVersionComboItem::new)
+                .toList());
+        app().persistentSettings().get(StringPersistentProperty.PDF_VERSION).map(PdfVersion::valueOf)
+                .flatMap(v -> pdfVersionCombo.getItems().stream().filter(i -> i.key() == v).findFirst())
+                .ifPresent(i -> pdfVersionCombo.getSelectionModel().select(i));
+        return pdfVersionCombo;
+    }
+    @Provides
+    @Named("checkForUpdates")
+    public PreferenceCheckBox checkForUpdates() {
+        var checkForUpdates = new PreferenceCheckBox(CHECK_UPDATES, i18n().tr("Check for updates at startup"),
+                app().persistentSettings().get(CHECK_UPDATES));
+        checkForUpdates.setId("checkForUpdates");
+        checkForUpdates.setGraphic(helpIcon(
+                i18n().tr("Set whether new version availability should be checked on startup (restart needed)")));
+        checkForUpdates.getStyleClass().addAll(Style.WITH_HELP.css());
+        checkForUpdates.getStyleClass().addAll(Style.VITEM.css());
+        return checkForUpdates;
+    }
+    @Provides
+    @Named("checkForNews")
+    public PreferenceCheckBox checkForNews() {
+        var checkForNews = new PreferenceCheckBox(CHECK_FOR_NEWS, i18n().tr("Check for news at startup"),
+                app().persistentSettings().get(CHECK_FOR_NEWS));
+        checkForNews.setId("checkForNews");
+        checkForNews.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should check for news availability on startup (restart needed)")));
+        checkForNews.getStyleClass().addAll(Style.WITH_HELP.css());
+        checkForNews.getStyleClass().addAll(Style.VITEM.css());
+        return checkForNews;
+    }
+    @Provides
+    @Named("compressionEnabled")
+    public PreferenceCheckBox compressionEnabled() {
+        var compressionEnabled = new PreferenceCheckBox(PDF_COMPRESSION_ENABLED, i18n().tr("Enabled PDF compression"),
+                app().persistentSettings().get(PDF_COMPRESSION_ENABLED));
+        compressionEnabled.setId("compressionEnabled");
+        compressionEnabled.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Compress output file\" should be enabled by default")));
+        compressionEnabled.getStyleClass().addAll(Style.WITH_HELP.css());
+        compressionEnabled.getStyleClass().addAll(Style.VITEM.css());
+        return compressionEnabled;
+    }
+    @Provides
+    @Named("discardBookmarks")
+    public PreferenceCheckBox discardBookmarks() {
+        var discardBookmarks = new PreferenceCheckBox(DISCARD_BOOKMARKS, i18n().tr("Discard bookmarks"),
+                app().persistentSettings().get(DISCARD_BOOKMARKS));
+        discardBookmarks.setId("discardBookmarks");
+        discardBookmarks.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Discard bookmarks\" should be enabled by default")));
+        discardBookmarks.getStyleClass().addAll(Style.WITH_HELP.css());
+        discardBookmarks.getStyleClass().addAll(Style.VITEM.css());
+        return discardBookmarks;
+    }
+    @Provides
+    @Named("prefixField")
+    public PreferencePrefixField prefixField() {
+        return new PreferencePrefixField();
+    }
+    @Provides
+    @Named("overwriteOutput")
+    public PreferenceCheckBox overwriteOutput() {
+        var overwriteOutput = new PreferenceCheckBox(OVERWRITE_OUTPUT, i18n().tr("Overwrite files"),
+                app().persistentSettings().get(OVERWRITE_OUTPUT));
+        overwriteOutput.setId("overwriteOutput");
+        overwriteOutput.setGraphic(
+                helpIcon(i18n().tr("Set whether \"Overwrite if already exists\" should be enabled by default")));
+        overwriteOutput.getStyleClass().addAll(Style.WITH_HELP.css());
+        overwriteOutput.getStyleClass().addAll(Style.VITEM.css());
+        return overwriteOutput;
+    }
+    @Provides
+    @Named("playSounds")
+    public PreferenceCheckBox playSounds() {
+        var playSounds = new PreferenceCheckBox(PLAY_SOUNDS, i18n().tr("Play alert sounds"),
+                app().persistentSettings().get(PLAY_SOUNDS));
+        playSounds.setId("playSounds");
+        playSounds.setGraphic(helpIcon(i18n().tr("Turn on or off alert sounds")));
+        playSounds.getStyleClass().addAll(Style.WITH_HELP.css());
+        playSounds.getStyleClass().addAll(Style.VITEM.css());
+        return playSounds;
+    }
+    @Provides
+    @Named("savePwdInWorkspace")
+    public PreferenceCheckBox savePwdInWorkspace() {
+        var savePwdInWorkspace = new PreferenceCheckBox(SAVE_PWD_IN_WORKSPACE,
+                i18n().tr("Store passwords when saving a workspace file"),
+                app().persistentSettings().get(SAVE_PWD_IN_WORKSPACE));
+        savePwdInWorkspace.setId("savePwdInWorkspace");
+        savePwdInWorkspace.setGraphic(helpIcon(i18n().tr(
+                "If an encrypted PDF document has been opened with a password, save the password in the workspace file")));
+        savePwdInWorkspace.getStyleClass().addAll(Style.WITH_HELP.css());
+        savePwdInWorkspace.getStyleClass().addAll(Style.VITEM.css());
+        return savePwdInWorkspace;
+    }
+    @Provides
+    @Named("donationNotification")
+    public PreferenceCheckBox donationNotification() {
+        var donationNotification = new PreferenceCheckBox(DONATION_NOTIFICATION, i18n().tr("Show donation window"),
+                app().persistentSettings().get(DONATION_NOTIFICATION));
+        donationNotification.setId("donationNotification");
+        donationNotification.setGraphic(helpIcon(i18n().tr(
+                "Turn on or off the notification appearing once in a while and asking the user to support PDFsam with a donation")));
+        donationNotification.getStyleClass().addAll(Style.WITH_HELP.css());
+        donationNotification.getStyleClass().addAll(Style.VITEM.css());
+        return donationNotification;
+    }
+    @Provides
+    @Named("fetchPremiumModules")
+    public PreferenceCheckBox fetchPremiumModules() {
+        var fetchPremiumModules = new PreferenceCheckBox(PREMIUM_MODULES, i18n().tr("Show premium features"),
+                app().persistentSettings().get(PREMIUM_MODULES));
+        fetchPremiumModules.setId("fetchPremiumModules");
+        fetchPremiumModules.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should fetch and show premium features description in the modules dashboard")));
+        fetchPremiumModules.getStyleClass().addAll(Style.WITH_HELP.css());
+        fetchPremiumModules.getStyleClass().addAll(Style.VITEM.css());
+        return fetchPremiumModules;
+    }
+    @Provides
+    @Named("clearConfirmation")
+    public PreferenceCheckBox clearConfirmation() {
+        var clearConfirmation = new PreferenceCheckBox(CLEAR_CONFIRMATION,
+                i18n().tr("Ask for a confirmation when clearing the selection table"),
+                app().persistentSettings().get(CLEAR_CONFIRMATION));
+        clearConfirmation.setId("clearConfirmation");
+        clearConfirmation.setGraphic(helpIcon(i18n().tr(
+                "Set whether the application should ask for a confirmation when clearing the selection table")));
+        clearConfirmation.getStyleClass().addAll(Style.WITH_HELP.css());
+        clearConfirmation.getStyleClass().addAll(Style.VITEM.css());
+        return clearConfirmation;
+    }
+    @Provides
+    @Named("smartRadio")
+    public PreferenceRadioButton smartRadio() {
+        var smartRadio = new PreferenceRadioButton(SMART_OUTPUT,
+                i18n().tr("Use the selected PDF document directory as output directory"),
+                app().persistentSettings().get(SMART_OUTPUT));
+        smartRadio.setId("smartRadio");
+        return smartRadio;
+    }
+    @Provides
+    @Named("workingDirectory")
+    public PreferenceBrowsableDirectoryField workingDirectory() {
+        var workingDirectory = new PreferenceBrowsableDirectoryField(WORKING_PATH);
+        workingDirectory.getTextField().setText(app().persistentSettings().get(WORKING_PATH).orElse(""));
+        workingDirectory.setId("workingDirectory");
+        return workingDirectory;
+    }
+    @Provides
+    @Named("workspace")
+    public PreferenceBrowsableFileField workspace() {
+        var workspace = new PreferenceBrowsableFileField(WORKSPACE_PATH, FileType.JSON, OpenType.OPEN);
+        workspace.getTextField().setText(app().persistentSettings().get(WORKSPACE_PATH).orElse(""));
+        workspace.setId("workspace");
+        return workspace;
+    }
+    @Provides
+    @Named("saveWorkspaceOnExit")
+    public PreferenceCheckBox saveWorkspaceOnExit() {
+        var saveWorkspaceOnExit = new PreferenceCheckBox(SAVE_WORKSPACE_ON_EXIT,
+                i18n().tr("Save default workspace on exit"), app().persistentSettings().get(SAVE_WORKSPACE_ON_EXIT));
+        saveWorkspaceOnExit.setId("saveWorkspaceOnExit");
+        saveWorkspaceOnExit.setGraphic(
+                helpIcon(i18n().tr("If a default workspace is set, save it on application exit")));
+        saveWorkspaceOnExit.getStyleClass().addAll(Style.WITH_HELP.css());
+        saveWorkspaceOnExit.getStyleClass().add("spaced-vitem");
+        return saveWorkspaceOnExit;
+    }
+    @Provides
+    @Named("logViewRowsNumber")
+    public PreferenceIntTextField logViewRowsNumber() {
+        var logRowsNumber = new PreferenceIntTextField(LOGVIEW_ROWS_NUMBER, Validators.positiveInteger());
+        logRowsNumber.setText(Integer.toString(app().persistentSettings().get(LOGVIEW_ROWS_NUMBER)));
+        logRowsNumber.setErrorMessage(i18n().tr("Maximum number of rows mast be a positive number"));
+        logRowsNumber.setId("logViewRowsNumber");
+        logRowsNumber.validProperty().addListener((o, oldVal, newVal) -> {
+            if (newVal == FXValidationSupport.ValidationState.VALID) {
+                eventStudio().broadcast(new MaxLogRowsChangedEvent());
+            }
+        });
+        return logRowsNumber;
+    }
+}
+package org.pdfsam.gui.components.content.preference;
+import org.pdfsam.core.context.ApplicationContext;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.ui.components.prefix.PrefixField;
+import org.sejda.model.prefix.Prefix;
+import static org.pdfsam.core.context.ApplicationContext.app;
+public class PreferencePrefixField extends PrefixField {
+    PreferencePrefixField() {
+        this(app());
+    }
+    PreferencePrefixField(ApplicationContext context) {
+        setText(context.persistentSettings().get(StringPersistentProperty.PREFIX).orElse("PDFsam_"));
+        addMenuItemFor(Prefix.FILENUMBER);
+        addMenuItemFor(Prefix.CURRENTPAGE);
+        addMenuItemFor(Prefix.BOOKMARK);
+        addMenuItemFor(Prefix.BOOKMARK_STRICT);
+        addMenuItemFor("[TOTAL_FILESNUMBER]");
+        focusedProperty().addListener((o, oldVal, newVal) -> {
+            if (!newVal) {
+                context.persistentSettings().set(StringPersistentProperty.PREFIX, getText());
+            }
+        });
+    }
+}
+package org.pdfsam.ui.components.prefix;
+import javafx.geometry.HPos;
+import javafx.geometry.VPos;
+import javafx.scene.control.Label;
+import javafx.scene.layout.GridPane;
+import org.pdfsam.core.context.StringPersistentProperty;
+import org.pdfsam.core.support.params.MultipleOutputTaskParametersBuilder;
+import org.pdfsam.core.support.params.TaskParametersBuildStep;
+import org.pdfsam.model.tool.TaskExecutionRequest;
+import org.pdfsam.model.tool.ToolBound;
+import org.pdfsam.model.ui.ResettableView;
+import org.pdfsam.model.ui.workspace.RestorableView;
+import org.pdfsam.persistence.PreferencesRepository;
+import org.pdfsam.ui.components.support.Style;
+import org.sejda.model.prefix.Prefix;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.pdfsam.core.context.ApplicationContext.app;
+import static org.pdfsam.eventstudio.StaticStudio.eventStudio;
+import static org.pdfsam.i18n.I18nContext.i18n;
+import static org.pdfsam.ui.components.support.Views.helpIcon;
+public class PrefixPane extends GridPane
+        implements TaskParametersBuildStep<MultipleOutputTaskParametersBuilder<?>>, RestorableView, ResettableView,
+        ToolBound {
+    private final PrefixField field;
+    private final String toolBinding;
+    private final PreferencesRepository repository;
+    public PrefixPane(String toolBinding, PreferencesRepository repository) {
+        this.toolBinding = defaultString(toolBinding);
+        this.repository = repository;
+        this.field = new PrefixField();
+        this.initPrefixValue();
+        getStyleClass().addAll(Style.CONTAINER.css());
+        getStyleClass().addAll(Style.GRID.css());
+        var label = new Label(i18n().tr("Generated PDF documents name prefix:"));
+        GridPane.setValignment(label, VPos.BOTTOM);
+        GridPane.setHalignment(label, HPos.LEFT);
+        add(label, 0, 0);
+        GridPane.setValignment(field, VPos.BOTTOM);
+        GridPane.setHalignment(field, HPos.LEFT);
+        add(field, 1, 0);
+        var helpIcon = helpIcon("""
+                %s
+                %s
+                %s
+                """.formatted(i18n().tr("Prefix for the output files name."),
+                i18n().tr("Some special keywords are replaced with runtime values."),
+                i18n().tr("Right click to add these keywords.")));
+        GridPane.setValignment(helpIcon, VPos.CENTER);
+        add(helpIcon, 2, 0);
+        eventStudio().add(TaskExecutionRequest.class, e -> {
+            if (toolBinding.equals(e.toolId())) {
+                repository.saveString("DEFAULT_PREFIX", field.getText());
+            }
+        });
+    }
+    public void addMenuItemFor(Prefix... prefixes) {
+        field.addMenuItemFor(prefixes);
+    }
+    public void addMenuItemFor(String... prefixes) {
+        field.addMenuItemFor(prefixes);
+    }
+    public final String getText() {
+        return field.getText();
+    }
+    @Override
+    public void resetView() {
+        this.initPrefixValue();
+    }
+    public void initPrefixValue() {
+        field.setText(repository.getString("DEFAULT_PREFIX",
+                () -> app().persistentSettings().get(StringPersistentProperty.PREFIX).orElse("PDFsam_")));
+    }
+    @Override
+    public String toolBinding() {
+        return toolBinding;
+    }
+    @Override
+    public void apply(MultipleOutputTaskParametersBuilder<?> builder, Consumer<String> onError) {
+        builder.prefix(getText());
+    }
+    @Override
+    public void saveStateTo(Map<String, String> data) {
+        data.put(defaultString(getId()) + "prefix", defaultString(field.getText()));
+    }
+    @Override
+    public void restoreStateFrom(Map<String, String> data) {
+        field.setText(Optional.ofNullable(data.get(defaultString(getId()) + "prefix")).orElse(EMPTY));
+    }
+}

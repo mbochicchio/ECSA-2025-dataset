@@ -1,0 +1,4400 @@
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2024 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.CharMatcher;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableBiMap;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.common.Appender;
+import org.sosy_lab.common.Appenders;
+import org.sosy_lab.java_smt.api.ArrayFormulaManager;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.EnumerationFormulaManager;
+import org.sosy_lab.java_smt.api.FloatingPointFormulaManager;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaManager;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.ArrayFormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.BitvectorType;
+import org.sosy_lab.java_smt.api.FormulaType.FloatingPointType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+import org.sosy_lab.java_smt.api.IntegerFormulaManager;
+import org.sosy_lab.java_smt.api.RationalFormulaManager;
+import org.sosy_lab.java_smt.api.SLFormulaManager;
+import org.sosy_lab.java_smt.api.SolverException;
+import org.sosy_lab.java_smt.api.StringFormulaManager;
+import org.sosy_lab.java_smt.api.Tactic;
+import org.sosy_lab.java_smt.api.visitors.FormulaTransformationVisitor;
+import org.sosy_lab.java_smt.api.visitors.FormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.TraversalProcess;
+import org.sosy_lab.java_smt.basicimpl.tactics.NNFVisitor;
+import org.sosy_lab.java_smt.utils.SolverUtils;
+/**
+ * Simplifies building a solver from the specific theories.
+ *
+ * @param <TFormulaInfo> The solver specific type.
+ */
+@SuppressWarnings("ClassTypeParameterName")
+public abstract class AbstractFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+    implements FormulaManager {
+  /**
+   * Avoid using basic mathematical or logical operators of SMT-LIB2 as names for symbols.
+   *
+   * <p>We do not accept some names as identifiers for variables or UFs, because they easily
+   * misguide the user. Most solvers even would allow such identifiers directly, currently only
+   * SMTInterpol has problems with some of them. For consistency, we disallow those names for all
+   * solvers.
+   */
+  @VisibleForTesting
+  public static final ImmutableSet<String> BASIC_OPERATORS =
+      ImmutableSet.of("!", "+", "-", "*", "/", "%", "=", "<", ">", "<=", ">=");
+  /**
+   * Avoid using basic keywords of SMT-LIB2 as names for symbols.
+   *
+   * <p>We do not accept some names as identifiers for variables or UFs, because they easily
+   * misguide the user. Most solvers even would allow such identifiers directly, currently only
+   * SMTInterpol has problems with some of them. For consistency, we disallow those names for all
+   * solvers.
+   */
+  @VisibleForTesting
+  public static final ImmutableSet<String> SMTLIB2_KEYWORDS =
+      ImmutableSet.of("true", "false", "and", "or", "select", "store", "xor", "distinct", "let");
+  /**
+   * Avoid using escape characters of SMT-LIB2 as part of names for symbols.
+   *
+   * <p>We do not accept some names as identifiers for variables or UFs, because they easily
+   * misguide the user. Most solvers even would allow such identifiers directly, currently only
+   * SMTInterpol has problems with some of them. For consistency, we disallow those names for all
+   * solvers.
+   */
+  private static final CharMatcher DISALLOWED_CHARACTERS = CharMatcher.anyOf("|\\");
+  /** Mapping of disallowed char to their escaped counterparts. */
+  /* Keep this map in sync with {@link #DISALLOWED_CHARACTERS}.
+   * Counterparts can be any unique string. For optimization, we could even use plain chars. */
+  @VisibleForTesting
+  public static final ImmutableBiMap<Character, String> DISALLOWED_CHARACTER_REPLACEMENT =
+      ImmutableBiMap.of('|', "pipe", '\\', "backslash");
+  private static final char ESCAPE = '$'; // just some allowed symbol, can be any char
+  private final @Nullable AbstractArrayFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      arrayManager;
+  private final AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> booleanManager;
+  private final @Nullable IntegerFormulaManager integerManager;
+  private final @Nullable RationalFormulaManager rationalManager;
+  private final @Nullable AbstractBitvectorFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      bitvectorManager;
+  private final @Nullable AbstractFloatingPointFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      floatingPointManager;
+  private final AbstractUFManager<TFormulaInfo, ?, TType, TEnv> functionManager;
+  private final @Nullable AbstractQuantifiedFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      quantifiedManager;
+  private final @Nullable AbstractSLFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> slManager;
+  private final @Nullable AbstractStringFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      strManager;
+  private final @Nullable AbstractEnumerationFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      enumManager;
+  private final FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> formulaCreator;
+  /** Builds a solver from the given theory implementations. */
+  @SuppressWarnings("checkstyle:parameternumber")
+  protected AbstractFormulaManager(
+      FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> pFormulaCreator,
+      AbstractUFManager<TFormulaInfo, ?, TType, TEnv> functionManager,
+      AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> booleanManager,
+      @Nullable IntegerFormulaManager pIntegerManager,
+      @Nullable RationalFormulaManager pRationalManager,
+      @Nullable AbstractBitvectorFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+          bitvectorManager,
+      @Nullable AbstractFloatingPointFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+          floatingPointManager,
+      @Nullable AbstractQuantifiedFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+          quantifiedManager,
+      @Nullable AbstractArrayFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> arrayManager,
+      @Nullable AbstractSLFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> slManager,
+      @Nullable AbstractStringFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> strManager,
+      @Nullable AbstractEnumerationFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+          enumManager) {
+    this.arrayManager = arrayManager;
+    this.quantifiedManager = quantifiedManager;
+    this.functionManager = checkNotNull(functionManager, "function manager needed");
+    this.booleanManager = checkNotNull(booleanManager, "boolean manager needed");
+    this.integerManager = pIntegerManager;
+    this.rationalManager = pRationalManager;
+    this.bitvectorManager = bitvectorManager;
+    this.floatingPointManager = floatingPointManager;
+    this.slManager = slManager;
+    this.strManager = strManager;
+    this.enumManager = enumManager;
+    this.formulaCreator = pFormulaCreator;
+    checkArgument(
+        booleanManager.getFormulaCreator() == formulaCreator
+            && functionManager.getFormulaCreator() == formulaCreator
+            && !(bitvectorManager != null && bitvectorManager.getFormulaCreator() != formulaCreator)
+            && !(floatingPointManager != null
+                && floatingPointManager.getFormulaCreator() != formulaCreator)
+            && !(quantifiedManager != null
+                && quantifiedManager.getFormulaCreator() != formulaCreator),
+        "The creator instances must match across the managers!");
+  }
+  public final FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> getFormulaCreator() {
+    return formulaCreator;
+  }
+  @Override
+  public IntegerFormulaManager getIntegerFormulaManager() {
+    if (integerManager == null) {
+      throw new UnsupportedOperationException("Solver does not support integer theory");
+    }
+    return integerManager;
+  }
+  @Override
+  public RationalFormulaManager getRationalFormulaManager() {
+    if (rationalManager == null) {
+      throw new UnsupportedOperationException("Solver does not support rationals theory");
+    }
+    return rationalManager;
+  }
+  @Override
+  public AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      getBooleanFormulaManager() {
+    return booleanManager;
+  }
+  @Override
+  public AbstractBitvectorFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      getBitvectorFormulaManager() {
+    if (bitvectorManager == null) {
+      throw new UnsupportedOperationException("Solver does not support bitvector theory");
+    }
+    return bitvectorManager;
+  }
+  @Override
+  public FloatingPointFormulaManager getFloatingPointFormulaManager() {
+    if (floatingPointManager == null) {
+      throw new UnsupportedOperationException("Solver does not support floating point theory");
+    }
+    return floatingPointManager;
+  }
+  @Override
+  public AbstractUFManager<TFormulaInfo, ?, TType, TEnv> getUFManager() {
+    return functionManager;
+  }
+  @Override
+  public SLFormulaManager getSLFormulaManager() {
+    if (slManager == null) {
+      throw new UnsupportedOperationException("Solver does not support separation logic theory");
+    }
+    return slManager;
+  }
+  @Override
+  public AbstractQuantifiedFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+      getQuantifiedFormulaManager() {
+    if (quantifiedManager == null) {
+      throw new UnsupportedOperationException("Solver does not support quantification");
+    }
+    return quantifiedManager;
+  }
+  @Override
+  public ArrayFormulaManager getArrayFormulaManager() {
+    if (arrayManager == null) {
+      throw new UnsupportedOperationException("Solver does not support arrays");
+    }
+    return arrayManager;
+  }
+  @Override
+  public StringFormulaManager getStringFormulaManager() {
+    if (strManager == null) {
+      throw new UnsupportedOperationException("Solver does not support string theory");
+    }
+    return strManager;
+  }
+  @Override
+  public EnumerationFormulaManager getEnumerationFormulaManager() {
+    if (enumManager == null) {
+      throw new UnsupportedOperationException("Solver does not support enumeration theory");
+    }
+    return enumManager;
+  }
+  protected abstract TFormulaInfo parseImpl(String formulaStr) throws IllegalArgumentException;
+  /**
+   * Takes a SMT-LIB2 script and cleans it up.
+   *
+   * <p>We remove all comments and put each command on its own line. Declarations and asserts are
+   * kept and everything else is removed. For <code>(set-logic ..)</code> we make sure that it's at
+   * the top of the file before removing it, and for <code>(exit)</code> we make sure that it can
+   * only occur as the last command.
+   */
+  private String sanitize(String formulaStr) {
+    List<String> tokens = Tokenizer.tokenize(formulaStr);
+    StringBuilder builder = new StringBuilder();
+    int pos = 0; // index of the current token
+    for (String token : tokens) {
+      if (Tokenizer.isSetLogicToken(token)) {
+        // Skip the (set-logic ...) command at the beginning of the input
+        Preconditions.checkArgument(pos == 0);
+      } else if (Tokenizer.isExitToken(token)) {
+        // Skip the (exit) command at the end of the input
+        Preconditions.checkArgument(pos == tokens.size() - 1);
+      } else if (Tokenizer.isDeclarationToken(token)
+          || Tokenizer.isDefinitionToken(token)
+          || Tokenizer.isAssertToken(token)) {
+        // Keep only declaration, definitions and assertion
+        builder.append(token).append('\n');
+      } else if (Tokenizer.isForbiddenToken(token)) {
+        // Throw an exception if the script contains commands like (pop) or (reset) that change the
+        // state of the assertion stack.
+        // We could keep track of the state of the stack and only consider the formulas that remain
+        // on the stack at the end of the script. However, this does not seem worth it at the
+        // moment. If needed, this feature can still be added later.
+        String message;
+        if (Tokenizer.isPushToken(token)) {
+          message = "(push ...)";
+        } else if (Tokenizer.isPopToken(token)) {
+          message = "(pop ...)";
+        } else if (Tokenizer.isResetAssertionsToken(token)) {
+          message = "(reset-assertions)";
+        } else if (Tokenizer.isResetToken(token)) {
+          message = "(reset)";
+        } else {
+          // Should be unreachable
+          throw new UnsupportedOperationException();
+        }
+        throw new IllegalArgumentException(
+            String.format("SMTLIB command '%s' is not supported when parsing formulas.", message));
+      } else {
+        // Remove everything else
+      }
+      pos++;
+    }
+    return builder.toString();
+  }
+  @Override
+  public BooleanFormula parse(String formulaStr) throws IllegalArgumentException {
+    return formulaCreator.encapsulateBoolean(parseImpl(sanitize(formulaStr)));
+  }
+  protected abstract String dumpFormulaImpl(TFormulaInfo t) throws IOException;
+  @Override
+  public Appender dumpFormula(BooleanFormula t) {
+    return new Appenders.AbstractAppender() {
+      @Override
+      public void appendTo(Appendable out) throws IOException {
+        String raw = dumpFormulaImpl(formulaCreator.extractInfo(t));
+        out.append(sanitize(raw));
+      }
+    };
+  }
+  @Override
+  public final <T extends Formula> FormulaType<T> getFormulaType(T formula) {
+    return formulaCreator.getFormulaType(checkNotNull(formula));
+  }
+  // Utility methods that are handy for subclasses
+  public final TEnv getEnvironment() {
+    return getFormulaCreator().getEnv();
+  }
+  public final TFormulaInfo extractInfo(Formula f) {
+    return formulaCreator.extractInfo(f);
+  }
+  @Override
+  public BooleanFormula applyTactic(BooleanFormula f, Tactic tactic)
+      throws InterruptedException, SolverException {
+    switch (tactic) {
+      case ACKERMANNIZATION:
+        return applyUFEImpl(f);
+      case NNF:
+        return applyNNFImpl(f);
+      case TSEITIN_CNF:
+        return applyCNFImpl(f);
+      case QE_LIGHT:
+        return applyQELightImpl(f);
+      default:
+        throw new UnsupportedOperationException("Unexpected enum value");
+    }
+  }
+  /** Eliminate UFs from the given input formula. */
+  protected BooleanFormula applyUFEImpl(BooleanFormula pF) {
+    return SolverUtils.ufElimination(this).eliminateUfs(pF);
+  }
+  /**
+   * Eliminate quantifiers from the given input formula.
+   *
+   * <p>This is the light version that does not need to eliminate all quantifiers.
+   *
+   * @throws InterruptedException Can be thrown by the native code.
+   * @throws SolverException Can be thrown by the native code.
+   */
+  protected BooleanFormula applyQELightImpl(BooleanFormula pF)
+      throws InterruptedException, SolverException {
+    // Returning the untouched formula is valid according to QE_LIGHT contract.
+    // TODO: substitution-based implementation.
+    return pF;
+  }
+  /**
+   * Apply conjunctive normal form (CNF) transformation to the given input formula.
+   *
+   * @param pF Input to apply the CNF transformation to.
+   * @throws InterruptedException Can be thrown by the native code.
+   * @throws SolverException Can be thrown by the native code.
+   */
+  protected BooleanFormula applyCNFImpl(BooleanFormula pF)
+      throws InterruptedException, SolverException {
+    // TODO: generic implementation.
+    throw new UnsupportedOperationException(
+        "Currently there is no generic implementation for CNF conversion");
+  }
+  /**
+   * Apply negation normal form (NNF) transformation to the given input formula.
+   *
+   * @throws InterruptedException Can be thrown by the native code.
+   * @throws SolverException Can be thrown by the native code.
+   */
+  protected BooleanFormula applyNNFImpl(BooleanFormula input)
+      throws InterruptedException, SolverException {
+    return getBooleanFormulaManager().transformRecursively(input, new NNFVisitor(this));
+  }
+  @Override
+  public <T extends Formula> T simplify(T f) throws InterruptedException {
+    return formulaCreator.encapsulate(formulaCreator.getFormulaType(f), simplify(extractInfo(f)));
+  }
+  /**
+   * Apply a simplification procedure for the given formula.
+   *
+   * <p>This does not need to change something, but it might simplify the formula.
+   *
+   * @throws InterruptedException Can be thrown by the native code.
+   */
+  protected TFormulaInfo simplify(TFormulaInfo f) throws InterruptedException {
+    return f;
+  }
+  @Override
+  public <R> R visit(Formula input, FormulaVisitor<R> visitor) {
+    return formulaCreator.visit(input, visitor);
+  }
+  @Override
+  public void visitRecursively(Formula pF, FormulaVisitor<TraversalProcess> pFormulaVisitor) {
+    formulaCreator.visitRecursively(pFormulaVisitor, pF);
+  }
+  @Override
+  public <T extends Formula> T transformRecursively(
+      T f, FormulaTransformationVisitor pFormulaVisitor) {
+    return formulaCreator.transformRecursively(pFormulaVisitor, f);
+  }
+  /**
+   * Extract names of all free variables in a formula.
+   *
+   * @param f The input formula
+   */
+  @Override
+  public ImmutableMap<String, Formula> extractVariables(Formula f) {
+    ImmutableMap.Builder<String, Formula> found = ImmutableMap.builder();
+    formulaCreator.extractVariablesAndUFs(f, false, found::put);
+    return found.buildOrThrow(); // visitation should not visit any symbol twice
+  }
+  /**
+   * Extract the names of all free variables and UFs in a formula.
+   *
+   * @param f The input formula
+   */
+  @Override
+  public ImmutableMap<String, Formula> extractVariablesAndUFs(Formula f) {
+    ImmutableMap.Builder<String, Formula> found = ImmutableMap.builder();
+    formulaCreator.extractVariablesAndUFs(f, true, found::put);
+    // We can find duplicate keys with different values, like UFs with distinct parameters.
+    // In such a case, we use only one appearance (the last one).
+    return found.buildKeepingLast();
+  }
+  @Override
+  public BooleanFormula translateFrom(BooleanFormula formula, FormulaManager otherManager) {
+    if (this == otherManager) {
+      return formula; // shortcut
+    }
+    return parse(otherManager.dumpFormula(formula).toString());
+  }
+  @Override
+  public <T extends Formula> T makeVariable(FormulaType<T> formulaType, String name) {
+    checkVariableName(name);
+    Formula t;
+    if (formulaType.isBooleanType()) {
+      t = booleanManager.makeVariable(name);
+    } else if (formulaType.isIntegerType()) {
+      assert integerManager != null;
+      t = integerManager.makeVariable(name);
+    } else if (formulaType.isRationalType()) {
+      assert rationalManager != null;
+      t = rationalManager.makeVariable(name);
+    } else if (formulaType.isStringType()) {
+      assert strManager != null;
+      t = strManager.makeVariable(name);
+    } else if (formulaType.isBitvectorType()) {
+      assert bitvectorManager != null;
+      t = bitvectorManager.makeVariable((BitvectorType) formulaType, name);
+    } else if (formulaType.isFloatingPointType()) {
+      assert floatingPointManager != null;
+      t = floatingPointManager.makeVariable(name, (FloatingPointType) formulaType);
+    } else if (formulaType.isArrayType()) {
+      assert arrayManager != null;
+      t = arrayManager.makeArray(name, (ArrayFormulaType<?, ?>) formulaType);
+    } else {
+      throw new IllegalArgumentException("Unknown formula type");
+    }
+    @SuppressWarnings("unchecked")
+    T out = (T) t;
+    return out;
+  }
+  @Override
+  @SuppressWarnings("unchecked")
+  public <T extends Formula> T makeApplication(
+      FunctionDeclaration<T> declaration, List<? extends Formula> args) {
+    if (declaration.getKind() == FunctionDeclarationKind.CONST) {
+      ArrayFormulaType<?, ?> arrayType = (ArrayFormulaType<?, ?>) declaration.getType();
+      Formula defaultElement = Iterables.getOnlyElement(args);
+      return (T)
+          arrayManager.makeArray(
+              arrayType.getIndexType(),
+              getFormulaType(defaultElement),
+              Iterables.getOnlyElement(args));
+    }
+    return formulaCreator.callFunction(declaration, args);
+  }
+  @Override
+  public <T extends Formula> T makeApplication(
+      FunctionDeclaration<T> declaration, Formula... args) {
+    return makeApplication(declaration, Arrays.asList(args));
+  }
+  @Override
+  public <T extends Formula> T substitute(
+      final T pF, final Map<? extends Formula, ? extends Formula> pFromToMapping) {
+    return transformRecursively(
+        pF,
+        new FormulaTransformationVisitor(this) {
+          @Override
+          public Formula visitFreeVariable(Formula f, String name) {
+            return replace(f);
+          }
+          @Override
+          public Formula visitFunction(
+              Formula f, List<Formula> newArgs, FunctionDeclaration<?> functionDeclaration) {
+            Formula out = pFromToMapping.get(f);
+            if (out == null) {
+              return makeApplication(functionDeclaration, newArgs);
+            } else {
+              return out;
+            }
+          }
+          private Formula replace(Formula f) {
+            Formula out = pFromToMapping.get(f);
+            if (out == null) {
+              return f;
+            } else {
+              return out;
+            }
+          }
+        });
+  }
+  /**
+   * Check whether the given String can be used as symbol/name for variables or undefined functions.
+   * We disallow some keywords from SMTLib2 and other basic operators to be used as symbols.
+   *
+   * <p>This method must be kept in sync with {@link #checkVariableName}.
+   */
+  @Override
+  public final boolean isValidName(String pVar) {
+    if (pVar.isEmpty()) {
+      return false;
+    }
+    if (BASIC_OPERATORS.contains(pVar)) {
+      return false;
+    }
+    if (SMTLIB2_KEYWORDS.contains(pVar)) {
+      return false;
+    }
+    if (DISALLOWED_CHARACTERS.matchesAnyOf(pVar)) {
+      return false;
+    }
+    return true;
+  }
+  /**
+   * This method is similar to {@link #isValidName} and throws an exception for invalid symbol
+   * names. While {@link #isValidName} can be used from users, this method should be used internally
+   * to validate user-given symbol names.
+   *
+   * <p>This method must be kept in sync with {@link #isValidName}.
+   */
+  @VisibleForTesting
+  public static void checkVariableName(final String variableName) {
+    final String help = "Use FormulaManager#isValidName to check your identifier before using it.";
+    Preconditions.checkArgument(
+        !variableName.isEmpty(), "Identifier for variable should not be empty.");
+    Preconditions.checkArgument(
+        !BASIC_OPERATORS.contains(variableName),
+        "Identifier '%s' can not be used, because it is a simple operator. %s",
+        variableName,
+        help);
+    Preconditions.checkArgument(
+        !SMTLIB2_KEYWORDS.contains(variableName),
+        "Identifier '%s' can not be used, because it is a keyword of SMT-LIB2. %s",
+        variableName,
+        help);
+    Preconditions.checkArgument(
+        DISALLOWED_CHARACTERS.matchesNoneOf(variableName),
+        "Identifier '%s' can not be used, "
+            + "because it should not contain an escape character %s of SMT-LIB2. %s",
+        variableName,
+        DISALLOWED_CHARACTER_REPLACEMENT
+            .keySet(), // toString prints UTF8-encoded escape sequence, better than nothing.
+        help);
+  }
+  /* This escaping works for simple escape sequences only, i.e., keywords are unique enough. */
+  @Override
+  public final String escape(String pVar) {
+    // as long as keywords stay simple, this simple escaping is sufficient
+    if (pVar.isEmpty() || BASIC_OPERATORS.contains(pVar) || SMTLIB2_KEYWORDS.contains(pVar)) {
+      return ESCAPE + pVar;
+    }
+    if (pVar.indexOf(ESCAPE) != -1) {
+      pVar = pVar.replace("" + ESCAPE, "" + ESCAPE + ESCAPE);
+    }
+    if (DISALLOWED_CHARACTERS.matchesAnyOf(pVar)) {
+      for (Map.Entry<Character, String> e : DISALLOWED_CHARACTER_REPLACEMENT.entrySet()) {
+        pVar = pVar.replace(e.getKey().toString(), ESCAPE + e.getValue());
+      }
+    }
+    return pVar; // unchanged
+  }
+  /* This unescaping works for simple escape sequences only, i.e., keywords are unique enough. */
+  @Override
+  public final String unescape(String pVar) {
+    int idx = pVar.indexOf(ESCAPE);
+    if (idx != -1) {
+      // unescape BASIC_OPERATORS and SMTLIB2_KEYWORDS
+      if (idx == 0) {
+        String tmp = pVar.substring(1);
+        if (tmp.isEmpty() || BASIC_OPERATORS.contains(tmp) || SMTLIB2_KEYWORDS.contains(tmp)) {
+          return tmp;
+        }
+      }
+      // unescape DISALLOWED_CHARACTERS
+      StringBuilder str = new StringBuilder();
+      int i = 0;
+      while (i < pVar.length()) {
+        if (pVar.charAt(i) == ESCAPE) {
+          if (pVar.charAt(i + 1) == ESCAPE) {
+            str.append(ESCAPE);
+            i++;
+          } else {
+            String rest = pVar.substring(i + 1);
+            for (Map.Entry<Character, String> e : DISALLOWED_CHARACTER_REPLACEMENT.entrySet()) {
+              if (rest.startsWith(e.getValue())) {
+                str.append(e.getKey());
+                i += e.getValue().length();
+                break;
+              }
+            }
+          }
+        } else {
+          str.append(pVar.charAt(i));
+        }
+        i++;
+      }
+      return str.toString();
+    }
+    return pVar; // unchanged
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2022 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.Immutable;
+/**
+ * Function declaration, for both UFs and built-in functions (theory and boolean).
+ *
+ * <p>Can be instantiated using {@link FormulaManager#makeApplication}
+ */
+@Immutable
+public interface FunctionDeclaration<E extends Formula> {
+  /**
+   * @return Type of the function (LT / GT / UF / etc...).
+   */
+  FunctionDeclarationKind getKind();
+  /**
+   * @return Name of the function (UF name / "LT" / etc...).
+   */
+  String getName();
+  /**
+   * @return Sort of the function output.
+   */
+  FormulaType<E> getType();
+  /**
+   * @return Sorts of the arguments.
+   */
+  ImmutableList<FormulaType<?>> getArgumentTypes();
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api.visitors;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.List;
+import org.sosy_lab.common.rationals.Rational;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaManager;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+/**
+ * Visitor iterating through entire formula. Use {@link FormulaManager#visit} for visiting formulas.
+ *
+ * @param <R> Desired return type.
+ */
+public interface FormulaVisitor<R> {
+  /**
+   * Visit a free variable (such as "x", "y" or "z"), not bound by a quantifier. The variable can
+   * have any sort (both boolean and non-boolean).
+   *
+   * @param f Formula representing the variable.
+   * @param name Variable name.
+   */
+  R visitFreeVariable(Formula f, String name);
+  /**
+   * Visit a variable bound by a quantifier. The variable can have any sort (both boolean and
+   * non-boolean).
+   *
+   * @param f Formula representing the variable.
+   * @param deBruijnIdx de-Bruijn index of the bound variable, which can be used to find the
+   *     matching quantifier.
+   */
+  R visitBoundVariable(Formula f, int deBruijnIdx);
+  /**
+   * Visit a constant, such as "true"/"false", a numeric constant like "1" or "1.0", a String
+   * constant like 2hello world" or enumeration constant like "Blue".
+   *
+   * @param f Formula representing the constant.
+   * @param value The value of the constant. It is either of type {@link Boolean}, of a subtype of
+   *     {@link Number} (mostly a {@link BigInteger}, a {@link BigDecimal}, or a {@link Rational}),
+   *     or {@link String}.
+   * @return An arbitrary return value that is passed to the caller.
+   */
+  R visitConstant(Formula f, Object value);
+  /**
+   * Visit an arbitrary, potentially uninterpreted function. The function can have any sort.
+   *
+   * @param f Input function.
+   * @param args List of arguments
+   * @param functionDeclaration Function declaration. Can be given to {@link
+   *     FormulaManager#makeApplication} to construct a new instance of the same function with
+   *     different arguments.
+   */
+  R visitFunction(Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration);
+  /**
+   * Visit a quantified node.
+   *
+   * @param f Quantifier formula.
+   * @param quantifier Quantifier type: either {@code FORALL} or {@code EXISTS}.
+   * @param boundVariables Variables bound by the quantifier. <b>NOTE:</b> not all solvers hold
+   *     metadata about bound variables. In case this is not available, this method will be called
+   *     with an empty list, yet {@code #mkQuantifier} will work fine with an empty list as well.
+   * @param body Body of the quantifier.
+   */
+  R visitQuantifier(
+      BooleanFormula f, Quantifier quantifier, List<Formula> boundVariables, BooleanFormula body);
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.Immutable;
+/** A formula of the boolean sort. */
+@Immutable
+public interface BooleanFormula extends Formula {}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.common.collect.ImmutableList;
+import java.util.List;
+/**
+ * This interface contains methods for working with any theory with quantifiers.
+ *
+ * <p>ATTENTION: Not every theory has a quantifier elimination property!
+ */
+public interface QuantifiedFormulaManager {
+  enum Quantifier {
+    FORALL,
+    EXISTS
+  }
+  /**
+   * @return An existentially quantified formula.
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  default BooleanFormula exists(List<? extends Formula> pVariables, BooleanFormula pBody) {
+    return mkQuantifier(Quantifier.EXISTS, pVariables, pBody);
+  }
+  /**
+   * @return A universally quantified formula.
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  default BooleanFormula forall(List<? extends Formula> pVariables, BooleanFormula pBody) {
+    return mkQuantifier(Quantifier.FORALL, pVariables, pBody);
+  }
+  /** Syntax sugar, see {@link #forall(List, BooleanFormula)}. */
+  default BooleanFormula forall(Formula quantifiedArg, BooleanFormula pBody) {
+    return forall(ImmutableList.of(quantifiedArg), pBody);
+  }
+  /** Syntax sugar, see {@link #exists(List, BooleanFormula)}. */
+  default BooleanFormula exists(Formula quantifiedArg, BooleanFormula pBody) {
+    return exists(ImmutableList.of(quantifiedArg), pBody);
+  }
+  /**
+   * @return A quantified formula
+   * @param q Quantifier type
+   * @param pVariables The variables that will get bound (variables) by the quantification.
+   * @param pBody The {@link BooleanFormula}} within that the binding will be performed.
+   * @throws IllegalArgumentException If the list {@code pVariables} is empty.
+   */
+  BooleanFormula mkQuantifier(
+      Quantifier q, List<? extends Formula> pVariables, BooleanFormula pBody);
+  /**
+   * Eliminate the quantifiers for a given formula. If this is not possible, it will return the
+   * input formula. Note that CVC4 only supports this for LIA and LRA.
+   *
+   * @param pF Formula with quantifiers.
+   * @return New formula without quantifiers.
+   */
+  BooleanFormula eliminateQuantifiers(BooleanFormula pF)
+      throws InterruptedException, SolverException;
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.DOUBLE_PRECISION_EXPONENT_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.DOUBLE_PRECISION_MANTISSA_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.SINGLE_PRECISION_EXPONENT_SIZE;
+import static org.sosy_lab.java_smt.api.FloatingPointNumber.SINGLE_PRECISION_MANTISSA_SIZE;
+import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.Immutable;
+import java.util.List;
+import java.util.Set;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+/**
+ * Type of a formula.
+ *
+ * @param <T> Formula class corresponding to the given formula type.
+ */
+@SuppressWarnings("checkstyle:constantname")
+@Immutable
+public abstract class FormulaType<T extends Formula> {
+  private FormulaType() {}
+  public boolean isArrayType() {
+    return false;
+  }
+  public boolean isBitvectorType() {
+    return false;
+  }
+  public boolean isBooleanType() {
+    return false;
+  }
+  public boolean isFloatingPointType() {
+    return false;
+  }
+  public boolean isFloatingPointRoundingModeType() {
+    return false;
+  }
+  public boolean isNumeralType() {
+    return false;
+  }
+  public boolean isRationalType() {
+    return false;
+  }
+  public boolean isIntegerType() {
+    return false;
+  }
+  public boolean isSLType() {
+    return false;
+  }
+  public boolean isStringType() {
+    return false;
+  }
+  public boolean isRegexType() {
+    return false;
+  }
+  public boolean isEnumerationType() {
+    return false;
+  }
+  @Override
+  public abstract String toString();
+  /** return the correctly formatted SMTLIB2 type declaration. */
+  public abstract String toSMTLIBString();
+  @Immutable
+  public abstract static class NumeralType<T extends NumeralFormula> extends FormulaType<T> {
+    @Override
+    public final boolean isNumeralType() {
+      return true;
+    }
+  }
+  @SuppressWarnings("ClassInitializationDeadlock")
+  public static final FormulaType<RationalFormula> RationalType =
+      new NumeralType<>() {
+        @Override
+        public boolean isRationalType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Rational";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Real";
+        }
+      };
+  @SuppressWarnings("ClassInitializationDeadlock")
+  public static final FormulaType<IntegerFormula> IntegerType =
+      new NumeralType<>() {
+        @Override
+        public boolean isIntegerType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Integer";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Int";
+        }
+      };
+  public static final FormulaType<BooleanFormula> BooleanType =
+      new FormulaType<>() {
+        @Override
+        public boolean isBooleanType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "Boolean";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "Bool";
+        }
+      };
+  public static BitvectorType getBitvectorTypeWithSize(int size) {
+    return new BitvectorType(size);
+  }
+  @Immutable
+  public static final class BitvectorType extends FormulaType<BitvectorFormula> {
+    private final int size;
+    private BitvectorType(int size) {
+      this.size = size;
+    }
+    @Override
+    public boolean isBitvectorType() {
+      return true;
+    }
+    public int getSize() {
+      return size;
+    }
+    @Override
+    public String toString() {
+      return "Bitvector<" + getSize() + ">";
+    }
+    @Override
+    public boolean equals(Object pObj) {
+      if (pObj == this) {
+        return true;
+      }
+      if (!(pObj instanceof BitvectorType)) {
+        return false;
+      }
+      BitvectorType other = (BitvectorType) pObj;
+      return size == other.size;
+    }
+    @Override
+    public int hashCode() {
+      return size;
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(_ BitVec " + size + ")";
+    }
+  }
+  public static FloatingPointType getFloatingPointType(int exponentSize, int mantissaSize) {
+    return new FloatingPointType(exponentSize, mantissaSize);
+  }
+  public static FloatingPointType getSinglePrecisionFloatingPointType() {
+    return FloatingPointType.SINGLE_PRECISION_FP_TYPE;
+  }
+  public static FloatingPointType getDoublePrecisionFloatingPointType() {
+    return FloatingPointType.DOUBLE_PRECISION_FP_TYPE;
+  }
+  @Immutable
+  public static final class FloatingPointType extends FormulaType<FloatingPointFormula> {
+    private static final FloatingPointType SINGLE_PRECISION_FP_TYPE =
+        new FloatingPointType(SINGLE_PRECISION_EXPONENT_SIZE, SINGLE_PRECISION_MANTISSA_SIZE);
+    private static final FloatingPointType DOUBLE_PRECISION_FP_TYPE =
+        new FloatingPointType(DOUBLE_PRECISION_EXPONENT_SIZE, DOUBLE_PRECISION_MANTISSA_SIZE);
+    private final int exponentSize;
+    private final int mantissaSize;
+    private FloatingPointType(int pExponentSize, int pMantissaSize) {
+      exponentSize = pExponentSize;
+      mantissaSize = pMantissaSize;
+    }
+    @Override
+    public boolean isFloatingPointType() {
+      return true;
+    }
+    public int getExponentSize() {
+      return exponentSize;
+    }
+    public int getMantissaSize() {
+      return mantissaSize;
+    }
+    /** Return the total size of a value of this type in bits. */
+    public int getTotalSize() {
+      return exponentSize + mantissaSize + 1;
+    }
+    @Override
+    public int hashCode() {
+      return (31 + exponentSize) * 31 + mantissaSize;
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof FloatingPointType)) {
+        return false;
+      }
+      FloatingPointType other = (FloatingPointType) obj;
+      return this.exponentSize == other.exponentSize && this.mantissaSize == other.mantissaSize;
+    }
+    @Override
+    public String toString() {
+      return "FloatingPoint<exp=" + exponentSize + ",mant=" + mantissaSize + ">";
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(_ FloatingPoint " + exponentSize + " " + mantissaSize + ")";
+    }
+  }
+  public static final FormulaType<FloatingPointRoundingModeFormula> FloatingPointRoundingModeType =
+      new FloatingPointRoundingModeType();
+  private static final class FloatingPointRoundingModeType
+      extends FormulaType<FloatingPointRoundingModeFormula> {
+    @Override
+    public boolean isFloatingPointRoundingModeType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return "FloatingPointRoundingMode";
+    }
+    @Override
+    public String toSMTLIBString() {
+      throw new UnsupportedOperationException(
+          "rounding mode is not expected in symbol declarations");
+    }
+  }
+  @SuppressWarnings("MethodTypeParameterName")
+  public static <TD extends Formula, TR extends Formula> ArrayFormulaType<TD, TR> getArrayType(
+      FormulaType<TD> pDomainSort, FormulaType<TR> pRangeSort) {
+    return new ArrayFormulaType<>(pDomainSort, pRangeSort);
+  }
+  @SuppressWarnings("ClassTypeParameterName")
+  public static final class ArrayFormulaType<TI extends Formula, TE extends Formula>
+      extends FormulaType<ArrayFormula<TI, TE>> {
+    private final FormulaType<TE> elementType;
+    private final FormulaType<TI> indexType;
+    private ArrayFormulaType(FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+      this.indexType = Preconditions.checkNotNull(pIndexType);
+      this.elementType = Preconditions.checkNotNull(pElementType);
+    }
+    public FormulaType<TE> getElementType() {
+      return elementType;
+    }
+    public FormulaType<TI> getIndexType() {
+      return indexType;
+    }
+    @Override
+    public boolean isArrayType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return String.format("Array<%s,%s>", indexType, elementType);
+    }
+    @Override
+    public int hashCode() {
+      return 31 * elementType.hashCode() + indexType.hashCode();
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof ArrayFormulaType)) {
+        return false;
+      }
+      ArrayFormulaType<?, ?> other = (ArrayFormulaType<?, ?>) obj;
+      return elementType.equals(other.elementType) && indexType.equals(other.indexType);
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(Array " + indexType.toSMTLIBString() + " " + elementType.toSMTLIBString() + ")";
+    }
+  }
+  public static EnumerationFormulaType getEnumerationType(String pName, Set<String> pElements) {
+    return new EnumerationFormulaType(pName, pElements);
+  }
+  public static final class EnumerationFormulaType extends FormulaType<EnumerationFormula> {
+    private final String name;
+    private final ImmutableSet<String> elements;
+    private EnumerationFormulaType(String pName, Set<String> pElements) {
+      this.name = Preconditions.checkNotNull(pName);
+      this.elements = ImmutableSet.copyOf(pElements);
+    }
+    public String getName() {
+      return name;
+    }
+    public ImmutableSet<String> getElements() {
+      return elements;
+    }
+    public int getCardinality() {
+      return elements.size();
+    }
+    @Override
+    public boolean isEnumerationType() {
+      return true;
+    }
+    @Override
+    public String toString() {
+      return String.format("%s (%s)", name, Joiner.on(", ").join(elements));
+    }
+    @Override
+    public int hashCode() {
+      return 31 * name.hashCode() + elements.hashCode();
+    }
+    @Override
+    public boolean equals(Object obj) {
+      if (this == obj) {
+        return true;
+      }
+      if (!(obj instanceof EnumerationFormulaType)) {
+        return false;
+      }
+      EnumerationFormulaType other = (EnumerationFormulaType) obj;
+      return name.equals(other.name) && elements.equals(other.elements);
+    }
+    @Override
+    public String toSMTLIBString() {
+      return "(" + this + ")";
+    }
+  }
+  public static final FormulaType<StringFormula> StringType =
+      new FormulaType<>() {
+        @Override
+        public boolean isStringType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "String";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "String";
+        }
+      };
+  public static final FormulaType<RegexFormula> RegexType =
+      new FormulaType<>() {
+        @Override
+        public boolean isRegexType() {
+          return true;
+        }
+        @Override
+        public String toString() {
+          return "RegLan";
+        }
+        @Override
+        public String toSMTLIBString() {
+          return "RegLan";
+        }
+      };
+  /**
+   * Parse a string and return the corresponding type. This method is the counterpart of {@link
+   * #toString()}.
+   */
+  public static FormulaType<?> fromString(String t) {
+    if (BooleanType.toString().equals(t)) {
+      return BooleanType;
+    } else if (IntegerType.toString().equals(t)) {
+      return IntegerType;
+    } else if (RationalType.toString().equals(t)) {
+      return RationalType;
+    } else if (StringType.toString().equals(t)) {
+      return StringType;
+    } else if (RegexType.toString().equals(t)) {
+      return RegexType;
+    } else if (FloatingPointRoundingModeType.toString().equals(t)) {
+      return FloatingPointRoundingModeType;
+    } else if (t.startsWith("FloatingPoint<")) {
+      // FloatingPoint<exp=11,mant=52>
+      List<String> exman = Splitter.on(',').limit(2).splitToList(t.substring(14, t.length() - 1));
+      return FormulaType.getFloatingPointType(
+          Integer.parseInt(exman.get(0).substring(4)), Integer.parseInt(exman.get(1).substring(5)));
+    } else if (t.startsWith("Bitvector<")) {
+      // Bitvector<32>
+      return FormulaType.getBitvectorTypeWithSize(
+          Integer.parseInt(t.substring(10, t.length() - 1)));
+    } else if (t.matches(".*\\(.*\\)")) {
+      // Color (Red, Green, Blue)
+      String name = t.substring(0, t.indexOf("(") - 1);
+      String elementsStr = t.substring(t.indexOf("(") + 1, t.length() - 1);
+      Set<String> elements = ImmutableSet.copyOf(Splitter.on(", ").split(elementsStr));
+      return new EnumerationFormulaType(name, elements);
+    } else {
+      throw new AssertionError("unknown type:" + t);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2022 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import com.google.auto.value.AutoValue;
+import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.Immutable;
+import java.util.List;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+/** Declaration of a function. */
+@Immutable(containerOf = "T")
+@AutoValue
+public abstract class FunctionDeclarationImpl<F extends Formula, T>
+    implements FunctionDeclaration<F> {
+  public static <F extends Formula, T> FunctionDeclaration<F> of(
+      String name,
+      FunctionDeclarationKind kind,
+      List<FormulaType<?>> pArgumentTypes,
+      FormulaType<F> pReturnType,
+      T pDeclaration) {
+    return new AutoValue_FunctionDeclarationImpl<>(
+        kind, name, pReturnType, ImmutableList.copyOf(pArgumentTypes), pDeclaration);
+  }
+  /**
+   * get a reference to the internal declaration used by the SMT solver. This method should only be
+   * used internally in JavaSMT.
+   */
+  public abstract T getSolverDeclaration();
+  @Override
+  public final String toString() {
+    return String.format("%s (%s)", getKind(), getName());
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.sosy_lab.java_smt.basicimpl.AbstractFormulaManager.checkVariableName;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
+import org.sosy_lab.java_smt.api.BitvectorFormula;
+import org.sosy_lab.java_smt.api.BitvectorFormulaManager;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.BitvectorType;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+@SuppressWarnings("ClassTypeParameterName")
+public abstract class AbstractBitvectorFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+    extends AbstractBaseFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+    implements BitvectorFormulaManager {
+  private final AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> bmgr;
+  protected AbstractBitvectorFormulaManager(
+      FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> pCreator,
+      AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> pBmgr) {
+    super(pCreator);
+    bmgr = pBmgr;
+  }
+  private BitvectorFormula wrap(TFormulaInfo pTerm) {
+    return getFormulaCreator().encapsulateBitvector(pTerm);
+  }
+  private void checkSameSize(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, String operation) {
+    final int len1 = getLength(pNumber1);
+    final int len2 = getLength(pNumber2);
+    checkArgument(
+        len1 == len2,
+        "Can't %s bitvectors with different sizes (%s and %s)",
+        operation,
+        len1,
+        len2);
+  }
+  @Override
+  public BitvectorFormula makeBitvector(int length, IntegerFormula pI) {
+    TFormulaInfo param1 = extractInfo(pI);
+    return wrap(makeBitvectorImpl(length, param1));
+  }
+  protected abstract TFormulaInfo makeBitvectorImpl(int length, TFormulaInfo pParam1);
+  @Override
+  public IntegerFormula toIntegerFormula(BitvectorFormula pI, boolean signed) {
+    TFormulaInfo param1 = extractInfo(pI);
+    return getFormulaCreator()
+        .encapsulate(FormulaType.IntegerType, toIntegerFormulaImpl(param1, signed));
+  }
+  protected abstract TFormulaInfo toIntegerFormulaImpl(TFormulaInfo pI, boolean signed);
+  @Override
+  public BitvectorFormula negate(BitvectorFormula pNumber) {
+    TFormulaInfo param1 = extractInfo(pNumber);
+    return wrap(negate(param1));
+  }
+  protected abstract TFormulaInfo negate(TFormulaInfo pParam1);
+  @Override
+  public BitvectorFormula add(BitvectorFormula pNumber1, BitvectorFormula pNumber2) {
+    checkSameSize(pNumber1, pNumber2, "add");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(add(param1, param2));
+  }
+  protected abstract TFormulaInfo add(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula subtract(BitvectorFormula pNumber1, BitvectorFormula pNumber2) {
+    checkSameSize(pNumber1, pNumber2, "subtract");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(subtract(param1, param2));
+  }
+  protected abstract TFormulaInfo subtract(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula divide(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "divide");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(divide(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo divide(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BitvectorFormula remainder(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "rem");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(remainder(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo remainder(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BitvectorFormula smodulo(BitvectorFormula pNumber1, BitvectorFormula pNumber2) {
+    checkSameSize(pNumber1, pNumber2, "smod");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(smodulo(param1, param2));
+  }
+  protected abstract TFormulaInfo smodulo(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula multiply(BitvectorFormula pNumber1, BitvectorFormula pNumber2) {
+    checkSameSize(pNumber1, pNumber2, "modulo");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrap(multiply(param1, param2));
+  }
+  protected abstract TFormulaInfo multiply(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BooleanFormula equal(BitvectorFormula pNumber1, BitvectorFormula pNumber2) {
+    checkSameSize(pNumber1, pNumber2, "compare");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrapBool(equal(param1, param2));
+  }
+  protected abstract TFormulaInfo equal(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BooleanFormula greaterThan(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "compare");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrapBool(greaterThan(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo greaterThan(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BooleanFormula greaterOrEquals(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "compare");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrapBool(greaterOrEquals(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo greaterOrEquals(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BooleanFormula lessThan(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "compare");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrapBool(lessThan(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo lessThan(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BooleanFormula lessOrEquals(
+      BitvectorFormula pNumber1, BitvectorFormula pNumber2, boolean signed) {
+    checkSameSize(pNumber1, pNumber2, "compare");
+    TFormulaInfo param1 = extractInfo(pNumber1);
+    TFormulaInfo param2 = extractInfo(pNumber2);
+    return wrapBool(lessOrEquals(param1, param2, signed));
+  }
+  protected abstract TFormulaInfo lessOrEquals(
+      TFormulaInfo pParam1, TFormulaInfo pParam2, boolean signed);
+  @Override
+  public BitvectorFormula not(BitvectorFormula pBits) {
+    TFormulaInfo param1 = extractInfo(pBits);
+    return wrap(not(param1));
+  }
+  protected abstract TFormulaInfo not(TFormulaInfo pParam1);
+  @Override
+  public BitvectorFormula and(BitvectorFormula pBits1, BitvectorFormula pBits2) {
+    checkSameSize(pBits1, pBits2, "combine");
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(and(param1, param2));
+  }
+  protected abstract TFormulaInfo and(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula or(BitvectorFormula pBits1, BitvectorFormula pBits2) {
+    checkSameSize(pBits1, pBits2, "combine");
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(or(param1, param2));
+  }
+  protected abstract TFormulaInfo or(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula xor(BitvectorFormula pBits1, BitvectorFormula pBits2) {
+    checkSameSize(pBits1, pBits2, "combine");
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(xor(param1, param2));
+  }
+  protected abstract TFormulaInfo xor(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BitvectorFormula makeBitvector(int pLength, long i) {
+    return wrap(makeBitvectorImpl(pLength, i));
+  }
+  protected TFormulaInfo makeBitvectorImpl(int pLength, long pI) {
+    return makeBitvectorImpl(pLength, BigInteger.valueOf(pI));
+  }
+  @Override
+  public BitvectorFormula makeBitvector(int pLength, BigInteger i) {
+    return wrap(makeBitvectorImpl(pLength, i));
+  }
+  protected abstract TFormulaInfo makeBitvectorImpl(int pLength, BigInteger pI);
+  /**
+   * transform a negative value into its positive counterpart.
+   *
+   * @throws IllegalArgumentException if the value is out of range for the given size.
+   */
+  protected final BigInteger transformValueToRange(int pLength, BigInteger pI) {
+    final BigInteger max = BigInteger.valueOf(2).pow(pLength);
+    if (pI.signum() < 0) {
+      BigInteger min = BigInteger.valueOf(2).pow(pLength - 1).negate();
+      Preconditions.checkArgument(
+          pI.compareTo(min) >= 0, "%s is to small for a bitvector with length %s", pI, pLength);
+      pI = pI.add(max);
+    } else {
+      Preconditions.checkArgument(
+          pI.compareTo(max) < 0, "%s is to large for a bitvector with length %s", pI, pLength);
+    }
+    return pI;
+  }
+  @Override
+  public BitvectorFormula makeVariable(BitvectorType type, String pVar) {
+    return makeVariable(type.getSize(), pVar);
+  }
+  @Override
+  public BitvectorFormula makeVariable(int pLength, String pVar) {
+    checkVariableName(pVar);
+    return wrap(makeVariableImpl(pLength, pVar));
+  }
+  protected abstract TFormulaInfo makeVariableImpl(int pLength, String pVar);
+  /**
+   * Return a term representing the (arithmetic if signed is true) right shift of number by toShift.
+   */
+  @Override
+  public BitvectorFormula shiftRight(
+      BitvectorFormula pNumber, BitvectorFormula pToShift, boolean signed) {
+    return wrap(shiftRight(extractInfo(pNumber), extractInfo(pToShift), signed));
+  }
+  protected abstract TFormulaInfo shiftRight(
+      TFormulaInfo pNumber, TFormulaInfo toShift, boolean signed);
+  @Override
+  public BitvectorFormula shiftLeft(BitvectorFormula pNumber, BitvectorFormula toShift) {
+    return wrap(shiftLeft(extractInfo(pNumber), extractInfo(toShift)));
+  }
+  protected abstract TFormulaInfo shiftLeft(TFormulaInfo pNumber, TFormulaInfo pToShift);
+  @Override
+  public BitvectorFormula rotateLeft(BitvectorFormula pNumber, int pToRotate) {
+    checkArgument(pToRotate >= 0, "Can not rotate by a negative number %s.", pToRotate);
+    return wrap(rotateLeftByConstant(extractInfo(pNumber), pToRotate));
+  }
+  protected TFormulaInfo rotateLeftByConstant(TFormulaInfo pNumber, int pToRotate) {
+    int length = getLength(wrap(pNumber));
+    int shift = pToRotate % length;
+    return extract(concat(pNumber, pNumber), length - 1 + shift, shift);
+  }
+  @Override
+  public BitvectorFormula rotateLeft(BitvectorFormula pNumber, BitvectorFormula pToRotate) {
+    return wrap(rotateLeft(extractInfo(pNumber), extractInfo(pToRotate)));
+  }
+  @SuppressWarnings("unused")
+  protected TFormulaInfo rotateLeft(TFormulaInfo pNumber, TFormulaInfo pToRotate) {
+    int length = getLength(wrap(pNumber));
+    final TFormulaInfo lengthAsBv = makeBitvectorImpl(length, length);
+    final TFormulaInfo toRotateInRange = smodulo(pToRotate, lengthAsBv);
+    return or(
+        shiftLeft(pNumber, toRotateInRange),
+        shiftRight(pNumber, subtract(lengthAsBv, toRotateInRange), false));
+    // The following approach would also work. However, some solvers are slower with it.
+    // return extract(
+    // shiftLeft(concat(pNumber, pNumber), extend(toRotateInRange, length, false)),
+    // 2 * length - 1,
+    // length);
+  }
+  @Override
+  public BitvectorFormula rotateRight(BitvectorFormula pNumber, int pToRotate) {
+    checkArgument(pToRotate >= 0, "Can not rotate by a negative number %s.", pToRotate);
+    return wrap(rotateRightByConstant(extractInfo(pNumber), pToRotate));
+  }
+  protected TFormulaInfo rotateRightByConstant(TFormulaInfo pNumber, int pToRotate) {
+    int length = getLength(wrap(pNumber));
+    int shift = pToRotate % length;
+    return extract(concat(pNumber, pNumber), 2 * length - 1 - shift, length - shift);
+  }
+  @Override
+  public BitvectorFormula rotateRight(BitvectorFormula pNumber, BitvectorFormula pToRotate) {
+    return wrap(rotateRight(extractInfo(pNumber), extractInfo(pToRotate)));
+  }
+  @SuppressWarnings("unused")
+  protected TFormulaInfo rotateRight(TFormulaInfo pNumber, TFormulaInfo pToRotate) {
+    int length = getLength(wrap(pNumber));
+    final TFormulaInfo lengthAsBv = makeBitvectorImpl(length, length);
+    final TFormulaInfo toRotateInRange = smodulo(pToRotate, lengthAsBv);
+    return or(
+        shiftRight(pNumber, toRotateInRange, false),
+        shiftLeft(pNumber, subtract(lengthAsBv, toRotateInRange)));
+    // The following approach would also work. However, some solvers are slower with it.
+    // return extract(
+    // shiftRight(concat(pNumber, pNumber), extend(toRotateInRange, length, false), false),
+    // length - 1,
+    // 0);
+  }
+  @Override
+  public final BitvectorFormula concat(BitvectorFormula pNumber, BitvectorFormula pAppend) {
+    return wrap(concat(extractInfo(pNumber), extractInfo(pAppend)));
+  }
+  protected abstract TFormulaInfo concat(TFormulaInfo number, TFormulaInfo pAppend);
+  @Override
+  public final BitvectorFormula extract(BitvectorFormula pNumber, int pMsb, int pLsb) {
+    final int bitsize = getLength(pNumber);
+    checkArgument(0 <= pLsb, "index out of bounds (negative index %s)", pLsb);
+    checkArgument(pLsb <= pMsb, "invalid range (lsb %s larger than msb %s)", pLsb, pMsb);
+    checkArgument(pMsb < bitsize, "index out of bounds (index %s beyond length %s)", pMsb, bitsize);
+    return wrap(extract(extractInfo(pNumber), pMsb, pLsb));
+  }
+  protected abstract TFormulaInfo extract(TFormulaInfo pNumber, int pMsb, int pLsb);
+  @Override
+  public final BitvectorFormula extend(
+      BitvectorFormula pNumber, int pExtensionBits, boolean pSigned) {
+    checkArgument(0 <= pExtensionBits, "can not extend a negative number of bits");
+    return wrap(extend(extractInfo(pNumber), pExtensionBits, pSigned));
+  }
+  protected abstract TFormulaInfo extend(TFormulaInfo pNumber, int pExtensionBits, boolean pSigned);
+  @Override
+  public int getLength(BitvectorFormula pNumber) {
+    FormulaType<BitvectorFormula> type = getFormulaCreator().getFormulaType(pNumber);
+    return ((FormulaType.BitvectorType) type).getSize();
+  }
+  @Override
+  public final BooleanFormula distinct(List<BitvectorFormula> pBits) {
+    // optimization
+    if (pBits.size() <= 1) {
+      return bmgr.makeTrue();
+    } else if (pBits.size() > 1L << getLength(pBits.iterator().next())) {
+      return bmgr.makeFalse();
+    } else {
+      return wrapBool(distinctImpl(Lists.transform(pBits, this::extractInfo)));
+    }
+  }
+  protected TFormulaInfo distinctImpl(List<TFormulaInfo> pBits) {
+    List<TFormulaInfo> lst = new ArrayList<>();
+    for (int i = 0; i < pBits.size(); i++) {
+      for (int j = 0; j < i; j++) {
+        lst.add(bmgr.not(equal(pBits.get(i), pBits.get(j))));
+      }
+    }
+    return bmgr.andImpl(lst);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+/**
+ * A BaseFormulaManager because all Abstract*FormulaManager-Classes wrap a FormulaCreator-instance.
+ *
+ * @param <TFormulaInfo> the solver specific type.
+ */
+@SuppressWarnings("ClassTypeParameterName")
+abstract class AbstractBaseFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl> {
+  protected final FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> formulaCreator;
+  AbstractBaseFormulaManager(FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> pFormulaCreator) {
+    this.formulaCreator = pFormulaCreator;
+  }
+  protected final FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> getFormulaCreator() {
+    return formulaCreator;
+  }
+  protected final TFormulaInfo extractInfo(Formula pBits) {
+    return getFormulaCreator().extractInfo(pBits);
+  }
+  final BooleanFormula wrapBool(TFormulaInfo pTerm) {
+    return getFormulaCreator().encapsulateBoolean(pTerm);
+  }
+  protected final TType toSolverType(FormulaType<?> formulaType) {
+    TType t;
+    if (formulaType.isBooleanType()) {
+      t = getFormulaCreator().getBoolType();
+    } else if (formulaType.isIntegerType()) {
+      t = getFormulaCreator().getIntegerType();
+    } else if (formulaType.isRationalType()) {
+      t = getFormulaCreator().getRationalType();
+    } else if (formulaType.isStringType()) {
+      t = getFormulaCreator().getStringType();
+    } else if (formulaType.isBitvectorType()) {
+      FormulaType.BitvectorType bitPreciseType = (FormulaType.BitvectorType) formulaType;
+      t = getFormulaCreator().getBitvectorType(bitPreciseType.getSize());
+    } else if (formulaType.isFloatingPointType()) {
+      FormulaType.FloatingPointType fpType = (FormulaType.FloatingPointType) formulaType;
+      t = getFormulaCreator().getFloatingPointType(fpType);
+    } else if (formulaType.isArrayType()) {
+      FormulaType.ArrayFormulaType<?, ?> arrType = (FormulaType.ArrayFormulaType<?, ?>) formulaType;
+      TType indexType = toSolverType(arrType.getIndexType());
+      TType elementType = toSolverType(arrType.getElementType());
+      t = getFormulaCreator().getArrayType(indexType, elementType);
+    } else {
+      throw new IllegalArgumentException("Not supported interface");
+    }
+    return t;
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+import static org.sosy_lab.java_smt.basicimpl.AbstractFormulaManager.checkVariableName;
+import com.google.common.collect.Collections2;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.BooleanFormulaManager;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+import org.sosy_lab.java_smt.api.visitors.BooleanFormulaTransformationVisitor;
+import org.sosy_lab.java_smt.api.visitors.BooleanFormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.DefaultFormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.FormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.TraversalProcess;
+@SuppressWarnings("ClassTypeParameterName")
+public abstract class AbstractBooleanFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+    extends AbstractBaseFormulaManager<TFormulaInfo, TType, TEnv, TFuncDecl>
+    implements BooleanFormulaManager {
+  private @Nullable BooleanFormula trueFormula = null;
+  private @Nullable BooleanFormula falseFormula = null;
+  protected AbstractBooleanFormulaManager(
+      FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> pCreator) {
+    super(pCreator);
+  }
+  private BooleanFormula wrap(TFormulaInfo formulaInfo) {
+    return getFormulaCreator().encapsulateBoolean(formulaInfo);
+  }
+  @Override
+  public BooleanFormula makeVariable(String pVar) {
+    checkVariableName(pVar);
+    return wrap(makeVariableImpl(pVar));
+  }
+  protected abstract TFormulaInfo makeVariableImpl(String pVar);
+  @Override
+  public BooleanFormula makeTrue() {
+    if (trueFormula == null) {
+      trueFormula = wrap(makeBooleanImpl(true));
+    }
+    return trueFormula;
+  }
+  @Override
+  public BooleanFormula makeFalse() {
+    if (falseFormula == null) {
+      falseFormula = wrap(makeBooleanImpl(false));
+    }
+    return falseFormula;
+  }
+  protected abstract TFormulaInfo makeBooleanImpl(boolean value);
+  @Override
+  public BooleanFormula not(BooleanFormula pBits) {
+    TFormulaInfo param1 = extractInfo(pBits);
+    return wrap(not(param1));
+  }
+  protected abstract TFormulaInfo not(TFormulaInfo pParam1);
+  @Override
+  public BooleanFormula and(BooleanFormula pBits1, BooleanFormula pBits2) {
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(and(param1, param2));
+  }
+  protected abstract TFormulaInfo and(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BooleanFormula and(Collection<BooleanFormula> pBits) {
+    switch (pBits.size()) {
+      case 0:
+        return makeTrue();
+      case 1:
+        return pBits.iterator().next();
+      case 2:
+        Iterator<BooleanFormula> it = pBits.iterator();
+        return and(it.next(), it.next());
+      default:
+        return wrap(andImpl(Collections2.transform(pBits, this::extractInfo)));
+    }
+  }
+  @Override
+  public BooleanFormula and(BooleanFormula... pBits) {
+    return and(Arrays.asList(pBits));
+  }
+  /**
+   * Create an n-ary conjunction. The default implementation delegates to {@link #and(Object,
+   * Object)} and assumes that all simplifications are done by that method. This method can be
+   * overridden, in which case it should filter out irrelevant operands.
+   *
+   * @param pParams A collection of at least 3 operands.
+   * @return A term that is equivalent to a conjunction of pParams.
+   */
+  protected TFormulaInfo andImpl(Collection<TFormulaInfo> pParams) {
+    TFormulaInfo result = makeBooleanImpl(true);
+    for (TFormulaInfo formula : ImmutableSet.copyOf(pParams)) {
+      if (isFalse(formula)) {
+        return formula;
+      }
+      result = and(result, formula);
+    }
+    return result;
+  }
+  @Override
+  public final Collector<BooleanFormula, ?, BooleanFormula> toConjunction() {
+    return Collectors.collectingAndThen(Collectors.toList(), this::and);
+  }
+  @Override
+  public BooleanFormula or(BooleanFormula pBits1, BooleanFormula pBits2) {
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(or(param1, param2));
+  }
+  @Override
+  public BooleanFormula or(BooleanFormula... pBits) {
+    return or(Arrays.asList(pBits));
+  }
+  protected abstract TFormulaInfo or(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  @Override
+  public BooleanFormula xor(BooleanFormula pBits1, BooleanFormula pBits2) {
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(xor(param1, param2));
+  }
+  @Override
+  public BooleanFormula or(Collection<BooleanFormula> pBits) {
+    switch (pBits.size()) {
+      case 0:
+        return makeFalse();
+      case 1:
+        return pBits.iterator().next();
+      case 2:
+        Iterator<BooleanFormula> it = pBits.iterator();
+        return or(it.next(), it.next());
+      default:
+        return wrap(orImpl(Collections2.transform(pBits, this::extractInfo)));
+    }
+  }
+  /**
+   * Create an n-ary disjunction. The default implementation delegates to {@link #or(Object,
+   * Object)} and assumes that all simplifications are done by that method. This method can be
+   * overridden, in which case it should filter out irrelevant operands.
+   *
+   * @param pParams A collection of at least 3 operands.
+   * @return A term that is equivalent to a disjunction of pParams.
+   */
+  protected TFormulaInfo orImpl(Collection<TFormulaInfo> pParams) {
+    TFormulaInfo result = makeBooleanImpl(false);
+    for (TFormulaInfo formula : ImmutableSet.copyOf(pParams)) {
+      if (isTrue(formula)) {
+        return formula;
+      }
+      result = or(result, formula);
+    }
+    return result;
+  }
+  @Override
+  public final Collector<BooleanFormula, ?, BooleanFormula> toDisjunction() {
+    return Collectors.collectingAndThen(Collectors.toList(), this::or);
+  }
+  protected abstract TFormulaInfo xor(TFormulaInfo pParam1, TFormulaInfo pParam2);
+  /**
+   * Creates a formula representing an equivalence of the two arguments.
+   *
+   * @param pBits1 a Formula
+   * @param pBits2 a Formula
+   * @return {@code f1 <-> f2}
+   */
+  @Override
+  public final BooleanFormula equivalence(BooleanFormula pBits1, BooleanFormula pBits2) {
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(equivalence(param1, param2));
+  }
+  protected abstract TFormulaInfo equivalence(TFormulaInfo bits1, TFormulaInfo bits2);
+  @Override
+  public final BooleanFormula implication(BooleanFormula pBits1, BooleanFormula pBits2) {
+    TFormulaInfo param1 = extractInfo(pBits1);
+    TFormulaInfo param2 = extractInfo(pBits2);
+    return wrap(implication(param1, param2));
+  }
+  protected TFormulaInfo implication(TFormulaInfo bits1, TFormulaInfo bits2) {
+    return or(not(bits1), bits2);
+  }
+  @Override
+  public final boolean isTrue(BooleanFormula pBits) {
+    return isTrue(extractInfo(pBits));
+  }
+  protected abstract boolean isTrue(TFormulaInfo bits);
+  @Override
+  public final boolean isFalse(BooleanFormula pBits) {
+    return isFalse(extractInfo(pBits));
+  }
+  protected abstract boolean isFalse(TFormulaInfo bits);
+  /**
+   * Creates a formula representing "IF cond THEN f1 ELSE f2".
+   *
+   * @param pBits a Formula
+   * @param f1 a Formula
+   * @param f2 a Formula
+   * @return (IF cond THEN f1 ELSE f2)
+   */
+  @Override
+  public final <T extends Formula> T ifThenElse(BooleanFormula pBits, T f1, T f2) {
+    FormulaType<T> t1 = getFormulaCreator().getFormulaType(f1);
+    FormulaType<T> t2 = getFormulaCreator().getFormulaType(f2);
+    checkArgument(
+        t1.equals(t2),
+        "Cannot create if-then-else formula with branches of different types: "
+            + "%s is of type %s; %s is of type %s",
+        f1,
+        t1,
+        f2,
+        t2);
+    TFormulaInfo result = ifThenElse(extractInfo(pBits), extractInfo(f1), extractInfo(f2));
+    return getFormulaCreator().encapsulate(t1, result);
+  }
+  protected abstract TFormulaInfo ifThenElse(TFormulaInfo cond, TFormulaInfo f1, TFormulaInfo f2);
+  @Override
+  public <R> R visit(BooleanFormula pFormula, BooleanFormulaVisitor<R> visitor) {
+    return formulaCreator.visit(pFormula, new DelegatingFormulaVisitor<>(visitor));
+  }
+  @Override
+  public void visitRecursively(
+      BooleanFormula pF, BooleanFormulaVisitor<TraversalProcess> pFormulaVisitor) {
+    formulaCreator.visitRecursively(
+        new DelegatingFormulaVisitor<>(pFormulaVisitor), pF, p -> p instanceof BooleanFormula);
+  }
+  @Override
+  public BooleanFormula transformRecursively(
+      BooleanFormula f, BooleanFormulaTransformationVisitor pVisitor) {
+    return formulaCreator.transformRecursively(
+        new DelegatingFormulaVisitor<>(pVisitor), f, p -> p instanceof BooleanFormula);
+  }
+  private class DelegatingFormulaVisitor<R> implements FormulaVisitor<R> {
+    private final BooleanFormulaVisitor<R> delegate;
+    DelegatingFormulaVisitor(BooleanFormulaVisitor<R> pDelegate) {
+      delegate = pDelegate;
+    }
+    @Override
+    public R visitFreeVariable(Formula f, String name) {
+      // Only boolean formulas can appear here.
+      assert f instanceof BooleanFormula;
+      BooleanFormula casted = (BooleanFormula) f;
+      return delegate.visitAtom(
+          casted,
+          FunctionDeclarationImpl.of(
+              name,
+              FunctionDeclarationKind.VAR,
+              ImmutableList.of(),
+              FormulaType.BooleanType,
+              formulaCreator.getBooleanVarDeclaration(casted)));
+    }
+    @Override
+    public R visitBoundVariable(Formula f, int deBruijnIdx) {
+      // Only boolean formulas can appear here.
+      assert f instanceof BooleanFormula;
+      return delegate.visitBoundVar((BooleanFormula) f, deBruijnIdx);
+    }
+    @Override
+    public R visitConstant(Formula f, Object value) {
+      checkState(value instanceof Boolean);
+      return delegate.visitConstant((boolean) value);
+    }
+    private List<BooleanFormula> getBoolArgs(List<Formula> args) {
+      checkState(Iterables.all(args, arg -> arg instanceof BooleanFormula));
+      @SuppressWarnings("unchecked")
+      List<BooleanFormula> out = (List<BooleanFormula>) (List<?>) args;
+      return out;
+    }
+    @Override
+    public R visitFunction(
+        Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+      switch (functionDeclaration.getKind()) {
+        case AND:
+          R out = delegate.visitAnd(getBoolArgs(args));
+          return out;
+        case NOT:
+          checkState(args.size() == 1);
+          Formula arg = args.get(0);
+          checkArgument(arg instanceof BooleanFormula);
+          return delegate.visitNot((BooleanFormula) arg);
+        case OR:
+          R out2 = delegate.visitOr(getBoolArgs(args));
+          return out2;
+        case IFF:
+          checkState(args.size() == 2);
+          Formula a = args.get(0);
+          Formula b = args.get(1);
+          checkState(a instanceof BooleanFormula && b instanceof BooleanFormula);
+          R out3 = delegate.visitEquivalence((BooleanFormula) a, (BooleanFormula) b);
+          return out3;
+        case EQ:
+          if (args.size() == 2
+              && args.get(0) instanceof BooleanFormula
+              && args.get(1) instanceof BooleanFormula) {
+            return delegate.visitEquivalence(
+                (BooleanFormula) args.get(0), (BooleanFormula) args.get(1));
+          } else {
+            return delegate.visitAtom(
+                (BooleanFormula) f, toBooleanDeclaration(functionDeclaration));
+          }
+        case ITE:
+          checkArgument(args.size() == 3);
+          Formula ifC = args.get(0);
+          Formula then = args.get(1);
+          Formula elseC = args.get(2);
+          checkState(
+              ifC instanceof BooleanFormula
+                  && then instanceof BooleanFormula
+                  && elseC instanceof BooleanFormula);
+          return delegate.visitIfThenElse(
+              (BooleanFormula) ifC, (BooleanFormula) then, (BooleanFormula) elseC);
+        case XOR:
+          checkArgument(args.size() == 2);
+          Formula a1 = args.get(0);
+          Formula a2 = args.get(1);
+          checkState(a1 instanceof BooleanFormula && a2 instanceof BooleanFormula);
+          return delegate.visitXor((BooleanFormula) a1, (BooleanFormula) a2);
+        case IMPLIES:
+          checkArgument(args.size() == 2);
+          Formula b1 = args.get(0);
+          Formula b2 = args.get(1);
+          checkArgument(b1 instanceof BooleanFormula && b2 instanceof BooleanFormula);
+          return delegate.visitImplication((BooleanFormula) b1, (BooleanFormula) b2);
+        default:
+          return delegate.visitAtom((BooleanFormula) f, toBooleanDeclaration(functionDeclaration));
+      }
+    }
+    @Override
+    public R visitQuantifier(
+        BooleanFormula f,
+        Quantifier quantifier,
+        List<Formula> boundVariables,
+        BooleanFormula body) {
+      return delegate.visitQuantifier(quantifier, f, boundVariables, body);
+    }
+    @SuppressWarnings("unchecked")
+    private FunctionDeclaration<BooleanFormula> toBooleanDeclaration(FunctionDeclaration<?> decl) {
+      return (FunctionDeclaration<BooleanFormula>) decl;
+    }
+  }
+  @Override
+  public Set<BooleanFormula> toConjunctionArgs(BooleanFormula f, boolean flatten) {
+    if (flatten) {
+      return asFuncRecursive(f, conjunctionFinder);
+    }
+    return formulaCreator.visit(f, conjunctionFinder);
+  }
+  @Override
+  public Set<BooleanFormula> toDisjunctionArgs(BooleanFormula f, boolean flatten) {
+    if (flatten) {
+      return asFuncRecursive(f, disjunctionFinder);
+    }
+    return formulaCreator.visit(f, disjunctionFinder);
+  }
+  /** Optimized non-recursive flattening implementation. */
+  private Set<BooleanFormula> asFuncRecursive(
+      BooleanFormula f, FormulaVisitor<Set<BooleanFormula>> visitor) {
+    ImmutableSet.Builder<BooleanFormula> output = ImmutableSet.builder();
+    Deque<BooleanFormula> toProcess = new ArrayDeque<>();
+    Map<BooleanFormula, Set<BooleanFormula>> cache = new HashMap<>();
+    toProcess.add(f);
+    while (!toProcess.isEmpty()) {
+      BooleanFormula s = toProcess.pop();
+      Set<BooleanFormula> out = cache.computeIfAbsent(s, ss -> formulaCreator.visit(ss, visitor));
+      if (out.size() == 1 && s.equals(out.iterator().next())) {
+        output.add(s);
+      }
+      for (BooleanFormula arg : out) {
+        if (cache.get(arg) == null) { // Wasn't processed yet.
+          toProcess.add(arg);
+        }
+      }
+    }
+    return output.build();
+  }
+  private final FormulaVisitor<Set<BooleanFormula>> conjunctionFinder =
+      new DefaultFormulaVisitor<>() {
+        @Override
+        protected Set<BooleanFormula> visitDefault(Formula f) {
+          assert f instanceof BooleanFormula;
+          BooleanFormula bf = (BooleanFormula) f;
+          if (isTrue(bf)) {
+            return ImmutableSet.of();
+          }
+          return ImmutableSet.of((BooleanFormula) f);
+        }
+        @SuppressWarnings("unchecked")
+        @Override
+        public Set<BooleanFormula> visitFunction(
+            Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+          if (functionDeclaration.getKind() == FunctionDeclarationKind.AND) {
+            return ImmutableSet.copyOf((List<BooleanFormula>) (List<?>) args);
+          }
+          return visitDefault(f);
+        }
+      };
+  /**
+   * Optimized, but ugly, implementation of argument extraction. Avoids extra visitor instantiation.
+   */
+  private final FormulaVisitor<Set<BooleanFormula>> disjunctionFinder =
+      new DefaultFormulaVisitor<>() {
+        @Override
+        protected Set<BooleanFormula> visitDefault(Formula f) {
+          assert f instanceof BooleanFormula;
+          BooleanFormula bf = (BooleanFormula) f;
+          if (isFalse(bf)) {
+            return ImmutableSet.of();
+          }
+          return ImmutableSet.of((BooleanFormula) f);
+        }
+        @SuppressWarnings("unchecked")
+        @Override
+        public Set<BooleanFormula> visitFunction(
+            Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+          if (functionDeclaration.getKind() == FunctionDeclarationKind.OR) {
+            return ImmutableSet.copyOf((List<BooleanFormula>) (List<?>) args);
+          }
+          return visitDefault(f);
+        }
+      };
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.basicimpl;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.sosy_lab.java_smt.api.ArrayFormula;
+import org.sosy_lab.java_smt.api.BitvectorFormula;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.EnumerationFormula;
+import org.sosy_lab.java_smt.api.FloatingPointFormula;
+import org.sosy_lab.java_smt.api.FloatingPointRoundingModeFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.ArrayFormulaType;
+import org.sosy_lab.java_smt.api.FormulaType.FloatingPointType;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.FunctionDeclarationKind;
+import org.sosy_lab.java_smt.api.NumeralFormula.IntegerFormula;
+import org.sosy_lab.java_smt.api.NumeralFormula.RationalFormula;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+import org.sosy_lab.java_smt.api.RegexFormula;
+import org.sosy_lab.java_smt.api.StringFormula;
+import org.sosy_lab.java_smt.api.visitors.DefaultFormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.FormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.TraversalProcess;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.ArrayFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.BitvectorFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.BooleanFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.EnumerationFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.FloatingPointFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.FloatingPointRoundingModeFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.IntegerFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.RationalFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.RegexFormulaImpl;
+import org.sosy_lab.java_smt.basicimpl.AbstractFormula.StringFormulaImpl;
+/**
+ * This is a helper class with several methods that are commonly used throughout the basicimpl
+ * package and may have solver-specific implementations. Each solver package is expected to provide
+ * an instance of this class, with the appropriate methods overwritten. Depending on the solver,
+ * some or all non-final methods in this class may need to be overwritten.
+ *
+ * @param <TFormulaInfo> the solver specific type for formulas.
+ * @param <TType> the solver specific type for formula types.
+ * @param <TEnv> the solver specific type for the environment/context.
+ */
+@SuppressWarnings({"ClassTypeParameterName", "MethodTypeParameterName"})
+public abstract class FormulaCreator<TFormulaInfo, TType, TEnv, TFuncDecl> {
+  private final TType boolType;
+  private final @Nullable TType integerType;
+  private final @Nullable TType rationalType;
+  private final @Nullable TType stringType;
+  private final @Nullable TType regexType;
+  protected final TEnv environment;
+  protected FormulaCreator(
+      TEnv env,
+      TType boolType,
+      @Nullable TType pIntegerType,
+      @Nullable TType pRationalType,
+      @Nullable TType stringType,
+      @Nullable TType regexType) {
+    this.environment = env;
+    this.boolType = boolType;
+    this.integerType = pIntegerType;
+    this.rationalType = pRationalType;
+    this.stringType = stringType;
+    this.regexType = regexType;
+  }
+  public final TEnv getEnv() {
+    return environment;
+  }
+  public final TType getBoolType() {
+    return boolType;
+  }
+  public final TType getIntegerType() {
+    if (integerType == null) {
+      throw new UnsupportedOperationException("Integer theory is not supported by this solver.");
+    }
+    return integerType;
+  }
+  public final TType getRationalType() {
+    if (rationalType == null) {
+      throw new UnsupportedOperationException("Rational theory is not supported by this solver.");
+    }
+    return rationalType;
+  }
+  public abstract TType getBitvectorType(int bitwidth);
+  public abstract TType getFloatingPointType(FloatingPointType type);
+  public abstract TType getArrayType(TType indexType, TType elementType);
+  public final TType getStringType() {
+    if (stringType == null) {
+      throw new UnsupportedOperationException("String theory is not supported by this solver.");
+    }
+    return stringType;
+  }
+  public final TType getRegexType() {
+    if (regexType == null) {
+      throw new UnsupportedOperationException("String theory is not supported by this solver.");
+    }
+    return regexType;
+  }
+  public abstract TFormulaInfo makeVariable(TType type, String varName);
+  public BooleanFormula encapsulateBoolean(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isBooleanType(),
+        "Boolean formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new BooleanFormulaImpl<>(pTerm);
+  }
+  protected BitvectorFormula encapsulateBitvector(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isBitvectorType(),
+        "Bitvector formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new BitvectorFormulaImpl<>(pTerm);
+  }
+  protected FloatingPointFormula encapsulateFloatingPoint(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isFloatingPointType(),
+        "Floatingpoint formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new FloatingPointFormulaImpl<>(pTerm);
+  }
+  protected <TI extends Formula, TE extends Formula> ArrayFormula<TI, TE> encapsulateArray(
+      TFormulaInfo pTerm, FormulaType<TI> pIndexType, FormulaType<TE> pElementType) {
+    checkArgument(
+        getFormulaType(pTerm).equals(FormulaType.getArrayType(pIndexType, pElementType)),
+        "Array formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new ArrayFormulaImpl<>(pTerm, pIndexType, pElementType);
+  }
+  protected StringFormula encapsulateString(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isStringType(),
+        "String formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new StringFormulaImpl<>(pTerm);
+  }
+  protected RegexFormula encapsulateRegex(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isRegexType(),
+        "Regex formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new RegexFormulaImpl<>(pTerm);
+  }
+  protected EnumerationFormula encapsulateEnumeration(TFormulaInfo pTerm) {
+    checkArgument(
+        getFormulaType(pTerm).isEnumerationType(),
+        "Enumeration formula has unexpected type: %s",
+        getFormulaType(pTerm));
+    return new EnumerationFormulaImpl<>(pTerm);
+  }
+  public Formula encapsulateWithTypeOf(TFormulaInfo pTerm) {
+    return encapsulate(getFormulaType(pTerm), pTerm);
+  }
+  @SuppressWarnings("unchecked")
+  public <T extends Formula> T encapsulate(FormulaType<T> pType, TFormulaInfo pTerm) {
+    checkArgument(
+        pType.equals(getFormulaType(pTerm)),
+        "Trying to encapsulate formula %s of type %s as %s",
+        pTerm,
+        getFormulaType(pTerm),
+        pType);
+    if (pType.isBooleanType()) {
+      return (T) new BooleanFormulaImpl<>(pTerm);
+    } else if (pType.isIntegerType()) {
+      return (T) new IntegerFormulaImpl<>(pTerm);
+    } else if (pType.isRationalType()) {
+      return (T) new RationalFormulaImpl<>(pTerm);
+    } else if (pType.isStringType()) {
+      return (T) new StringFormulaImpl<>(pTerm);
+    } else if (pType.isRegexType()) {
+      return (T) new RegexFormulaImpl<>(pTerm);
+    } else if (pType.isBitvectorType()) {
+      return (T) new BitvectorFormulaImpl<>(pTerm);
+    } else if (pType.isFloatingPointType()) {
+      return (T) new FloatingPointFormulaImpl<>(pTerm);
+    } else if (pType.isFloatingPointRoundingModeType()) {
+      return (T) new FloatingPointRoundingModeFormulaImpl<>(pTerm);
+    } else if (pType.isArrayType()) {
+      ArrayFormulaType<?, ?> arrayType = (ArrayFormulaType<?, ?>) pType;
+      return (T) encapsulateArray(pTerm, arrayType.getIndexType(), arrayType.getElementType());
+    } else if (pType.isEnumerationType()) {
+      return (T) new EnumerationFormulaImpl<>(pTerm);
+    }
+    throw new IllegalArgumentException(
+        "Cannot create formulas of type " + pType + " in the Solver!");
+  }
+  @SuppressWarnings("unchecked")
+  protected TFormulaInfo extractInfo(Formula pT) {
+    if (pT instanceof AbstractFormula) {
+      return ((AbstractFormula<TFormulaInfo>) pT).getFormulaInfo();
+    }
+    throw new IllegalArgumentException(
+        "Cannot get the formula info of type " + pT.getClass().getSimpleName() + " in the Solver!");
+  }
+  @SuppressWarnings("unchecked")
+  protected <TI extends Formula, TE extends Formula> FormulaType<TE> getArrayFormulaElementType(
+      ArrayFormula<TI, TE> pArray) {
+    return ((ArrayFormulaImpl<TI, TE, TFormulaInfo>) pArray).getElementType();
+  }
+  @SuppressWarnings("unchecked")
+  protected <TI extends Formula, TE extends Formula> FormulaType<TI> getArrayFormulaIndexType(
+      ArrayFormula<TI, TE> pArray) {
+    return ((ArrayFormulaImpl<TI, TE, TFormulaInfo>) pArray).getIndexType();
+  }
+  /** Returns the type of the given Formula. */
+  @SuppressWarnings("unchecked")
+  protected <T extends Formula> FormulaType<T> getFormulaType(T formula) {
+    checkNotNull(formula);
+    FormulaType<?> t;
+    if (formula instanceof BooleanFormula) {
+      t = FormulaType.BooleanType;
+    } else if (formula instanceof IntegerFormula) {
+      t = FormulaType.IntegerType;
+    } else if (formula instanceof RationalFormula) {
+      t = FormulaType.RationalType;
+    } else if (formula instanceof StringFormula) {
+      t = FormulaType.StringType;
+    } else if (formula instanceof RegexFormula) {
+      t = FormulaType.RegexType;
+    } else if (formula instanceof FloatingPointRoundingModeFormula) {
+      t = FormulaType.FloatingPointRoundingModeType;
+    } else if (formula instanceof ArrayFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for arrays need to overwrite FormulaCreator.getFormulaType()");
+    } else if (formula instanceof BitvectorFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for bitvectors "
+              + "need to overwrite FormulaCreator.getFormulaType()");
+    } else if (formula instanceof EnumerationFormula) {
+      throw new UnsupportedOperationException(
+          "SMT solvers with support for enumerations need to overwrite FormulaCreator"
+              + ".getFormulaType()");
+    } else {
+      throw new IllegalArgumentException("Formula with unexpected type " + formula.getClass());
+    }
+    return (FormulaType<T>) t;
+  }
+  public abstract FormulaType<?> getFormulaType(TFormulaInfo formula);
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visit
+   */
+  @CanIgnoreReturnValue
+  public <R> R visit(Formula input, FormulaVisitor<R> visitor) {
+    return visit(visitor, input, extractInfo(input));
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visit
+   */
+  public abstract <R> R visit(FormulaVisitor<R> visitor, Formula formula, TFormulaInfo f);
+  protected List<TFormulaInfo> extractInfo(List<? extends Formula> input) {
+    return Lists.transform(input, this::extractInfo);
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visitRecursively
+   */
+  public void visitRecursively(FormulaVisitor<TraversalProcess> pFormulaVisitor, Formula pF) {
+    visitRecursively(pFormulaVisitor, pF, t -> true);
+  }
+  /**
+   * @see org.sosy_lab.java_smt.api.FormulaManager#visitRecursively
+   */
+  public void visitRecursively(
+      FormulaVisitor<TraversalProcess> pFormulaVisitor,
+      Formula pF,
+      Predicate<Formula> shouldProcess) {
+    RecursiveFormulaVisitorImpl recVisitor = new RecursiveFormulaVisitorImpl(pFormulaVisitor);
+    recVisitor.addToQueue(pF);
+    while (!recVisitor.isQueueEmpty()) {
+      Formula tt = recVisitor.pop();
+      if (shouldProcess.test(tt)) {
+        TraversalProcess process = visit(tt, recVisitor);
+        if (process == TraversalProcess.ABORT) {
+          return;
+        }
+      }
+    }
+  }
+  public <T extends Formula> T transformRecursively(
+      FormulaVisitor<? extends Formula> pFormulaVisitor, T pF) {
+    return transformRecursively(pFormulaVisitor, pF, t -> true);
+  }
+  public <T extends Formula> T transformRecursively(
+      FormulaVisitor<? extends Formula> pFormulaVisitor, T pF, Predicate<Object> shouldProcess) {
+    final Deque<Formula> toProcess = new ArrayDeque<>();
+    Map<Formula, Formula> pCache = new HashMap<>();
+    FormulaTransformationVisitorImpl recVisitor =
+        new FormulaTransformationVisitorImpl(pFormulaVisitor, toProcess, pCache);
+    toProcess.push(pF);
+    // Process the work queue
+    while (!toProcess.isEmpty()) {
+      Formula tt = toProcess.peek();
+      if (pCache.containsKey(tt)) {
+        toProcess.pop();
+        continue;
+      }
+      if (shouldProcess.test(tt)) {
+        visit(tt, recVisitor);
+      } else {
+        pCache.put(tt, tt);
+      }
+    }
+    @SuppressWarnings("unchecked")
+    T out = (T) pCache.get(pF);
+    return out;
+  }
+  /**
+   * Wrapper for {@link #extractVariablesAndUFs(Formula, boolean, BiConsumer)} which unwraps both
+   * input and output.
+   */
+  public Map<String, TFormulaInfo> extractVariablesAndUFs(
+      final TFormulaInfo pFormula, final boolean extractUFs) {
+    Map<String, TFormulaInfo> found = new LinkedHashMap<>();
+    extractVariablesAndUFs(
+        encapsulateWithTypeOf(pFormula), extractUFs, (name, f) -> found.put(name, extractInfo(f)));
+    return found;
+  }
+  /**
+   * Wrapper for {@link #extractVariablesAndUFs(Formula, boolean, BiConsumer)} which unwraps both
+   * input and output.
+   */
+  public void extractVariablesAndUFs(
+      final TFormulaInfo pFormula,
+      final boolean extractUFs,
+      final BiConsumer<String, TFormulaInfo> pConsumer) {
+    extractVariablesAndUFs(
+        encapsulateWithTypeOf(pFormula),
+        extractUFs,
+        (name, f) -> pConsumer.accept(name, extractInfo(f)));
+  }
+  /** Extract all free variables from the formula, optionally including UFs. */
+  public void extractVariablesAndUFs(
+      final Formula pFormula,
+      final boolean extractUF,
+      final BiConsumer<String, Formula> pConsumer) {
+    visitRecursively(
+        new VariableAndUFExtractor(extractUF, pConsumer, ImmutableSet.of(), new LinkedHashSet<>()),
+        pFormula);
+  }
+  private class VariableAndUFExtractor extends DefaultFormulaVisitor<TraversalProcess> {
+    private final boolean extractUF;
+    private final BiConsumer<String, Formula> consumer;
+    private final Set<Formula> boundVariablesInContext;
+    /**
+     * let's collect all visited symbols here, to avoid redundant visitation of symbols in nested
+     * quantified formulas.
+     */
+    private final Set<Formula> alreadyVisited;
+    VariableAndUFExtractor(
+        boolean pExtractUF,
+        BiConsumer<String, Formula> pConsumer,
+        Set<Formula> pBoundVariablesInContext,
+        Set<Formula> pAlreadyVisited) {
+      extractUF = pExtractUF;
+      consumer = pConsumer;
+      boundVariablesInContext = pBoundVariablesInContext;
+      alreadyVisited = pAlreadyVisited;
+    }
+    @Override
+    protected TraversalProcess visitDefault(Formula f) {
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitFunction(
+        Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+      if (!boundVariablesInContext.contains(f) // TODO can UFs be bounded?
+          && functionDeclaration.getKind() == FunctionDeclarationKind.UF
+          && extractUF) {
+        if (alreadyVisited.add(f)) {
+          consumer.accept(functionDeclaration.getName(), f);
+        }
+      }
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitFreeVariable(Formula f, String name) {
+      // If we are inside a quantified formula, bound variables appear to be free,
+      // but they are actually bound by the surrounding context.
+      if (!boundVariablesInContext.contains(f)) {
+        if (alreadyVisited.add(f)) {
+          consumer.accept(name, f);
+        }
+      }
+      return TraversalProcess.CONTINUE;
+    }
+    @Override
+    public TraversalProcess visitQuantifier(
+        BooleanFormula f, Quantifier q, List<Formula> boundVariables, BooleanFormula body) {
+      // We begin a new nested scope, thus we need a 'really' recursive call and
+      // use another visitor-instance which knows the corresponding bound variables.
+      visitRecursively(
+          new VariableAndUFExtractor(
+              extractUF,
+              consumer,
+              Sets.union(boundVariablesInContext, ImmutableSet.copyOf(boundVariables)),
+              alreadyVisited),
+          body);
+      // Afterwards, we skip the already finished body-formula.
+      return TraversalProcess.SKIP;
+    }
+  }
+  @SuppressWarnings("unchecked")
+  public final <T extends Formula> T callFunction(
+      FunctionDeclaration<T> declaration, List<? extends Formula> args) {
+    checkArgument(
+        args.size() >= declaration.getArgumentTypes().size(),
+        "function application '%s' requires %s arguments, but received %s arguments",
+        declaration,
+        declaration.getArgumentTypes().size(),
+        args.size());
+    for (int i = 0; i < args.size(); i++) {
+      // For chainable functions like EQ, DISTINCT, ADD, LESS, LESS_EQUAL, ..., with a variable
+      // number of arguments, we repeat the last argument-type several times.
+      int index = Math.min(i, declaration.getArgumentTypes().size() - 1);
+      checkArgument(
+          isCompatible(getFormulaType(args.get(i)), declaration.getArgumentTypes().get(index)),
+          "function application '%s' requires argument types %s, but received argument types %s",
+          declaration,
+          declaration.getArgumentTypes(),
+          Lists.transform(args, this::getFormulaType));
+    }
+    return encapsulate(
+        declaration.getType(),
+        callFunctionImpl(
+            ((FunctionDeclarationImpl<T, TFuncDecl>) declaration).getSolverDeclaration(),
+            extractInfo(args)));
+  }
+  /**
+   * This function checks whether the used type of the function argument is compatible with the
+   * declared type in the function declaration.
+   *
+   * <p>Identical types are always compatible, a subtype like INT to supertype RATIONAL is also
+   * compatible. A solver-specific wrapper can override this method if it does an explicit
+   * transformation between (some) types, e.g., from BV to BOOLEAN or from BOOLEAN to INT.
+   */
+  protected boolean isCompatible(FormulaType<?> usedType, FormulaType<?> declaredType) {
+    // INT is a subtype of RATIONAL
+    if (usedType.isIntegerType() && declaredType.isRationalType()) {
+      return true;
+    }
+    return usedType.equals(declaredType);
+  }
+  public abstract TFormulaInfo callFunctionImpl(TFuncDecl declaration, List<TFormulaInfo> args);
+  public abstract TFuncDecl declareUFImpl(String pName, TType pReturnType, List<TType> pArgTypes);
+  public TFuncDecl getBooleanVarDeclaration(BooleanFormula var) {
+    return getBooleanVarDeclarationImpl(extractInfo(var));
+  }
+  protected abstract TFuncDecl getBooleanVarDeclarationImpl(TFormulaInfo pTFormulaInfo);
+  /**
+   * Convert the formula into a Java object as far as possible, i.e., try to match a primitive or
+   * simple type like Boolean, BigInteger, Rational, or String.
+   *
+   * <p>If the formula is not a simple constant expression, we simply return <code>null</code>.
+   *
+   * @param pF the formula to be converted.
+   */
+  public Object convertValue(TFormulaInfo pF) {
+    throw new UnsupportedOperationException(
+        "This SMT solver needs a second term to determine a correct type. "
+            + "Please use the other method 'convertValue(formula, formula)'.");
+  }
+  /**
+   * Convert the formula into a Java object as far as possible, i.e., try to match a primitive or
+   * simple type.
+   *
+   * @param pAdditionalF an additional formula where the type can be received from.
+   * @param pF the formula to be converted.
+   */
+  // only some solvers require the additional (first) parameter, other solvers ignore it.
+  public Object convertValue(
+      @SuppressWarnings("unused") TFormulaInfo pAdditionalF, TFormulaInfo pF) {
+    return convertValue(pF);
+  }
+  /** Variable names (symbols) can be wrapped with "|". This function removes those chars. */
+  protected static String dequote(String s) {
+    int l = s.length();
+    if (s.charAt(0) == '|' && s.charAt(l - 1) == '|') {
+      return s.substring(1, l - 1);
+    }
+    return s;
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.cvc4;
+import com.google.common.collect.Iterables;
+import edu.stanford.CVC4.Expr;
+import edu.stanford.CVC4.ExprManager;
+import edu.stanford.CVC4.Kind;
+import edu.stanford.CVC4.Type;
+import edu.stanford.CVC4.vectorExpr;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+public class CVC4BooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Expr, Type, ExprManager, Expr> {
+  private final Expr cvc4True;
+  private final Expr cvc4False;
+  private final ExprManager exprManager;
+  protected CVC4BooleanFormulaManager(CVC4FormulaCreator pCreator) {
+    super(pCreator);
+    exprManager = pCreator.getEnv();
+    cvc4True = exprManager.mkConst(true);
+    cvc4False = exprManager.mkConst(false);
+  }
+  @Override
+  protected Expr makeVariableImpl(String pVar) {
+    return formulaCreator.makeVariable(getFormulaCreator().getBoolType(), pVar);
+  }
+  @Override
+  protected Expr makeBooleanImpl(boolean pValue) {
+    return pValue ? cvc4True : cvc4False;
+  }
+  @Override
+  protected Expr not(Expr pParam1) {
+    if (isTrue(pParam1)) {
+      return cvc4False;
+    } else if (isFalse(pParam1)) {
+      return cvc4True;
+    } else if (pParam1.getKind() == Kind.NOT) {
+      return pParam1.getChild(0);
+    }
+    return exprManager.mkExpr(Kind.NOT, pParam1);
+  }
+  @Override
+  protected Expr and(Expr pParam1, Expr pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return cvc4False;
+    } else if (isFalse(pParam2)) {
+      return cvc4False;
+    } else if (pParam1 == pParam2) {
+      return pParam1;
+    }
+    return exprManager.mkExpr(Kind.AND, pParam1, pParam2);
+  }
+  @Override
+  protected Expr andImpl(Collection<Expr> pParams) {
+    // CVC4 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Expr> operands = new LinkedHashSet<>();
+    for (final Expr operand : pParams) {
+      if (isFalse(operand)) {
+        return cvc4False;
+      }
+      if (!isTrue(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return cvc4True;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        vectorExpr vExpr = new vectorExpr();
+        for (Expr e : operands) {
+          vExpr.add(e);
+        }
+        return exprManager.mkExpr(Kind.AND, vExpr);
+    }
+  }
+  @Override
+  protected Expr or(Expr pParam1, Expr pParam2) {
+    if (isTrue(pParam1)) {
+      return cvc4True;
+    } else if (isTrue(pParam2)) {
+      return cvc4True;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (pParam1 == pParam2) {
+      return pParam1;
+    }
+    return exprManager.mkExpr(Kind.OR, pParam1, pParam2);
+  }
+  @Override
+  protected Expr orImpl(Collection<Expr> pParams) {
+    // CVC4 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Expr> operands = new LinkedHashSet<>();
+    for (final Expr operand : pParams) {
+      if (isTrue(operand)) {
+        return cvc4True;
+      }
+      if (!isFalse(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return cvc4False;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        vectorExpr vExpr = new vectorExpr();
+        for (Expr e : operands) {
+          vExpr.add(e);
+        }
+        return exprManager.mkExpr(Kind.OR, vExpr);
+    }
+  }
+  @Override
+  protected Expr xor(Expr pParam1, Expr pParam2) {
+    return exprManager.mkExpr(Kind.XOR, pParam1, pParam2);
+  }
+  @Override
+  protected Expr equivalence(Expr pBits1, Expr pBits2) {
+    return exprManager.mkExpr(Kind.EQUAL, pBits1, pBits2);
+  }
+  @Override
+  protected Expr implication(Expr bits1, Expr bits2) {
+    return exprManager.mkExpr(Kind.IMPLIES, bits1, bits2);
+  }
+  @Override
+  protected boolean isTrue(Expr pBits) {
+    return pBits.isConst() && pBits.getKind() == Kind.CONST_BOOLEAN && pBits.getConstBoolean();
+  }
+  @Override
+  protected boolean isFalse(Expr pBits) {
+    return pBits.isConst() && pBits.getKind() == Kind.CONST_BOOLEAN && !pBits.getConstBoolean();
+  }
+  @Override
+  protected Expr ifThenElse(Expr pCond, Expr pF1, Expr pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return exprManager.mkExpr(Kind.ITE, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.princess;
+import ap.parser.IBinFormula;
+import ap.parser.IBinJunctor;
+import ap.parser.IBoolLit;
+import ap.parser.IExpression;
+import ap.parser.IFormula;
+import ap.parser.IFormulaITE;
+import ap.parser.INot;
+import ap.parser.ITerm;
+import ap.parser.ITermITE;
+import ap.types.Sort;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+import scala.Enumeration;
+class PrincessBooleanFormulaManager
+    extends AbstractBooleanFormulaManager<
+        IExpression, Sort, PrincessEnvironment, PrincessFunctionDeclaration> {
+  private final IBoolLit pTrue = new IBoolLit(true);
+  private final IBoolLit pFalse = new IBoolLit(false);
+  PrincessBooleanFormulaManager(PrincessFormulaCreator creator) {
+    super(creator);
+  }
+  @Override
+  public IFormula makeVariableImpl(String varName) {
+    return (IFormula) getFormulaCreator().makeVariable(getFormulaCreator().getBoolType(), varName);
+  }
+  @Override
+  public IFormula makeBooleanImpl(boolean pValue) {
+    return pValue ? pTrue : pFalse;
+  }
+  @Override
+  public IFormula equivalence(IExpression t1, IExpression t2) {
+    return new IBinFormula(IBinJunctor.Eqv(), (IFormula) t1, (IFormula) t2);
+  }
+  @Override
+  public boolean isTrue(IExpression t) {
+    return t instanceof IBoolLit && ((IBoolLit) t).value();
+  }
+  @Override
+  public boolean isFalse(IExpression t) {
+    return t instanceof IBoolLit && !((IBoolLit) t).value();
+  }
+  @Override
+  public IExpression ifThenElse(IExpression condition, IExpression t1, IExpression t2) {
+    if (isTrue(condition)) {
+      return t1;
+    } else if (isFalse(condition)) {
+      return t2;
+    } else if (t1.equals(t2)) {
+      return t1;
+    } else if (isTrue(t1) && isFalse(t2)) {
+      return condition;
+    } else if (isFalse(t1) && isTrue(t2)) {
+      return not(condition);
+    }
+    if (t1 instanceof IFormula) {
+      return new IFormulaITE((IFormula) condition, (IFormula) t1, (IFormula) t2);
+    } else {
+      return new ITermITE((IFormula) condition, (ITerm) t1, (ITerm) t2);
+    }
+  }
+  @Override
+  public IFormula not(IExpression pBits) {
+    if (isTrue(pBits)) {
+      return pFalse;
+    } else if (isFalse(pBits)) {
+      return pTrue;
+    } else if (pBits instanceof INot) {
+      return ((INot) pBits).subformula(); // "not not a" == "a"
+    } else {
+      return new INot((IFormula) pBits);
+    }
+  }
+  @Override
+  public IFormula and(IExpression t1, IExpression t2) {
+    if (t1 == t2) {
+      return (IFormula) t1;
+    } else if (isTrue(t1)) {
+      return (IFormula) t2;
+    } else if (isTrue(t2)) {
+      return (IFormula) t1;
+    } else if (isFalse(t1)) {
+      return pFalse;
+    } else if (isFalse(t2)) {
+      return pFalse;
+    }
+    return simplify(new IBinFormula(IBinJunctor.And(), (IFormula) t1, (IFormula) t2));
+  }
+  @Override
+  public IFormula or(IExpression t1, IExpression t2) {
+    if (t1 == t2) {
+      return (IFormula) t1;
+    } else if (isTrue(t1)) {
+      return pTrue;
+    } else if (isTrue(t2)) {
+      return pTrue;
+    } else if (isFalse(t1)) {
+      return (IFormula) t2;
+    } else if (isFalse(t2)) {
+      return (IFormula) t1;
+    }
+    return simplify(new IBinFormula(IBinJunctor.Or(), (IFormula) t1, (IFormula) t2));
+  }
+  /**
+   * simplification based on distribution property of boolean operands, to avoid identical subgraphs
+   * in basic boolean operations:
+   *
+   * <ul>
+   *   <li>(a&b)&(a&c) --> a&(b&c)
+   *   <li>(a|b)&(a|c) --> a|(b&c)
+   *   <li>(a&b)|(a&c) --> a&(b|c)
+   *   <li>(a|b)|(a|c) --> a|(b|c)
+   * </ul>
+   *
+   * <p>Note that we only consider the most frequently used operations here. There are more
+   * combination of boolean operators (implication and equivalence), which are ignored here, to keep
+   * it simple.
+   */
+  private IFormula simplify(IFormula f) {
+    if (f instanceof IBinFormula) {
+      final IBinFormula bin = (IBinFormula) f;
+      Enumeration.Value operator = bin.j();
+      if (isDistributiveBooleanOperator(operator)
+          && bin.f1() instanceof IBinFormula
+          && bin.f2() instanceof IBinFormula
+          && ((IBinFormula) bin.f1()).j().equals(((IBinFormula) bin.f2()).j())) {
+        Enumeration.Value innerOperator = ((IBinFormula) bin.f1()).j();
+        if (isDistributiveBooleanOperator(innerOperator)) {
+          IFormula s11 = ((IBinFormula) bin.f1()).f1();
+          IFormula s12 = ((IBinFormula) bin.f1()).f2();
+          IFormula s21 = ((IBinFormula) bin.f2()).f1();
+          IFormula s22 = ((IBinFormula) bin.f2()).f2();
+          // only check for object equality, for performance
+          if (s11 == s21) { // (ab)(ac) -> a(bc)
+            return new IBinFormula(innerOperator, s11, new IBinFormula(operator, s12, s22));
+          } else if (s11 == s22) { // (ab)(ca) -> a(bc)
+            return new IBinFormula(innerOperator, s11, new IBinFormula(operator, s12, s21));
+          } else if (s12 == s21) { // (ba)(ac) -> a(bc)
+            return new IBinFormula(innerOperator, s12, new IBinFormula(operator, s11, s22));
+          } else if (s12 == s22) { // (ba)(ca) -> a(bc)
+            return new IBinFormula(innerOperator, s12, new IBinFormula(operator, s11, s21));
+          }
+        }
+      }
+    }
+    // if we cannot simplify the formula, we create an abbreviation
+    // return getFormulaCreator().getEnv().abbrev(f);
+    return f;
+  }
+  private boolean isDistributiveBooleanOperator(Enumeration.Value operator) {
+    return IBinJunctor.And().equals(operator) || IBinJunctor.Or().equals(operator);
+  }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Princess does not support XOR Formulas are converted from {@code a^b} to {@code !(a<=>b)}
+   */
+  @Override
+  public IFormula xor(IExpression t1, IExpression t2) {
+    return new INot(new IBinFormula(IBinJunctor.Eqv(), (IFormula) t1, (IFormula) t2));
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2022 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.cvc5;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Iterables;
+import io.github.cvc5.CVC5ApiException;
+import io.github.cvc5.Kind;
+import io.github.cvc5.Solver;
+import io.github.cvc5.Sort;
+import io.github.cvc5.Term;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+public class CVC5BooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Term, Sort, Solver, Term> {
+  private final Solver solver;
+  private final Term pTrue;
+  private final Term pFalse;
+  protected CVC5BooleanFormulaManager(CVC5FormulaCreator pCreator) {
+    super(pCreator);
+    solver = pCreator.getEnv();
+    pTrue = solver.mkBoolean(true);
+    pFalse = solver.mkBoolean(false);
+  }
+  @Override
+  @VisibleForTesting
+  public Term makeVariableImpl(String pVar) {
+    return formulaCreator.makeVariable(getFormulaCreator().getBoolType(), pVar);
+  }
+  @Override
+  protected Term makeBooleanImpl(boolean pValue) {
+    return pValue ? pTrue : pFalse;
+  }
+  @Override
+  protected Term not(Term pParam1) {
+    try {
+      if (isTrue(pParam1)) {
+        return pFalse;
+      } else if (isFalse(pParam1)) {
+        return pTrue;
+      } else if (pParam1.getKind() == Kind.NOT) {
+        return pParam1.getChild(0);
+      }
+    } catch (CVC5ApiException e) {
+      throw new IllegalArgumentException("Failure when negating the term '" + pParam1 + "'.", e);
+    }
+    return solver.mkTerm(Kind.NOT, pParam1);
+  }
+  @Override
+  protected Term and(Term pParam1, Term pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return pFalse;
+    } else if (isFalse(pParam2)) {
+      return pFalse;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return solver.mkTerm(Kind.AND, pParam1, pParam2);
+  }
+  @Override
+  protected Term andImpl(Collection<Term> pParams) {
+    // CVC5 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Term> operands = new LinkedHashSet<>();
+    for (final Term operand : pParams) {
+      if (isFalse(operand)) {
+        return pFalse;
+      }
+      if (!isTrue(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return pTrue;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return solver.mkTerm(Kind.AND, operands.toArray(new Term[0]));
+    }
+  }
+  @Override
+  protected Term or(Term pParam1, Term pParam2) {
+    if (isTrue(pParam1)) {
+      return pTrue;
+    } else if (isTrue(pParam2)) {
+      return pTrue;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return solver.mkTerm(Kind.OR, pParam1, pParam2);
+  }
+  @Override
+  protected Term orImpl(Collection<Term> pParams) {
+    // CVC5 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Term> operands = new LinkedHashSet<>();
+    for (final Term operand : pParams) {
+      if (isTrue(operand)) {
+        return pTrue;
+      }
+      if (!isFalse(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return pFalse;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return solver.mkTerm(Kind.OR, operands.toArray(new Term[0]));
+    }
+  }
+  @Override
+  protected Term xor(Term pParam1, Term pParam2) {
+    return solver.mkTerm(Kind.XOR, pParam1, pParam2);
+  }
+  @Override
+  protected Term equivalence(Term pBits1, Term pBits2) {
+    return solver.mkTerm(Kind.EQUAL, pBits1, pBits2);
+  }
+  @Override
+  protected Term implication(Term bits1, Term bits2) {
+    return solver.mkTerm(Kind.IMPLIES, bits1, bits2);
+  }
+  @Override
+  protected boolean isTrue(Term pBits) {
+    return pBits.isBooleanValue() && pBits.getBooleanValue();
+  }
+  @Override
+  protected boolean isFalse(Term pBits) {
+    return pBits.isBooleanValue() && !pBits.getBooleanValue();
+  }
+  @Override
+  protected Term ifThenElse(Term pCond, Term pF1, Term pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return solver.mkTerm(Kind.ITE, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api.visitors;
+import com.google.common.collect.ImmutableSet;
+import org.sosy_lab.java_smt.api.BooleanFormulaManager;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FormulaManager;
+/**
+ * Return class that lets the visitor guide the recursive formula traversal process started with
+ * {@link FormulaManager#visitRecursively}. or {@link BooleanFormulaManager#visitRecursively}.
+ */
+public final class TraversalProcess {
+  /** Continue traversal and recurse into current formula subtree. */
+  public static final TraversalProcess CONTINUE =
+      new TraversalProcess(TraversalType.CONTINUE_TYPE, ImmutableSet.of());
+  /** Continue traversal, but do not recurse into current formula subtree. */
+  public static final TraversalProcess SKIP =
+      new TraversalProcess(TraversalType.SKIP_TYPE, ImmutableSet.of());
+  /** Immediately abort traversal and return to caller. */
+  public static final TraversalProcess ABORT =
+      new TraversalProcess(TraversalType.ABORT_TYPE, ImmutableSet.of());
+  /**
+   * Traverse only the given children.
+   *
+   * <p>NOTE: given formulas which are <em>not</em> children of the given node will be ignored.
+   */
+  public static TraversalProcess custom(Iterable<? extends Formula> pToTraverse) {
+    return new TraversalProcess(TraversalType.CUSTOM_TYPE, ImmutableSet.copyOf(pToTraverse));
+  }
+  /**
+   * Traverse only the given child.
+   *
+   * <p>NOTE: any given which is <em>not</em> child of the given node will be ignored.
+   */
+  public static TraversalProcess custom(Formula pToTraverse) {
+    return new TraversalProcess(TraversalType.CUSTOM_TYPE, ImmutableSet.of(pToTraverse));
+  }
+  public enum TraversalType {
+    CONTINUE_TYPE,
+    SKIP_TYPE,
+    ABORT_TYPE,
+    CUSTOM_TYPE
+  }
+  private final TraversalType type;
+  private final ImmutableSet<? extends Formula> toTraverse;
+  private TraversalProcess(TraversalType pType, ImmutableSet<? extends Formula> pToTraverse) {
+    type = pType;
+    toTraverse = pToTraverse;
+  }
+  public TraversalType getType() {
+    return type;
+  }
+  public boolean contains(Formula f) {
+    if (type == TraversalType.CONTINUE_TYPE) {
+      return true;
+    } else if (type == TraversalType.SKIP_TYPE || type == TraversalType.ABORT_TYPE) {
+      return false;
+    } else {
+      assert type == TraversalType.CUSTOM_TYPE;
+      return toTraverse.contains(f);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.boolector;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_and;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_cond;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_false;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_iff;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_not;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_or;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_true;
+import static org.sosy_lab.java_smt.solvers.boolector.BtorJNI.boolector_xor;
+import com.google.common.primitives.Longs;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+public class BoolectorBooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Long, Long, Long, Long> {
+  private final long btor;
+  private final long pTrue;
+  private final long pFalse;
+  BoolectorBooleanFormulaManager(BoolectorFormulaCreator pCreator) {
+    super(pCreator);
+    this.btor = pCreator.getEnv();
+    pTrue = boolector_true(btor);
+    pFalse = boolector_false(btor);
+  }
+  @Override
+  public Long makeVariableImpl(String varName) {
+    long boolType = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(boolType, varName);
+  }
+  @Override
+  public Long makeBooleanImpl(boolean pValue) {
+    return pValue ? pTrue : pFalse;
+  }
+  @Override
+  public Long not(Long pParam1) {
+    return boolector_not(btor, pParam1);
+  }
+  @Override
+  public Long and(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return pFalse;
+    } else if (isFalse(pParam2)) {
+      return pFalse;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return boolector_and(btor, pParam1, pParam2);
+  }
+  @Override
+  public Long or(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return pTrue;
+    } else if (isTrue(pParam2)) {
+      return pTrue;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return boolector_or(btor, pParam1, pParam2);
+  }
+  @Override
+  public Long xor(Long pParam1, Long pParam2) {
+    return boolector_xor(btor, pParam1, pParam2);
+  }
+  @Override
+  public Long equivalence(Long pBits1, Long pBits2) {
+    return boolector_iff(btor, pBits1, pBits2);
+  }
+  @Override
+  public boolean isTrue(Long pBits) {
+    return isConstant(pBits, 1);
+  }
+  @Override
+  public boolean isFalse(Long pBits) {
+    return isConstant(pBits, 0);
+  }
+  private boolean isConstant(final long pBits, final int constant) {
+    if (BtorJNI.boolector_get_width(btor, pBits) == 1) {
+      String assignment;
+      if (BtorJNI.boolector_is_const(btor, pBits)) {
+        assignment = BtorJNI.boolector_get_bits(btor, pBits);
+        Long maybeLong = Longs.tryParse(assignment);
+        if (maybeLong != null && maybeLong == constant) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  @Override
+  public Long ifThenElse(Long pCond, Long pF1, Long pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return boolector_cond(btor, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.z3;
+import static org.sosy_lab.java_smt.solvers.z3.Z3FormulaCreator.isOP;
+import com.google.common.collect.Iterables;
+import com.google.common.primitives.Longs;
+import com.microsoft.z3.Native;
+import com.microsoft.z3.enumerations.Z3_decl_kind;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+class Z3BooleanFormulaManager extends AbstractBooleanFormulaManager<Long, Long, Long, Long> {
+  private final long z3context;
+  private final Long z3true;
+  private final Long z3false;
+  Z3BooleanFormulaManager(Z3FormulaCreator creator) {
+    super(creator);
+    z3context = creator.getEnv();
+    z3true = Native.mkTrue(z3context);
+    Native.incRef(z3context, z3true);
+    z3false = Native.mkFalse(z3context);
+    Native.incRef(z3context, z3false);
+  }
+  @Override
+  protected Long makeVariableImpl(String varName) {
+    long type = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(type, varName);
+  }
+  @Override
+  protected Long makeBooleanImpl(boolean pValue) {
+    return pValue ? z3true : z3false;
+  }
+  @Override
+  protected Long not(Long pParam) {
+    if (isTrue(pParam)) {
+      return z3false;
+    } else if (isFalse(pParam)) {
+      return z3true;
+    } else if (isOP(z3context, pParam, Z3_decl_kind.Z3_OP_NOT)) {
+      return Native.getAppArg(z3context, pParam, 0);
+    }
+    return Native.mkNot(z3context, pParam);
+  }
+  @Override
+  protected Long and(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return z3false;
+    } else if (isFalse(pParam2)) {
+      return z3false;
+    } else if (Native.isEqAst(z3context, pParam1, pParam2)) {
+      return pParam1;
+    }
+    return Native.mkAnd(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long or(Long pParam1, Long pParam2) {
+    if (isTrue(pParam1)) {
+      return z3true;
+    } else if (isTrue(pParam2)) {
+      return z3true;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (Native.isEqAst(z3context, pParam1, pParam2)) {
+      return pParam1;
+    }
+    return Native.mkOr(z3context, 2, new long[] {pParam1, pParam2});
+  }
+  @Override
+  protected Long orImpl(Collection<Long> params) {
+    // Z3 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Long> operands = new LinkedHashSet<>();
+    for (final Long operand : params) {
+      if (isTrue(operand)) {
+        return z3true;
+      }
+      if (!isFalse(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return z3false;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return Native.mkOr(z3context, operands.size(), Longs.toArray(operands));
+    }
+  }
+  @Override
+  protected Long andImpl(Collection<Long> params) {
+    // Z3 does not do any simplifications,
+    // so we filter "true", short-circuit on "false", and filter out (simple) redundancies.
+    final Set<Long> operands = new LinkedHashSet<>();
+    for (final Long operand : params) {
+      if (isFalse(operand)) {
+        return z3false;
+      }
+      if (!isTrue(operand)) {
+        operands.add(operand);
+      }
+    }
+    switch (operands.size()) {
+      case 0:
+        return z3true;
+      case 1:
+        return Iterables.getOnlyElement(operands);
+      default:
+        return Native.mkAnd(z3context, operands.size(), Longs.toArray(operands));
+    }
+  }
+  @Override
+  protected Long xor(Long pParam1, Long pParam2) {
+    return Native.mkXor(z3context, pParam1, pParam2);
+  }
+  @Override
+  protected Long equivalence(Long pBits1, Long pBits2) {
+    return Native.mkEq(z3context, pBits1, pBits2);
+  }
+  @Override
+  protected Long implication(Long pBits1, Long pBits2) {
+    return Native.mkImplies(z3context, pBits1, pBits2);
+  }
+  @Override
+  protected boolean isTrue(Long pParam) {
+    return z3true.equals(pParam);
+  }
+  @Override
+  protected boolean isFalse(Long pParam) {
+    return z3false.equals(pParam);
+  }
+  @Override
+  protected Long ifThenElse(Long pCond, Long pF1, Long pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return Native.mkIte(z3context, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api.visitors;
+import java.util.List;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+public abstract class DefaultFormulaVisitor<R> implements FormulaVisitor<R> {
+  /**
+   * Method for default case, is called by all methods from this class if they are not overridden.
+   *
+   * @param f Formula for the currently visited node.
+   * @return An arbitrary value, will be passed through to the caller.
+   */
+  protected abstract R visitDefault(Formula f);
+  @Override
+  public R visitFreeVariable(Formula f, String name) {
+    return visitDefault(f);
+  }
+  @Override
+  public R visitBoundVariable(Formula f, int deBruijnIdx) {
+    return visitDefault(f);
+  }
+  @Override
+  public R visitConstant(Formula f, Object value) {
+    return visitDefault(f);
+  }
+  @Override
+  public R visitFunction(
+      Formula f, List<Formula> args, FunctionDeclaration<?> functionDeclaration) {
+    return visitDefault(f);
+  }
+  @Override
+  public R visitQuantifier(
+      BooleanFormula f, Quantifier q, List<Formula> boundVariables, BooleanFormula body) {
+    return visitDefault(f);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0 OR GPL-3.0-or-later
+package org.sosy_lab.java_smt.solvers.yices2;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_and2;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_false;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_iff;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_implies;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_ite;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_not;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_or2;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_true;
+import static org.sosy_lab.java_smt.solvers.yices2.Yices2NativeApi.yices_xor2;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+public class Yices2BooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Integer, Integer, Long, Integer> {
+  protected Yices2BooleanFormulaManager(Yices2FormulaCreator pCreator) {
+    super(pCreator);
+  }
+  @Override
+  protected Integer makeVariableImpl(String pVar) {
+    int boolType = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(boolType, pVar);
+  }
+  @Override
+  protected Integer makeBooleanImpl(boolean pValue) {
+    if (pValue) {
+      return yices_true();
+    } else {
+      return yices_false();
+    }
+  }
+  @Override
+  protected Integer not(Integer pParam1) {
+    return yices_not(pParam1);
+  }
+  @Override
+  protected Integer and(Integer pParam1, Integer pParam2) {
+    return yices_and2(pParam1, pParam2);
+  }
+  // Causes BooleanFormulaManagerTest/testConjunctionCollector to fail.
+  // @Override
+  // protected Integer andImpl(Collection<Integer> pParams) {
+  // return yices_and(pParams.size(), Ints.toArray(pParams));
+  // }
+  @Override
+  protected Integer or(Integer pParam1, Integer pParam2) {
+    return yices_or2(pParam1, pParam2);
+  }
+  // Causes BooleanFormulaManagerTest/testDisjunctionCollector to fail.
+  // @Override
+  // protected Integer orImpl(Collection<Integer> pParams) {
+  // return yices_or(pParams.size(), Ints.toArray(pParams));
+  // }
+  @Override
+  protected Integer xor(Integer pParam1, Integer pParam2) {
+    return yices_xor2(pParam1, pParam2);
+  }
+  @Override
+  protected Integer equivalence(Integer pBits1, Integer pBits2) {
+    return yices_iff(pBits1, pBits2);
+  }
+  @Override
+  protected Integer implication(Integer bits1, Integer bits2) {
+    return yices_implies(bits1, bits2);
+  }
+  @Override
+  protected boolean isTrue(Integer pBits) {
+    return pBits.equals(yices_true());
+  }
+  @Override
+  protected boolean isFalse(Integer pBits) {
+    return pBits.equals(yices_false());
+  }
+  @Override
+  protected Integer ifThenElse(Integer pCond, Integer pF1, Integer pF2) {
+    return yices_ite(pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.bitwuzla;
+import java.math.BigInteger;
+import org.sosy_lab.java_smt.basicimpl.AbstractBitvectorFormulaManager;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Kind;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Sort;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Term;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.TermManager;
+public class BitwuzlaBitvectorFormulaManager
+    extends AbstractBitvectorFormulaManager<Term, Sort, Void, BitwuzlaDeclaration> {
+  private final TermManager termManager;
+  protected BitwuzlaBitvectorFormulaManager(
+      BitwuzlaFormulaCreator pCreator,
+      AbstractBooleanFormulaManager<Term, Sort, Void, BitwuzlaDeclaration> pBmgr) {
+    super(pCreator, pBmgr);
+    termManager = pCreator.getTermManager();
+  }
+  @Override
+  protected Term makeBitvectorImpl(int length, Term pParam1) {
+    throw new UnsupportedOperationException("Bitwuzla does not support the theory of Integers.");
+  }
+  @Override
+  protected Term makeBitvectorImpl(int length, BigInteger pI) {
+    pI = transformValueToRange(length, pI);
+    Sort sort = termManager.mk_bv_sort(length);
+    return termManager.mk_bv_value(sort, pI.toString(), (short) 10);
+  }
+  @Override
+  protected Term toIntegerFormulaImpl(Term pI, boolean signed) {
+    throw new UnsupportedOperationException("Bitvector to Integers conversion is not supported.");
+  }
+  @Override
+  protected Term negate(Term pParam1) {
+    return termManager.mk_term(Kind.BV_NEG, pParam1);
+  }
+  @Override
+  protected Term add(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_ADD, pParam1, pParam2);
+  }
+  @Override
+  protected Term subtract(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_SUB, pParam1, pParam2);
+  }
+  @Override
+  protected Term divide(Term pParam1, Term pParam2, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_SDIV, pParam1, pParam2);
+    } else {
+      return termManager.mk_term(Kind.BV_UDIV, pParam1, pParam2);
+    }
+  }
+  @Override
+  protected Term remainder(Term pParam1, Term pParam2, boolean signed) {
+    return termManager.mk_term(signed ? Kind.BV_SREM : Kind.BV_UREM, pParam1, pParam2);
+  }
+  @Override
+  protected Term smodulo(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_SMOD, pParam1, pParam2);
+  }
+  @Override
+  protected Term multiply(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_MUL, pParam1, pParam2);
+  }
+  @Override
+  protected Term equal(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.EQUAL, pParam1, pParam2);
+  }
+  @Override
+  protected Term greaterThan(Term pParam1, Term pParam2, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_SGT, pParam1, pParam2);
+    } else {
+      return termManager.mk_term(Kind.BV_UGT, pParam1, pParam2);
+    }
+  }
+  @Override
+  protected Term greaterOrEquals(Term pParam1, Term pParam2, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_SGE, pParam1, pParam2);
+    } else {
+      return termManager.mk_term(Kind.BV_UGE, pParam1, pParam2);
+    }
+  }
+  @Override
+  protected Term lessThan(Term pParam1, Term pParam2, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_SLT, pParam1, pParam2);
+    } else {
+      return termManager.mk_term(Kind.BV_ULT, pParam1, pParam2);
+    }
+  }
+  @Override
+  protected Term lessOrEquals(Term pParam1, Term pParam2, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_SLE, pParam1, pParam2);
+    } else {
+      return termManager.mk_term(Kind.BV_ULE, pParam1, pParam2);
+    }
+  }
+  @Override
+  protected Term not(Term pParam1) {
+    return termManager.mk_term(Kind.BV_NOT, pParam1);
+  }
+  @Override
+  protected Term and(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_AND, pParam1, pParam2);
+  }
+  @Override
+  protected Term or(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_OR, pParam1, pParam2);
+  }
+  @Override
+  protected Term xor(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.BV_XOR, pParam1, pParam2);
+  }
+  @Override
+  protected Term makeVariableImpl(int pLength, String pVar) {
+    Sort sort = termManager.mk_bv_sort(pLength);
+    return getFormulaCreator().makeVariable(sort, pVar);
+  }
+  @Override
+  protected Term shiftRight(Term pNumber, Term toShift, boolean signed) {
+    if (signed) {
+      return termManager.mk_term(Kind.BV_ASHR, pNumber, toShift);
+    } else {
+      return termManager.mk_term(Kind.BV_SHR, pNumber, toShift);
+    }
+  }
+  @Override
+  protected Term shiftLeft(Term pNumber, Term toShift) {
+    return termManager.mk_term(Kind.BV_SHL, pNumber, toShift);
+  }
+  @Override
+  public Term rotateLeftByConstant(Term bitVec, int toRotate) {
+    return termManager.mk_term(Kind.BV_ROLI, bitVec, toRotate);
+  }
+  @Override
+  public Term rotateLeft(Term bitVec, Term toRotate) {
+    return termManager.mk_term(Kind.BV_ROL, bitVec, toRotate);
+  }
+  @Override
+  public Term rotateRightByConstant(Term bitVec, int toRotate) {
+    return termManager.mk_term(Kind.BV_RORI, bitVec, toRotate);
+  }
+  @Override
+  public Term rotateRight(Term bitVec, Term toRotate) {
+    return termManager.mk_term(Kind.BV_ROR, bitVec, toRotate);
+  }
+  @Override
+  protected Term concat(Term number, Term pAppend) {
+    return termManager.mk_term(Kind.BV_CONCAT, number, pAppend);
+  }
+  @Override
+  protected Term extract(Term pNumber, int pMsb, int pLsb) {
+    return termManager.mk_term(Kind.BV_EXTRACT, pNumber, pMsb, pLsb);
+  }
+  @Override
+  protected Term extend(Term pNumber, int pExtensionBits, boolean pSigned) {
+    if (pSigned) {
+      return termManager.mk_term(Kind.BV_SIGN_EXTEND, pNumber, pExtensionBits);
+    } else {
+      return termManager.mk_term(Kind.BV_ZERO_EXTEND, pNumber, pExtensionBits);
+    }
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.bitwuzla;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Kind;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Sort;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.Term;
+import org.sosy_lab.java_smt.solvers.bitwuzla.api.TermManager;
+public class BitwuzlaBooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Term, Sort, Void, BitwuzlaDeclaration> {
+  private final TermManager termManager;
+  private final Term pTrue;
+  private final Term pFalse;
+  protected BitwuzlaBooleanFormulaManager(BitwuzlaFormulaCreator pCreator) {
+    super(pCreator);
+    termManager = pCreator.getTermManager();
+    pTrue = termManager.mk_true();
+    pFalse = termManager.mk_false();
+  }
+  @Override
+  protected Term makeVariableImpl(String pVar) {
+    Sort boolType = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(boolType, pVar);
+  }
+  @Override
+  protected Term makeBooleanImpl(boolean value) {
+    return value ? pTrue : pFalse;
+  }
+  @Override
+  protected Term not(Term pParam1) {
+    if (isTrue(pParam1)) {
+      return pFalse;
+    } else if (isFalse(pParam1)) {
+      return pTrue;
+    }
+    if (pParam1.kind() == Kind.NOT) {
+      return pParam1.get(0);
+    }
+    return termManager.mk_term(Kind.NOT, pParam1);
+  }
+  @Override
+  protected Term and(Term pParam1, Term pParam2) {
+    if (isTrue(pParam1)) {
+      return pParam2;
+    } else if (isTrue(pParam2)) {
+      return pParam1;
+    } else if (isFalse(pParam1)) {
+      return pFalse;
+    } else if (isFalse(pParam2)) {
+      return pFalse;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return termManager.mk_term(Kind.AND, pParam1, pParam2);
+  }
+  @Override
+  protected Term or(Term pParam1, Term pParam2) {
+    if (isTrue(pParam1)) {
+      return pTrue;
+    } else if (isTrue(pParam2)) {
+      return pTrue;
+    } else if (isFalse(pParam1)) {
+      return pParam2;
+    } else if (isFalse(pParam2)) {
+      return pParam1;
+    } else if (pParam1.equals(pParam2)) {
+      return pParam1;
+    }
+    return termManager.mk_term(Kind.OR, pParam1, pParam2);
+  }
+  @Override
+  protected Term xor(Term pParam1, Term pParam2) {
+    return termManager.mk_term(Kind.XOR, pParam1, pParam2);
+  }
+  @Override
+  protected Term equivalence(Term bits1, Term bits2) {
+    return termManager.mk_term(Kind.IFF, bits1, bits2);
+  }
+  @Override
+  protected boolean isTrue(Term bits) {
+    return pTrue.equals(bits);
+  }
+  @Override
+  protected boolean isFalse(Term bits) {
+    return pFalse.equals(bits);
+  }
+  @Override
+  protected Term ifThenElse(Term pCond, Term pF1, Term pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return termManager.mk_term(Kind.ITE, pCond, pF1, pF2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api.visitors;
+import java.util.List;
+import org.sosy_lab.java_smt.api.BooleanFormula;
+import org.sosy_lab.java_smt.api.BooleanFormulaManager;
+import org.sosy_lab.java_smt.api.Formula;
+import org.sosy_lab.java_smt.api.FunctionDeclaration;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager;
+import org.sosy_lab.java_smt.api.QuantifiedFormulaManager.Quantifier;
+/**
+ * Visitor iterating through the boolean part of the formula. Use {@link
+ * BooleanFormulaManager#visit} for visiting formulas.
+ *
+ * @param <R> Desired return type.
+ */
+public interface BooleanFormulaVisitor<R> {
+  /**
+   * Visit a constant with a given value.
+   *
+   * @see BooleanFormulaManager#makeBoolean
+   */
+  R visitConstant(boolean value);
+  /** Visit a boolean variable bound by a quantifier. */
+  R visitBoundVar(BooleanFormula var, int deBruijnIdx);
+  /**
+   * Visit a NOT-expression.
+   *
+   * @param operand Negated term.
+   * @see BooleanFormulaManager#not
+   */
+  R visitNot(BooleanFormula operand);
+  /**
+   * Visit an AND-expression with an arbitrary number of boolean arguments.
+   *
+   * <p>An AND-expression with zero arguments is equisatisfiable to 'TRUE'. An AND-expression with
+   * one argument is equal to the argument itself. In all other cases, default boolean logic
+   * applies.
+   *
+   * @see BooleanFormulaManager#and
+   */
+  R visitAnd(List<BooleanFormula> operands);
+  /**
+   * Visit an OR-expression with an arbitrary number of boolean arguments.
+   *
+   * <p>An OR-expression with zero arguments is equisatisfiable to 'TRUE'. An OR-expression with one
+   * argument is equal to the argument itself. In all other cases, default boolean logic applies.
+   *
+   * @see BooleanFormulaManager#or
+   */
+  R visitOr(List<BooleanFormula> operands);
+  /**
+   * Visit a XOR-expression.
+   *
+   * @see BooleanFormulaManager#xor
+   */
+  R visitXor(BooleanFormula operand1, BooleanFormula operand2);
+  /**
+   * Visit an equivalence between two formulas of boolean sort: {@code operand1 = operand2}.
+   *
+   * @see BooleanFormulaManager#equivalence
+   */
+  R visitEquivalence(BooleanFormula operand1, BooleanFormula operand2);
+  /**
+   * Visit an implication.
+   *
+   * @see BooleanFormulaManager#implication
+   */
+  R visitImplication(BooleanFormula operand1, BooleanFormula operand2);
+  /**
+   * Visit an if-then-else expression.
+   *
+   * @see BooleanFormulaManager#ifThenElse
+   */
+  R visitIfThenElse(
+      BooleanFormula condition, BooleanFormula thenFormula, BooleanFormula elseFormula);
+  /**
+   * Visit a quantifier: forall- or exists-.
+   *
+   * @param quantifier Quantifier type: FORALL- or EXISTS-
+   * @param quantifiedAST AST of the quantified node. Provided because it is difficult to re-create
+   *     from the parameters.
+   * @param boundVars Variables bound by this quantifier.
+   * @param body Body of the quantified expression.
+   * @see QuantifiedFormulaManager#mkQuantifier
+   * @see QuantifiedFormulaManager#forall
+   * @see QuantifiedFormulaManager#exists
+   */
+  R visitQuantifier(
+      Quantifier quantifier,
+      BooleanFormula quantifiedAST,
+      List<Formula> boundVars,
+      BooleanFormula body);
+  /**
+   * Visit an SMT atom. An atom can be a theory expression, constant, or a variable.
+   *
+   * <p>This is anything with a boolean sort which is not covered by the cases above.
+   */
+  R visitAtom(BooleanFormula atom, FunctionDeclaration<BooleanFormula> funcDecl);
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.smtinterpol;
+import de.uni_freiburg.informatik.ultimate.logic.FunctionSymbol;
+import de.uni_freiburg.informatik.ultimate.logic.Script;
+import de.uni_freiburg.informatik.ultimate.logic.Sort;
+import de.uni_freiburg.informatik.ultimate.logic.Term;
+import de.uni_freiburg.informatik.ultimate.logic.Theory;
+import java.util.Collection;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+class SmtInterpolBooleanFormulaManager
+    extends AbstractBooleanFormulaManager<Term, Sort, Script, FunctionSymbol> {
+  // We use the Theory directly here because the methods there perform simplifications
+  // that we could not use otherwise.
+  private final Theory theory;
+  SmtInterpolBooleanFormulaManager(SmtInterpolFormulaCreator creator) {
+    super(creator);
+    theory = getFormulaCreator().getEnv().getTheory();
+  }
+  @Override
+  public Term makeVariableImpl(String varName) {
+    return formulaCreator.makeVariable(formulaCreator.getBoolType(), varName);
+  }
+  @Override
+  public Term makeBooleanImpl(boolean pValue) {
+    Term t;
+    if (pValue) {
+      t = theory.mTrue;
+    } else {
+      t = theory.mFalse;
+    }
+    return t;
+  }
+  @Override
+  public Term equivalence(Term t1, Term t2) {
+    assert t1.getTheory().getBooleanSort() == t1.getSort()
+            && t2.getTheory().getBooleanSort() == t2.getSort()
+        : "Cannot make equivalence of non-boolean terms:\nTerm 1:\n"
+            + t1.toStringDirect()
+            + "\nTerm 2:\n"
+            + t2.toStringDirect();
+    return theory.equals(t1, t2);
+  }
+  @Override
+  public boolean isTrue(Term t) {
+    return t.getTheory().mTrue == t;
+  }
+  @Override
+  public boolean isFalse(Term t) {
+    return t.getTheory().mFalse == t;
+  }
+  @Override
+  public Term ifThenElse(Term condition, Term t1, Term t2) {
+    return theory.ifthenelse(condition, t1, t2);
+  }
+  @Override
+  public Term not(Term pBits) {
+    return theory.not(pBits);
+  }
+  @Override
+  public Term and(Term pBits1, Term pBits2) {
+    return theory.and(pBits1, pBits2);
+  }
+  @Override
+  protected Term andImpl(Collection<Term> pParams) {
+    // SMTInterpol does all simplifications itself
+    return theory.and(pParams.toArray(new Term[0]));
+  }
+  @Override
+  public Term or(Term pBits1, Term pBits2) {
+    return theory.or(pBits1, pBits2);
+  }
+  @Override
+  protected Term orImpl(Collection<Term> pParams) {
+    // SMTInterpol does all simplifications itself
+    return theory.or(pParams.toArray(new Term[0]));
+  }
+  @Override
+  public Term xor(Term pBits1, Term pBits2) {
+    return theory.xor(pBits1, pBits2);
+  }
+  @Override
+  protected Term implication(Term bits1, Term bits2) {
+    return theory.implies(bits1, bits2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.api;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.util.Collection;
+import java.util.Set;
+import java.util.stream.Collector;
+import org.sosy_lab.java_smt.api.visitors.BooleanFormulaTransformationVisitor;
+import org.sosy_lab.java_smt.api.visitors.BooleanFormulaVisitor;
+import org.sosy_lab.java_smt.api.visitors.TraversalProcess;
+/** Manager for dealing with boolean formulas. */
+public interface BooleanFormulaManager {
+  /**
+   * Returns a {@link BooleanFormula} representing the given value.
+   *
+   * @param value the boolean value the returned <code>Formula</code> should represent
+   * @return a Formula representing the given value
+   */
+  default BooleanFormula makeBoolean(boolean value) {
+    return value ? makeTrue() : makeFalse();
+  }
+  /** Shortcut for {@code makeBoolean(true)}. */
+  BooleanFormula makeTrue();
+  /** Shortcut for {@code makeBoolean(false)}. */
+  BooleanFormula makeFalse();
+  /**
+   * Creates a variable with exactly the given name.
+   *
+   * <p>Please make sure that the given name is valid in SMT-LIB2. Take a look at {@link
+   * FormulaManager#isValidName} for further information.
+   *
+   * <p>This method does not quote or unquote the given name, but uses the plain name "AS IS".
+   * {@link Formula#toString} can return a different String than the given one.
+   */
+  BooleanFormula makeVariable(String pVar);
+  /**
+   * Creates a formula representing an equivalence of the two arguments.
+   *
+   * @param formula1 a Formula
+   * @param formula2 a Formula
+   * @return {@code formula1 <-> formula2}
+   */
+  BooleanFormula equivalence(BooleanFormula formula1, BooleanFormula formula2);
+  /**
+   * @return {@code formula1 => formula2}.
+   */
+  BooleanFormula implication(BooleanFormula formula1, BooleanFormula formula2);
+  /**
+   * Check, if the formula is the formula "TRUE". This does not include a satisfiability check, but
+   * only a syntactical matching. However, depending on the SMT solver, there might be some
+   * pre-processing of formulas such that trivial cases like "1==1" are recognized and rewritten as
+   * "TRUE", and thus such formulas might also be matched.
+   */
+  boolean isTrue(BooleanFormula formula);
+  /**
+   * Check, if the formula is the formula "FALSE". This does not include a satisfiability check, but
+   * only a syntactical matching. However, depending on the SMT solver, there might be some
+   * pre-processing of formulas such that trivial cases like "1==2" are recognized and rewritten as
+   * "FALSE", and thus such formulas might also be matched.
+   */
+  boolean isFalse(BooleanFormula formula);
+  /**
+   * Creates a formula representing {@code IF cond THEN f1 ELSE f2}.
+   *
+   * @param cond a Formula
+   * @param f1 a Formula
+   * @param f2 a Formula
+   * @return (IF cond THEN f1 ELSE f2)
+   */
+  <T extends Formula> T ifThenElse(BooleanFormula cond, T f1, T f2);
+  /**
+   * Creates a formula representing a negation of the argument.
+   *
+   * @param bits a Formula
+   * @return {@code !bits}
+   */
+  BooleanFormula not(BooleanFormula bits);
+  /**
+   * Creates a formula representing an AND of the two arguments.
+   *
+   * @param bits1 a Formula
+   * @param bits2 a Formula
+   * @return {@code bits1 & bits2}
+   */
+  BooleanFormula and(BooleanFormula bits1, BooleanFormula bits2);
+  /**
+   * @see #and(BooleanFormula, BooleanFormula)
+   */
+  BooleanFormula and(Collection<BooleanFormula> bits);
+  /**
+   * @see #and(BooleanFormula, BooleanFormula)
+   */
+  BooleanFormula and(BooleanFormula... bits);
+  /** Return a stream {@link Collector} that creates a conjunction of all elements in the stream. */
+  Collector<BooleanFormula, ?, BooleanFormula> toConjunction();
+  /**
+   * Creates a formula representing an OR of the two arguments.
+   *
+   * @param bits1 a Formula
+   * @param bits2 a Formula
+   * @return {@code bits1 | bits2}
+   */
+  BooleanFormula or(BooleanFormula bits1, BooleanFormula bits2);
+  /**
+   * @see #or(BooleanFormula, BooleanFormula)
+   */
+  BooleanFormula or(Collection<BooleanFormula> bits);
+  /**
+   * @see #or(BooleanFormula, BooleanFormula)
+   */
+  BooleanFormula or(BooleanFormula... bits);
+  /** Return a stream {@link Collector} that creates a disjunction of all elements in the stream. */
+  Collector<BooleanFormula, ?, BooleanFormula> toDisjunction();
+  /** Creates a formula representing XOR of the two arguments. */
+  BooleanFormula xor(BooleanFormula bits1, BooleanFormula bits2);
+  /** Visit the formula with the given visitor. */
+  @CanIgnoreReturnValue
+  <R> R visit(BooleanFormula pFormula, BooleanFormulaVisitor<R> visitor);
+  /**
+   * Visit the formula recursively with a given {@link BooleanFormulaVisitor}.
+   *
+   * <p>This method guarantees that the traversal is done iteratively, without using Java recursion,
+   * and thus is not prone to StackOverflowErrors.
+   *
+   * <p>Furthermore, this method also guarantees that every equal part of the formula is visited
+   * only once. Thus, it can be used to traverse DAG-like formulas efficiently.
+   */
+  void visitRecursively(BooleanFormula f, BooleanFormulaVisitor<TraversalProcess> rFormulaVisitor);
+  /**
+   * Visit the formula recursively with a given {@link BooleanFormulaVisitor}. The arguments each
+   * visitor method receives are <b>already</b> transformed.
+   *
+   * <p>This method guarantees that the traversal is done iteratively, without using Java recursion,
+   * and thus is not prone to StackOverflowErrors.
+   *
+   * <p>Furthermore, this method also guarantees that every equal part of the formula is visited
+   * only once. Thus, it can be used to traverse DAG-like formulas efficiently.
+   */
+  BooleanFormula transformRecursively(
+      BooleanFormula f, BooleanFormulaTransformationVisitor pVisitor);
+  /**
+   * Return a set of formulas such that a conjunction over them is equivalent to the input formula.
+   *
+   * <p>Example output:
+   *
+   * <ul>
+   *   <li>For conjunction {@code A /\ B /\ C}: {@code A, B, C}
+   *   <li>For "true": empty set.
+   *   <li>For anything else: singleton set consisting of the input formula.
+   * </ul>
+   *
+   * @param flatten If {@code true}, flatten recursively.
+   */
+  Set<BooleanFormula> toConjunctionArgs(BooleanFormula f, boolean flatten);
+  /**
+   * Return a set of formulas such that a disjunction over them is equivalent to the input formula.
+   *
+   * <p>Example output:
+   *
+   * <ul>
+   *   <li>For conjunction {@code A \/ B \/ C}: {@code A, B, C}
+   *   <li>For "false": empty set.
+   *   <li>For anything else: singleton set consisting of the input formula.
+   * </ul>
+   *
+   * @param flatten If {@code true}, flatten recursively.
+   */
+  Set<BooleanFormula> toDisjunctionArgs(BooleanFormula f, boolean flatten);
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2023 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.opensmt;
+import java.util.Collection;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+import org.sosy_lab.java_smt.solvers.opensmt.api.Logic;
+import org.sosy_lab.java_smt.solvers.opensmt.api.PTRef;
+import org.sosy_lab.java_smt.solvers.opensmt.api.SRef;
+import org.sosy_lab.java_smt.solvers.opensmt.api.SymRef;
+import org.sosy_lab.java_smt.solvers.opensmt.api.VectorPTRef;
+public class OpenSmtBooleanFormulaManager
+    extends AbstractBooleanFormulaManager<PTRef, SRef, Logic, SymRef> {
+  private final Logic logic;
+  private final PTRef openSmtTrue;
+  private final PTRef openSmtFalse;
+  OpenSmtBooleanFormulaManager(OpenSmtFormulaCreator pCreator) {
+    super(pCreator);
+    logic = pCreator.getEnv();
+    openSmtTrue = logic.getTerm_true();
+    openSmtFalse = logic.getTerm_false();
+  }
+  @Override
+  protected PTRef and(PTRef pParam1, PTRef pParam2) {
+    return logic.mkAnd(pParam1, pParam2);
+  }
+  @Override
+  protected PTRef andImpl(Collection<PTRef> pParams) {
+    return logic.mkAnd(new VectorPTRef(pParams));
+  }
+  @Override
+  protected PTRef equivalence(PTRef bits1, PTRef bits2) {
+    return logic.mkEq(bits1, bits2);
+  }
+  @Override
+  protected PTRef ifThenElse(PTRef pCond, PTRef pF1, PTRef pF2) {
+    if (isTrue(pCond)) {
+      return pF1;
+    } else if (isFalse(pCond)) {
+      return pF2;
+    } else if (pF1.equals(pF2)) {
+      return pF1;
+    } else if (isTrue(pF1) && isFalse(pF2)) {
+      return pCond;
+    } else if (isFalse(pF1) && isTrue(pF2)) {
+      return not(pCond);
+    }
+    return logic.mkIte(pCond, pF1, pF2);
+  }
+  @Override
+  protected boolean isFalse(PTRef bits) {
+    return logic.isFalse(bits);
+  }
+  @Override
+  protected boolean isTrue(PTRef bits) {
+    return logic.isTrue(bits);
+  }
+  @Override
+  protected PTRef makeBooleanImpl(boolean value) {
+    return value ? openSmtTrue : openSmtFalse;
+  }
+  @Override
+  protected PTRef makeVariableImpl(String pVar) {
+    return logic.mkBoolVar(pVar);
+  }
+  @Override
+  protected PTRef not(PTRef pParam1) {
+    return logic.mkNot(pParam1);
+  }
+  @Override
+  protected PTRef or(PTRef pParam1, PTRef pParam2) {
+    return logic.mkOr(pParam1, pParam2);
+  }
+  @Override
+  protected PTRef orImpl(Collection<PTRef> pParams) {
+    return logic.mkOr(new VectorPTRef(pParams));
+  }
+  @Override
+  protected PTRef xor(PTRef pParam1, PTRef pParam2) {
+    return logic.mkXor(pParam1, pParam2);
+  }
+}
+// This file is part of JavaSMT,
+// an API wrapper for a collection of SMT solvers:
+// https://github.com/sosy-lab/java-smt
+//
+// SPDX-FileCopyrightText: 2020 Dirk Beyer <https://www.sosy-lab.org>
+//
+// SPDX-License-Identifier: Apache-2.0
+package org.sosy_lab.java_smt.solvers.mathsat5;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_is_bool_type;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_and;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_false;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_iff;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_not;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_or;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_term_ite;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_make_true;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_term_get_type;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_term_is_false;
+import static org.sosy_lab.java_smt.solvers.mathsat5.Mathsat5NativeApi.msat_term_is_true;
+import org.sosy_lab.java_smt.basicimpl.AbstractBooleanFormulaManager;
+class Mathsat5BooleanFormulaManager extends AbstractBooleanFormulaManager<Long, Long, Long, Long> {
+  private final long mathsatEnv;
+  protected Mathsat5BooleanFormulaManager(Mathsat5FormulaCreator pCreator) {
+    super(pCreator);
+    this.mathsatEnv = pCreator.getEnv();
+  }
+  @Override
+  public Long makeVariableImpl(String pVar) {
+    long boolType = getFormulaCreator().getBoolType();
+    return getFormulaCreator().makeVariable(boolType, pVar);
+  }
+  @Override
+  public Long makeBooleanImpl(boolean pValue) {
+    long v;
+    if (pValue) {
+      v = msat_make_true(mathsatEnv);
+    } else {
+      v = msat_make_false(mathsatEnv);
+    }
+    return v;
+  }
+  @Override
+  public Long equivalence(Long f1, Long f2) {
+    return msat_make_iff(mathsatEnv, f1, f2);
+  }
+  @Override
+  public boolean isTrue(Long t) {
+    return msat_term_is_true(mathsatEnv, t);
+  }
+  @Override
+  public boolean isFalse(Long t) {
+    return msat_term_is_false(mathsatEnv, t);
+  }
+  @Override
+  public Long ifThenElse(Long cond, Long f1, Long f2) {
+    if (isTrue(cond)) {
+      return f1;
+    } else if (isFalse(cond)) {
+      return f2;
+    } else if (f1.equals(f2)) {
+      return f1;
+    } else if (isTrue(f1) && isFalse(f2)) {
+      return cond;
+    } else if (isFalse(f1) && isTrue(f2)) {
+      return not(cond);
+    }
+    long t;
+    long msatEnv = mathsatEnv;
+    long f1Type = msat_term_get_type(f1);
+    long f2Type = msat_term_get_type(f2);
+    // ite does not allow boolean arguments
+    if (!msat_is_bool_type(msatEnv, f1Type) || !msat_is_bool_type(msatEnv, f2Type)) {
+      t = msat_make_term_ite(msatEnv, cond, f1, f2);
+    } else {
+      t =
+          msat_make_and(
+              msatEnv,
+              msat_make_or(msatEnv, msat_make_not(msatEnv, cond), f1),
+              msat_make_or(msatEnv, cond, f2));
+    }
+    return t;
+  }
+  @Override
+  public Long not(Long pBits) {
+    return msat_make_not(mathsatEnv, pBits);
+  }
+  @Override
+  public Long and(Long pBits1, Long pBits2) {
+    return msat_make_and(mathsatEnv, pBits1, pBits2);
+  }
+  @Override
+  public Long or(Long pBits1, Long pBits2) {
+    return msat_make_or(mathsatEnv, pBits1, pBits2);
+  }
+  @Override
+  public Long xor(Long pBits1, Long pBits2) {
+    return not(msat_make_iff(mathsatEnv, pBits1, pBits2));
+  }
+}

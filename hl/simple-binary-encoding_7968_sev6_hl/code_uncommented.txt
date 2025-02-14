@@ -1,0 +1,3951 @@
+package uk.co.real_logic.sbe.xml;
+import org.agrona.Verify;
+import org.w3c.dom.Node;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+import java.nio.ByteOrder;
+import java.util.ArrayDeque;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValue;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValueOrNull;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getByteOrder;
+public class MessageSchema
+{
+    public static final String HEADER_TYPE_DEFAULT = "messageHeader";
+    private final String packageName;                 
+    private final String description;                 
+    private final int id;                             
+    private final int version;                        
+    private final String semanticVersion;             
+    private final ByteOrder byteOrder;                
+    private final String headerType;                  
+    private final Map<String, Type> typeByNameMap;
+    private final Map<Long, Message> messageByIdMap;
+    MessageSchema(final Node schemaNode, final Map<String, Type> typeByNameMap, final Map<Long, Message> messageByIdMap)
+    {
+        this.packageName = getAttributeValue(schemaNode, "package");
+        this.description = getAttributeValueOrNull(schemaNode, "description");
+        this.id = Integer.parseInt(getAttributeValue(schemaNode, "id"));
+        this.version = Integer.parseInt(getAttributeValue(schemaNode, "version", "0"));
+        this.semanticVersion = getAttributeValueOrNull(schemaNode, "semanticVersion");
+        this.byteOrder = getByteOrder(getAttributeValue(schemaNode, "byteOrder", "littleEndian"));
+        this.typeByNameMap = typeByNameMap;
+        this.messageByIdMap = messageByIdMap;
+        final String configuredHeaderType = getAttributeValueOrNull(schemaNode, "headerType");
+        headerType = null == configuredHeaderType ? HEADER_TYPE_DEFAULT : configuredHeaderType;
+        Verify.present(typeByNameMap, this.headerType, "Message header");
+        final Node messageHeaderNode = findNode(schemaNode, "types/composite[@name='" + this.headerType + "']");
+        ((CompositeType)typeByNameMap.get(this.headerType)).checkForWellFormedMessageHeader(messageHeaderNode);
+    }
+    MessageSchema(
+        final String packageName,
+        final String description,
+        final int id,
+        final int version,
+        final String semanticVersion,
+        final ByteOrder byteOrder,
+        final String headerType,
+        final Map<String, Type> typeByNameMap,
+        final Map<Long, Message> messageByIdMap)
+    {
+        this.packageName = packageName;
+        this.description = description;
+        this.id = id;
+        this.version = version;
+        this.semanticVersion = semanticVersion;
+        this.byteOrder = byteOrder;
+        this.headerType = headerType;
+        this.typeByNameMap = typeByNameMap;
+        this.messageByIdMap = messageByIdMap;
+    }
+    public CompositeType messageHeader()
+    {
+        return (CompositeType)typeByNameMap.get(headerType);
+    }
+    public String packageName()
+    {
+        return packageName;
+    }
+    public String description()
+    {
+        return description;
+    }
+    public int id()
+    {
+        return id;
+    }
+    public int version()
+    {
+        return version;
+    }
+    public String semanticVersion()
+    {
+        return semanticVersion;
+    }
+    public Message getMessage(final long messageId)
+    {
+        return messageByIdMap.get(messageId);
+    }
+    public Type getType(final String typeName)
+    {
+        return typeByNameMap.get(typeName);
+    }
+    public Collection<Message> messages()
+    {
+        return messageByIdMap.values();
+    }
+    public Collection<Type> types()
+    {
+        return typeByNameMap.values();
+    }
+    public ByteOrder byteOrder()
+    {
+        return byteOrder;
+    }
+    public void validate(final ErrorHandler errorHandler)
+    {
+        final Deque<String> path = new ArrayDeque<>();
+        for (final Type type : typeByNameMap.values())
+        {
+            validateType(errorHandler, path, type);
+        }
+        for (final Message message : messageByIdMap.values())
+        {
+            if (message.sinceVersion() > version)
+            {
+                errorHandler.error(message.name() + ".sinceVersion=" + message.sinceVersion() +
+                    " > messageSchema.version=" + version);
+            }
+            path.addLast(message.name());
+            for (final Field field : message.fields())
+            {
+                validateField(errorHandler, path, field);
+            }
+            path.removeLast();
+        }
+    }
+    private void validateType(final ErrorHandler errorHandler, final Deque<String> path, final Type type)
+    {
+        if (type instanceof EncodedDataType)
+        {
+            validateEncodedType(errorHandler, path, (EncodedDataType)type);
+        }
+        else if (type instanceof EnumType)
+        {
+            validateEnumType(errorHandler, path, (EnumType)type);
+        }
+        else if (type instanceof SetType)
+        {
+            validateSetType(errorHandler, path, (SetType)type);
+        }
+        else if (type instanceof CompositeType)
+        {
+            validateCompositeType(errorHandler, path, (CompositeType)type);
+        }
+    }
+    private void validateEncodedType(
+        final ErrorHandler errorHandler, final Deque<String> path, final EncodedDataType type)
+    {
+        if (type.sinceVersion() > version)
+        {
+            reportError(errorHandler, path, type.name(), type.sinceVersion());
+        }
+    }
+    private void validateEnumType(final ErrorHandler errorHandler, final Deque<String> path, final EnumType type)
+    {
+        if (type.sinceVersion() > version)
+        {
+            reportError(errorHandler, path, type.name(), type.sinceVersion());
+        }
+        path.addLast(type.name());
+        for (final EnumType.ValidValue validValue : type.validValues())
+        {
+            if (validValue.sinceVersion() > version)
+            {
+                reportError(errorHandler, path, validValue.name(), validValue.sinceVersion());
+            }
+        }
+        path.removeLast();
+    }
+    private void validateSetType(final ErrorHandler errorHandler, final Deque<String> path, final SetType type)
+    {
+        if (type.sinceVersion() > version)
+        {
+            reportError(errorHandler, path, type.name(), type.sinceVersion());
+        }
+        path.addLast(type.name());
+        for (final SetType.Choice choice : type.choices())
+        {
+            if (choice.sinceVersion() > version)
+            {
+                reportError(errorHandler, path, choice.name(), choice.sinceVersion());
+            }
+        }
+        path.removeLast();
+    }
+    private void validateCompositeType(
+        final ErrorHandler errorHandler, final Deque<String> path, final CompositeType type)
+    {
+        if (type.sinceVersion() > version)
+        {
+            reportError(errorHandler, path, type.name(), type.sinceVersion());
+        }
+        path.addLast(type.name());
+        for (final Type subType : type.getTypeList())
+        {
+            validateType(errorHandler, path, subType);
+        }
+        path.removeLast();
+    }
+    private void validateField(final ErrorHandler errorHandler, final Deque<String> path, final Field field)
+    {
+        if (field.sinceVersion() > version)
+        {
+            reportError(errorHandler, path, field.name(), field.sinceVersion());
+        }
+        final List<Field> groupFields = field.groupFields();
+        if (null != groupFields)
+        {
+            path.addLast(field.name());
+            for (final Field groupField : groupFields)
+            {
+                validateField(errorHandler, path, groupField);
+            }
+            path.removeLast();
+        }
+    }
+    private void reportError(
+        final ErrorHandler errorHandler, final Deque<String> path, final String name, final int sinceVersion)
+    {
+        final StringBuilder sb = new StringBuilder();
+        for (final String step : path)
+        {
+            sb.append(step).append('.');
+        }
+        sb.append(name)
+            .append(".sinceVersion=").append(sinceVersion)
+            .append(" > messageSchema.version=").append(version);
+        errorHandler.error(sb.toString());
+    }
+    private static Node findNode(final Node contextNode, final String path)
+    {
+        try
+        {
+            return (Node)XPathFactory.newInstance().newXPath()
+                .evaluate(path, contextNode, XPathConstants.NODE);
+        }
+        catch (final XPathExpressionException ex)
+        {
+            throw new IllegalArgumentException("Unable to locate node with path=" + path, ex);
+        }
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import java.io.PrintStream;
+public class ErrorHandler
+{
+    private final PrintStream out;
+    private final boolean stopOnError;
+    private final boolean warningsFatal;
+    private final boolean suppressOutput;
+    private int errors = 0;
+    private int warnings = 0;
+    public ErrorHandler(final PrintStream stream, final ParserOptions options)
+    {
+        out = stream;
+        stopOnError = options.stopOnError();
+        warningsFatal = options.warningsFatal();
+        suppressOutput = options.suppressOutput();
+    }
+    public ErrorHandler(final ParserOptions options)
+    {
+        this(options.errorPrintStream() != null ? options.errorPrintStream() : System.err, options);
+    }
+    public void error(final String msg)
+    {
+        errors++;
+        if (!suppressOutput)
+        {
+            out.println("ERROR: " + msg);
+        }
+        if (stopOnError)
+        {
+            throw new IllegalArgumentException(msg);
+        }
+    }
+    public void warning(final String msg)
+    {
+        warnings++;
+        if (!suppressOutput)
+        {
+            out.println("WARNING: " + msg);
+        }
+        if (warningsFatal && stopOnError)
+        {
+            throw new IllegalArgumentException(msg);
+        }
+    }
+    public void checkIfShouldExit()
+    {
+        if (errors > 0)
+        {
+            throw new IllegalStateException("had " + errors + (errors > 1 ? " errors" : " error"));
+        }
+        else if (warnings > 0 && warningsFatal)
+        {
+            throw new IllegalStateException("had " + warnings + (warnings > 1 ? " warnings" : " warning"));
+        }
+    }
+    public int errorCount()
+    {
+        return errors;
+    }
+    public int warningCount()
+    {
+        return warnings;
+    }
+    public String toString()
+    {
+        return "ErrorHandler{" +
+            "out=" + out +
+            ", stopOnError=" + stopOnError +
+            ", warningsFatal=" + warningsFatal +
+            ", suppressOutput=" + suppressOutput +
+            ", errors=" + errors +
+            ", warnings=" + warnings +
+            '}';
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.w3c.dom.Node;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValue;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValueOrNull;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getTypesPackageAttribute;
+public abstract class Type
+{
+    private final String name;
+    private final String packageName;
+    private final Presence presence;
+    private final String description;
+    private final int deprecated;
+    private final String semanticType;
+    private final String referencedName;
+    private int offsetAttribute;
+    private int sinceVersion;
+    public Type(final Node node, final String givenName, final String referencedName)
+    {
+        if (null == givenName)
+        {
+            name = getAttributeValue(node, "name");
+        }
+        else
+        {
+            name = givenName;
+        }
+        this.referencedName = referencedName;
+        packageName = getTypesPackageAttribute(node);
+        presence = Presence.get(getAttributeValue(node, "presence", "required"));
+        description = getAttributeValueOrNull(node, "description");
+        sinceVersion = Integer.parseInt(getAttributeValue(node, "sinceVersion", "0"));
+        deprecated = Integer.parseInt(getAttributeValue(node, "deprecated", "0"));
+        semanticType = getAttributeValueOrNull(node, "semanticType");
+        offsetAttribute = Integer.parseInt(getAttributeValue(node, "offset", "-1"));
+    }
+    public Type(
+        final String name,
+        final Presence presence,
+        final String description,
+        final int sinceVersion,
+        final int deprecated,
+        final String semanticType)
+    {
+        this(name, null, presence, description, sinceVersion, deprecated, semanticType);
+    }
+    public Type(
+        final String name,
+        final String packageName,
+        final Presence presence,
+        final String description,
+        final int sinceVersion,
+        final int deprecated,
+        final String semanticType)
+    {
+        this.name = name;
+        this.packageName = packageName;
+        this.presence = presence;
+        this.description = description;
+        this.sinceVersion = sinceVersion;
+        this.deprecated = deprecated;
+        this.semanticType = semanticType;
+        this.offsetAttribute = -1;
+        this.referencedName = null;
+    }
+    public String name()
+    {
+        return name;
+    }
+    public String referencedName()
+    {
+        return referencedName;
+    }
+    public Presence presence()
+    {
+        return presence;
+    }
+    public abstract int encodedLength();
+    public String description()
+    {
+        return description;
+    }
+    public int sinceVersion()
+    {
+        return sinceVersion;
+    }
+    public void sinceVersion(final int version)
+    {
+        sinceVersion = version;
+    }
+    public int deprecated()
+    {
+        return deprecated;
+    }
+    public String semanticType()
+    {
+        return semanticType;
+    }
+    public abstract boolean isVariableLength();
+    public int offsetAttribute()
+    {
+        return offsetAttribute;
+    }
+    public void offsetAttribute(final int offsetAttribute)
+    {
+        this.offsetAttribute = offsetAttribute;
+    }
+    public String packageName()
+    {
+        return packageName;
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.w3c.dom.Node;
+import java.util.List;
+import java.util.Map;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.*;
+public class Field
+{
+    public static final int INVALID_ID = Integer.MAX_VALUE;  
+    private final String name;                 
+    private final String description;          
+    private final int id;                      
+    private final Type type;                   
+    private final int offset;                  
+    private final String semanticType;         
+    private final Presence presence;           
+    private final String valueRef;             
+    private final int blockLength;             
+    private final CompositeType dimensionType; 
+    private final boolean variableLength;      
+    private final int sinceVersion;            
+    private final int deprecated;              
+    private List<Field> groupFieldList;        
+    private int computedOffset;                
+    private int computedBlockLength;           
+    private final String epoch;                
+    private final String timeUnit;             
+    Field(
+        final String name,
+        final String description,
+        final int id,
+        final Type type,
+        final int offset,
+        final String semanticType,
+        final Presence presence,
+        final String valueRef,
+        final int blockLength,
+        final CompositeType dimensionType,
+        final boolean variableLength,
+        final int sinceVersion,
+        final int deprecated,
+        final String epoch,
+        final String timeUnit)
+    {
+        this.name = name;
+        this.description = description;
+        this.id = id;
+        this.type = type;
+        this.offset = offset;
+        this.semanticType = semanticType;
+        this.presence = presence;
+        this.valueRef = valueRef;
+        this.blockLength = blockLength;
+        this.dimensionType = dimensionType;
+        this.variableLength = variableLength;
+        this.sinceVersion = sinceVersion;
+        this.deprecated = deprecated;
+        this.groupFieldList = null;
+        this.computedOffset = 0;
+        this.computedBlockLength = 0;
+        this.epoch = epoch;
+        this.timeUnit = timeUnit;
+    }
+    Field(final Field field, final List<Field> groupFieldList)
+    {
+        this(
+            field.name,
+            field.description,
+            field.id,
+            field.type,
+            field.offset,
+            field.semanticType,
+            field.presence,
+            field.valueRef,
+            field.blockLength,
+            field.dimensionType,
+            field.variableLength,
+            field.sinceVersion,
+            field.deprecated,
+            field.epoch,
+            field.timeUnit);
+        this.groupFieldList = groupFieldList;
+    }
+    public void validate(final Node node, final Map<String, Type> typeByNameMap)
+    {
+        if (type != null &&
+            semanticType != null &&
+            type.semanticType() != null &&
+            !semanticType.equals(type.semanticType()))
+        {
+            handleError(node, "Mismatched semanticType on type and field: " + name);
+        }
+        checkForValidName(node, name);
+        if (null != valueRef)
+        {
+            validateValueRef(node, typeByNameMap);
+        }
+        if (type instanceof EnumType && presence == Presence.CONSTANT)
+        {
+            if (null == valueRef)
+            {
+                handleError(node, "valueRef not set for constant enum");
+            }
+        }
+        if (null != valueRef && presence == Presence.CONSTANT)
+        {
+            final String valueRefType = valueRef.substring(0, valueRef.indexOf('.'));
+            if (!(type instanceof EnumType))
+            {
+                if (type instanceof EncodedDataType)
+                {
+                    final EnumType enumType = (EnumType)typeByNameMap.get(valueRefType);
+                    if (((EncodedDataType)type).primitiveType() != enumType.encodingType())
+                    {
+                        handleError(node, "valueRef does not match field type: " + valueRef);
+                    }
+                }
+                else
+                {
+                    handleError(node, "valueRef does not match field type: " + valueRef);
+                }
+            }
+            else if (!valueRefType.equals(type.name()))
+            {
+                handleError(node, "valueRef for enum name not found: " + valueRefType);
+            }
+        }
+    }
+    public void groupFields(final List<Field> fields)
+    {
+        groupFieldList = fields;
+    }
+    public List<Field> groupFields()
+    {
+        return groupFieldList;
+    }
+    public void computedOffset(final int offset)
+    {
+        computedOffset = offset;
+    }
+    public int computedOffset()
+    {
+        return computedOffset;
+    }
+    public String name()
+    {
+        return name;
+    }
+    public String description()
+    {
+        return description;
+    }
+    public int id()
+    {
+        return id;
+    }
+    public Type type()
+    {
+        return type;
+    }
+    public int offset()
+    {
+        return offset;
+    }
+    public int blockLength()
+    {
+        return blockLength;
+    }
+    public void computedBlockLength(final int length)
+    {
+        computedBlockLength = length;
+    }
+    public int computedBlockLength()
+    {
+        return computedBlockLength;
+    }
+    public Presence presence()
+    {
+        return presence;
+    }
+    public String valueRef()
+    {
+        return valueRef;
+    }
+    public String semanticType()
+    {
+        return semanticType;
+    }
+    public CompositeType dimensionType()
+    {
+        return dimensionType;
+    }
+    public boolean isVariableLength()
+    {
+        return variableLength;
+    }
+    public int sinceVersion()
+    {
+        return sinceVersion;
+    }
+    public int deprecated()
+    {
+        return deprecated;
+    }
+    public String epoch()
+    {
+        return epoch;
+    }
+    public String timeUnit()
+    {
+        return timeUnit;
+    }
+    public String toString()
+    {
+        return "Field{name='" + name + '\'' +
+            ", description='" + description + '\'' +
+            ", id=" + id +
+            ", type=" + type +
+            ", offset=" + offset +
+            ", semanticType='" + semanticType + '\'' +
+            ", presence=" + presence +
+            ", valueRef='" + valueRef + '\'' +
+            ", blockLength=" + blockLength +
+            ", dimensionType=" + dimensionType +
+            ", variableLength=" + variableLength +
+            ", sinceVersion=" + sinceVersion +
+            ", deprecated=" + deprecated +
+            ", groupFieldList=" + groupFieldList +
+            ", computedOffset=" + computedOffset +
+            ", computedBlockLength=" + computedBlockLength +
+            ", epoch='" + epoch + '\'' +
+            ", timeUnit=" + timeUnit +
+            '}';
+    }
+    private void validateValueRef(final Node node, final Map<String, Type> typeByNameMap)
+    {
+        final int periodIndex = valueRef.indexOf('.');
+        if (periodIndex < 1 || periodIndex == (valueRef.length() - 1))
+        {
+            handleError(node, "valueRef format not valid (enum-name.valid-value-name): " + valueRef);
+        }
+        final String valueRefType = valueRef.substring(0, periodIndex);
+        final Type valueType = typeByNameMap.get(valueRefType);
+        if (null == valueType)
+        {
+            handleError(node, "valueRef for enum name not found: " + valueRefType);
+        }
+        if (valueType instanceof EnumType)
+        {
+            final EnumType enumType = (EnumType)valueType;
+            final String validValueName = valueRef.substring(periodIndex + 1);
+            if (null == enumType.getValidValue(validValueName))
+            {
+                handleError(node, "valueRef for validValue name not found: " + validValueName);
+            }
+        }
+        else
+        {
+            handleError(node, "valueRef for is not of type enum: " + valueRefType);
+        }
+    }
+    static class Builder
+    {
+        private String name;
+        private String description;
+        private int id = INVALID_ID;
+        private Type type;
+        private int offset;
+        private String semanticType;
+        private Presence presence;
+        private String refValue;
+        private int blockLength;
+        private CompositeType dimensionType;
+        private boolean variableLength;
+        private int sinceVersion = 0;
+        private int deprecated = 0;
+        private String epoch;
+        private String timeUnit;
+        Builder name(final String name)
+        {
+            this.name = name;
+            return this;
+        }
+        Builder description(final String description)
+        {
+            this.description = description;
+            return this;
+        }
+        Builder id(final int id)
+        {
+            this.id = id;
+            return this;
+        }
+        Builder type(final Type type)
+        {
+            this.type = type;
+            return this;
+        }
+        Builder offset(final int offset)
+        {
+            this.offset = offset;
+            return this;
+        }
+        Builder semanticType(final String semanticType)
+        {
+            this.semanticType = semanticType;
+            return this;
+        }
+        Builder presence(final Presence presence)
+        {
+            this.presence = presence;
+            return this;
+        }
+        Builder valueRef(final String refValue)
+        {
+            this.refValue = refValue;
+            return this;
+        }
+        Builder blockLength(final int blockLength)
+        {
+            this.blockLength = blockLength;
+            return this;
+        }
+        Builder dimensionType(final CompositeType dimensionType)
+        {
+            this.dimensionType = dimensionType;
+            return this;
+        }
+        Builder variableLength(final boolean variableLength)
+        {
+            this.variableLength = variableLength;
+            return this;
+        }
+        Builder sinceVersion(final int sinceVersion)
+        {
+            this.sinceVersion = sinceVersion;
+            return this;
+        }
+        Builder deprecated(final int deprecated)
+        {
+            this.deprecated = deprecated;
+            return this;
+        }
+        Builder epoch(final String epoch)
+        {
+            this.epoch = epoch;
+            return this;
+        }
+        Builder timeUnit(final String timeUnit)
+        {
+            this.timeUnit = timeUnit;
+            return this;
+        }
+        Field build()
+        {
+            return new Field(
+                name,
+                description,
+                id,
+                type,
+                offset,
+                semanticType,
+                presence,
+                refValue,
+                blockLength,
+                dimensionType,
+                variableLength,
+                sinceVersion,
+                deprecated,
+                epoch,
+                timeUnit);
+        }
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import uk.co.real_logic.sbe.ir.Token;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import static javax.xml.xpath.XPathConstants.NODESET;
+import static uk.co.real_logic.sbe.PrimitiveType.*;
+import static uk.co.real_logic.sbe.SbeTool.JAVA_GENERATE_INTERFACES;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValue;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValueOrNull;
+public class CompositeType extends Type
+{
+    public static final String COMPOSITE_TYPE = "composite";
+    private static final String SUB_TYPES_EXP = "type|enum|set|composite|ref|data|group";
+    private final List<String> compositesPath = new ArrayList<>();
+    private final Map<String, Type> containedTypeByNameMap = new LinkedHashMap<>();
+    CompositeType(final Node node) throws XPathExpressionException
+    {
+        this(node, null, null, new ArrayList<>());
+    }
+    CompositeType(
+        final Node node, final String givenName, final String referencedName, final List<String> compositesPath)
+        throws XPathExpressionException
+    {
+        super(node, givenName, referencedName);
+        this.compositesPath.addAll(compositesPath);
+        this.compositesPath.add(getAttributeValue(node, "name"));
+        final XPath xPath = XPathFactory.newInstance().newXPath();
+        final NodeList list = (NodeList)xPath.compile(SUB_TYPES_EXP).evaluate(node, NODESET);
+        for (int i = 0, size = list.getLength(); i < size; i++)
+        {
+            final Node subTypeNode = list.item(i);
+            final String subTypeName = XmlSchemaParser.getAttributeValue(subTypeNode, "name");
+            processType(subTypeNode, subTypeName, null, null);
+        }
+        checkForValidOffsets(node);
+    }
+    public Type getType(final String name)
+    {
+        return containedTypeByNameMap.get(name);
+    }
+    public int encodedLength()
+    {
+        int length = 0;
+        for (final Type t : containedTypeByNameMap.values())
+        {
+            if (t.isVariableLength())
+            {
+                return Token.VARIABLE_LENGTH;
+            }
+            if (t.offsetAttribute() != -1)
+            {
+                length = t.offsetAttribute();
+            }
+            if (t.presence() != Presence.CONSTANT)
+            {
+                length += t.encodedLength();
+            }
+        }
+        return length;
+    }
+    public List<Type> getTypeList()
+    {
+        return new ArrayList<>(containedTypeByNameMap.values());
+    }
+    public void makeDataFieldCompositeType()
+    {
+        final EncodedDataType edt = (EncodedDataType)containedTypeByNameMap.get("varData");
+        if (edt != null)
+        {
+            edt.variableLength(true);
+        }
+    }
+    public void checkForWellFormedGroupSizeEncoding(final Node node)
+    {
+        final EncodedDataType blockLengthType = (EncodedDataType)containedTypeByNameMap.get("blockLength");
+        final EncodedDataType numInGroupType = (EncodedDataType)containedTypeByNameMap.get("numInGroup");
+        if (blockLengthType == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for group encodedLength encoding must have \"blockLength\"");
+        }
+        else if (!isUnsigned(blockLengthType.primitiveType()))
+        {
+            XmlSchemaParser.handleError(node, "\"blockLength\" must be unsigned type");
+        }
+        else
+        {
+            if (blockLengthType.primitiveType() != UINT8 && blockLengthType.primitiveType() != UINT16)
+            {
+                XmlSchemaParser.handleWarning(node, "\"blockLength\" should be UINT8 or UINT16");
+            }
+            final PrimitiveValue blockLengthTypeMaxValue = blockLengthType.maxValue();
+            validateGroupMaxValue(node, blockLengthType.primitiveType(), blockLengthTypeMaxValue);
+        }
+        if (numInGroupType == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for group encodedLength encoding must have \"numInGroup\"");
+        }
+        else if (!isUnsigned(numInGroupType.primitiveType()))
+        {
+            XmlSchemaParser.handleWarning(node, "\"numInGroup\" should be unsigned type");
+            final PrimitiveValue numInGroupMinValue = numInGroupType.minValue();
+            if (null == numInGroupMinValue)
+            {
+                XmlSchemaParser.handleError(node, "\"numInGroup\" minValue must be set for signed types");
+            }
+            else if (numInGroupMinValue.longValue() < 0)
+            {
+                XmlSchemaParser.handleError(node,
+                    "\"numInGroup\" minValue=" + numInGroupMinValue + " must be greater than zero " +
+                    "for signed \"numInGroup\" types");
+            }
+        }
+        else
+        {
+            if (numInGroupType.primitiveType() != UINT8 && numInGroupType.primitiveType() != UINT16)
+            {
+                XmlSchemaParser.handleWarning(node, "\"numInGroup\" should be UINT8 or UINT16");
+            }
+            final PrimitiveValue numInGroupMaxValue = numInGroupType.maxValue();
+            validateGroupMaxValue(node, numInGroupType.primitiveType(), numInGroupMaxValue);
+            final PrimitiveValue numInGroupMinValue = numInGroupType.minValue();
+            if (null != numInGroupMinValue)
+            {
+                final long max = numInGroupMaxValue != null ?
+                    numInGroupMaxValue.longValue() : numInGroupType.primitiveType().maxValue().longValue();
+                if (numInGroupMinValue.longValue() > max)
+                {
+                    XmlSchemaParser.handleError(
+                        node, "\"numInGroup\" minValue=" + numInGroupMinValue + " greater than maxValue=" + max);
+                }
+            }
+        }
+    }
+    public void checkForWellFormedVariableLengthDataEncoding(final Node node)
+    {
+        final EncodedDataType lengthType = (EncodedDataType)containedTypeByNameMap.get("length");
+        if (lengthType == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for variable length data encoding must have \"length\"");
+        }
+        else
+        {
+            final PrimitiveType primitiveType = lengthType.primitiveType();
+            if (!isUnsigned(primitiveType))
+            {
+                XmlSchemaParser.handleError(node, "\"length\" must be unsigned type");
+            }
+            else if (primitiveType != UINT8 && primitiveType != UINT16 && primitiveType != UINT32)
+            {
+                XmlSchemaParser.handleWarning(node, "\"length\" should be UINT8, UINT16, or UINT32");
+            }
+            validateGroupMaxValue(node, primitiveType, lengthType.maxValue());
+        }
+        if ("optional".equals(getAttributeValueOrNull(node, "presence")))
+        {
+            XmlSchemaParser.handleError(
+                node, "composite for variable length data encoding cannot have presence=\"optional\"");
+        }
+        if (containedTypeByNameMap.get("varData") == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for variable length data encoding must have \"varData\"");
+        }
+    }
+    private static void validateGroupMaxValue(
+        final Node node, final PrimitiveType primitiveType, final PrimitiveValue value)
+    {
+        if (null != value)
+        {
+            final long longValue = value.longValue();
+            final long allowedValue = primitiveType.maxValue().longValue();
+            if (longValue > allowedValue)
+            {
+                XmlSchemaParser.handleError(
+                    node, "maxValue greater than allowed for type: maxValue=" + longValue + " allowed=" + allowedValue);
+            }
+            final long maxInt = INT32.maxValue().longValue();
+            if (primitiveType == UINT32 && longValue > maxInt)
+            {
+                XmlSchemaParser.handleError(
+                    node, "maxValue greater than allowed for type: maxValue=" + longValue + " allowed=" + maxInt);
+            }
+        }
+        else if (primitiveType == UINT32)
+        {
+            final long maxInt = INT32.maxValue().longValue();
+            XmlSchemaParser.handleError(
+                node, "maxValue must be set for varData UINT32 type: max value allowed=" + maxInt);
+        }
+    }
+    public void checkForWellFormedMessageHeader(final Node node)
+    {
+        final boolean shouldGenerateInterfaces = "true".equals(System.getProperty(JAVA_GENERATE_INTERFACES));
+        final EncodedDataType blockLengthType = (EncodedDataType)containedTypeByNameMap.get("blockLength");
+        final EncodedDataType templateIdType = (EncodedDataType)containedTypeByNameMap.get("templateId");
+        final EncodedDataType schemaIdType = (EncodedDataType)containedTypeByNameMap.get("schemaId");
+        final EncodedDataType versionType = (EncodedDataType)containedTypeByNameMap.get("version");
+        if (blockLengthType == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for message header must have \"blockLength\"");
+        }
+        else if (!isUnsigned(blockLengthType.primitiveType()))
+        {
+            XmlSchemaParser.handleError(node, "\"blockLength\" must be unsigned");
+        }
+        validateHeaderField(node, "blockLength", blockLengthType, UINT16, shouldGenerateInterfaces);
+        validateHeaderField(node, "templateId", templateIdType, UINT16, shouldGenerateInterfaces);
+        validateHeaderField(node, "schemaId", schemaIdType, UINT16, shouldGenerateInterfaces);
+        validateHeaderField(node, "version", versionType, UINT16, shouldGenerateInterfaces);
+    }
+    private void validateHeaderField(
+        final Node node,
+        final String fieldName,
+        final EncodedDataType actualType,
+        final PrimitiveType expectedType,
+        final boolean shouldGenerateInterfaces)
+    {
+        if (actualType == null)
+        {
+            XmlSchemaParser.handleError(node, "composite for message header must have \"" + fieldName + "\"");
+        }
+        else if (actualType.primitiveType() != expectedType)
+        {
+            XmlSchemaParser.handleWarning(node, "\"" + fieldName + "\" should be " + expectedType.name());
+            if (shouldGenerateInterfaces)
+            {
+                if (actualType.primitiveType().size() > expectedType.size())
+                {
+                    final String msg = "\"" + fieldName + "\" must be less than " + expectedType.size() +
+                        " bytes to use " + JAVA_GENERATE_INTERFACES;
+                    XmlSchemaParser.handleError(node, msg);
+                }
+                else
+                {
+                    final String msg = "\"" + fieldName + "\" will be cast to " + expectedType.name() +
+                        " to use " + JAVA_GENERATE_INTERFACES;
+                    XmlSchemaParser.handleWarning(node, msg);
+                }
+            }
+        }
+    }
+    public void checkForValidOffsets(final Node node)
+    {
+        int offset = 0;
+        for (final Type edt : containedTypeByNameMap.values())
+        {
+            final int offsetAttribute = edt.offsetAttribute();
+            if (-1 != offsetAttribute)
+            {
+                if (offsetAttribute < offset)
+                {
+                    XmlSchemaParser.handleError(
+                        node, "composite element \"" + edt.name() + "\" has incorrect offset specified");
+                }
+                offset = offsetAttribute;
+            }
+            offset += edt.encodedLength();
+        }
+    }
+    public boolean isVariableLength()
+    {
+        return false;
+    }
+    private Type processType(
+        final Node subTypeNode, final String subTypeName, final String givenName, final String referencedName)
+        throws XPathExpressionException
+    {
+        final String nodeName = subTypeNode.getNodeName();
+        Type type = null;
+        switch (nodeName)
+        {
+            case "type":
+                type = addType(subTypeNode, subTypeName, new EncodedDataType(subTypeNode, givenName, referencedName));
+                break;
+            case "enum":
+                type = addType(subTypeNode, subTypeName, new EnumType(subTypeNode, givenName, referencedName));
+                break;
+            case "set":
+                type = addType(subTypeNode, subTypeName, new SetType(subTypeNode, givenName, referencedName));
+                break;
+            case "composite":
+                type = addType(
+                    subTypeNode,
+                    subTypeName,
+                    new CompositeType(subTypeNode, givenName, referencedName, compositesPath));
+                break;
+            case "ref":
+            {
+                final XPath xPath = XPathFactory.newInstance().newXPath();
+                final String refTypeName = XmlSchemaParser.getAttributeValue(subTypeNode, "type");
+                final String expression = "
+    public String toString()
+    {
+        return "CompositeType{" +
+            "compositesPath=" + compositesPath +
+            ", containedTypeByNameMap=" + containedTypeByNameMap +
+            '}';
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import static uk.co.real_logic.sbe.xml.Presence.OPTIONAL;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.*;
+public class EnumType extends Type
+{
+    public static final String ENUM_TYPE = "enum";
+    private final PrimitiveType encodingType;
+    private final PrimitiveValue nullValue;
+    private final Map<PrimitiveValue, ValidValue> validValueByPrimitiveValueMap = new LinkedHashMap<>();
+    private final Map<String, ValidValue> validValueByNameMap = new LinkedHashMap<>();
+    EnumType(final Node node) throws XPathExpressionException
+    {
+        this(node, null, null);
+    }
+    EnumType(final Node node, final String givenName, final String referencedName)
+        throws XPathExpressionException
+    {
+        super(node, givenName, referencedName);
+        final XPath xPath = XPathFactory.newInstance().newXPath();
+        final String encodingTypeStr = getAttributeValue(node, "encodingType");
+        final EncodedDataType encodedDataType;
+        switch (encodingTypeStr)
+        {
+            case "char":
+            case "uint8":
+            case "int8":
+            case "int16":
+            case "uint16":
+            case "int32":
+                encodingType = PrimitiveType.get(encodingTypeStr);
+                encodedDataType = null;
+                break;
+            default:
+                final String expression = TYPE_XPATH_EXPR + "[@name='" + encodingTypeStr + "']";
+                final Node encodingTypeNode = (Node)xPath.compile(expression)
+                    .evaluate(node.getOwnerDocument(), XPathConstants.NODE);
+                if (null == encodingTypeNode)
+                {
+                    throw new IllegalArgumentException("illegal encodingType for enum " + encodingTypeStr);
+                }
+                encodedDataType = new EncodedDataType(encodingTypeNode);
+                if (encodedDataType.length() != 1)
+                {
+                    throw new IllegalArgumentException(
+                        "illegal encodingType for enum " + encodingTypeStr + " length not equal to 1");
+                }
+                encodingType = encodedDataType.primitiveType();
+        }
+        final String nullValueStr = getAttributeValueOrNull(node, "nullValue");
+        if (null != nullValueStr)
+        {
+            nullValue = PrimitiveValue.parse(nullValueStr, encodingType);
+        }
+        else if (null != encodedDataType && null != encodedDataType.nullValue())
+        {
+            nullValue = encodedDataType.nullValue();
+        }
+        else
+        {
+            nullValue = encodingType.nullValue();
+        }
+        if (presence() == OPTIONAL && null == nullValue)
+        {
+            handleError(node, "presence optional but no null value found");
+        }
+        final NodeList list = (NodeList)xPath.compile("validValue").evaluate(node, XPathConstants.NODESET);
+        for (int i = 0, size = list.getLength(); i < size; i++)
+        {
+            final ValidValue v = new ValidValue(list.item(i), encodingType);
+            if (validValueByPrimitiveValueMap.get(v.primitiveValue()) != null)
+            {
+                handleWarning(node, "validValue already exists for value: " + v.primitiveValue());
+            }
+            if (validValueByNameMap.get(v.name()) != null)
+            {
+                handleWarning(node, "validValue already exists for name: " + v.name());
+            }
+            if (PrimitiveType.CHAR != encodingType)
+            {
+                final long value = v.primitiveValue().longValue();
+                final long minValue = null != encodedDataType && null != encodedDataType.minValue() ?
+                    encodedDataType.minValue().longValue() : encodingType.minValue().longValue();
+                final long maxValue = null != encodedDataType && null != encodedDataType.maxValue() ?
+                    encodedDataType.maxValue().longValue() : encodingType.maxValue().longValue();
+                final long nullLongValue = nullValue.longValue();
+                if (nullLongValue == value)
+                {
+                    handleError(node, "validValue " + v.name() + " uses nullValue: " + nullLongValue);
+                }
+                else if (value < minValue || value > maxValue)
+                {
+                    handleError(
+                        node,
+                        "validValue " + v.name() + " outside of range " + minValue + " - " + maxValue + ": " + value);
+                }
+            }
+            validValueByPrimitiveValueMap.put(v.primitiveValue(), v);
+            validValueByNameMap.put(v.name(), v);
+        }
+    }
+    public PrimitiveType encodingType()
+    {
+        return encodingType;
+    }
+    public int encodedLength()
+    {
+        if (presence() == Presence.CONSTANT)
+        {
+            return 0;
+        }
+        return encodingType.size();
+    }
+    public ValidValue getValidValue(final PrimitiveValue value)
+    {
+        return validValueByPrimitiveValueMap.get(value);
+    }
+    public ValidValue getValidValue(final String name)
+    {
+        return validValueByNameMap.get(name);
+    }
+    public PrimitiveValue nullValue()
+    {
+        return nullValue;
+    }
+    public Collection<ValidValue> validValues()
+    {
+        return validValueByNameMap.values();
+    }
+    public boolean isVariableLength()
+    {
+        return false;
+    }
+    public String toString()
+    {
+        return "EnumType{" +
+            "encodingType=" + encodingType +
+            ", nullValue=" + nullValue +
+            ", validValueByPrimitiveValueMap=" + validValueByPrimitiveValueMap +
+            ", validValueByNameMap=" + validValueByNameMap +
+            '}';
+    }
+    public static class ValidValue
+    {
+        private final String name;
+        private final String description;
+        private final PrimitiveValue value;
+        private final int sinceVersion;
+        private final int deprecated;
+        public ValidValue(final Node node, final PrimitiveType encodingType)
+        {
+            name = getAttributeValue(node, "name");
+            description = getAttributeValueOrNull(node, "description");
+            value = PrimitiveValue.parse(node.getFirstChild().getNodeValue(), encodingType);
+            sinceVersion = Integer.parseInt(getAttributeValue(node, "sinceVersion", "0"));
+            deprecated = Integer.parseInt(getAttributeValue(node, "deprecated", "0"));
+            checkForValidName(node, name);
+        }
+        public PrimitiveValue primitiveValue()
+        {
+            return value;
+        }
+        public String name()
+        {
+            return name;
+        }
+        public String description()
+        {
+            return description;
+        }
+        public int sinceVersion()
+        {
+            return sinceVersion;
+        }
+        public int deprecated()
+        {
+            return deprecated;
+        }
+        public String toString()
+        {
+            return "ValidValue{" +
+                "name='" + name + '\'' +
+                ", description='" + description + '\'' +
+                ", value=" + value +
+                ", sinceVersion=" + sinceVersion +
+                ", deprecated=" + deprecated +
+                '}';
+        }
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import uk.co.real_logic.sbe.ir.Token;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import org.w3c.dom.Node;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathException;
+import javax.xml.xpath.XPathFactory;
+import static uk.co.real_logic.sbe.xml.Presence.CONSTANT;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.handleError;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.handleWarning;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValue;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.getAttributeValueOrNull;
+public class EncodedDataType extends Type
+{
+    public static final String ENCODED_DATA_TYPE = "type";
+    private final PrimitiveType primitiveType;
+    private final int length;
+    private final PrimitiveValue constValue;
+    private final PrimitiveValue minValue;
+    private final PrimitiveValue maxValue;
+    private final PrimitiveValue nullValue;
+    private final String characterEncoding;
+    private final String valueRef;
+    private boolean varLen;
+    public EncodedDataType(final Node node)
+    {
+        this(node, null, null);
+    }
+    @SuppressWarnings("this-escape")
+    public EncodedDataType(final Node node, final String givenName, final String referencedName)
+    {
+        super(node, givenName, referencedName);
+        primitiveType = PrimitiveType.get(getAttributeValue(node, "primitiveType"));
+        final String lengthAttr = getAttributeValueOrNull(node, "length");
+        length = Integer.parseInt(null == lengthAttr ? "1" : lengthAttr);
+        varLen = Boolean.parseBoolean(getAttributeValue(node, "variableLength", "false"));
+        valueRef = getAttributeValueOrNull(node, "valueRef");
+        if (null != valueRef)
+        {
+            if (valueRef.indexOf('.') == -1)
+            {
+                handleError(node, "valueRef format not valid (enum-name.valid-value-name): " + valueRef);
+            }
+            if (presence() != CONSTANT)
+            {
+                handleError(node, "presence must be constant when valueRef is set: " + valueRef);
+            }
+        }
+        if (PrimitiveType.CHAR == primitiveType)
+        {
+            characterEncoding = getAttributeValue(node, "characterEncoding", "US-ASCII").trim();
+        }
+        else
+        {
+            final String configuredCharacterEncoding = getAttributeValueOrNull(node, "characterEncoding");
+            characterEncoding = configuredCharacterEncoding == null ? null : configuredCharacterEncoding.trim();
+        }
+        if (presence() == CONSTANT)
+        {
+            if (null == valueRef)
+            {
+                if (node.getFirstChild() == null)
+                {
+                    handleError(node, "type has declared presence as \"constant\" but XML node has no data");
+                    constValue = null;
+                }
+                else
+                {
+                    final String nodeValue = node.getFirstChild().getNodeValue();
+                    if (PrimitiveType.CHAR == primitiveType)
+                    {
+                        constValue = processConstantChar(node, lengthAttr, nodeValue);
+                    }
+                    else
+                    {
+                        constValue = PrimitiveValue.parse(nodeValue, primitiveType);
+                    }
+                }
+            }
+            else
+            {
+                constValue = lookupValueRef(node);
+            }
+        }
+        else
+        {
+            constValue = null;
+        }
+        final String minValStr = getAttributeValueOrNull(node, "minValue");
+        minValue = minValStr != null ? PrimitiveValue.parse(minValStr, primitiveType) : null;
+        final String maxValStr = getAttributeValueOrNull(node, "maxValue");
+        maxValue = maxValStr != null ? PrimitiveValue.parse(maxValStr, primitiveType) : null;
+        final String nullValStr = getAttributeValueOrNull(node, "nullValue");
+        if (nullValStr != null)
+        {
+            if (presence() != Presence.OPTIONAL)
+            {
+                handleWarning(node, "nullValue set, but presence is not optional");
+            }
+            nullValue = PrimitiveValue.parse(nullValStr, primitiveType);
+        }
+        else
+        {
+            nullValue = null;
+        }
+    }
+    private PrimitiveValue lookupValueRef(final Node node)
+    {
+        try
+        {
+            final int periodIndex = valueRef.indexOf('.');
+            final String valueRefType = valueRef.substring(0, periodIndex);
+            final XPath xPath = XPathFactory.newInstance().newXPath();
+            final Node valueRefNode = (Node)xPath.compile(
+                "
+    public EncodedDataType(
+        final String name,
+        final Presence presence,
+        final String description,
+        final String semanticType,
+        final PrimitiveType primitiveType,
+        final int length,
+        final boolean varLen)
+    {
+        this(name, null, presence, description, semanticType, primitiveType, length, varLen);
+    }
+    public EncodedDataType(
+        final String name,
+        final String packageName,
+        final Presence presence,
+        final String description,
+        final String semanticType,
+        final PrimitiveType primitiveType,
+        final int length,
+        final boolean varLen)
+    {
+        super(name, packageName, presence, description, 0, 0, semanticType);
+        this.primitiveType = primitiveType;
+        this.length = length;
+        this.varLen = varLen;
+        this.constValue = null;
+        this.minValue = null;
+        this.maxValue = null;
+        this.nullValue = null;
+        characterEncoding = null;
+        valueRef = null;
+    }
+    public int length()
+    {
+        return length;
+    }
+    public boolean isVariableLength()
+    {
+        return varLen;
+    }
+    public void variableLength(final boolean variableLength)
+    {
+        this.varLen = variableLength;
+    }
+    public PrimitiveType primitiveType()
+    {
+        return primitiveType;
+    }
+    public int encodedLength()
+    {
+        if (presence() == CONSTANT)
+        {
+            return 0;
+        }
+        if (varLen)
+        {
+            return Token.VARIABLE_LENGTH;
+        }
+        return primitiveType.size() * length;
+    }
+    public PrimitiveValue constVal()
+    {
+        if (presence() != CONSTANT)
+        {
+            throw new IllegalStateException("type is not of constant presence");
+        }
+        return constValue;
+    }
+    public PrimitiveValue minValue()
+    {
+        return minValue;
+    }
+    public PrimitiveValue maxValue()
+    {
+        return maxValue;
+    }
+    public PrimitiveValue nullValue()
+    {
+        return nullValue;
+    }
+    public String characterEncoding()
+    {
+        return characterEncoding;
+    }
+    public String valueRef()
+    {
+        return valueRef;
+    }
+    private PrimitiveValue processConstantChar(final Node node, final String lengthAttr, final String nodeValue)
+    {
+        final int valueLength = nodeValue.length();
+        if (null != lengthAttr && length < valueLength)
+        {
+            handleError(node, "length of " + length + " is less than provided value: " + nodeValue);
+        }
+        final PrimitiveValue primitiveValue;
+        if (valueLength == 1)
+        {
+            if (null == lengthAttr || length == 1)
+            {
+                primitiveValue = PrimitiveValue.parse(nodeValue, primitiveType, characterEncoding);
+            }
+            else
+            {
+                primitiveValue = PrimitiveValue.parse(nodeValue, length, characterEncoding);
+            }
+        }
+        else
+        {
+            if (null == lengthAttr)
+            {
+                primitiveValue = PrimitiveValue.parse(nodeValue, valueLength, characterEncoding);
+            }
+            else
+            {
+                primitiveValue = PrimitiveValue.parse(nodeValue, length, characterEncoding);
+            }
+        }
+        return primitiveValue;
+    }
+    public String toString()
+    {
+        return "EncodedDataType{" +
+            "primitiveType=" + primitiveType +
+            ", length=" + length +
+            ", constValue=" + constValue +
+            ", minValue=" + minValue +
+            ", maxValue=" + maxValue +
+            ", nullValue=" + nullValue +
+            ", characterEncoding='" + characterEncoding + '\'' +
+            ", valueRef='" + valueRef + '\'' +
+            ", varLen=" + varLen +
+            '}';
+    }
+}
+package uk.co.real_logic.sbe.properties.arbitraries;
+import net.jqwik.api.Arbitraries;
+import net.jqwik.api.Arbitrary;
+import net.jqwik.api.Combinators;
+import net.jqwik.api.arbitraries.CharacterArbitrary;
+import net.jqwik.api.arbitraries.ListArbitrary;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import uk.co.real_logic.sbe.ir.Encoding;
+import uk.co.real_logic.sbe.ir.Ir;
+import uk.co.real_logic.sbe.ir.Token;
+import uk.co.real_logic.sbe.properties.schema.*;
+import uk.co.real_logic.sbe.xml.IrGenerator;
+import uk.co.real_logic.sbe.xml.ParserOptions;
+import org.agrona.BitUtil;
+import org.agrona.ExpandableArrayBuffer;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.MutableInteger;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.stream.Collectors;
+import static uk.co.real_logic.sbe.ir.Signal.*;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.parse;
+@SuppressWarnings("EnhancedSwitchMigration")
+public final class SbeArbitraries
+{
+    private static final int MAX_COMPOSITE_DEPTH = 3;
+    private static final int MAX_GROUP_DEPTH = 3;
+    public static final int NULL_VALUE = Integer.MIN_VALUE;
+    private SbeArbitraries()
+    {
+    }
+    private static <T> Arbitrary<List<T>> withDuplicates(
+        final int maxDuplicates,
+        final ListArbitrary<T> arbitrary)
+    {
+        return Combinators.combine(
+            Arbitraries.integers().list().ofMaxSize(2 * maxDuplicates),
+            arbitrary
+        ).as((positions, originalItems) ->
+        {
+            if (originalItems.isEmpty())
+            {
+                return originalItems;
+            }
+            final List<T> items = new ArrayList<>(originalItems);
+            T itemToDupe = null;
+            int j = 0;
+            for (final int position : positions)
+            {
+                j += position;
+                j %= items.size();
+                j = Math.abs(j);
+                if (itemToDupe == null)
+                {
+                    itemToDupe = items.get(j);
+                }
+                else
+                {
+                    items.add(j, itemToDupe);
+                    itemToDupe = null;
+                }
+            }
+            return items;
+        });
+    }
+    private static Arbitrary<EncodedDataTypeSchema> encodedDataTypeSchema()
+    {
+        return Combinators.combine(
+            Arbitraries.of(PrimitiveType.values()),
+            Arbitraries.of(1, 1, 1, 2, 13),
+            presence(),
+            Arbitraries.of(true, false)
+        ).as(EncodedDataTypeSchema::new);
+    }
+    public enum CharGenerationMode
+    {
+        UNRESTRICTED,
+        JSON_PRINTER_COMPATIBLE
+    }
+    private static Arbitrary<EnumTypeSchema> enumTypeSchema()
+    {
+        return Arbitraries.oneOf(
+            Arbitraries.chars().alpha()
+                .map(Character::toUpperCase)
+                .list()
+                .ofMinSize(1)
+                .ofMaxSize(10)
+                .uniqueElements()
+                .map(values -> new EnumTypeSchema(
+                    "char",
+                    values.stream().map(String::valueOf).collect(Collectors.toList())
+                )),
+            Arbitraries.integers()
+                .between(1, 254)
+                .list()
+                .ofMinSize(1)
+                .ofMaxSize(254)
+                .uniqueElements()
+                .map(values -> new EnumTypeSchema(
+                    "uint8",
+                    values.stream().map(String::valueOf).collect(Collectors.toList())
+                ))
+        );
+    }
+    private static Arbitrary<SetSchema> setTypeSchema()
+    {
+        return Arbitraries.oneOf(
+            Arbitraries.integers().between(0, 7).set()
+                .ofMaxSize(8)
+                .map(choices -> new SetSchema("uint8", choices)),
+            Arbitraries.integers().between(0, 15).set()
+                .ofMaxSize(16)
+                .map(choices -> new SetSchema("uint16", choices)),
+            Arbitraries.integers().between(0, 31).set()
+                .ofMaxSize(32)
+                .map(choices -> new SetSchema("uint32", choices)),
+            Arbitraries.integers().between(0, 63).set()
+                .ofMaxSize(64)
+                .map(choices -> new SetSchema("uint64", choices))
+        );
+    }
+    private static Arbitrary<TypeSchema> compositeTypeSchema(final int depth)
+    {
+        return withDuplicates(2, typeSchema(depth - 1).list().ofMinSize(1).ofMaxSize(3))
+            .map(CompositeTypeSchema::new);
+    }
+    private static Arbitrary<TypeSchema> typeSchema(final int depth)
+    {
+        if (depth == 1)
+        {
+            return Arbitraries.oneOf(
+                encodedDataTypeSchema(),
+                enumTypeSchema(),
+                setTypeSchema()
+            );
+        }
+        else
+        {
+            return Arbitraries.oneOf(
+                compositeTypeSchema(depth),
+                encodedDataTypeSchema(),
+                enumTypeSchema(),
+                setTypeSchema()
+            );
+        }
+    }
+    private static Arbitrary<FieldSchema> addedField()
+    {
+        return Combinators.combine(
+            typeSchema(MAX_COMPOSITE_DEPTH),
+            Arbitraries.of(Encoding.Presence.OPTIONAL),
+            Arbitraries.of((short)1, (short)2)
+        ).as(FieldSchema::new);
+    }
+    private static Arbitrary<FieldSchema> originalField()
+    {
+        return Combinators.combine(
+            typeSchema(MAX_COMPOSITE_DEPTH),
+            presence(),
+            Arbitraries.of((short)0)
+        ).as(FieldSchema::new);
+    }
+    private static Arbitrary<FieldSchema> skewedFieldDistribution()
+    {
+        final Arbitrary<FieldSchema> originalField = originalField();
+        final Arbitrary<FieldSchema> addedField = addedField();
+        return Arbitraries.oneOf(
+            originalField,
+            originalField,
+            originalField,
+            addedField
+        );
+    }
+    private static Arbitrary<GroupSchema> groupSchema(final int depth)
+    {
+        final Arbitrary<List<GroupSchema>> subGroups = depth == 1 ?
+            Arbitraries.of(0).map(ignored -> new ArrayList<>()) :
+            groupSchema(depth - 1).list().ofMaxSize(3);
+        return Combinators.combine(
+            withDuplicates(
+                2,
+                skewedFieldDistribution().list().ofMaxSize(5)
+            ),
+            subGroups,
+            varDataSchema(Arbitraries.of((short)0)).list().ofMaxSize(3)
+        ).as(GroupSchema::new);
+    }
+    private static Arbitrary<Encoding.Presence> presence()
+    {
+        return Arbitraries.of(
+            Encoding.Presence.REQUIRED,
+            Encoding.Presence.OPTIONAL
+        );
+    }
+    private static Arbitrary<VarDataSchema> varDataSchema(final Arbitrary<Short> sinceVersion)
+    {
+        return Combinators.combine(
+            Arbitraries.of(VarDataSchema.Encoding.values()),
+            Arbitraries.of(
+                PrimitiveType.UINT8,
+                PrimitiveType.UINT16,
+                PrimitiveType.UINT32
+            ),
+            sinceVersion
+        ).as(VarDataSchema::new);
+    }
+    private static Arbitrary<VarDataSchema> varDataSchema()
+    {
+        return varDataSchema(
+            Arbitraries.of(
+                (short)0,
+                (short)0,
+                (short)0,
+                (short)1,
+                (short)2));
+    }
+    public static Arbitrary<MessageSchema> messageSchema()
+    {
+        return Combinators.combine(
+            withDuplicates(
+                3,
+                skewedFieldDistribution().list().ofMaxSize(10)
+            ),
+            groupSchema(MAX_GROUP_DEPTH).list().ofMaxSize(3),
+            varDataSchema().list().ofMaxSize(3)
+        ).as(MessageSchema::new);
+    }
+    private interface Encoder
+    {
+        void encode(
+            EncodingLogger logger,
+            MutableDirectBuffer buffer,
+            int offset,
+            MutableInteger limit);
+    }
+    private static final class EncodingLogger
+    {
+        private final StringBuilder builder = new StringBuilder();
+        private final Deque<String> scope = new ArrayDeque<>();
+        public void beginScope(final String name)
+        {
+            scope.addLast(name);
+        }
+        public StringBuilder appendLine()
+        {
+            builder.append("\n");
+            scope.forEach(s -> builder.append(".").append(s));
+            builder.append(": ");
+            return builder;
+        }
+        public void endScope()
+        {
+            scope.removeLast();
+        }
+        public String toString()
+        {
+            return builder.toString();
+        }
+    }
+    private static Encoder combineEncoders(final Collection<Encoder> encoders)
+    {
+        return (builder, buffer, offset, limit) ->
+        {
+            for (final Encoder encoder : encoders)
+            {
+                encoder.encode(builder, buffer, offset, limit);
+            }
+        };
+    }
+    private static Arbitrary<Encoder> combineArbitraryEncoders(final List<Arbitrary<Encoder>> encoders)
+    {
+        if (encoders.isEmpty())
+        {
+            return Arbitraries.of(emptyEncoder());
+        }
+        else
+        {
+            return Combinators.combine(encoders).as(SbeArbitraries::combineEncoders);
+        }
+    }
+    public static CharacterArbitrary chars(final CharGenerationMode mode)
+    {
+        switch (mode)
+        {
+            case UNRESTRICTED:
+                return Arbitraries.chars();
+            case JSON_PRINTER_COMPATIBLE:
+                return Arbitraries.chars().alpha();
+            default:
+                throw new IllegalArgumentException("Unsupported mode: " + mode);
+        }
+    }
+    private static Arbitrary<Encoder> encodedTypeEncoder(
+        final Encoding encoding,
+        final CharGenerationMode charGenerationMode)
+    {
+        final PrimitiveValue minValue = encoding.applicableMinValue();
+        final PrimitiveValue maxValue = encoding.applicableMaxValue();
+        switch (encoding.primitiveType())
+        {
+            case CHAR:
+                assert minValue.longValue() <= maxValue.longValue();
+                return chars(charGenerationMode).map(c ->
+                    (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append(c).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_BYTE).append("]");
+                        buffer.putChar(offset, c, encoding.byteOrder());
+                    });
+            case UINT8:
+            case INT8:
+                assert (short)minValue.longValue() <= (short)maxValue.longValue();
+                return Arbitraries.shorts()
+                    .between((short)minValue.longValue(), (short)maxValue.longValue())
+                    .map(b -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append((byte)(short)b).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_BYTE).append("]");
+                        buffer.putByte(offset, (byte)(short)b);
+                    });
+            case UINT16:
+            case INT16:
+                assert (int)minValue.longValue() <= (int)maxValue.longValue();
+                return Arbitraries.integers()
+                    .between((int)minValue.longValue(), (int)maxValue.longValue())
+                    .map(s -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append((short)(int)s).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_SHORT).append("]");
+                        buffer.putShort(offset, (short)(int)s, encoding.byteOrder());
+                    });
+            case UINT32:
+            case INT32:
+                assert minValue.longValue() <= maxValue.longValue();
+                return Arbitraries.longs()
+                    .between(minValue.longValue(), maxValue.longValue())
+                    .map(i -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append((int)(long)i).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_INT).append("]");
+                        buffer.putInt(offset, (int)(long)i, encoding.byteOrder());
+                    });
+            case UINT64:
+                return Arbitraries.longs()
+                    .map(l -> (builder, buffer, offset, limit) ->
+                    {
+                        final long nullValue = encoding.applicableNullValue().longValue();
+                        final long nonNullValue = l == nullValue ? minValue.longValue() : l;
+                        builder.appendLine().append(nonNullValue).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_LONG).append("]");
+                        buffer.putLong(offset, nonNullValue, encoding.byteOrder());
+                    });
+            case INT64:
+                assert minValue.longValue() <= maxValue.longValue();
+                return Arbitraries.longs()
+                    .between(minValue.longValue(), maxValue.longValue())
+                    .map(l -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append(l).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_LONG).append("]");
+                        buffer.putLong(offset, l, encoding.byteOrder());
+                    });
+            case FLOAT:
+                return Arbitraries.floats()
+                    .map(f -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append(f).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_FLOAT).append("]");
+                        buffer.putFloat(offset, f, encoding.byteOrder());
+                    });
+            case DOUBLE:
+                return Arbitraries.doubles()
+                    .map(d -> (builder, buffer, offset, limit) ->
+                    {
+                        builder.appendLine().append(d).append(" @ ").append(offset)
+                            .append("[").append(BitUtil.SIZE_OF_DOUBLE).append("]");
+                        buffer.putDouble(offset, d, encoding.byteOrder());
+                    });
+            default:
+                throw new IllegalArgumentException("Unsupported type: " + encoding.primitiveType());
+        }
+    }
+    private static Arbitrary<Encoder> encodedTypeEncoder(
+        final int offset,
+        final Token typeToken,
+        final CharGenerationMode charGenerationMode)
+    {
+        final Encoding encoding = typeToken.encoding();
+        final Arbitrary<Encoder> arbEncoder = encodedTypeEncoder(encoding, charGenerationMode);
+        if (typeToken.arrayLength() == 1)
+        {
+            return arbEncoder.map(encoder -> (builder, buffer, bufferOffset, limit) ->
+                encoder.encode(builder, buffer, bufferOffset + offset, limit));
+        }
+        else
+        {
+            return arbEncoder.list().ofSize(typeToken.arrayLength())
+                .map(encoders -> (builder, buffer, bufferOffset, limit) ->
+                {
+                    for (int i = 0; i < typeToken.arrayLength(); i++)
+                    {
+                        builder.beginScope("[" + i + "]");
+                        final int elementOffset = bufferOffset + offset + i * encoding.primitiveType().size();
+                        encoders.get(i).encode(builder, buffer, elementOffset, limit);
+                        builder.endScope();
+                    }
+                });
+        }
+    }
+    private static Encoder emptyEncoder()
+    {
+        return (builder, buffer, offset, limit) ->
+        {
+        };
+    }
+    private static Encoder integerValueEncoder(final Encoding encoding, final long value)
+    {
+        final PrimitiveType type = encoding.primitiveType();
+        switch (type)
+        {
+            case CHAR:
+            case UINT8:
+            case INT8:
+                return (builder, buffer, offset, limit) ->
+                {
+                    builder.appendLine().append((byte)value).append("[").append(value).append("]")
+                        .append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_BYTE).append("]");
+                    buffer.putByte(offset, (byte)value);
+                };
+            case UINT16:
+            case INT16:
+                return (builder, buffer, offset, limit) ->
+                {
+                    builder.appendLine().append((short)value).append("[").append(value).append("]")
+                        .append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_SHORT).append("]");
+                    buffer.putShort(offset, (short)value, encoding.byteOrder());
+                };
+            case UINT32:
+            case INT32:
+                return (builder, buffer, offset, limit) ->
+                {
+                    builder.appendLine().append((int)value).append("[").append(value).append("]")
+                        .append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_INT).append("]");
+                    buffer.putInt(offset, (int)value, encoding.byteOrder());
+                };
+            case UINT64:
+            case INT64:
+                return (builder, buffer, offset, limit) ->
+                {
+                    builder.appendLine().append(value).append("[").append(value).append("]")
+                        .append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_LONG).append("]");
+                    buffer.putLong(offset, value, encoding.byteOrder());
+                };
+            default:
+                throw new IllegalArgumentException("Unsupported type: " + type);
+        }
+    }
+    private static Arbitrary<Encoder> enumEncoder(
+        final int offset,
+        final List<Token> tokens,
+        final Token typeToken,
+        final MutableInteger cursor,
+        final int endIdxInclusive)
+    {
+        cursor.increment();
+        final List<Encoder> encoders = new ArrayList<>();
+        for (; cursor.get() <= endIdxInclusive; cursor.increment())
+        {
+            final Token token = tokens.get(cursor.get());
+            if (VALID_VALUE != token.signal())
+            {
+                throw new IllegalArgumentException("Expected VALID_VALUE token");
+            }
+            final Encoding encoding = token.encoding();
+            final Encoder caseEncoder = integerValueEncoder(encoding, encoding.constValue().longValue());
+            encoders.add(caseEncoder);
+        }
+        if (encoders.isEmpty())
+        {
+            final Encoder nullEncoder = integerValueEncoder(
+                typeToken.encoding(),
+                typeToken.encoding().nullValue().longValue());
+            encoders.add(nullEncoder);
+        }
+        return Arbitraries.of(encoders).map(encoder ->
+            (builder, buffer, bufferOffset, limit) ->
+                encoder.encode(builder, buffer, bufferOffset + offset, limit));
+    }
+    private static Encoder choiceEncoder(final Encoding encoding)
+    {
+        final long choiceBitIdx = encoding.constValue().longValue();
+        final PrimitiveType type = encoding.primitiveType();
+        switch (type)
+        {
+            case UINT8:
+            case INT8:
+                return (builder, buffer, offset, limit) ->
+                {
+                    buffer.checkLimit(offset + BitUtil.SIZE_OF_BYTE);
+                    final byte oldValue = buffer.getByte(offset);
+                    final byte newValue = (byte)(oldValue | (1 << choiceBitIdx));
+                    buffer.putByte(offset, newValue);
+                    builder.appendLine().append("oldValue: ").append(oldValue);
+                    builder.appendLine().append(newValue).append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_BYTE).append("]");
+                };
+            case UINT16:
+            case INT16:
+                return (builder, buffer, offset, limit) ->
+                {
+                    buffer.checkLimit(offset + BitUtil.SIZE_OF_SHORT);
+                    final short oldValue = buffer.getShort(offset, encoding.byteOrder());
+                    final short newValue = (short)(oldValue | (1 << choiceBitIdx));
+                    buffer.putShort(offset, newValue, encoding.byteOrder());
+                    builder.appendLine().append("oldValue: ").append(oldValue);
+                    builder.appendLine().append(newValue).append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_SHORT).append("]");
+                };
+            case UINT32:
+            case INT32:
+                return (builder, buffer, offset, limit) ->
+                {
+                    buffer.checkLimit(offset + BitUtil.SIZE_OF_INT);
+                    final int oldValue = buffer.getInt(offset, encoding.byteOrder());
+                    final int newValue = oldValue | (1 << choiceBitIdx);
+                    buffer.putInt(offset, newValue, encoding.byteOrder());
+                    builder.appendLine().append("oldValue: ").append(oldValue);
+                    builder.appendLine().append(newValue).append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_INT).append("]");
+                };
+            case UINT64:
+            case INT64:
+                return (builder, buffer, offset, limit) ->
+                {
+                    buffer.checkLimit(offset + BitUtil.SIZE_OF_LONG);
+                    final long oldValue = buffer.getLong(offset, encoding.byteOrder());
+                    final long newValue = oldValue | (1L << choiceBitIdx);
+                    buffer.putLong(offset, newValue, encoding.byteOrder());
+                    builder.appendLine().append("oldValue: ").append(oldValue);
+                    builder.appendLine().append(newValue).append(" @ ").append(offset)
+                        .append("[").append(BitUtil.SIZE_OF_LONG).append("]");
+                };
+            default:
+                throw new IllegalArgumentException("Unsupported type: " + type);
+        }
+    }
+    private static Arbitrary<Encoder> bitSetEncoder(
+        final int offset,
+        final List<Token> tokens,
+        final MutableInteger cursor,
+        final int endIdxInclusive)
+    {
+        cursor.increment();
+        final List<Encoder> encoders = new ArrayList<>();
+        for (; cursor.get() <= endIdxInclusive; cursor.increment())
+        {
+            final Token token = tokens.get(cursor.get());
+            if (CHOICE != token.signal())
+            {
+                throw new IllegalArgumentException("Expected CHOICE token");
+            }
+            final Encoding encoding = token.encoding();
+            final Encoder choiceEncoder = choiceEncoder(encoding);
+            encoders.add(choiceEncoder);
+        }
+        if (encoders.isEmpty())
+        {
+            return Arbitraries.of(emptyEncoder());
+        }
+        return Arbitraries.subsetOf(encoders)
+            .map(SbeArbitraries::combineEncoders)
+            .map(encoder -> (builder, buffer, bufferOffset, limit) ->
+                encoder.encode(builder, buffer, bufferOffset + offset, limit));
+    }
+    private static Arbitrary<Encoder> fieldsEncoder(
+        final List<Token> tokens,
+        final MutableInteger cursor,
+        final int endIdxInclusive,
+        final boolean expectFields,
+        final CharGenerationMode charGenerationMode)
+    {
+        final List<Arbitrary<Encoder>> encoders = new ArrayList<>();
+        while (cursor.get() <= endIdxInclusive)
+        {
+            final Token memberToken = tokens.get(cursor.get());
+            final int nextFieldIdx = cursor.get() + memberToken.componentTokenCount();
+            Token typeToken = memberToken;
+            int endFieldTokenCount = 0;
+            if (BEGIN_FIELD == memberToken.signal())
+            {
+                cursor.increment();
+                typeToken = tokens.get(cursor.get());
+                endFieldTokenCount = 1;
+            }
+            else if (expectFields)
+            {
+                break;
+            }
+            final int offset = typeToken.offset();
+            if (!memberToken.isConstantEncoding())
+            {
+                Arbitrary<Encoder> fieldEncoder = null;
+                switch (typeToken.signal())
+                {
+                    case BEGIN_COMPOSITE:
+                        cursor.increment();
+                        final int endCompositeTokenCount = 1;
+                        final int lastMemberIdx = nextFieldIdx - endCompositeTokenCount - endFieldTokenCount - 1;
+                        final Arbitrary<Encoder> encoder = fieldsEncoder(
+                            tokens, cursor, lastMemberIdx, false, charGenerationMode);
+                        fieldEncoder = encoder.map(e ->
+                            (builder, buffer, bufferOffset, limit) ->
+                                e.encode(builder, buffer, bufferOffset + offset, limit));
+                        break;
+                    case BEGIN_ENUM:
+                        final int endEnumTokenCount = 1;
+                        final int lastValidValueIdx = nextFieldIdx - endFieldTokenCount - endEnumTokenCount - 1;
+                        fieldEncoder = enumEncoder(offset, tokens, typeToken, cursor, lastValidValueIdx);
+                        break;
+                    case BEGIN_SET:
+                        final int endSetTokenCount = 1;
+                        final int lastChoiceIdx = nextFieldIdx - endFieldTokenCount - endSetTokenCount - 1;
+                        fieldEncoder = bitSetEncoder(offset, tokens, cursor, lastChoiceIdx);
+                        break;
+                    case ENCODING:
+                        fieldEncoder = encodedTypeEncoder(offset, typeToken, charGenerationMode);
+                        break;
+                    default:
+                        break;
+                }
+                if (fieldEncoder != null)
+                {
+                    encoders.add(fieldEncoder.map(encoder -> (builder, buffer, off, limit) ->
+                    {
+                        builder.beginScope(memberToken.name());
+                        encoder.encode(builder, buffer, off, limit);
+                        builder.endScope();
+                    }));
+                }
+            }
+            cursor.set(nextFieldIdx);
+        }
+        return combineArbitraryEncoders(encoders);
+    }
+    private static Arbitrary<Encoder> groupsEncoder(
+        final List<Token> tokens,
+        final MutableInteger cursor,
+        final int endIdxInclusive,
+        final CharGenerationMode charGenerationMode)
+    {
+        final List<Arbitrary<Encoder>> encoders = new ArrayList<>();
+        while (cursor.get() <= endIdxInclusive)
+        {
+            final Token token = tokens.get(cursor.get());
+            if (BEGIN_GROUP != token.signal())
+            {
+                break;
+            }
+            final int nextFieldIdx = cursor.get() + token.componentTokenCount();
+            cursor.increment(); 
+            cursor.increment(); 
+            final Token blockLengthToken = tokens.get(cursor.get());
+            final int blockLength = token.encodedLength();
+            final Encoder blockLengthEncoder = integerValueEncoder(blockLengthToken.encoding(), blockLength);
+            cursor.increment(); 
+            final Token numInGroupToken = tokens.get(cursor.get());
+            cursor.increment(); 
+            cursor.increment(); 
+            final int headerLength = blockLengthToken.encodedLength() + numInGroupToken.encodedLength();
+            final Arbitrary<Encoder> groupElement = Combinators.combine(
+                fieldsEncoder(tokens, cursor, nextFieldIdx - 1, true, charGenerationMode),
+                groupsEncoder(tokens, cursor, nextFieldIdx - 1, charGenerationMode),
+                varDataEncoder(tokens, cursor, nextFieldIdx - 1, charGenerationMode)
+            ).as((fieldsEncoder, groupsEncoder, varDataEncoder) ->
+                (builder, buffer, ignored, limit) ->
+                {
+                    final int offset = limit.get();
+                    fieldsEncoder.encode(builder, buffer, offset, null);
+                    buffer.checkLimit(offset + blockLength);
+                    limit.set(offset + blockLength);
+                    builder.appendLine().append("limit: ").append(offset).append(" -> ").append(limit.get());
+                    groupsEncoder.encode(builder, buffer, NULL_VALUE, limit);
+                    varDataEncoder.encode(builder, buffer, NULL_VALUE, limit);
+                });
+            final Arbitrary<Encoder> repeatingGroupEncoder = groupElement.list()
+                .ofMaxSize(10)
+                .map(elements -> (builder, buffer, ignored, limit) ->
+                {
+                    final int offset = limit.get();
+                    limit.set(offset + headerLength);
+                    builder.beginScope(token.name());
+                    builder.appendLine().append("limit: ").append(offset).append(" -> ").append(limit.get());
+                    builder.beginScope("blockLength");
+                    blockLengthEncoder.encode(builder, buffer, offset, null);
+                    builder.endScope();
+                    builder.beginScope("numInGroup");
+                    integerValueEncoder(numInGroupToken.encoding(), elements.size())
+                        .encode(builder, buffer, offset + blockLengthToken.encodedLength(), null);
+                    builder.endScope();
+                    for (int i = 0; i < elements.size(); i++)
+                    {
+                        final Encoder element = elements.get(i);
+                        builder.beginScope("[" + i + "]");
+                        element.encode(builder, buffer, NULL_VALUE, limit);
+                        builder.endScope();
+                    }
+                    builder.endScope();
+                });
+            encoders.add(repeatingGroupEncoder);
+            cursor.set(nextFieldIdx);
+        }
+        return combineArbitraryEncoders(encoders);
+    }
+    private static Arbitrary<Encoder> varDataEncoder(
+        final List<Token> tokens,
+        final MutableInteger cursor,
+        final int endIdxInclusive,
+        final CharGenerationMode charGenerationMode)
+    {
+        final List<Arbitrary<Encoder>> encoders = new ArrayList<>();
+        while (cursor.get() <= endIdxInclusive)
+        {
+            final Token token = tokens.get(cursor.get());
+            if (BEGIN_VAR_DATA != token.signal())
+            {
+                break;
+            }
+            final int nextFieldIdx = cursor.get() + token.componentTokenCount();
+            cursor.increment(); 
+            cursor.increment(); 
+            final Token lengthToken = tokens.get(cursor.get());
+            cursor.increment(); 
+            final Token varDataToken = tokens.get(cursor.get());
+            cursor.increment(); 
+            final String characterEncoding = varDataToken.encoding().characterEncoding();
+            final Arbitrary<Byte> arbitraryByte = null == characterEncoding ?
+                Arbitraries.bytes() :
+                chars(charGenerationMode).map(c -> (byte)c.charValue());
+            encoders.add(arbitraryByte.list()
+                .ofMaxSize((int)Math.min(lengthToken.encoding().applicableMaxValue().longValue(), 260L))
+                .map(bytes -> (builder, buffer, ignored, limit) ->
+                {
+                    final int offset = limit.get();
+                    final int elementLength = varDataToken.encoding().primitiveType().size();
+                    limit.set(offset + lengthToken.encodedLength() + bytes.size() * elementLength);
+                    builder.beginScope(token.name());
+                    builder.appendLine().append("limit: ").append(offset).append(" -> ").append(limit.get());
+                    builder.beginScope("length");
+                    integerValueEncoder(lengthToken.encoding(), bytes.size())
+                        .encode(builder, buffer, offset, null);
+                    builder.endScope();
+                    for (int i = 0; i < bytes.size(); i++)
+                    {
+                        final int dataOffset = offset + lengthToken.encodedLength() + i * elementLength;
+                        builder.beginScope("[" + i + "]");
+                        integerValueEncoder(varDataToken.encoding(), bytes.get(i))
+                            .encode(builder, buffer, dataOffset, null);
+                        builder.endScope();
+                    }
+                    builder.endScope();
+                }));
+            cursor.set(nextFieldIdx);
+        }
+        return combineArbitraryEncoders(encoders);
+    }
+    private static Arbitrary<Encoder> messageValueEncoder(
+        final Ir ir,
+        final short messageId,
+        final CharGenerationMode charGenerationMode)
+    {
+        final List<Token> tokens = ir.getMessage(messageId);
+        final MutableInteger cursor = new MutableInteger(1);
+        final Token token = tokens.get(0);
+        if (BEGIN_MESSAGE != token.signal())
+        {
+            throw new IllegalArgumentException("Expected BEGIN_MESSAGE token");
+        }
+        final Arbitrary<Encoder> fieldsEncoder = fieldsEncoder(
+            tokens, cursor, tokens.size() - 1, true, charGenerationMode);
+        final Arbitrary<Encoder> groupsEncoder = groupsEncoder(
+            tokens, cursor, tokens.size() - 1, charGenerationMode);
+        final Arbitrary<Encoder> varDataEncoder = varDataEncoder(
+            tokens, cursor, tokens.size() - 1, charGenerationMode);
+        return Combinators.combine(fieldsEncoder, groupsEncoder, varDataEncoder)
+            .as((fields, groups, varData) -> (builder, buffer, offset, limit) ->
+            {
+                final int blockLength = token.encodedLength();
+                buffer.putShort(0, (short)blockLength, ir.byteOrder());
+                buffer.putShort(2, messageId, ir.byteOrder());
+                buffer.putShort(4, (short)ir.id(), ir.byteOrder());
+                buffer.putShort(6, (short)ir.version(), ir.byteOrder());
+                final int headerLength = 8;
+                fields.encode(builder, buffer, offset + headerLength, null);
+                final int oldLimit = limit.get();
+                buffer.checkLimit(offset + headerLength + blockLength);
+                limit.set(offset + headerLength + blockLength);
+                builder.appendLine().append("limit: ").append(oldLimit).append(" -> ").append(limit.get());
+                groups.encode(builder, buffer, NULL_VALUE, limit);
+                varData.encode(builder, buffer, NULL_VALUE, limit);
+            });
+    }
+    public static final class EncodedMessage
+    {
+        private final String schema;
+        private final Ir ir;
+        private final ExpandableArrayBuffer buffer;
+        private final int length;
+        private final String encodingLog;
+        private EncodedMessage(
+            final String schema,
+            final Ir ir,
+            final ExpandableArrayBuffer buffer,
+            final int length,
+            final String encodingLog)
+        {
+            this.schema = schema;
+            this.ir = ir;
+            this.buffer = buffer;
+            this.length = length;
+            this.encodingLog = encodingLog;
+        }
+        public String schema()
+        {
+            return schema;
+        }
+        public Ir ir()
+        {
+            return ir;
+        }
+        public ExpandableArrayBuffer buffer()
+        {
+            return buffer;
+        }
+        public int length()
+        {
+            return length;
+        }
+        public String encodingLog()
+        {
+            return encodingLog;
+        }
+    }
+    public static Arbitrary<EncodedMessage> encodedMessage(final CharGenerationMode mode)
+    {
+        return SbeArbitraries.messageSchema().flatMap(testSchema ->
+        {
+            final String xml = TestXmlSchemaWriter.writeString(testSchema);
+            try (InputStream in = new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)))
+            {
+                final ParserOptions options = ParserOptions.builder()
+                    .suppressOutput(false)
+                    .warningsFatal(true)
+                    .stopOnError(true)
+                    .build();
+                final uk.co.real_logic.sbe.xml.MessageSchema parsedSchema = parse(in, options);
+                final Ir ir = new IrGenerator().generate(parsedSchema);
+                return SbeArbitraries.messageValueEncoder(ir, testSchema.templateId(), mode)
+                    .map(encoder ->
+                    {
+                        final EncodingLogger logger = new EncodingLogger();
+                        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
+                        final MutableInteger limit = new MutableInteger();
+                        encoder.encode(logger, buffer, 0, limit);
+                        return new EncodedMessage(xml, ir, buffer, limit.get(), logger.toString());
+                    });
+            }
+            catch (final Exception e)
+            {
+                throw new AssertionError(
+                    "Failed to generate encoded value for schema.\n\n" +
+                    "SCHEMA:\n" + xml,
+                    e);
+            }
+        }).withoutEdgeCases();
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.agrona.collections.IntHashSet;
+import org.agrona.collections.ObjectHashSet;
+import uk.co.real_logic.sbe.ir.Token;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import static javax.xml.xpath.XPathConstants.NODESET;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.*;
+public class Message
+{
+    private static final String FIELD_OR_GROUP_OR_DATA_EXPR = "field|group|data";
+    private final int id;
+    private final String name;
+    private final String description;
+    private final int sinceVersion;
+    private final int deprecated;
+    private final int blockLength;
+    private final List<Field> fieldList;
+    private final String semanticType;
+    private final int computedBlockLength;
+    private final Map<String, Type> typeByNameMap;
+    public Message(final Node messageNode, final Map<String, Type> typeByNameMap) throws XPathExpressionException
+    {
+        id = Integer.parseInt(getAttributeValue(messageNode, "id"));                        
+        name = getAttributeValue(messageNode, "name");                                      
+        description = getAttributeValueOrNull(messageNode, "description");                  
+        blockLength = Integer.parseInt(getAttributeValue(messageNode, "blockLength", "0")); 
+        sinceVersion = Integer.parseInt(getAttributeValue(messageNode, "sinceVersion", "0"));
+        deprecated = Integer.parseInt(getAttributeValue(messageNode, "deprecated", "0"));
+        semanticType = getAttributeValueOrNull(messageNode, "semanticType");                
+        this.typeByNameMap = typeByNameMap;
+        fieldList = parseMembers(messageNode);
+        computeAndValidateOffsets(messageNode, fieldList, blockLength);
+        computedBlockLength = computeMessageRootBlockLength(fieldList);
+        validateBlockLength(messageNode, blockLength, computedBlockLength);
+    }
+    Message(final Message message, final List<Field> newFieldList)
+    {
+        id = message.id;
+        name = message.name;
+        description = message.description;
+        blockLength = message.blockLength;
+        sinceVersion = message.sinceVersion;
+        deprecated = message.deprecated;
+        semanticType = message.semanticType;
+        typeByNameMap = message.typeByNameMap;
+        fieldList = newFieldList;
+        computedBlockLength = computeMessageRootBlockLength(newFieldList);
+    }
+    public int id()
+    {
+        return id;
+    }
+    public String name()
+    {
+        return name;
+    }
+    public String description()
+    {
+        return description;
+    }
+    public String semanticType()
+    {
+        return semanticType;
+    }
+    public int sinceVersion()
+    {
+        return sinceVersion;
+    }
+    public int deprecated()
+    {
+        return deprecated;
+    }
+    public List<Field> fields()
+    {
+        return fieldList;
+    }
+    public int blockLength()
+    {
+        return Math.max(blockLength, computedBlockLength);
+    }
+    private List<Field> parseMembers(final Node node) throws XPathExpressionException
+    {
+        final XPath xPath = XPathFactory.newInstance().newXPath();
+        final NodeList list = (NodeList)xPath.compile(FIELD_OR_GROUP_OR_DATA_EXPR).evaluate(node, NODESET);
+        boolean groupEncountered = false, dataEncountered = false;
+        final ObjectHashSet<String> distinctNames = new ObjectHashSet<>();
+        final IntHashSet distinctIds = new IntHashSet();
+        final ArrayList<Field> fieldList = new ArrayList<>();
+        for (int i = 0, size = list.getLength(); i < size; i++)
+        {
+            final Field field;
+            final String nodeName = list.item(i).getNodeName();
+            switch (nodeName)
+            {
+                case "group":
+                    if (dataEncountered)
+                    {
+                        handleError(node, "group node specified after data node");
+                    }
+                    field = parseGroupField(list, i);
+                    groupEncountered = true;
+                    break;
+                case "data":
+                    field = parseDataField(list, i);
+                    dataEncountered = true;
+                    break;
+                case "field":
+                    if (groupEncountered || dataEncountered)
+                    {
+                        handleError(node, "field node specified after group or data node specified");
+                    }
+                    field = parseField(list, i);
+                    break;
+                default:
+                    throw new IllegalStateException("Unknown node name: " + nodeName);
+            }
+            if (!distinctIds.add(field.id()))
+            {
+                handleError(node, "duplicate id found: " + field.id());
+            }
+            if (!distinctNames.add(field.name()))
+            {
+                handleError(node, "duplicate name found: " + field.name());
+            }
+            fieldList.add(field);
+        }
+        return fieldList;
+    }
+    private Field parseGroupField(final NodeList nodeList, final int nodeIndex) throws XPathExpressionException
+    {
+        final Node node = nodeList.item(nodeIndex);
+        final String dimensionTypeName = getAttributeValue(node, "dimensionType", "groupSizeEncoding");
+        Type dimensionType = typeByNameMap.get(dimensionTypeName);
+        if (dimensionType == null)
+        {
+            handleError(node, "could not find dimensionType: " + dimensionTypeName);
+        }
+        else if (!(dimensionType instanceof CompositeType))
+        {
+            handleError(node, "dimensionType should be a composite type: " + dimensionTypeName);
+            dimensionType = null;
+        }
+        else
+        {
+            ((CompositeType)dimensionType).checkForWellFormedGroupSizeEncoding(node);
+        }
+        final Field field = new Field.Builder()
+            .name(getAttributeValue(node, "name"))
+            .description(getAttributeValueOrNull(node, "description"))
+            .id(Integer.parseInt(getAttributeValue(node, "id")))
+            .blockLength(Integer.parseInt(getAttributeValue(node, "blockLength", "0")))
+            .sinceVersion(Integer.parseInt(getAttributeValue(node, "sinceVersion", "0")))
+            .deprecated(Integer.parseInt(getAttributeValue(node, "deprecated", "0")))
+            .dimensionType((CompositeType)dimensionType)
+            .build();
+        XmlSchemaParser.checkForValidName(node, field.name());
+        field.groupFields(parseMembers(node)); 
+        return field;
+    }
+    private Field parseField(final NodeList nodeList, final int nodeIndex)
+    {
+        final Node node = nodeList.item(nodeIndex);
+        final String typeName = getAttributeValue(node, "type");
+        final Type fieldType = typeByNameMap.get(typeName);
+        if (fieldType == null)
+        {
+            handleError(node, "could not find type: " + typeName);
+        }
+        final Field field = new Field.Builder()
+            .name(getAttributeValue(node, "name"))
+            .description(getAttributeValueOrNull(node, "description"))
+            .id(Integer.parseInt(getAttributeValue(node, "id")))
+            .offset(Integer.parseInt(getAttributeValue(node, "offset", "0")))
+            .semanticType(getAttributeValueOrNull(node, "semanticType"))
+            .presence(getPresence(node, fieldType))
+            .valueRef(getAttributeValueOrNull(node, "valueRef"))
+            .sinceVersion(Integer.parseInt(getAttributeValue(node, "sinceVersion", "0")))
+            .deprecated(Integer.parseInt(getAttributeValue(node, "deprecated", "0")))
+            .epoch(getAttributeValueOrNull(node, "epoch"))
+            .timeUnit(getAttributeValueOrNull(node, "timeUnit"))
+            .type(fieldType)
+            .build();
+        field.validate(node, typeByNameMap);
+        return field;
+    }
+    private static Presence getPresence(final Node node, final Type fieldType)
+    {
+        final String presenceStr = getAttributeValueOrNull(node, "presence");
+        final Presence presence;
+        if (null != presenceStr)
+        {
+            presence = Presence.get(presenceStr);
+        }
+        else if (null != fieldType)
+        {
+            presence = fieldType.presence();
+        }
+        else
+        {
+            presence = Presence.REQUIRED;
+        }
+        return presence;
+    }
+    private Field parseDataField(final NodeList nodeList, final int nodeIndex)
+    {
+        final Node node = nodeList.item(nodeIndex);
+        final String typeName = getAttributeValue(node, "type");
+        final Type fieldType = typeByNameMap.get(typeName);
+        if (fieldType == null)
+        {
+            handleError(node, "could not find type: " + typeName);
+        }
+        else if (!(fieldType instanceof CompositeType))
+        {
+            handleError(node, "data type is not composite type: " + typeName);
+        }
+        else
+        {
+            ((CompositeType)fieldType).checkForWellFormedVariableLengthDataEncoding(node);
+            ((CompositeType)fieldType).makeDataFieldCompositeType();
+        }
+        final Field field = new Field.Builder()
+            .name(getAttributeValue(node, "name"))
+            .description(getAttributeValueOrNull(node, "description"))
+            .id(Integer.parseInt(getAttributeValue(node, "id")))
+            .offset(Integer.parseInt(getAttributeValue(node, "offset", "0")))
+            .semanticType(getAttributeValueOrNull(node, "semanticType"))
+            .presence(Presence.get(getAttributeValue(node, "presence", "required")))
+            .sinceVersion(Integer.parseInt(getAttributeValue(node, "sinceVersion", "0")))
+            .deprecated(Integer.parseInt(getAttributeValue(node, "deprecated", "0")))
+            .epoch(getAttributeValueOrNull(node, "epoch"))
+            .timeUnit(getAttributeValueOrNull(node, "timeUnit"))
+            .type(fieldType)
+            .variableLength(true)
+            .build();
+        field.validate(node, typeByNameMap);
+        return field;
+    }
+    private static int computeAndValidateOffsets(final Node node, final List<Field> fields, final int blockLength)
+    {
+        boolean variableLengthBlock = false;
+        int offset = 0;
+        for (final Field field : fields)
+        {
+            if (0 != field.offset() && field.offset() < offset)
+            {
+                handleError(node, "Offset provides insufficient space at field: " + field.name());
+            }
+            if (Token.VARIABLE_LENGTH != offset)
+            {
+                if (0 != field.offset())
+                {
+                    offset = field.offset();
+                }
+                else if (null != field.dimensionType() && 0 != blockLength)
+                {
+                    offset = blockLength;
+                }
+                else if (field.isVariableLength() && 0 != blockLength)
+                {
+                    offset = blockLength;
+                }
+            }
+            field.computedOffset(variableLengthBlock ? Token.VARIABLE_LENGTH : offset);
+            if (null != field.groupFields())
+            {
+                final int groupBlockLength = computeAndValidateOffsets(node, field.groupFields(), 0);
+                validateBlockLength(node, field.blockLength(), groupBlockLength);
+                field.computedBlockLength(Math.max(field.blockLength(), groupBlockLength));
+                variableLengthBlock = true;
+            }
+            else if (null != field.type() && Presence.CONSTANT != field.presence())
+            {
+                final int size = field.type().encodedLength();
+                if (Token.VARIABLE_LENGTH == size)
+                {
+                    variableLengthBlock = true;
+                }
+                else
+                {
+                    field.computedBlockLength(size);
+                }
+                if (!variableLengthBlock)
+                {
+                    offset += size;
+                }
+            }
+        }
+        return offset;
+    }
+    private static int computeMessageRootBlockLength(final List<Field> fields)
+    {
+        int blockLength = 0;
+        for (final Field field : fields)
+        {
+            if (field.groupFields() != null)
+            {
+                return blockLength;
+            }
+            else if (field.type() != null)
+            {
+                final int fieldLength = field.type().encodedLength();
+                if (Token.VARIABLE_LENGTH == fieldLength)
+                {
+                    return blockLength;
+                }
+                if (field.presence() == Presence.CONSTANT)
+                {
+                    blockLength = field.computedOffset();
+                }
+                else
+                {
+                    blockLength = field.computedOffset() + fieldLength;
+                }
+            }
+        }
+        return blockLength;
+    }
+    private static void validateBlockLength(
+        final Node node, final long specifiedBlockLength, final long computedBlockLength)
+    {
+        if (0 != specifiedBlockLength && computedBlockLength > specifiedBlockLength)
+        {
+            final String msg = "specified blockLength provides insufficient space " +
+                computedBlockLength + " > " + specifiedBlockLength;
+            handleError(node, msg);
+        }
+    }
+    public String toString()
+    {
+        return "Message{" +
+            "id=" + id +
+            ", name='" + name + '\'' +
+            ", description='" + description + '\'' +
+            ", sinceVersion=" + sinceVersion +
+            ", deprecated=" + deprecated +
+            ", blockLength=" + blockLength +
+            ", fieldList=" + fieldList +
+            ", semanticType='" + semanticType + '\'' +
+            ", computedBlockLength=" + computedBlockLength +
+            ", typeByNameMap=" + typeByNameMap +
+            '}';
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import java.util.HashMap;
+import java.util.Map;
+public class SchemaTransformerFactory implements SchemaTransformer
+{
+    private final SchemaTransformer transformer;
+    public SchemaTransformerFactory(final String schemaTransformConfig)
+    {
+        transformer = parse(schemaTransformConfig);
+    }
+    public MessageSchema transform(final MessageSchema originalSchema)
+    {
+        return transformer.transform(originalSchema);
+    }
+    static SchemaTransformer parse(final String configuration)
+    {
+        if (null == configuration || configuration.isEmpty())
+        {
+            return IDENTITY_TRANSFORMER;
+        }
+        final String[] split = configuration.split(",");
+        if (0 == split.length)
+        {
+            return IDENTITY_TRANSFORMER;
+        }
+        final HashMap<Integer, SchemaTransformer> transformerBySchemaId = new HashMap<>();
+        parseComponents(split, transformerBySchemaId);
+        SchemaTransformer defaultTransformer = transformerBySchemaId.remove(-1);
+        defaultTransformer = null != defaultTransformer ? defaultTransformer : IDENTITY_TRANSFORMER;
+        return transformerBySchemaId.isEmpty() ?
+            defaultTransformer : new IdKeyedSchemaTransformer(transformerBySchemaId, defaultTransformer);
+    }
+    private static void parseComponents(
+        final String[] configuration,
+        final Map<Integer, SchemaTransformer> transformerBySchemaId)
+    {
+        for (final String field : configuration)
+        {
+            final String[] fieldParts = field.split(":");
+            if (2 != fieldParts.length)
+            {
+                throw new IllegalArgumentException("version transformation property part '" + field + "' is invalid");
+            }
+            final int schemaId = "*".equals(fieldParts[0]) ? -1 : Integer.parseInt(fieldParts[0].trim());
+            final int sinceVersion = Integer.parseInt(fieldParts[1].trim());
+            transformerBySchemaId.put(schemaId, new SinceVersionSchemaTransformer(sinceVersion));
+        }
+    }
+    SchemaTransformer delegate()
+    {
+        return transformer;
+    }
+}
+package uk.co.real_logic.sbe.xml;
+public interface SchemaTransformer
+{
+    SchemaTransformer IDENTITY_TRANSFORMER = originalSchema -> originalSchema;
+    MessageSchema transform(MessageSchema originalSchema);
+}
+package uk.co.real_logic.sbe.xml;
+import org.agrona.Strings;
+import org.agrona.collections.ObjectHashSet;
+import org.w3c.dom.*;
+import org.xml.sax.InputSource;
+import uk.co.real_logic.sbe.ValidationUtil;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.validation.SchemaFactory;
+import javax.xml.xpath.*;
+import java.io.File;
+import java.io.InputStream;
+import java.nio.ByteOrder;
+import java.util.HashMap;
+import java.util.Map;
+import static uk.co.real_logic.sbe.PrimitiveType.*;
+import static uk.co.real_logic.sbe.xml.Presence.REQUIRED;
+public class XmlSchemaParser
+{
+    public static final String ERROR_HANDLER_KEY = "SbeErrorHandler";
+    static final String TYPE_XPATH_EXPR =
+        "
+    public static void validate(final String xsdFilename, final InputSource is, final ParserOptions options)
+        throws Exception
+    {
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        final SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        factory.setSchema(schemaFactory.newSchema(new File(xsdFilename)));
+        factory.setNamespaceAware(true);
+        if (options.xIncludeAware())
+        {
+            factory.setXIncludeAware(true);
+            factory.setFeature("http:
+        }
+        factory.newDocumentBuilder().parse(is);
+    }
+    public static void validate(final String xsdFilename, final InputStream in, final ParserOptions options)
+        throws Exception
+    {
+        validate(xsdFilename, new InputSource(in), options);
+    }
+    public static MessageSchema parse(final InputSource is, final ParserOptions options) throws Exception
+    {
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        if (options.xIncludeAware())
+        {
+            factory.setNamespaceAware(true);
+            factory.setXIncludeAware(true);
+            factory.setFeature("http:
+        }
+        final Document document = factory.newDocumentBuilder().parse(is);
+        final ErrorHandler errorHandler = new ErrorHandler(options);
+        document.setUserData(ERROR_HANDLER_KEY, errorHandler, null);
+        final XPath xPath = XPathFactory.newInstance().newXPath();
+        final Map<String, Type> typeByNameMap = findTypes(document, xPath);
+        errorHandler.checkIfShouldExit();
+        final Map<Long, Message> messageByIdMap = findMessages(document, xPath, typeByNameMap);
+        errorHandler.checkIfShouldExit();
+        final Node schemaNode = (Node)xPath.compile(MESSAGE_SCHEMA_XPATH_EXPR).evaluate(document, XPathConstants.NODE);
+        if (null == schemaNode)
+        {
+            throw new IllegalStateException("messageSchema element not found in document, schema is not valid for SBE");
+        }
+        final MessageSchema messageSchema = new MessageSchema(schemaNode, typeByNameMap, messageByIdMap);
+        messageSchema.validate(errorHandler);
+        errorHandler.checkIfShouldExit();
+        return messageSchema;
+    }
+    public static MessageSchema parse(final InputStream in, final ParserOptions options) throws Exception
+    {
+        return parse(new InputSource(in), options);
+    }
+    public static Map<String, Type> findTypes(final Document document, final XPath xPath)
+        throws XPathExpressionException
+    {
+        final Map<String, Type> typeByNameMap = new HashMap<>();
+        typeByNameMap.put("char", new EncodedDataType("char", REQUIRED, null, null, CHAR, 1, false));
+        typeByNameMap.put("int8", new EncodedDataType("int8", REQUIRED, null, null, INT8, 1, false));
+        typeByNameMap.put("int16", new EncodedDataType("int16", REQUIRED, null, null, INT16, 1, false));
+        typeByNameMap.put("int32", new EncodedDataType("int32", REQUIRED, null, null, INT32, 1, false));
+        typeByNameMap.put("int64", new EncodedDataType("int64", REQUIRED, null, null, INT64, 1, false));
+        typeByNameMap.put("uint8", new EncodedDataType("uint8", REQUIRED, null, null, UINT8, 1, false));
+        typeByNameMap.put("uint16", new EncodedDataType("uint16", REQUIRED, null, null, UINT16, 1, false));
+        typeByNameMap.put("uint32", new EncodedDataType("uint32", REQUIRED, null, null, UINT32, 1, false));
+        typeByNameMap.put("uint64", new EncodedDataType("uint64", REQUIRED, null, null, UINT64, 1, false));
+        typeByNameMap.put("float", new EncodedDataType("float", REQUIRED, null, null, FLOAT, 1, false));
+        typeByNameMap.put("double", new EncodedDataType("double", REQUIRED, null, null, DOUBLE, 1, false));
+        forEach(
+            (NodeList)xPath.compile(TYPE_XPATH_EXPR).evaluate(document, XPathConstants.NODESET),
+            (node) -> addTypeWithNameCheck(typeByNameMap, new EncodedDataType(node), node));
+        forEach(
+            (NodeList)xPath.compile(COMPOSITE_XPATH_EXPR).evaluate(document, XPathConstants.NODESET),
+            (node) -> addTypeWithNameCheck(typeByNameMap, new CompositeType(node), node));
+        forEach(
+            (NodeList)xPath.compile(ENUM_XPATH_EXPR).evaluate(document, XPathConstants.NODESET),
+            (node) -> addTypeWithNameCheck(typeByNameMap, new EnumType(node), node));
+        forEach(
+            (NodeList)xPath.compile(SET_XPATH_EXPR).evaluate(document, XPathConstants.NODESET),
+            (node) -> addTypeWithNameCheck(typeByNameMap, new SetType(node), node));
+        return typeByNameMap;
+    }
+    public static Map<Long, Message> findMessages(
+        final Document document, final XPath xPath, final Map<String, Type> typeByNameMap)
+        throws XPathExpressionException
+    {
+        final Map<Long, Message> messageByIdMap = new HashMap<>();
+        final ObjectHashSet<String> distinctNames = new ObjectHashSet<>();
+        forEach(
+            (NodeList)xPath.compile(MESSAGE_XPATH_EXPR).evaluate(document, XPathConstants.NODESET),
+            (node) -> addMessageWithIdCheck(distinctNames, messageByIdMap, new Message(node, typeByNameMap), node));
+        if (messageByIdMap.isEmpty())
+        {
+            handleWarning(document.getDocumentElement(), "no messages found in document");
+        }
+        return messageByIdMap;
+    }
+    public static void handleError(final Node node, final String msg)
+    {
+        final ErrorHandler handler = (ErrorHandler)node.getOwnerDocument().getUserData(ERROR_HANDLER_KEY);
+        if (null == handler)
+        {
+            throw new IllegalStateException("ERROR: " + formatLocationInfo(node) + msg);
+        }
+        else
+        {
+            handler.error(formatLocationInfo(node) + msg);
+        }
+    }
+    public static void handleWarning(final Node node, final String msg)
+    {
+        final ErrorHandler handler = (ErrorHandler)node.getOwnerDocument().getUserData(ERROR_HANDLER_KEY);
+        if (null == handler)
+        {
+            throw new IllegalStateException("WARNING: " + formatLocationInfo(node) + msg);
+        }
+        else
+        {
+            handler.warning(formatLocationInfo(node) + msg);
+        }
+    }
+    public static String getAttributeValue(final Node elementNode, final String attrName)
+    {
+        if (null == elementNode)
+        {
+            throw new IllegalStateException(
+                "element node is null when looking for attribute: " + attrName);
+        }
+        final NamedNodeMap attributes = elementNode.getAttributes();
+        final Node attrNode = attributes.getNamedItemNS(null, attrName);
+        if (null == attrNode)
+        {
+            throw new IllegalStateException(
+                "element '" + elementNode.getNodeName() + "' has missing attribute: " + attrName);
+        }
+        final String nodeValue = attrNode.getNodeValue();
+        if (Strings.isEmpty(nodeValue))
+        {
+            throw new IllegalStateException(
+                "element '" + elementNode.getNodeName() + "' has empty attribute: " + attrName);
+        }
+        return nodeValue;
+    }
+    public static String getAttributeValue(final Node elementNode, final String attrName, final String defValue)
+    {
+        if (null == elementNode)
+        {
+            throw new IllegalStateException(
+                "element node is null when looking for attribute: " + attrName);
+        }
+        final NamedNodeMap attributes = elementNode.getAttributes();
+        final Node attrNode = attributes.getNamedItemNS(null, attrName);
+        if (null == attrNode)
+        {
+            return defValue;
+        }
+        return attrNode.getNodeValue();
+    }
+    public static String getTypesPackageAttribute(final Node elementNode)
+    {
+        Node parentNode = elementNode.getParentNode();
+        while (null != parentNode)
+        {
+            if ("types".equals(parentNode.getLocalName()) || "types".equals(parentNode.getNodeName()))
+            {
+                return getAttributeValue(parentNode, "package", null);
+            }
+            parentNode = parentNode.getParentNode();
+        }
+        return null;
+    }
+    public static String getAttributeValueOrNull(final Node elementNode, final String attrName)
+    {
+        if (null == elementNode)
+        {
+            return null;
+        }
+        final NamedNodeMap attributes = elementNode.getAttributes();
+        if (null == attributes)
+        {
+            return null;
+        }
+        final Node attrNode = attributes.getNamedItemNS(null, attrName);
+        if (null == attrNode)
+        {
+            return null;
+        }
+        return attrNode.getNodeValue();
+    }
+    public static ByteOrder getByteOrder(final String byteOrderName)
+    {
+        if ("bigEndian".equals(byteOrderName))
+        {
+            return ByteOrder.BIG_ENDIAN;
+        }
+        return ByteOrder.LITTLE_ENDIAN;
+    }
+    public static void checkForValidName(final Node node, final String name)
+    {
+        if (!ValidationUtil.isSbeCppName(name))
+        {
+            handleWarning(node, "name is not valid for C++: " + name);
+        }
+        if (!ValidationUtil.isSbeJavaName(name))
+        {
+            handleWarning(node, "name is not valid for Java: " + name);
+        }
+        if (!ValidationUtil.isSbeGolangName(name))
+        {
+            handleWarning(node, "name is not valid for Golang: " + name);
+        }
+        if (!ValidationUtil.isSbeCSharpName(name))
+        {
+            handleWarning(node, "name is not valid for C#: " + name);
+        }
+    }
+    private static void addTypeWithNameCheck(final Map<String, Type> typeByNameMap, final Type type, final Node node)
+    {
+        if (typeByNameMap.get(type.name()) != null)
+        {
+            handleWarning(node, "type already exists for name: " + type.name());
+        }
+        checkForValidName(node, type.name());
+        typeByNameMap.put(type.name(), type);
+    }
+    private static void addMessageWithIdCheck(
+        final ObjectHashSet<String> distinctNames,
+        final Map<Long, Message> messageByIdMap,
+        final Message message,
+        final Node node)
+    {
+        if (messageByIdMap.get((long)message.id()) != null)
+        {
+            handleError(node, "message template id already exists: " + message.id());
+        }
+        if (!distinctNames.add(message.name()))
+        {
+            handleError(node, "message name already exists: " + message.name());
+        }
+        checkForValidName(node, message.name());
+        messageByIdMap.put((long)message.id(), message);
+    }
+    private static String formatLocationInfo(final Node node)
+    {
+        final Node parentNode = node.getParentNode();
+        return "at " +
+            "<" + parentNode.getNodeName() +
+            (getAttributeValueOrNull(parentNode, "name") == null ?
+                ">" : (" name=\"" + getAttributeValueOrNull(parentNode, "name") + "\"> ")) +
+            "<" + node.getNodeName() +
+            (getAttributeValueOrNull(node, "name") == null ?
+                ">" : (" name=\"" + getAttributeValueOrNull(node, "name") + "\"> "));
+    }
+    @FunctionalInterface
+    interface NodeFunction
+    {
+        void execute(Node node) throws XPathExpressionException;
+    }
+    static void forEach(final NodeList nodeList, final NodeFunction func)
+        throws XPathExpressionException
+    {
+        for (int i = 0, size = nodeList.getLength(); i < size; i++)
+        {
+            func.execute(nodeList.item(i));
+        }
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import java.util.*;
+class SinceVersionSchemaTransformer implements SchemaTransformer
+{
+    private final int sinceVersion;
+    SinceVersionSchemaTransformer(final int sinceVersion)
+    {
+        this.sinceVersion = sinceVersion;
+    }
+    public MessageSchema transform(final MessageSchema originalSchema)
+    {
+        final Collection<Type> types = originalSchema.types();
+        final Map<String, Type> newTypes = new HashMap<>();
+        for (final Type type : types)
+        {
+            if (type.sinceVersion() <= this.sinceVersion)
+            {
+                newTypes.put(type.name(), type);
+            }
+        }
+        final Collection<Message> messages = originalSchema.messages();
+        final Map<Long, Message> newMessages = new HashMap<>();
+        for (final Message message : messages)
+        {
+            final List<Field> newFields = removeFields(message.fields(), sinceVersion);
+            final Message newMessage = new Message(message, newFields);
+            if (newMessage.sinceVersion() <= this.sinceVersion)
+            {
+                newMessages.put((long)newMessage.id(), newMessage);
+            }
+        }
+        return new MessageSchema(
+            originalSchema.packageName(),
+            originalSchema.description(),
+            originalSchema.id(),
+            sinceVersion,
+            originalSchema.semanticVersion(),
+            originalSchema.byteOrder(),
+            originalSchema.messageHeader().name(),
+            newTypes,
+            newMessages);
+    }
+    private List<Field> removeFields(final List<Field> fields, final int sinceVersion)
+    {
+        final ArrayList<Field> newFields = new ArrayList<>();
+        for (final Field field : fields)
+        {
+            if (field.sinceVersion() > sinceVersion)
+            {
+                continue;
+            }
+            Field newField = field;
+            List<Field> groupFields = field.groupFields();
+            if (null != groupFields && !groupFields.isEmpty())
+            {
+                groupFields = removeFields(groupFields, sinceVersion);
+                newField = new Field(field, groupFields);
+            }
+            newFields.add(newField);
+        }
+        return newFields;
+    }
+    int sinceVersion()
+    {
+        return sinceVersion;
+    }
+}
+package uk.co.real_logic.sbe;
+import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
+import org.xml.sax.InputSource;
+import uk.co.real_logic.sbe.generation.CodeGenerator;
+import uk.co.real_logic.sbe.generation.TargetCodeGenerator;
+import uk.co.real_logic.sbe.generation.TargetCodeGeneratorLoader;
+import uk.co.real_logic.sbe.ir.Ir;
+import uk.co.real_logic.sbe.ir.IrDecoder;
+import uk.co.real_logic.sbe.ir.IrEncoder;
+import uk.co.real_logic.sbe.xml.*;
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+public class SbeTool
+{
+    public static final String JAVA_INTERFACE_PACKAGE = "org.agrona.sbe";
+    public static final String JAVA_DEFAULT_ENCODING_BUFFER_TYPE = MutableDirectBuffer.class.getName();
+    public static final String JAVA_DEFAULT_DECODING_BUFFER_TYPE = DirectBuffer.class.getName();
+    public static final String VALIDATION_STOP_ON_ERROR = "sbe.validation.stop.on.error";
+    public static final String VALIDATION_WARNINGS_FATAL = "sbe.validation.warnings.fatal";
+    public static final String VALIDATION_XSD = "sbe.validation.xsd";
+    public static final String VALIDATION_SUPPRESS_OUTPUT = "sbe.validation.suppress.output";
+    public static final String GENERATE_STUBS = "sbe.generate.stubs";
+    public static final String XINCLUDE_AWARE = "sbe.xinclude.aware";
+    public static final String TYPES_PACKAGE_OVERRIDE = "sbe.types.package.override";
+    public static final String TARGET_LANGUAGE = "sbe.target.language";
+    public static final String GENERATE_IR = "sbe.generate.ir";
+    public static final String OUTPUT_DIR = "sbe.output.dir";
+    public static final String TARGET_NAMESPACE = "sbe.target.namespace";
+    public static final String CPP_NAMESPACES_COLLAPSE = "sbe.cpp.namespaces.collapse";
+    public static final String RUST_CRATE_VERSION = "sbe.rust.crate.version";
+    public static final String RUST_DEFAULT_CRATE_VERSION = "0.1.0";
+    public static final String JAVA_GENERATE_INTERFACES = "sbe.java.generate.interfaces";
+    public static final String JAVA_ENCODING_BUFFER_TYPE = "sbe.java.encoding.buffer.type";
+    public static final String JAVA_DECODING_BUFFER_TYPE = "sbe.java.decoding.buffer.type";
+    public static final String JAVA_GROUP_ORDER_ANNOTATION = "sbe.java.generate.group-order.annotation";
+    public static final String CSHARP_GENERATE_NAMESPACE_DIR = "sbe.csharp.generate.namespace.dir";
+    public static final String KEYWORD_APPEND_TOKEN = "sbe.keyword.append.token";
+    public static final String DECODE_UNKNOWN_ENUM_VALUES = "sbe.decode.unknown.enum.values";
+    public static final String CPP_GENERATE_DTOS = "sbe.cpp.generate.dtos";
+    public static final String JAVA_GENERATE_DTOS = "sbe.java.generate.dtos";
+    public static final String SCHEMA_TRANSFORM_VERSION = "sbe.schema.transform.version";
+    public static final String GENERATE_PRECEDENCE_CHECKS = "sbe.generate.precedence.checks";
+    public static final String PRECEDENCE_CHECKS_FLAG_NAME = "sbe.precedence.checks.flag.name";
+    public static final String JAVA_PRECEDENCE_CHECKS_PROPERTY_NAME = "sbe.java.precedence.checks.property.name";
+    public static final String GO_GENERATE_FLYWEIGHTS = "sbe.go.generate.generate.flyweights";
+    public static void main(final String[] args) throws Exception
+    {
+        if (args.length == 0)
+        {
+            System.err.format("Usage: %s <filenames>...%n", SbeTool.class.getName());
+            System.exit(-1);
+        }
+        for (final String fileName : args)
+        {
+            final Ir ir;
+            if (fileName.endsWith(".xml"))
+            {
+                final String xsdFilename = System.getProperty(SbeTool.VALIDATION_XSD);
+                if (xsdFilename != null)
+                {
+                    validateAgainstSchema(fileName, xsdFilename);
+                }
+                final MessageSchema schema = parseSchema(fileName);
+                final SchemaTransformer transformer = new SchemaTransformerFactory(
+                    System.getProperty(SCHEMA_TRANSFORM_VERSION));
+                ir = new IrGenerator().generate(transformer.transform(schema), System.getProperty(TARGET_NAMESPACE));
+            }
+            else if (fileName.endsWith(".sbeir"))
+            {
+                try (IrDecoder irDecoder = new IrDecoder(fileName))
+                {
+                    ir = irDecoder.decode();
+                }
+            }
+            else
+            {
+                System.err.println("Input file format not supported: " + fileName);
+                System.exit(-1);
+                return;
+            }
+            final String outputDirName = System.getProperty(OUTPUT_DIR, ".");
+            if (Boolean.parseBoolean(System.getProperty(GENERATE_STUBS, "true")))
+            {
+                final String targetLanguage = System.getProperty(TARGET_LANGUAGE, "Java");
+                generate(ir, outputDirName, targetLanguage);
+            }
+            if (Boolean.parseBoolean(System.getProperty(GENERATE_IR, "false")))
+            {
+                final File inputFile = new File(fileName);
+                final String inputFilename = inputFile.getName();
+                final int nameEnd = inputFilename.lastIndexOf('.');
+                final String namePart = inputFilename.substring(0, nameEnd);
+                final File fullPath = new File(outputDirName, namePart + ".sbeir");
+                try (IrEncoder irEncoder = new IrEncoder(fullPath.getAbsolutePath(), ir))
+                {
+                    irEncoder.encode();
+                }
+            }
+        }
+    }
+    public static void validateAgainstSchema(final String sbeSchemaFilename, final String xsdFilename)
+        throws Exception
+    {
+        final ParserOptions.Builder optionsBuilder = ParserOptions.builder()
+            .xsdFilename(System.getProperty(VALIDATION_XSD))
+            .xIncludeAware(Boolean.parseBoolean(System.getProperty(XINCLUDE_AWARE)))
+            .stopOnError(Boolean.parseBoolean(System.getProperty(VALIDATION_STOP_ON_ERROR)))
+            .warningsFatal(Boolean.parseBoolean(System.getProperty(VALIDATION_WARNINGS_FATAL)))
+            .suppressOutput(Boolean.parseBoolean(System.getProperty(VALIDATION_SUPPRESS_OUTPUT)));
+        final Path path = Paths.get(sbeSchemaFilename);
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(path)))
+        {
+            final InputSource inputSource = new InputSource(in);
+            if (path.toAbsolutePath().getParent() != null)
+            {
+                inputSource.setSystemId(path.toUri().toString());
+            }
+            XmlSchemaParser.validate(xsdFilename, inputSource, optionsBuilder.build());
+        }
+    }
+    public static MessageSchema parseSchema(final String sbeSchemaFilename)
+        throws Exception
+    {
+        final ParserOptions.Builder optionsBuilder = ParserOptions.builder()
+            .xsdFilename(System.getProperty(VALIDATION_XSD))
+            .xIncludeAware(Boolean.parseBoolean(System.getProperty(XINCLUDE_AWARE)))
+            .stopOnError(Boolean.parseBoolean(System.getProperty(VALIDATION_STOP_ON_ERROR)))
+            .warningsFatal(Boolean.parseBoolean(System.getProperty(VALIDATION_WARNINGS_FATAL)))
+            .suppressOutput(Boolean.parseBoolean(System.getProperty(VALIDATION_SUPPRESS_OUTPUT)));
+        final Path path = Paths.get(sbeSchemaFilename);
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(path)))
+        {
+            final InputSource inputSource = new InputSource(in);
+            if (path.toAbsolutePath().getParent() != null)
+            {
+                inputSource.setSystemId(path.toUri().toString());
+            }
+            return XmlSchemaParser.parse(inputSource, optionsBuilder.build());
+        }
+    }
+    public static void generate(final Ir ir, final String outputDirName, final String targetLanguage)
+        throws Exception
+    {
+        final TargetCodeGenerator targetCodeGenerator = TargetCodeGeneratorLoader.get(targetLanguage);
+        final CodeGenerator codeGenerator = targetCodeGenerator.newInstance(ir, outputDirName);
+        codeGenerator.generate();
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import java.util.Map;
+class IdKeyedSchemaTransformer implements SchemaTransformer
+{
+    private final Map<Integer, SchemaTransformer> transformerBySchemaId;
+    private final SchemaTransformer defaultTransformer;
+    IdKeyedSchemaTransformer(
+        final Map<Integer, SchemaTransformer> transformerBySchemaId,
+        final SchemaTransformer defaultTransformer)
+    {
+        this.transformerBySchemaId = transformerBySchemaId;
+        this.defaultTransformer = defaultTransformer;
+    }
+    public MessageSchema transform(final MessageSchema originalSchema)
+    {
+        return lookupTransformer(originalSchema.id()).transform(originalSchema);
+    }
+    SchemaTransformer lookupTransformer(final int schemaId)
+    {
+        return transformerBySchemaId.getOrDefault(schemaId, defaultTransformer);
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import uk.co.real_logic.sbe.ir.Encoding;
+import uk.co.real_logic.sbe.ir.Ir;
+import uk.co.real_logic.sbe.ir.Signal;
+import uk.co.real_logic.sbe.ir.Token;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+public class IrGenerator
+{
+    private final List<Token> tokenList = new ArrayList<>();
+    private MessageSchema schema;
+    public Ir generate(final MessageSchema schema, final String namespace)
+    {
+        this.schema = schema;
+        final List<Token> headerTokens = generateForHeader(schema);
+        final Ir ir = new Ir(
+            schema.packageName(),
+            namespace,
+            schema.id(),
+            schema.version(),
+            schema.description(),
+            schema.semanticVersion(),
+            schema.byteOrder(),
+            headerTokens);
+        for (final Message message : schema.messages())
+        {
+            final long msgId = message.id();
+            ir.addMessage(msgId, generateForMessage(schema, msgId));
+        }
+        return ir;
+    }
+    public Ir generate(final MessageSchema schema)
+    {
+        return generate(schema, null);
+    }
+    private List<Token> generateForMessage(final MessageSchema schema, final long messageId)
+    {
+        tokenList.clear();
+        final Message msg = schema.getMessage(messageId);
+        addMessageSignal(msg, Signal.BEGIN_MESSAGE);
+        addAllFields(msg.fields());
+        addMessageSignal(msg, Signal.END_MESSAGE);
+        return tokenList;
+    }
+    private List<Token> generateForHeader(final MessageSchema schema)
+    {
+        tokenList.clear();
+        add(schema.messageHeader(), 0, null);
+        return tokenList;
+    }
+    private void addMessageSignal(final Message msg, final Signal signal)
+    {
+        final Encoding encoding = new Encoding.Builder()
+            .semanticType(msg.semanticType())
+            .build();
+        final Token token = new Token.Builder()
+            .signal(signal)
+            .name(msg.name())
+            .description(msg.description())
+            .size(msg.blockLength())
+            .id(msg.id())
+            .version(msg.sinceVersion())
+            .deprecated(msg.deprecated())
+            .encoding(encoding)
+            .build();
+        tokenList.add(token);
+    }
+    private void addFieldSignal(final Field field, final Signal signal, final int typeSinceVersion)
+    {
+        final Encoding.Builder encodingBuilder = new Encoding.Builder()
+            .epoch(field.epoch())
+            .timeUnit(field.timeUnit())
+            .presence(mapPresence(field.presence()))
+            .semanticType(semanticTypeOf(null, field));
+        if (field.presence() == Presence.CONSTANT && null != field.valueRef())
+        {
+            final String valueRef = field.valueRef();
+            final byte[] bytes;
+            bytes = valueRef.getBytes(StandardCharsets.UTF_8);
+            encodingBuilder.constValue(new PrimitiveValue(bytes, "UTF-8", valueRef.length()));
+            encodingBuilder.primitiveType(PrimitiveType.CHAR);
+        }
+        final Token token = new Token.Builder()
+            .signal(signal)
+            .size(field.computedBlockLength())
+            .name(field.name())
+            .description(field.description())
+            .id(field.id())
+            .offset(field.computedOffset())
+            .version(Math.max(field.sinceVersion(), typeSinceVersion))
+            .deprecated(field.deprecated())
+            .encoding(encodingBuilder.build())
+            .build();
+        tokenList.add(token);
+    }
+    private void addAllFields(final List<Field> fieldList)
+    {
+        for (final Field field : fieldList)
+        {
+            final Type type = field.type();
+            if (null == type)
+            {
+                addFieldSignal(field, Signal.BEGIN_GROUP, 0);
+                add(field.dimensionType(), 0, field);
+                addAllFields(field.groupFields());
+                addFieldSignal(field, Signal.END_GROUP, 0);
+            }
+            else if (type instanceof CompositeType && field.isVariableLength())
+            {
+                addFieldSignal(field, Signal.BEGIN_VAR_DATA, 0);
+                add((CompositeType)type, field.computedOffset(), field);
+                addFieldSignal(field, Signal.END_VAR_DATA, 0);
+            }
+            else
+            {
+                final int typeSinceVersion = type.sinceVersion();
+                addFieldSignal(field, Signal.BEGIN_FIELD, typeSinceVersion);
+                if (type instanceof EncodedDataType)
+                {
+                    add((EncodedDataType)type, field.computedOffset(), field);
+                }
+                else if (type instanceof CompositeType)
+                {
+                    add((CompositeType)type, field.computedOffset(), field);
+                }
+                else if (type instanceof EnumType)
+                {
+                    add((EnumType)type, field.computedOffset(), field);
+                }
+                else if (type instanceof SetType)
+                {
+                    add((SetType)type, field.computedOffset(), field);
+                }
+                else
+                {
+                    throw new IllegalStateException("Unknown type: " + type);
+                }
+                addFieldSignal(field, Signal.END_FIELD, typeSinceVersion);
+            }
+        }
+    }
+    private void add(final CompositeType type, final int currOffset, final Field field)
+    {
+        final Encoding encoding = new Encoding.Builder()
+            .semanticType(semanticTypeOf(type, field))
+            .build();
+        final int version = null != field ? Math.max(field.sinceVersion(), type.sinceVersion()) : type.sinceVersion();
+        final Token.Builder builder = new Token.Builder()
+            .signal(Signal.BEGIN_COMPOSITE)
+            .name(type.name())
+            .packageName(type.packageName())
+            .referencedName(type.referencedName())
+            .offset(currOffset)
+            .size(type.encodedLength())
+            .version(version)
+            .deprecated(type.deprecated())
+            .description(type.description())
+            .encoding(encoding);
+        tokenList.add(builder.build());
+        int offset = 0;
+        for (final Type elementType : type.getTypeList())
+        {
+            if (elementType.offsetAttribute() != -1)
+            {
+                offset = elementType.offsetAttribute();
+            }
+            if (elementType instanceof EncodedDataType)
+            {
+                add((EncodedDataType)elementType,
+                    offset,
+                    null != field ? Math.max(field.sinceVersion(), type.sinceVersion()) : elementType.sinceVersion());
+            }
+            else if (elementType instanceof EnumType)
+            {
+                add((EnumType)elementType, offset, field);
+            }
+            else if (elementType instanceof SetType)
+            {
+                add((SetType)elementType, offset, field);
+            }
+            else if (elementType instanceof CompositeType)
+            {
+                add((CompositeType)elementType, offset, field);
+            }
+            offset += elementType.encodedLength();
+        }
+        tokenList.add(builder.signal(Signal.END_COMPOSITE).build());
+    }
+    private void add(final EnumType type, final int offset, final Field field)
+    {
+        final PrimitiveType encodingType = type.encodingType();
+        final Encoding.Builder encodingBuilder = new Encoding.Builder()
+            .primitiveType(encodingType)
+            .semanticType(semanticTypeOf(type, field))
+            .nullValue(type.nullValue())
+            .byteOrder(schema.byteOrder());
+        final int version = null != field ? Math.max(field.sinceVersion(), type.sinceVersion()) : type.sinceVersion();
+        final Token.Builder builder = new Token.Builder()
+            .signal(Signal.BEGIN_ENUM)
+            .name(type.name())
+            .packageName(type.packageName())
+            .referencedName(type.referencedName())
+            .size(encodingType.size())
+            .offset(offset)
+            .version(version)
+            .deprecated(type.deprecated())
+            .description(type.description())
+            .encoding(encodingBuilder.build());
+        tokenList.add(builder.build());
+        for (final EnumType.ValidValue validValue : type.validValues())
+        {
+            add(validValue, encodingType);
+        }
+        builder.signal(Signal.END_ENUM);
+        tokenList.add(builder.build());
+    }
+    private void add(final EnumType.ValidValue value, final PrimitiveType encodingType)
+    {
+        final Encoding encoding = new Encoding.Builder()
+            .byteOrder(schema.byteOrder())
+            .primitiveType(encodingType)
+            .constValue(value.primitiveValue())
+            .build();
+        final Token.Builder builder = new Token.Builder()
+            .signal(Signal.VALID_VALUE)
+            .name(value.name())
+            .version(value.sinceVersion())
+            .deprecated(value.deprecated())
+            .description(value.description())
+            .encoding(encoding);
+        tokenList.add(builder.build());
+    }
+    private void add(final SetType type, final int offset, final Field field)
+    {
+        final PrimitiveType encodingType = type.encodingType();
+        final Encoding encoding = new Encoding.Builder()
+            .semanticType(semanticTypeOf(type, field))
+            .primitiveType(encodingType)
+            .build();
+        final int version = null != field ? Math.max(field.sinceVersion(), type.sinceVersion()) : type.sinceVersion();
+        final Token.Builder builder = new Token.Builder()
+            .signal(Signal.BEGIN_SET)
+            .name(type.name())
+            .packageName(type.packageName())
+            .referencedName(type.referencedName())
+            .size(encodingType.size())
+            .offset(offset)
+            .version(version)
+            .deprecated(type.deprecated())
+            .description(type.description())
+            .encoding(encoding);
+        tokenList.add(builder.build());
+        for (final SetType.Choice choice : type.choices())
+        {
+            add(choice, encodingType);
+        }
+        builder.signal(Signal.END_SET);
+        tokenList.add(builder.build());
+    }
+    private void add(final SetType.Choice value, final PrimitiveType encodingType)
+    {
+        final Encoding encoding = new Encoding.Builder()
+            .constValue(value.primitiveValue())
+            .byteOrder(schema.byteOrder())
+            .primitiveType(encodingType)
+            .build();
+        final Token.Builder builder = new Token.Builder()
+            .signal(Signal.CHOICE)
+            .name(value.name())
+            .description(value.description())
+            .version(value.sinceVersion())
+            .deprecated(value.deprecated())
+            .encoding(encoding);
+        tokenList.add(builder.build());
+    }
+    private void add(final EncodedDataType type, final int offset, final int sinceVersion)
+    {
+        final Encoding.Builder encodingBuilder = new Encoding.Builder()
+            .primitiveType(type.primitiveType())
+            .byteOrder(schema.byteOrder())
+            .characterEncoding(type.characterEncoding());
+        final Token.Builder tokenBuilder = new Token.Builder()
+            .signal(Signal.ENCODING)
+            .name(type.name())
+            .packageName(type.packageName())
+            .referencedName(type.referencedName())
+            .size(type.encodedLength())
+            .description(type.description())
+            .version(sinceVersion)
+            .deprecated(type.deprecated())
+            .offset(offset);
+        switch (type.presence())
+        {
+            case REQUIRED:
+                encodingBuilder
+                    .presence(Encoding.Presence.REQUIRED)
+                    .minValue(type.minValue())
+                    .maxValue(type.maxValue());
+                break;
+            case OPTIONAL:
+                encodingBuilder
+                    .presence(Encoding.Presence.OPTIONAL)
+                    .minValue(type.minValue())
+                    .maxValue(type.maxValue())
+                    .nullValue(type.nullValue());
+                break;
+            case CONSTANT:
+                tokenBuilder.size(0);
+                encodingBuilder
+                    .presence(Encoding.Presence.CONSTANT)
+                    .constValue(type.constVal());
+                break;
+        }
+        final Token token = tokenBuilder.encoding(encodingBuilder.build()).build();
+        tokenList.add(token);
+    }
+    private void add(final EncodedDataType type, final int offset, final Field field)
+    {
+        final Encoding.Builder encodingBuilder = new Encoding.Builder()
+            .primitiveType(type.primitiveType())
+            .byteOrder(schema.byteOrder())
+            .semanticType(semanticTypeOf(type, field))
+            .characterEncoding(type.characterEncoding())
+            .timeUnit(field.timeUnit())
+            .epoch(field.epoch());
+        final int version = Math.max(field.sinceVersion(), type.sinceVersion());
+        final Token.Builder tokenBuilder = new Token.Builder()
+            .signal(Signal.ENCODING)
+            .name(type.name())
+            .packageName(type.packageName())
+            .referencedName(type.referencedName())
+            .size(type.encodedLength())
+            .description(type.description())
+            .version(version)
+            .deprecated(type.deprecated())
+            .offset(offset);
+        switch (field.presence())
+        {
+            case REQUIRED:
+                encodingBuilder
+                    .presence(Encoding.Presence.REQUIRED)
+                    .minValue(type.minValue())
+                    .maxValue(type.maxValue());
+                break;
+            case OPTIONAL:
+                encodingBuilder
+                    .presence(Encoding.Presence.OPTIONAL)
+                    .minValue(type.minValue())
+                    .maxValue(type.maxValue())
+                    .nullValue(type.nullValue());
+                break;
+            case CONSTANT:
+                final String valueRef = field.valueRef();
+                tokenBuilder.size(0);
+                encodingBuilder
+                    .presence(Encoding.Presence.CONSTANT)
+                    .constValue(valueRef != null ? lookupValueRef(valueRef) : type.constVal());
+                break;
+        }
+        final Token token = tokenBuilder.encoding(encodingBuilder.build()).build();
+        tokenList.add(token);
+    }
+    private PrimitiveValue lookupValueRef(final String valueRef)
+    {
+        final int periodIndex = valueRef.indexOf('.');
+        final String valueRefType = valueRef.substring(0, periodIndex);
+        final String validValueName = valueRef.substring(periodIndex + 1);
+        final EnumType enumType = (EnumType)schema.getType(valueRefType);
+        final EnumType.ValidValue validValue = enumType.getValidValue(validValueName);
+        return validValue.primitiveValue();
+    }
+    private static String semanticTypeOf(final Type type, final Field field)
+    {
+        final String typeSemanticType = null != type ? type.semanticType() : null;
+        if (typeSemanticType != null)
+        {
+            return typeSemanticType;
+        }
+        return null != field ? field.semanticType() : null;
+    }
+    private Encoding.Presence mapPresence(final Presence presence)
+    {
+        Encoding.Presence encodingPresence = Encoding.Presence.REQUIRED;
+        if (null != presence)
+        {
+            switch (presence)
+            {
+                case OPTIONAL:
+                    encodingPresence = Encoding.Presence.OPTIONAL;
+                    break;
+                case CONSTANT:
+                    encodingPresence = Encoding.Presence.CONSTANT;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return encodingPresence;
+    }
+}
+package uk.co.real_logic.sbe.xml;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import uk.co.real_logic.sbe.PrimitiveType;
+import uk.co.real_logic.sbe.PrimitiveValue;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import static uk.co.real_logic.sbe.xml.XmlSchemaParser.*;
+public class SetType extends Type
+{
+    public static final String SET_TYPE = "set";
+    private final PrimitiveType encodingType;
+    private final Map<PrimitiveValue, Choice> choiceByPrimitiveValueMap = new LinkedHashMap<>();
+    private final Map<String, Choice> choiceByNameMap = new LinkedHashMap<>();
+    SetType(final Node node)
+        throws XPathExpressionException
+    {
+        this(node, null, null);
+    }
+    public SetType(final Node node, final String givenName, final String referencedName)
+        throws XPathExpressionException
+    {
+        super(node, givenName, referencedName);
+        final XPath xPath = XPathFactory.newInstance().newXPath();
+        final String encodingTypeStr = getAttributeValue(node, "encodingType");
+        switch (encodingTypeStr)
+        {
+            case "uint8":
+            case "uint16":
+            case "uint32":
+            case "uint64":
+                encodingType = PrimitiveType.get(encodingTypeStr);
+                break;
+            default:
+                final String expression = TYPE_XPATH_EXPR + "[@name='" + encodingTypeStr + "']";
+                final Node encodingTypeNode = (Node)xPath
+                    .compile(expression)
+                    .evaluate(node.getOwnerDocument(), XPathConstants.NODE);
+                if (null == encodingTypeNode)
+                {
+                    encodingType = null;
+                }
+                else if (Integer.parseInt(getAttributeValue(encodingTypeNode, "length", "1")) != 1)
+                {
+                    encodingType = null;
+                }
+                else
+                {
+                    encodingType = PrimitiveType.get(getAttributeValue(encodingTypeNode, "primitiveType"));
+                }
+                break;
+        }
+        if (encodingType == null)
+        {
+            throw new IllegalArgumentException("Illegal encodingType " + encodingTypeStr);
+        }
+        final NodeList list = (NodeList)xPath.compile("choice").evaluate(node, XPathConstants.NODESET);
+        for (int i = 0, size = list.getLength(); i < size; i++)
+        {
+            final Choice c = new Choice(list.item(i), encodingType);
+            if (choiceByPrimitiveValueMap.get(c.primitiveValue()) != null)
+            {
+                handleWarning(node, "Choice value already defined: " + c.primitiveValue());
+            }
+            if (choiceByNameMap.get(c.name()) != null)
+            {
+                handleWarning(node, "Choice already exists for name: " + c.name());
+            }
+            choiceByPrimitiveValueMap.put(c.primitiveValue(), c);
+            choiceByNameMap.put(c.name(), c);
+        }
+    }
+    public PrimitiveType encodingType()
+    {
+        return encodingType;
+    }
+    public int encodedLength()
+    {
+        return encodingType.size();
+    }
+    public Choice getChoice(final PrimitiveValue value)
+    {
+        return choiceByPrimitiveValueMap.get(value);
+    }
+    public Choice getChoice(final String name)
+    {
+        return choiceByNameMap.get(name);
+    }
+    public Collection<Choice> choices()
+    {
+        return choiceByNameMap.values();
+    }
+    public boolean isVariableLength()
+    {
+        return false;
+    }
+    public String toString()
+    {
+        return "SetType{" +
+            "encodingType=" + encodingType +
+            ", choiceByPrimitiveValueMap=" + choiceByPrimitiveValueMap +
+            ", choiceByNameMap=" + choiceByNameMap +
+            '}';
+    }
+    public static class Choice
+    {
+        private final String name;
+        private final String description;
+        private final PrimitiveValue value;
+        private final int sinceVersion;
+        private final int deprecated;
+        public Choice(final Node node, final PrimitiveType encodingType)
+        {
+            name = getAttributeValue(node, "name");
+            description = getAttributeValueOrNull(node, "description");
+            value = PrimitiveValue.parse(node.getFirstChild().getNodeValue(), encodingType);
+            sinceVersion = Integer.parseInt(getAttributeValue(node, "sinceVersion", "0"));
+            deprecated = Integer.parseInt(getAttributeValue(node, "deprecated", "0"));
+            if (value.longValue() >= (encodingType.size() * 8L))
+            {
+                throw new IllegalArgumentException("Choice value out of bounds: " + value.longValue());
+            }
+            checkForValidName(node, name);
+        }
+        public PrimitiveValue primitiveValue()
+        {
+            return value;
+        }
+        public String name()
+        {
+            return name;
+        }
+        public String description()
+        {
+            return description;
+        }
+        public int sinceVersion()
+        {
+            return sinceVersion;
+        }
+        public int deprecated()
+        {
+            return deprecated;
+        }
+        public String toString()
+        {
+            return "Choice{" +
+                "name='" + name + '\'' +
+                ", description='" + description + '\'' +
+                ", value=" + value +
+                ", sinceVersion=" + sinceVersion +
+                ", deprecated=" + deprecated +
+                '}';
+        }
+    }
+}

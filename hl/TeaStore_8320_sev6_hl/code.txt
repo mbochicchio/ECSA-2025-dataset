@@ -1,0 +1,1779 @@
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import java.util.LinkedList;
+import java.util.List;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedRecommenderOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.webui.servlet.elhelper.ELHelperUtils;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+import tools.descartes.teastore.entities.OrderItem;
+import tools.descartes.teastore.entities.Product;
+import tools.descartes.teastore.entities.message.SessionBlob;
+/**
+ * Servlet implementation for the web view of "Product".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/product")
+public class ProductServlet extends AbstractUIServlet {
+  private static final long serialVersionUID = 1L;
+  /**
+   * @see HttpServlet#HttpServlet()
+   */
+  public ProductServlet() {
+    super();
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    checkforCookie(request, response);
+    if (request.getParameter("id") != null) {
+      Long id = Long.valueOf(request.getParameter("id"));
+      request.setAttribute("CategoryList", LoadBalancedCRUDOperations
+          .getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+      request.setAttribute("title", "TeaStore Product");
+      SessionBlob blob = getSessionBlob(request);
+      request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(blob));
+      Product p = LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE, "products",
+          Product.class, id);
+      request.setAttribute("product", p);
+      List<OrderItem> items = new LinkedList<>();
+      OrderItem oi = new OrderItem();
+      oi.setProductId(id);
+      oi.setQuantity(1);
+      items.add(oi);
+      items.addAll(getSessionBlob(request).getOrderItems());
+      List<Long> productIds = LoadBalancedRecommenderOperations.getRecommendations(items,
+          getSessionBlob(request).getUID());
+      List<Product> ads = new LinkedList<Product>();
+      for (Long productId : productIds) {
+        ads.add(LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE, "products", Product.class,
+            productId));
+      }
+      if (ads.size() > 3) {
+        ads.subList(3, ads.size()).clear();
+      }
+      request.setAttribute("Advertisment", ads);
+      request.setAttribute("productImages", LoadBalancedImageOperations.getProductImages(ads,
+          ImageSizePreset.RECOMMENDATION.getSize()));
+      request.setAttribute("productImage", LoadBalancedImageOperations.getProductImage(p));
+      request.setAttribute("storeIcon",
+          LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+      request.setAttribute("helper", ELHelperUtils.UTILS);
+      request.getRequestDispatcher("WEB-INF/pages/product.jsp").forward(request, response);
+    } else {
+      redirect("/", response);
+    }
+  }
+}
+package tools.descartes.teastore.registryclient.rest;
+import jakarta.ws.rs.client.Entity;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.loadbalancers.ServiceLoadBalancer;
+import tools.descartes.teastore.registryclient.util.NotFoundException;
+import tools.descartes.teastore.entities.Product;
+import tools.descartes.teastore.entities.message.SessionBlob;
+/**
+ * Container class for the static calls to the Store service.
+ * 
+ * @author Simon
+ *
+ */
+public final class LoadBalancedStoreOperations {
+  private LoadBalancedStoreOperations() {
+  }
+  /**
+   * Persists order in database.
+   * 
+   * @param blob
+   *          Sessionblob
+   * @param addressName
+   *          adress
+   * @param address1
+   *          adress
+   * @param address2
+   *          adress
+   * @param creditCardCompany
+   *          creditcard
+   * @param creditCardExpiryDate
+   *          creditcard
+   * @param creditCardNumber
+   *          creditcard
+   * @param totalPriceInCents
+   *          totalPrice
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return empty SessionBlob
+   */
+  public static SessionBlob placeOrder(SessionBlob blob, String addressName, String address1,
+      String address2, String creditCardCompany, String creditCardExpiryDate,
+      long totalPriceInCents, String creditCardNumber)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "useractions",
+        Product.class,
+        client -> ResponseWrapper.wrap(HttpWrapper
+            .wrap(client.getEndpointTarget().path("placeorder")
+                .queryParam("addressName", addressName).queryParam("address1", address1)
+                .queryParam("address2", address2).queryParam("creditCardCompany", creditCardCompany)
+                .queryParam("creditCardNumber", creditCardNumber)
+                .queryParam("creditCardExpiryDate", creditCardExpiryDate)
+                .queryParam("totalPriceInCents", totalPriceInCents))
+            .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+  /**
+   * Login if name and pw are correct.
+   * 
+   * @param blob
+   *          SessionBlob
+   * @param name
+   *          username
+   * @param password
+   *          user password
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return SessionBlob with login information if login was successful
+   */
+  public static SessionBlob login(SessionBlob blob, String name, String password)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "useractions",
+        Product.class,
+        client -> ResponseWrapper.wrap(HttpWrapper
+            .wrap(client.getEndpointTarget().path("login").queryParam("name", name)
+                .queryParam("password", password))
+            .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+  /**
+   * Logs user out.
+   * 
+   * @param blob
+   *          SessionBlob
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return SessionBlob without user information
+   */
+  public static SessionBlob logout(SessionBlob blob)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "useractions",
+        Product.class,
+        client -> ResponseWrapper.wrap(HttpWrapper.wrap(client.getEndpointTarget().path("logout"))
+            .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+  /**
+   * Checks if user is logged in.
+   * 
+   * @param blob
+   *          SessionBlob
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return true if user is logged in
+   */
+  public static boolean isLoggedIn(SessionBlob blob)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "useractions",
+        Product.class,
+        client -> ResponseWrapper
+            .wrap(HttpWrapper.wrap(client.getEndpointTarget().path("isloggedin"))
+                .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class) != null;
+  }
+  /**
+   * Adds product to cart. if the item is already in the cart, the quantity is
+   * increased.
+   * 
+   * @param blob
+   *          SessionBlob
+   * @param pid
+   *          ProductId
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return Sessionblob containing product
+   */
+  public static SessionBlob addProductToCart(SessionBlob blob, long pid)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "cart", Product.class,
+        client -> ResponseWrapper
+            .wrap(HttpWrapper.wrap(client.getEndpointTarget().path("add").path("" + pid))
+                .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+  /**
+   * Removes product from cart.
+   * 
+   * @param blob
+   *          Sessionblob
+   * @param pid
+   *          productid
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return Sessionblob without product
+   */
+  public static SessionBlob removeProductFromCart(SessionBlob blob, long pid)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "cart", Product.class,
+        client -> ResponseWrapper
+            .wrap(HttpWrapper.wrap(client.getEndpointTarget().path("remove").path("" + pid))
+                .post(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+  /**
+   * Updates quantity of item in cart.
+   * 
+   * @param blob
+   *          Sessionblob
+   * @param pid
+   *          productid of item
+   * @param quantity
+   *          target quantity
+   * @throws NotFoundException
+   *           If 404 was returned.
+   * @throws LoadBalancerTimeoutException
+   *           On receiving the 408 status code and on repeated load balancer
+   *           socket timeouts.
+   * @return Sessionblob with updated quantity
+   */
+  public static SessionBlob updateQuantity(SessionBlob blob, long pid, int quantity)
+      throws NotFoundException, LoadBalancerTimeoutException {
+    if (quantity < 1) {
+      throw new IllegalArgumentException("Quantity has to be larger than 1");
+    }
+    Response r = ServiceLoadBalancer.loadBalanceRESTOperation(Service.AUTH, "cart", Product.class,
+        client -> ResponseWrapper.wrap(HttpWrapper
+            .wrap(client.getEndpointTarget().path("" + pid).queryParam("quantity", quantity))
+            .put(Entity.entity(blob, MediaType.APPLICATION_JSON), Response.class)));
+    return RestUtil.readThrowAndOrClose(r, SessionBlob.class);
+  }
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.registryclient.loadbalancers;
+import tools.descartes.teastore.registryclient.Service;
+/**
+ * Exception thrown for too many load balancer retries.
+ * @author Joakim von Kistowski
+ *
+ */
+public class LoadBalancerTimeoutException extends RuntimeException {
+	private static final long serialVersionUID = 5101941775644953394L;
+	private Service targetService;
+	/**
+	 * Creates a new LoadBalancerTimoutException.
+	 * @param message The the timeout message.
+	 * @param targetService The service for which the load balancer failed.
+	 */
+	public LoadBalancerTimeoutException(String message, Service targetService) {
+		super(message);
+		this.targetService = targetService;
+	}
+	
+	/**
+	 * Returns the service for which the timeout occurred.
+	 * @return The service for which the timeout occurred.
+	 */
+	public Service getTargetService() {
+		return targetService;
+	}
+	
+}
+package tools.descartes.teastore.registryclient.rest;
+import jakarta.ws.rs.client.Invocation.Builder;
+import jakarta.ws.rs.core.MediaType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import kieker.monitoring.core.controller.IMonitoringController;
+import kieker.monitoring.core.controller.MonitoringController;
+import kieker.monitoring.core.registry.ControlFlowRegistry;
+import kieker.monitoring.core.registry.SessionRegistry;
+import tools.descartes.teastore.registryclient.tracing.Tracing;
+import jakarta.ws.rs.client.WebTarget;
+/**
+ * Wrapper for http calls.
+ *
+ * @author Simon
+ *
+ */
+public final class HttpWrapper {
+  private static final IMonitoringController CTRLINST = MonitoringController.getInstance();
+  private static final Logger LOG = LoggerFactory.getLogger(HttpWrapper.class);
+  private static final ControlFlowRegistry CF_REGISTRY = ControlFlowRegistry.INSTANCE;
+  private static final SessionRegistry SESSION_REGISTRY = SessionRegistry.INSTANCE;
+  private static final String HEADER_FIELD = "KiekerTracingInfo";
+  /**
+   * Hide default constructor.
+   */
+  private HttpWrapper() {
+  }
+  /**
+   * Wrap webtarget.
+   *
+   * @param target webtarget to wrap
+   * @return wrapped wentarget
+   */
+  public static Builder wrap(WebTarget target) {
+    Builder builder = target.request(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON);
+    Tracing.inject(builder);
+    if (CTRLINST.isMonitoringEnabled()) {
+      final String sessionId = SESSION_REGISTRY.recallThreadLocalSessionId();
+      final int eoi; // this is executionOrderIndex-th execution in this trace
+      final int ess; // this is the height in the dynamic call tree of this execution
+      final int nextESS;
+      long traceId = CF_REGISTRY.recallThreadLocalTraceId(); // traceId, -1 if entry point
+      if (traceId == -1) {
+        // entrypoint = true;
+        traceId = CF_REGISTRY.getAndStoreUniqueThreadLocalTraceId();
+        CF_REGISTRY.storeThreadLocalEOI(0);
+        CF_REGISTRY.storeThreadLocalESS(1); // next operation is ess + 1
+        eoi = 0;
+        ess = 0;
+        nextESS = 1;
+      } else {
+        // entrypoint = false;
+        eoi = CF_REGISTRY.recallThreadLocalEOI();
+        ess = CF_REGISTRY.recallThreadLocalESS();
+        nextESS = ess;
+        if ((eoi == -1) || (ess == -1)) {
+          LOG.error("eoi and/or ess have invalid values:" + " eoi == " + eoi + " ess == " + ess);
+          // CTRLINST.terminateMonitoring();
+        }
+      }
+      // Get request header
+      return builder.header(HEADER_FIELD,
+          Long.toString(traceId) + "," + sessionId + "," + Integer.toString(eoi) + "," + Integer.toString(nextESS));
+    }
+    return builder;
+  }
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.registryclient.loadbalancers;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import jakarta.ws.rs.core.Response.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import com.netflix.client.DefaultLoadBalancerRetryHandler;
+import com.netflix.client.RetryHandler;
+import com.netflix.loadbalancer.BaseLoadBalancer;
+import com.netflix.loadbalancer.LoadBalancerBuilder;
+import com.netflix.loadbalancer.Server;
+import com.netflix.loadbalancer.reactive.LoadBalancerCommand;
+import rx.Observable;
+import tools.descartes.teastore.registryclient.RegistryClient;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.util.NotFoundException;
+import tools.descartes.teastore.registryclient.util.RESTClient;
+/**
+ * The load balancer for services.
+ * @author Joakim von Kistowski
+ *
+ */
+public final class ServiceLoadBalancer {
+	private static final Logger LOG = LoggerFactory.getLogger(ServiceLoadBalancer.class);
+	//Loadbalancers for each service name
+	private static ConcurrentHashMap<String, ServiceLoadBalancer> serviceMap = new ConcurrentHashMap<>();
+	//clients for each endpoint (for a fixed service)
+	private ConcurrentHashMap<String, EndpointClientCollection<?>> endpointMap = new ConcurrentHashMap<>();
+	private final Service targetService;
+	private Set<Server> serviceServers = new HashSet<Server>();
+	private BaseLoadBalancer loadBalancer;
+    // retry handler that does not retry on same server, but on a different server
+    private final RetryHandler retryHandler = new DefaultLoadBalancerRetryHandler(0, 2, true);
+    private ReadWriteLock loadBalancerModificationLock = new ReentrantReadWriteLock();
+    //private constructor
+    private ServiceLoadBalancer(final Service targetService) {
+    	this.targetService = targetService;
+    }
+    /**
+     * Initializes load balancers for the target services.
+     * Queries target service instances from the registry.
+     * @param targetServices The services to pre-initialize.
+     */
+    public static void preInitializeServiceLoadBalancers(Service... targetServices) {
+    	for (Service service : targetServices) {
+    		//initialize before logging in case the compiler optimizes it away when log-level info is not set
+    		getServiceLoadBalancer(service);
+    		//log the state to prevent the compiler from optimizing the initialization away
+    		LOG.info("Pre-initializing client-side load balancer for target: "
+			 + getServiceLoadBalancer(service).targetService.getServiceName());
+    	}
+    }
+	private static ServiceLoadBalancer getServiceLoadBalancer(Service targetService) {
+		ServiceLoadBalancer serviceBalancer = serviceMap.get(targetService.getServiceName());
+    	if (serviceBalancer == null
+    			|| serviceBalancer.serviceServers == null
+    			|| serviceBalancer.serviceServers.isEmpty()) {
+    		serviceMap.putIfAbsent(targetService.getServiceName(), new ServiceLoadBalancer(targetService));
+    		updateLoadBalancersForServiceUsingRegistry(targetService);
+    	}
+    	return serviceMap.get(targetService.getServiceName());
+    }
+	/**
+	 * Gets the load balancer for a service. Initializes it with a list of know servers,
+	 * if the service is not known exists.
+	 * @param targetService The service for which to get the balancer
+	 * @param knownServers The list of know servers.
+	 * @return The load balancer.
+	 */
+	static ServiceLoadBalancer getServiceLoadBalancer(Service targetService, List<Server> knownServers) {
+		ServiceLoadBalancer serviceBalancer = ServiceLoadBalancer.serviceMap.get(targetService.getServiceName());
+    	if (serviceBalancer == null
+    			|| serviceBalancer.serviceServers == null
+    			|| serviceBalancer.serviceServers.isEmpty()) {
+    		serviceMap.putIfAbsent(targetService.getServiceName(), new ServiceLoadBalancer(targetService));
+    		updateLoadBalancersForService(targetService, knownServers);
+    	}
+    	return serviceMap.get(targetService.getServiceName());
+    }
+	@SuppressWarnings("unchecked")
+	private <T> EndpointClientCollection<T> getEndpointClientCollection(String endpointURI, Class<T> entityClass) {
+		EndpointClientCollection<?> endpointCollection = endpointMap.get(endpointURI);
+    	if (endpointCollection == null) {
+    		endpointMap.putIfAbsent(endpointURI,
+    				new EndpointClientCollection<T>(targetService, endpointURI, entityClass));
+    		endpointMap.get(endpointURI).updateServers(serviceServers);
+    	}
+    	endpointCollection = endpointMap.get(endpointURI);
+    	return (EndpointClientCollection<T>) endpointCollection;
+	}
+	/**
+	 * Update all load balancers for a service. Triggers Registry client to ask registry for updates.
+	 */
+	static void updateLoadBalancersForKnownServicesUsingRegistry() {
+		serviceMap.values().forEach(balancer -> updateLoadBalancersForServiceUsingRegistry(balancer.targetService));
+    }
+	/**
+	 * Update all load balancers for a service with servers. Triggers Registry client to ask registry for updates.
+	 * @param targetService The service for which to update.
+	 */
+    private static void updateLoadBalancersForServiceUsingRegistry(Service targetService) {
+    	List<Server> servers = RegistryClient.getClient().getServersForService(targetService);
+    	updateLoadBalancersForService(targetService, servers);
+    }
+	/**
+	 * Update all load balancers for a service. Call if server list has changed.
+	 * @param newServers New servers with which to update the load balancers.
+	 * @param targetService The service for which to update.
+	 */
+    static void updateLoadBalancersForService(Service targetService, List<Server> newServers) {
+    	ServiceLoadBalancer serviceBalancer = serviceMap.get(targetService.getServiceName());
+    	if (serviceBalancer == null) {
+    		return;
+    	}
+    	serviceBalancer.updateLoadBalancer(newServers);
+    }
+    private void updateLoadBalancer(List<Server> newServers) {
+    	if (serviceServers == null) {
+    		serviceServers = new HashSet<Server>();
+    	}
+    	if (newServers == null) {
+    		newServers = new ArrayList<Server>();
+    	}
+    	//return if nothing changed
+    	if ((serviceServers.isEmpty() && newServers.isEmpty())
+    		|| (newServers.size() == serviceServers.size() && serviceServers.containsAll(newServers))) {
+    		return;
+    	}
+    	serviceServers = new HashSet<Server>(newServers);
+    	loadBalancerModificationLock.writeLock().lock();
+    	try {
+	    	if (loadBalancer != null) {
+	    		loadBalancer.shutdown();
+	    	}
+	    	loadBalancer = LoadBalancerBuilder.newBuilder().buildFixedServerListLoadBalancer(newServers);
+	    	for (EndpointClientCollection<?> lb : endpointMap.values()) {
+	    		lb.updateServers(newServers);
+	    	}
+    	} finally {
+    		loadBalancerModificationLock.writeLock().unlock();
+    	}
+    }
+    /**
+     * Load balances a REST operation. Automatically creates the needed load balancers, clients, etc. if needed.
+     * @param targetService The service to load balance.
+     * @param endpointURI The endpoint URI (e.g., "products").
+     * @param entityClass The class of entities to send/receive.
+     * @param operation The operation to load balance as Java8 lambda.
+     * 				E.g.: "client -> CRUDOperations.getEntity(client, id)".
+     * @param <R> The expected return type.
+     * @param <T> The entity type of the entity to send/receive.
+     * @throws LoadBalancerTimeoutException On receiving the 408 status code
+     * and on repeated load balancer socket timeouts.
+	 * @throws NotFoundException On receiving the 404 status code.
+     * @return Returns the return value of the load balanced operation.
+     */
+    public static <T, R> R loadBalanceRESTOperation(Service targetService,
+    		String endpointURI, Class<T> entityClass,
+    		Function<RESTClient<T>, R> operation) throws NotFoundException, LoadBalancerTimeoutException {
+    	return getServiceLoadBalancer(targetService).loadBalanceRESTOperation(endpointURI, entityClass, operation);
+	}
+    private <T, R> R loadBalanceRESTOperation(String endpointURI,
+    		Class<T> entityClass, Function<RESTClient<T>, R> operation)
+    				throws NotFoundException, LoadBalancerTimeoutException {
+    	R r = null;
+    	loadBalancerModificationLock.readLock().lock();
+    	try {
+    		if (loadBalancer == null) {
+        		LOG.warn("Load Balancer was not initialized for service: " + targetService.getServiceName()
+        			+ ". Is Registry up?");
+        		updateLoadBalancersForServiceUsingRegistry(targetService);
+        	}
+        	if (loadBalancer == null || loadBalancer.getAllServers().isEmpty()) {
+        		LOG.warn("No Server registered for Service: " + targetService.getServiceName());
+        	} else {
+        		ServiceLoadBalancerResult<R> slbr = LoadBalancerCommand.<ServiceLoadBalancerResult<R>>builder()
+                        .withLoadBalancer(loadBalancer)
+                        .withRetryHandler(retryHandler)
+                        .build()
+                        .submit(server -> Observable.just(
+                        		ServiceLoadBalancerResult.fromRESTOperation(
+                        				(RESTClient<T>) getEndpointClientCollection(endpointURI, entityClass)
+                				.getRESTClient(server), operation)
+                        		))
+						.onErrorReturn((Throwable e) -> {
+							e.printStackTrace();
+							return null;
+						}).toBlocking().first();
+        		if (slbr == null) {
+        			throw new NullPointerException("ServiceLoadBalancerResult was null!");
+        		}
+        		if (slbr.getStatusCode() == Status.REQUEST_TIMEOUT.getStatusCode()) {
+        			throw new LoadBalancerTimeoutException("Timout at endpoint: "
+        					+ endpointURI + ", with target service: " + targetService.getServiceName(),
+        					targetService);
+        		} else if (slbr.getStatusCode() == Status.NOT_FOUND.getStatusCode() || slbr.getEntity() == null) {
+        			throw new NotFoundException();
+        		}
+        		r = slbr.getEntity();
+        	}
+    	} finally {
+    		loadBalancerModificationLock.readLock().unlock();
+    	}
+		return r;
+	}
+    /**
+     * Sends a multicast to all known instances of the service.
+     * Does not repeat failed sends.
+     * @param targetService The service to send to.
+     * @param endpointURI The endpoint URI (e.g., "cache").
+     * @param entityClass The class of entities to send/receive.
+     * @param operation The operation to load balance as Java8 lambda.
+     * 				E.g.: "client -> CRUDOperations.getEntity(client, id)".
+     * @param <R> The expected return type.
+     * @param <T> The entity type of the entity to send/receive.
+     * @return List of all responses. Contains null for each unreachable server.
+     */
+    public static <T, R> List<R> multicastRESTOperation(Service targetService,
+    		String endpointURI, Class<T> entityClass,
+    		Function<RESTClient<T>, R> operation) {
+    	return getServiceLoadBalancer(targetService).multicastRESTOperation(endpointURI, entityClass, operation, null);
+    }
+    /**
+     * Sends a multicast to all known instances of this service, except for the
+     * one actually sending (this instance).
+     * Does not repeat failed sends.
+     * @param endpointURI The endpoint URI (e.g., "cache").
+     * @param entityClass The class of entities to send/receive.
+     * @param operation The operation to load balance as Java8 lambda.
+     * 				E.g.: "client -> CRUDOperations.getEntity(client, id)".
+     * @param <R> The expected return type.
+     * @param <T> The entity type of the entity to send/receive.
+     * @return List of all responses. Contains null for each unreachable server.
+     */
+    public static <T, R> List<R> multicastRESTToOtherServiceInstances(String endpointURI, Class<T> entityClass,
+    		Function<RESTClient<T>, R> operation) {
+    	return getServiceLoadBalancer(RegistryClient.getClient().getMyService())
+    			.multicastRESTOperation(endpointURI, entityClass, operation,
+    					RegistryClient.getClient().getMyServiceInstanceServer());
+    }
+    //exception can be null
+    private <T, R> List<R> multicastRESTOperation(String endpointURI, Class<T> entityClass,
+    		Function<RESTClient<T>, R> operation, Server exception) {
+    	List<R> responses = new ArrayList<>();
+    	List<Server> servers = null;
+    	loadBalancerModificationLock.readLock().lock();
+    	try {
+	    	if (loadBalancer != null) {
+	    		servers = new ArrayList<>(loadBalancer.getAllServers());
+	    	}
+	    	if (servers != null) {
+	    		if (exception != null) {
+	        		servers.remove(exception);
+	        	}
+	        	responses = servers.parallelStream().map(
+	        		server -> {
+	        			try {
+	        				return operation.apply((RESTClient<T>) getEndpointClientCollection(endpointURI, entityClass)
+	                				.getRESTClient(server));
+	        			} catch (Exception e) {
+	        				return null;
+	        			}
+	        		}).collect(Collectors.toList());
+	    	}
+    	} finally {
+    		loadBalancerModificationLock.readLock().unlock();
+    	}
+    	return responses;
+    }
+}
+package tools.descartes.teastore.entities.message;
+import java.util.LinkedList;
+import java.util.List;
+import tools.descartes.teastore.entities.Order;
+import tools.descartes.teastore.entities.OrderItem;
+/**
+ * Blob containing all information about the user session.
+ * @author Simon
+ */
+public class SessionBlob {
+	private Long uid;
+	private String sid;
+	private String token;
+	private Order order;
+	private List<OrderItem> orderItems = new LinkedList<OrderItem>();
+	private String message;
+	
+	/**
+	 * Constructor, creates an empty order.
+	 */
+	public SessionBlob() {
+		this.setOrder(new Order());
+	}
+	/**
+	 * Getter for the userid.
+	 * @return userid
+	 */
+	public Long getUID() {
+		return uid;
+	}
+	/**
+	 * Setter for the userid.
+	 * @param uID userid
+	 */
+	public void setUID(Long uID) {
+		uid = uID;
+	}
+	/**
+	 * Getter for session id.
+	 * @return session id
+	 */
+	public String getSID() {
+		return sid;
+	}
+	/**
+	 * Setter for session id.
+	 * @param sID session id
+	 */
+	public void setSID(String sID) {
+		sid = sID;
+	}
+	/**
+	 * Getter for trust token.
+	 * @return trust token
+	 */
+	public String getToken() {
+		return token;
+	}
+	/**
+	 * Setter for trust token.
+	 * @param token trust token.
+	 */
+	public void setToken(String token) {
+		this.token = token;
+	}
+	
+	/**
+	 * Setter for the message.
+	 * @param message String
+	 */
+	public void setMessage(String message) {
+		this.message = message;
+	}
+	
+	/**
+	 * Getter for the message.
+	 * @return message
+	 */
+	public String getMessage() {
+		return message;
+	}
+	/**
+	 * Getter for order.
+	 * @return order
+	 */
+	public Order getOrder() {
+		return order;
+	}
+	/**
+	 * Setter for order.
+	 * @param order order
+	 */
+	public void setOrder(Order order) {
+		this.order = order;
+	}
+	/**
+	 * Getter for order items.
+	 * @return order items.
+	 */
+	public List<OrderItem> getOrderItems() {
+		return orderItems;
+	}
+	/**
+	 * Setter for order items.
+	 * @param orderItems list of order items
+	 */
+	public void setOrderItems(List<OrderItem> orderItems) {
+		this.orderItems = orderItems;
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+/**
+ * Servlet implementation for the web view of "Order".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/order")
+public class OrderServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public OrderServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		checkforCookie(request, response);
+		if (getSessionBlob(request).getOrderItems().size() == 0) {
+			redirect("/", response);
+		} else {
+			doPost(request, response);
+		}
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handlePOSTRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		request.setAttribute("CategoryList",
+				LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+		request.setAttribute("storeIcon",
+				LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+		request.setAttribute("title", "TeaStore Order");
+		request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+		request.getRequestDispatcher("WEB-INF/pages/order.jsp").forward(request, response);
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashMap;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.ImageSizePreset;
+/**
+ * Servlet implementation for the web view of "About us".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/about")
+public class AboutUsServlet extends AbstractUIServlet {
+  private static final long serialVersionUID = 1L;
+  /**
+   * @see HttpServlet#HttpServlet()
+   */
+  public AboutUsServlet() {
+    super();
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    checkforCookie(request, response);
+    HashMap<String, String> portraits = LoadBalancedImageOperations
+        .getWebImages(Arrays.asList("andreBauer", "johannesGrohmann", "joakimKistowski",
+            "simonEismann", "norbertSchmitt", "samuelKounev"), ImageSizePreset.PORTRAIT.getSize());
+    request.setAttribute("portraitAndre", portraits.get("andreBauer"));
+    request.setAttribute("portraitJohannes", portraits.get("johannesGrohmann"));
+    request.setAttribute("portraitJoakim", portraits.get("joakimKistowski"));
+    request.setAttribute("portraitSimon", portraits.get("simonEismann"));
+    request.setAttribute("portraitNorbert", portraits.get("norbertSchmitt"));
+    request.setAttribute("portraitKounev", portraits.get("samuelKounev"));
+    request.setAttribute("descartesLogo",
+        LoadBalancedImageOperations.getWebImage("descartesLogo", ImageSizePreset.LOGO.getSize()));
+    request.setAttribute("storeIcon",
+        LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+    request.setAttribute("title", "TeaStore About Us");
+    request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+    request.getRequestDispatcher("WEB-INF/pages/about.jsp").forward(request, response);
+  }
+}
+package tools.descartes.teastore.registryclient.rest;
+import java.util.ArrayList;
+import java.util.List;
+import jakarta.ws.rs.core.GenericType;
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.Response.Status;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.util.NotFoundException;
+import tools.descartes.teastore.entities.Order;
+import tools.descartes.teastore.entities.Product;
+/**
+ * Utilities.
+ * @author Simon
+ *
+ */
+public final class RestUtil {
+	
+  /**
+   * hides constructor.
+   */
+  private RestUtil() {
+    
+  }
+  
+  /**
+   * Throw common exceptions.
+   * @param responseWithStatus response
+   * @throws NotFoundException error 404
+   * @throws LoadBalancerTimeoutException timeout error
+   */
+	public static void throwCommonExceptions(Response responseWithStatus)
+			throws NotFoundException, LoadBalancerTimeoutException {
+		if (responseWithStatus.getStatus() == Status.NOT_FOUND.getStatusCode()) {
+			throw new NotFoundException();
+		} else if (responseWithStatus.getStatus() == Status.REQUEST_TIMEOUT.getStatusCode()) {
+			throw new LoadBalancerTimeoutException("Timout waiting for Store.", Service.AUTH);
+		}
+	}
+	
+	/**
+	 * Read entity or return null-.
+	 * @param r external call response
+	 * @param entityClass class of object to load
+   * @param <T> class of object to be loaded
+	 * @return entity or null
+	 */
+	public static <T> T readEntityOrNull(Response r, Class<T> entityClass) {
+		if (r != null) {
+			if (r.getStatus() == 200) {
+				return r.readEntity(entityClass);
+			} else {
+				r.bufferEntity();
+			}
+		}
+		return null;
+	}
+	
+	/**
+	 * reads entity, throws potential errors and closes the response.
+	 * @param responseWithStatus response 
+	 * @param entityClass class of object to be loaded
+	 * @param <T> class of object to be loaded
+	 * @return entity
+	 */
+	public static <T> T readThrowAndOrClose(Response responseWithStatus, Class<T> entityClass) {
+		T entity = null;
+		entity = readEntityOrNull(responseWithStatus, entityClass);
+		throwCommonExceptions(responseWithStatus);
+		return entity;
+	}
+  /**
+   * Special case for orders.
+   * @param r response 
+   * @return List of orders
+   */
+	public static List<Order> readListThrowAndOrCloseOrder(Response r) {
+		List<Order> entity = null;
+		if (r != null) {
+			if (r.getStatus() == 200) {
+				entity = r.readEntity(new GenericType<List<Order>>() { });
+			} else {
+				r.bufferEntity();
+			}
+		}
+		if (r == null || entity == null) {
+			entity = new ArrayList<Order>();
+		}
+		throwCommonExceptions(r);
+		return entity;
+	}
+	
+	/**
+	 * Special case for products.
+	 * @param r response
+	 * @return List of products
+	 */
+	public static List<Product> readListThrowAndOrCloseProduct(Response r) {
+		List<Product> entity = null;
+		if (r != null) {
+			if (r.getStatus() == 200) {
+				entity = r.readEntity(new GenericType<List<Product>>() { });
+			} else {
+				r.bufferEntity();
+			}
+		}
+		if (r == null || entity == null) {
+			entity = new ArrayList<Product>();
+		}
+		throwCommonExceptions(r);
+		return entity;
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.loadbalancers.ServiceLoadBalancer;
+import tools.descartes.teastore.registryclient.rest.HttpWrapper;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.registryclient.rest.ResponseWrapper;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+import tools.descartes.teastore.entities.Product;
+/**
+ * Servlet implementation for the web view of "Category".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/category")
+public class CategoryServlet extends AbstractUIServlet {
+  private static final long serialVersionUID = 1L;
+  private static final int INITIAL_PRODUCT_DISPLAY_COUNT = 20;
+  private static final List<Integer> PRODUCT_DISPLAY_COUNT_OPTIONS = Arrays.asList(5, 10, 20, 30,
+      50);
+  /**
+   * @see HttpServlet#HttpServlet()
+   */
+  public CategoryServlet() {
+    super();
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    if (request.getParameter("category") != null) {
+      checkforCookie(request, response);
+      long categoryID = Long.parseLong(request.getParameter("category"));
+      Category category = LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE, "categories",
+          Category.class, categoryID);
+      int products = Integer.parseInt(ServiceLoadBalancer.loadBalanceRESTOperation(
+          Service.PERSISTENCE, "products", Product.class,
+          client -> ResponseWrapper.wrap(HttpWrapper
+              .wrap(client.getEndpointTarget().path("count").path(String.valueOf(categoryID)))
+              .get()).readEntity(String.class)));
+      int numberProducts = INITIAL_PRODUCT_DISPLAY_COUNT;
+      if (request.getAttribute("numberProducts") != null) {
+        numberProducts = Integer.parseInt(request.getAttribute("numberProducts").toString());
+      }
+      int page = 1;
+      if (request.getParameter("page") != null) {
+        int pagenumber = Integer.parseInt(request.getParameter("page"));
+        int maxpages = (int) Math.ceil(((double) products) / numberProducts);
+        if (pagenumber <= maxpages) {
+          page = pagenumber;
+        }
+      }
+      ArrayList<String> navigation = createNavigation(products, page, numberProducts);
+      List<Product> productlist = LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE,
+          "products", Product.class, "category", categoryID, (page - 1) * numberProducts,
+          numberProducts);
+      request.setAttribute("productImages",
+          LoadBalancedImageOperations.getProductPreviewImages(productlist));
+      request.setAttribute("storeIcon",
+          LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+      request.setAttribute("CategoryList", LoadBalancedCRUDOperations
+          .getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+      request.setAttribute("title", "TeaStore Categorie " + category.getName());
+      request.setAttribute("Productslist", productlist);
+      request.setAttribute("category", category.getName());
+      request.setAttribute("login",
+          LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+      request.setAttribute("categoryID", categoryID);
+      request.setAttribute("currentnumber", numberProducts);
+      request.setAttribute("pagination", navigation);
+      request.setAttribute("pagenumber", page);
+      request.setAttribute("productdisplaycountoptions", PRODUCT_DISPLAY_COUNT_OPTIONS);
+      request.getRequestDispatcher("WEB-INF/pages/category.jsp").forward(request, response);
+    } else {
+      redirect("/", response);
+    }
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handlePOSTRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    if (request.getParameter("number") != null && request.getParameter("page") != null
+        && request.getParameter("category") != null) {
+      redirect(
+          "/category?category=" + request.getParameter("category") + "&page="
+              + request.getParameter("page"),
+          response, PRODUCTCOOKIE, request.getParameter("number"));
+    } else {
+      handleGETRequest(request, response);
+    }
+  }
+  /**
+   * Creates the entries for the pagination.
+   * @param products
+   * @param page
+   * @param numberProducts
+   * @return Arraylist<String> pagination
+   */
+  private ArrayList<String> createNavigation(int products, int page, int numberProducts) {
+    ArrayList<String> navigation = new ArrayList<String>();
+    int numberpagination = 5;
+    int maxpages = (int) Math.ceil(((double) products) / numberProducts);
+    if (maxpages < page) {
+      return navigation;
+    }
+    if (page == 1) {
+      if (maxpages == 1) {
+        navigation.add("1");
+        return navigation;
+      }
+      int min = Math.min(maxpages, numberpagination + 1);
+      for (int i = 1; i <= min; i++) {
+        navigation.add(String.valueOf(i));
+      }
+    } else {
+      navigation.add("previous");
+      if (page == maxpages) {
+        int max = Math.max(maxpages - numberpagination, 1);
+        for (int i = max; i <= maxpages; i++) {
+          navigation.add(String.valueOf(i));
+        }
+        return navigation;
+      } else {
+        int lowerbound = (int) Math.ceil(((double) numberpagination - 1.0) / 2.0);
+        int upperbound = (int) Math.floor(((double) numberpagination - 1.0) / 2.0);
+        int up = Math.min(page + upperbound, maxpages);
+        int down = Math.max(page - lowerbound, 1);
+        for (int i = down; i <= up; i++) {
+          navigation.add(String.valueOf(i));
+        }
+      }
+    }
+    navigation.add("next");
+    return navigation;
+  }
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedRecommenderOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+import tools.descartes.teastore.entities.OrderItem;
+import tools.descartes.teastore.entities.Product;
+import tools.descartes.teastore.entities.message.SessionBlob;
+/**
+ * Servlet implementation for the web view of "Cart".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/cart")
+public class CartServlet extends AbstractUIServlet {
+  private static final long serialVersionUID = 1L;
+  /**
+   * @see HttpServlet#HttpServlet()
+   */
+  public CartServlet() {
+    super();
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    checkforCookie(request, response);
+    SessionBlob blob = getSessionBlob(request);
+    List<OrderItem> orderItems = blob.getOrderItems();
+    ArrayList<Long> ids = new ArrayList<Long>();
+    for (OrderItem orderItem : orderItems) {
+      ids.add(orderItem.getProductId());
+    }
+    HashMap<Long, Product> products = new HashMap<Long, Product>();
+    for (Long id : ids) {
+      Product product = LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE, "products",
+          Product.class, id);
+      products.put(product.getId(), product);
+    }
+    request.setAttribute("storeIcon",
+        LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+    request.setAttribute("title", "TeaStore Cart");
+    request.setAttribute("CategoryList", LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE,
+        "categories", Category.class, -1, -1));
+    request.setAttribute("OrderItems", orderItems);
+    request.setAttribute("Products", products);
+    request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+    List<Long> productIds = LoadBalancedRecommenderOperations
+        .getRecommendations(blob.getOrderItems(), blob.getUID());
+    List<Product> ads = new LinkedList<Product>();
+    for (Long productId : productIds) {
+      ads.add(LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE, "products", Product.class,
+          productId));
+    }
+    if (ads.size() > 3) {
+      ads.subList(3, ads.size()).clear();
+    }
+    request.setAttribute("Advertisment", ads);
+    request.setAttribute("productImages", LoadBalancedImageOperations.getProductPreviewImages(ads));
+    request.getRequestDispatcher("WEB-INF/pages/cart.jsp").forward(request, response);
+  }
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.webui.servlet.elhelper.ELHelperUtils;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+import tools.descartes.teastore.entities.Order;
+import tools.descartes.teastore.entities.User;
+/**
+ * Servlet implementation for the web view of "Profile".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/profile")
+public class ProfileServlet extends AbstractUIServlet {
+  private static final long serialVersionUID = 1L;
+  /**
+   * @see HttpServlet#HttpServlet()
+   */
+  public ProfileServlet() {
+    super();
+  }
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+      throws ServletException, IOException, LoadBalancerTimeoutException {
+    checkforCookie(request, response);
+    if (!LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request))) {
+      redirect("/", response);
+    } else {
+      request.setAttribute("storeIcon",
+          LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+      request.setAttribute("CategoryList", LoadBalancedCRUDOperations
+          .getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+      request.setAttribute("title", "TeaStore Home");
+      request.setAttribute("User", LoadBalancedCRUDOperations.getEntity(Service.PERSISTENCE,
+          "users", User.class, getSessionBlob(request).getUID()));
+      request.setAttribute("Orders", LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE,
+          "orders", Order.class, "user", getSessionBlob(request).getUID(), -1, -1));
+      request.setAttribute("login",
+          LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+      request.setAttribute("helper", ELHelperUtils.UTILS);
+      request.getRequestDispatcher("WEB-INF/pages/profile.jsp").forward(request, response);
+    }
+  }
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.OrderItem;
+import tools.descartes.teastore.entities.message.SessionBlob;
+/**
+ * Servlet for handling all cart actions.
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/cartAction")
+public class CartActionServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("MM/yyyy");
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public CartActionServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		for (Object paramo : request.getParameterMap().keySet()) {
+			String param = (String) paramo;
+			if (param.contains("addToCart")) {
+				long productID = Long.parseLong(request.getParameter("productid"));
+				SessionBlob blob = LoadBalancedStoreOperations.addProductToCart(getSessionBlob(request), productID);
+				saveSessionBlob(blob, response);
+				redirect("/cart", response, MESSAGECOOKIE, String.format(ADDPRODUCT, productID));
+				break;
+			} else if (param.contains("removeProduct")) {
+				long productID = Long.parseLong(param.substring("removeProduct_".length()));
+				SessionBlob blob = LoadBalancedStoreOperations.removeProductFromCart(getSessionBlob(request),
+						productID);
+				saveSessionBlob(blob, response);
+				redirect("/cart", response, MESSAGECOOKIE, String.format(REMOVEPRODUCT, productID));
+				break;
+			} else if (param.contains("updateCartQuantities")) {
+				List<OrderItem> orderItems = getSessionBlob(request).getOrderItems();
+				updateOrder(request, orderItems, response);
+				redirect("/cart", response, MESSAGECOOKIE, CARTUPDATED);
+				break;
+			} else if (param.contains("proceedtoCheckout")) {
+				if (LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request))) {
+					List<OrderItem> orderItems = getSessionBlob(request).getOrderItems();
+					updateOrder(request, orderItems, response);
+					redirect("/order", response);
+				} else {
+					redirect("/login", response);
+				}
+				break;
+			} else if (param.contains("confirm")) {
+				confirmOrder(request, response);
+				break;
+			}
+		}
+	}
+	/**
+	 * Handles the confirm order action. Saves the order into the sessionBlob
+	 * 
+	 * @param request
+	 * @param response
+	 * @throws IOException
+	 */
+	private void confirmOrder(HttpServletRequest request, HttpServletResponse response) throws IOException {
+		String[] infos = extractOrderInformation(request);
+		if (infos.length == 0) {
+			redirect("/order", response);
+		} else {
+			SessionBlob blob = getSessionBlob(request);
+			long price = 0;
+			for (OrderItem item : blob.getOrderItems()) {
+				price += item.getQuantity() * item.getUnitPriceInCents();
+			}
+			blob = LoadBalancedStoreOperations.placeOrder(getSessionBlob(request), infos[0] + " " + infos[1], infos[2],
+					infos[3], infos[4],
+					YearMonth.parse(infos[6], DTF).atDay(1).format(DateTimeFormatter.ISO_LOCAL_DATE), price, infos[5]);
+			saveSessionBlob(blob, response);
+			redirect("/", response, MESSAGECOOKIE, ORDERCONFIRMED);
+		}
+	}
+	/**
+	 * Extracts the user information from the input fields.
+	 * 
+	 * @param request
+	 * @return String[] with user infos.
+	 * 
+	 */
+	private String[] extractOrderInformation(HttpServletRequest request) {
+		String[] parameters = new String[] { "firstname", "lastname", "address1", "address2", "cardtype", "cardnumber",
+				"expirydate" };
+		String[] infos = new String[parameters.length];
+		for (int i = 0; i < parameters.length; i++) {
+			if (request.getParameter(parameters[i]) == null) {
+				return new String[0];
+			} else {
+				infos[i] = request.getParameter(parameters[i]);
+			}
+		}
+		return infos;
+	}
+	/**
+	 * Updates the items in the cart.
+	 * 
+	 * @param request
+	 * @param orderItems
+	 * @param response
+	 */
+	private void updateOrder(HttpServletRequest request, List<OrderItem> orderItems, HttpServletResponse response) {
+		SessionBlob blob = getSessionBlob(request);
+		for (OrderItem orderItem : orderItems) {
+			if (request.getParameter("orderitem_" + orderItem.getProductId()) != null) {
+				blob = LoadBalancedStoreOperations.updateQuantity(blob, orderItem.getProductId(),
+						Integer.parseInt(request.getParameter("orderitem_" + orderItem.getProductId())));
+			}
+		}
+		saveSessionBlob(blob, response);
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+/**
+ * Servlet implementation for the web view of "Error page".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/error")
+public class ErrorServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public ErrorServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		Integer statusCode = (Integer) request.getAttribute("javax.servlet.error.status_code");
+		if (statusCode == null) {
+			redirect("/", response);
+		} else {
+			request.setAttribute("CategoryList",
+					LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+			request.setAttribute("storeIcon",
+					LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+			request.setAttribute("errorImage",
+					LoadBalancedImageOperations.getWebImage("error", ImageSizePreset.ERROR.getSize()));
+			request.setAttribute("title", "TeaStore Error ");
+			request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+			request.getRequestDispatcher("WEB-INF/pages/error.jsp").forward(request, response);
+		}
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+/**
+ * Servlet implementation for the web view of "Login".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/login")
+public class LoginServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public LoginServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		checkforCookie(request, response);
+		request.setAttribute("CategoryList",
+				LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+		request.setAttribute("storeIcon",
+				LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+		request.setAttribute("title", "TeaStore Login");
+		request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+		request.setAttribute("referer", request.getHeader("Referer"));
+		request.getRequestDispatcher("WEB-INF/pages/login.jsp").forward(request, response);
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.message.SessionBlob;
+/**
+ * Servlet for handling the login actions.
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/loginAction")
+public class LoginActionServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public LoginActionServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		redirect("/", response);
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handlePOSTRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		boolean login = false;
+		if (request.getParameter("username") != null && request.getParameter("password") != null) {
+			SessionBlob blob = LoadBalancedStoreOperations.login(getSessionBlob(request),
+					request.getParameter("username"), request.getParameter("password"));
+			login = (blob != null && blob.getSID() != null);
+			if (login) {
+				saveSessionBlob(blob, response);
+				if (request.getParameter("referer") != null
+						&& request.getParameter("referer").contains("tools.descartes.teastore.webui/cart")) {
+					redirect("/cart", response, MESSAGECOOKIE, SUCESSLOGIN);
+				} else {
+					redirect("/", response, MESSAGECOOKIE, SUCESSLOGIN);
+				}
+			} else {
+				redirect("/login", response, ERRORMESSAGECOOKIE, WRONGCREDENTIALS);
+			}
+		} else if (request.getParameter("logout") != null) {
+			SessionBlob blob = LoadBalancedStoreOperations.logout(getSessionBlob(request));
+			saveSessionBlob(blob, response);
+			destroySessionBlob(blob, response);
+			redirect("/", response, MESSAGECOOKIE, SUCESSLOGOUT);
+		} else {
+			handleGETRequest(request, response);
+		}
+	}
+}
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tools.descartes.teastore.webui.servlet;
+import java.io.IOException;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.WebServlet;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.descartes.teastore.registryclient.Service;
+import tools.descartes.teastore.registryclient.loadbalancers.LoadBalancerTimeoutException;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedCRUDOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedImageOperations;
+import tools.descartes.teastore.registryclient.rest.LoadBalancedStoreOperations;
+import tools.descartes.teastore.entities.Category;
+import tools.descartes.teastore.entities.ImageSizePreset;
+/**
+ * Servlet implementation for the web view of "Index".
+ * 
+ * @author Andre Bauer
+ */
+@WebServlet("/index")
+public class IndexServlet extends AbstractUIServlet {
+	private static final long serialVersionUID = 1L;
+	/**
+	 * @see HttpServlet#HttpServlet()
+	 */
+	public IndexServlet() {
+		super();
+	}
+	/**
+	 * {@inheritDoc}
+	 */
+	@Override
+	protected void handleGETRequest(HttpServletRequest request, HttpServletResponse response)
+			throws ServletException, IOException, LoadBalancerTimeoutException {
+		checkforCookie(request, response);
+		request.setAttribute("CategoryList",
+				LoadBalancedCRUDOperations.getEntities(Service.PERSISTENCE, "categories", Category.class, -1, -1));
+		request.setAttribute("title", "TeaStore Home");
+		request.setAttribute("login", LoadBalancedStoreOperations.isLoggedIn(getSessionBlob(request)));
+		request.setAttribute("storeIcon",
+				LoadBalancedImageOperations.getWebImage("icon", ImageSizePreset.ICON.getSize()));
+		request.getRequestDispatcher("WEB-INF/pages/index.jsp").forward(request, response);
+	}
+}
+

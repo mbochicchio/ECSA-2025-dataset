@@ -1,0 +1,2006 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins.sfmenu;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.resource.HoverIntentJavaScriptResourceReference;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.resource.SuperfishJavaScriptResourceReference;
+import org.wicketstuff.jquery.ui.plugins.sfmenu.settings.SuperfishLibrarySettings;
+/***
+ * Provides the Superfish menu plugin behavior
+ *
+ * @author Ludger Kluitmann - JavaLuigi
+ * @since 6.12.0
+ */
+public class SfMenuBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "superfish";
+	/***
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 */
+	public SfMenuBehavior(String selector)
+	{
+		this(selector, new Options(), false);
+	}
+	/***
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param options the {@link Options}
+	 * @param isVertical indicates whether the menu is a vertical menu
+	 */
+	public SfMenuBehavior(String selector, Options options, Boolean isVertical)
+	{
+		super(selector, METHOD, options);
+		SuperfishLibrarySettings settings = SuperfishLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (isVertical && settings.getVerticalStyleSheetReference() != null)
+		{
+			this.add(settings.getVerticalStyleSheetReference());
+		}
+		this.add(HoverIntentJavaScriptResourceReference.get());
+		this.add(SuperfishJavaScriptResourceReference.get());
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.core;
+import java.util.List;
+import java.util.Map.Entry;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Args;
+import org.apache.wicket.util.lang.Generics;
+import org.wicketstuff.jquery.core.utils.JQueryUtils;
+/**
+ * Provides a default implementation of {@link JQueryAbstractBehavior}.
+ *
+ * @author Sebastien Briquet - sebfz1
+ * @since 1.0
+ */
+public class JQueryBehavior extends JQueryAbstractBehavior
+{
+	private static final long serialVersionUID = 1L;
+	protected String selector = null;
+	protected final String method;
+	protected final Options options;
+	private List<String> events = null;
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 */
+	public JQueryBehavior(String selector)
+	{
+		this(selector, "");
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the jquery method
+	 */
+	public JQueryBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the jquery method
+	 * @param options the {@link Options}
+	 */
+	public JQueryBehavior(String selector, String method, Options options)
+	{
+		this.method = Args.notNull(method, "method");
+		this.options = Args.notNull(options, "options");
+		this.selector = selector;
+	}
+	// Methods //
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		super.renderHead(component, response);
+		// renders javascript events
+		if (this.events != null)
+		{
+			StringBuilder statements = new StringBuilder();
+			for (String event : this.events)
+			{
+				statements.append(event);
+			}
+			this.renderOnDomReadyScript(statements.toString(), response);
+		}
+	}
+	/**
+	 * Removes the element matching the current selector from the DOM.<br>
+	 * The {@code #detach} method is the same as {@code #remove}, except that {@code #detach} keeps all jQuery data associated with the removed elements.<br>
+	 * This method is useful when removed elements are to be reinserted into the DOM at a later time.
+	 * 
+	 * @param handler the {@link IPartialPageRequestHandler}
+	 * @see #remove(IPartialPageRequestHandler)
+	 */
+	public void detach(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(JQueryUtils.detach(this.selector));
+	}
+	/**
+	 * Removes the element matching the current selector from the DOM.<br>
+	 * Use {@code #remove} when you want to remove the element itself, as well as everything inside it.<br>
+	 * In addition to the elements themselves, all bound events and jQuery data associated with the elements are removed.<br>
+	 * To remove the elements without removing data and events, use {@code #detach} instead.
+	 * 
+	 * @param handler the {@link IPartialPageRequestHandler}
+	 * @see #detach(IPartialPageRequestHandler)
+	 */
+	public void remove(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(JQueryUtils.remove(this.selector));
+	}
+	// Properties //
+	/**
+	 * Gets the selector
+	 *
+	 * @return the selector
+	 */
+	public String getSelector()
+	{
+		return this.selector;
+	}
+	/**
+	 * Sets the selector
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 */
+	protected void setSelector(String selector)
+	{
+		this.selector = selector;
+	}
+	/**
+	 * Gets the jQuery method
+	 *
+	 * @return the method
+	 */
+	public String getMethod()
+	{
+		return this.method;
+	}
+	/**
+	 * Gets a behavior option, referenced by its key
+	 * 
+	 * @param <T> the object type
+	 * @param key the option key
+	 * @return {@code null} if the key does not exists
+	 */
+	public <T> T getOption(String key)
+	{
+		return this.options.get(key);
+	}
+	/**
+	 * Sets a behavior option.
+	 *
+	 * @param key the option key
+	 * @param value the option value
+	 * @return the {@link JQueryBehavior} (this)
+	 */
+	public JQueryBehavior setOption(String key, Object value)
+	{
+		this.options.set(key, value);
+		return this;
+	}
+	/**
+	 * Sets a behavior option, with multiple values.
+	 *
+	 * @param key the option key
+	 * @param values the option values
+	 * @return the {@link JQueryBehavior} (this)
+	 */
+	public JQueryBehavior setOption(String key, Object... values)
+	{
+		this.options.set(key, values);
+		return this;
+	}
+	/**
+	 * Sets a behavior option, with multiple values.
+	 *
+	 * @param key the option key
+	 * @param values the option values
+	 * @return the {@link JQueryBehavior} (this)
+	 */
+	public JQueryBehavior setOption(String key, List<?> values)
+	{
+		this.options.set(key, values);
+		return this;
+	}
+	/**
+	 * Gets the {@link Options}
+	 *
+	 * @return the {@link Options}
+	 */
+	public Options getOptions()
+	{
+		return this.options;
+	}
+	/**
+	 * Adds or replace behavior options
+	 *
+	 * @param options the {@link Options}
+	 */
+	public void setOptions(Options options)
+	{
+		for (Entry<String, Object> option : options.entries())
+		{
+			this.setOption(option.getKey(), option.getValue());
+		}
+	}
+	// Statements //
+	/**
+	 * Registers a jQuery event callback
+	 *
+	 * @param event the jQuery event (ie: "click")
+	 * @param callback the jQuery callback
+	 */
+	protected void on(String event, String callback)
+	{
+		this.on(this.selector, event, callback);
+	}
+	/**
+	 * Registers a jQuery event callback
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param event the jQuery event (ie: "click")
+	 * @param callback the jQuery callback
+	 */
+	protected void on(String selector, String event, String callback)
+	{
+		this.register(String.format("jQuery('%s').on('%s', %s);", selector, event, callback));
+	}
+	/**
+	 * Unregisters a jQuery event callback
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param event the jQuery event (ie: "click")
+	 */
+	protected void off(String selector, String event)
+	{
+		this.register(String.format("jQuery('%s').off('%s');", selector, event));
+	}
+	/**
+	 * Registers a jQuery event statement
+	 *
+	 * @param statement the jQuery statement (ie: "jQuery('#myId').on('click', function() {});")
+	 */
+	protected void register(String statement)
+	{
+		if (this.events == null)
+		{
+			this.events = Generics.newArrayList();
+		}
+		this.events.add(statement);
+	}
+	@Override
+	protected String $()
+	{
+		return JQueryBehavior.$(this.selector, this.method, this.options.toString());
+	}
+	/**
+	 * Gets the jQuery statement.<br>
+	 * <b>Warning: </b> This method is *not* called by the behavior directly (only {@link #$()} is).
+	 *
+	 * @param options the options to be supplied to the current method
+	 * @return the jQuery statement
+	 */
+	public String $(String options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, options);
+	}
+	/**
+	 * Gets the jQuery statement.<br>
+	 * <b>Warning: </b> This method is *not* called by the behavior directly (only {@link #$()} is).
+	 *
+	 * @param options the {@link Options} to be supplied to the current method
+	 * @return the jQuery statement
+	 */
+	public String $(Options options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, options.toString());
+	}
+	/**
+	 * Gets the jQuery statement.<br>
+	 * <b>Warning: </b> This method is *not* called by the behavior directly (only {@link #$()} is).
+	 *
+	 * @param options the list of options to be supplied to the current method
+	 * @return the jQuery statement
+	 */
+	public String $(Object... options)
+	{
+		return JQueryBehavior.$(this.selector, this.method, Options.fromArray(options));
+	}
+	/**
+	 * Gets the jQuery statement.
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the jQuery method to invoke
+	 * @param options the options to be applied
+	 * @return the jQuery statement
+	 */
+	private static String $(String selector, String method, String options)
+	{
+		return String.format("jQuery('%s').%s(%s);", selector, method, options);
+	}
+	// Events //
+	/**
+	 * {@inheritDoc} <br>
+	 * Also, {@link #onConfigure(Component)} will call {@link IJQueryWidget#onConfigure(JQueryBehavior)} (if the component IS-A {@link IJQueryWidget})<br>
+	 * If a property is set in {@link #onConfigure(Component)} and is needed in {@link IJQueryWidget#onConfigure(JQueryBehavior)}, {@code super.onConfigure(component)} should be the last statement.
+	 */
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (component instanceof IJQueryWidget)
+		{
+			((IJQueryWidget) component).onConfigure(this);
+		}
+	}
+	/**
+	 * {@inheritDoc} <br>
+	 * Also, {@link #beforeRender(Component)} will call {@link IJQueryWidget#onBeforeRender(JQueryBehavior)} (if the component IS-A {@link IJQueryWidget})<br>
+	 * If a property is set in {@link #beforeRender(Component)} and is needed in {@link IJQueryWidget#onBeforeRender(JQueryBehavior)}, {@code super.beforeRender(component)} should be the last statement.
+	 */
+	@Override
+	public void beforeRender(Component component)
+	{
+		super.beforeRender(component);
+		if (component instanceof IJQueryWidget)
+		{
+			((IJQueryWidget) component).onBeforeRender(this);
+		}
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.kendo.ui;
+import java.util.Collection;
+import java.util.List;
+import org.apache.wicket.Application;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Generics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.IJQueryWidget.JQueryWidget;
+import org.wicketstuff.kendo.ui.KendoDestroyListener.IDestroyable;
+import org.wicketstuff.kendo.ui.settings.KendoUILibrarySettings;
+/**
+ * Provides the base class for Kendo UI behavior implementations
+ *
+ * @author Sebastien Briquet - sebfz1
+ */
+public class KendoUIBehavior extends JQueryBehavior implements IDestroyable
+{
+	private static final long serialVersionUID = 1L;
+	private static final Logger LOG = LoggerFactory.getLogger(KendoUIBehavior.class);
+	/** Data Sources */
+	private List<IKendoDataSource> datasources = null;
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the kendo-ui method
+	 */
+	public KendoUIBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the kendo-ui method
+	 * @param options the {@link Options}
+	 */
+	public KendoUIBehavior(String selector, String method, Options options)
+	{
+		super(selector, method, options);
+		this.initReferences();
+	}
+	// Methods //
+	/**
+	 * Initializes CSS & JavaScript resource references
+	 */
+	private void initReferences()
+	{
+		KendoUILibrarySettings settings = KendoUILibrarySettings.get();
+		// kendo.common.min.css //
+		if (settings.getCommonStyleSheetReference() != null)
+		{
+			this.add(settings.getCommonStyleSheetReference());
+		}
+		// kendo.<theme>.min.css //
+		if (settings.getThemeStyleSheetReference() != null)
+		{
+			this.add(settings.getThemeStyleSheetReference());
+		}
+		// kendo.<theme>.mobile.min.css //
+		if (settings.getMobileStyleSheetReference() != null)
+		{
+			this.add(settings.getMobileStyleSheetReference());
+		}
+		// kendo.ui.core.js //
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+	/**
+	 * Adds a data-source to be rendered at {@link #renderHead(Component, IHeaderResponse)} time.
+	 *
+	 * @param datasource the {@link IKendoDataSource}
+	 * @return {@code true} (as specified by {@link Collection#add})
+	 */
+	public boolean add(IKendoDataSource datasource)
+	{
+		if (this.datasources == null)
+		{
+			this.datasources = Generics.newArrayList();
+		}
+		return this.datasources.add(datasource);
+	}
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		// Data Sources //
+		if (this.datasources != null)
+		{
+			for (IKendoDataSource datasource : this.datasources)
+			{
+				this.renderOnDomReadyScript(datasource.toScript(), response); // #311, #333
+			}
+		}
+		super.renderHead(component, response);
+	}
+	/**
+	 * Gets the Kendo UI widget
+	 *
+	 * @return the jQuery object
+	 */
+	public String widget()
+	{
+		return KendoUIBehavior.widget(this.selector, this.method);
+	}
+	/**
+	 * Gets the Kendo UI widget
+	 *
+	 * @param method the Kendo UI method
+	 * @return the jQuery object
+	 */
+	protected String widget(String method)
+	{
+		return KendoUIBehavior.widget(this.selector, method);
+	}
+	/**
+	 * Gets the Kendo UI widget
+	 *
+	 * @param selector the widget selector
+	 * @param method the Kendo UI method
+	 * @return the jQuery object
+	 */
+	public static String widget(String selector, String method)
+	{
+		return String.format("jQuery('%s').data('%s')", selector, method);
+	}
+	/**
+	 * Gets the Kendo UI widget
+	 *
+	 * @param component the {@link Component}
+	 * @param method the Kendo UI method
+	 * @return the jQuery object
+	 */
+	public static String widget(Component component, String method)
+	{
+		return KendoUIBehavior.widget(JQueryWidget.getSelector(component), method);
+	}
+	@Override
+	public void destroy(IPartialPageRequestHandler handler)
+	{
+		handler.prependJavaScript(String.format("var $w = %s; if($w) { $w.destroy(); }", this.widget()));
+		this.onDestroy(handler);
+	}
+	// Events //
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (!Application.get().getMarkupSettings().getStripWicketTags())
+		{
+			LOG.warn("Application > MarkupSettings > StripWicketTags: setting is currently set to false. It is highly recommended to set it to true to prevent widget misbehaviors.");
+		}
+	}
+	/**
+	 * Called when the widget is about to be destroyed
+	 * 
+	 * @param handler the {@link IPartialPageRequestHandler}
+	 * @see #destroy(IPartialPageRequestHandler)
+	 */
+	protected void onDestroy(IPartialPageRequestHandler handler)
+	{
+		// noop
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins.fixedheadertable;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.fixedheadertable.settings.FixedHeaderTableLibrarySettings;
+/**
+ * Provides the jQuery FixedHeaderTable plugin behavior
+ *
+ * @author Sebastien Briquet - sebfz1
+ */
+public class FixedHeaderTableBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "fixedHeaderTable";
+	public FixedHeaderTableBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	public FixedHeaderTableBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	private void initReferences()
+	{
+		FixedHeaderTableLibrarySettings settings = FixedHeaderTableLibrarySettings.get();
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins.datepicker;
+import org.apache.wicket.Component;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.ajax.attributes.CallbackParameter;
+import org.apache.wicket.request.resource.CssResourceReference;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.apache.wicket.util.lang.Args;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.JQueryEvent;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.ajax.IJQueryAjaxAware;
+import org.wicketstuff.jquery.core.ajax.JQueryAjaxBehavior;
+import org.wicketstuff.jquery.core.utils.RequestCycleUtils;
+/**
+ * Provides the jQuery DatePicker behavior
+ *
+ * @author Sebastien Briquet - sebfz1
+ * @deprecated seems to not work with lastest jquery/jquery-ui, and the js plugin seems not maintained anymore 
+ */
+@Deprecated
+public class RangeDatePickerBehavior extends JQueryBehavior implements IJQueryAjaxAware
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "DatePicker";
+	private final IRangeDatePickerListener listener;
+	private JQueryAjaxBehavior onRangeChangeAjaxBehavior;
+	public RangeDatePickerBehavior(final String selector, IRangeDatePickerListener listener)
+	{
+		this(selector, new Options(), listener);
+	}
+	public RangeDatePickerBehavior(final String selector, final Options options, IRangeDatePickerListener listener)
+	{
+		super(selector, METHOD, options);
+		this.listener = Args.notNull(listener, "listener");
+		this.add(new CssResourceReference(RangeDatePickerBehavior.class, "css/base.css"));
+		this.add(new CssResourceReference(RangeDatePickerBehavior.class, "css/clean.css"));
+		this.add(new JQueryPluginResourceReference(RangeDatePickerBehavior.class, "js/datepicker.js"));
+	}
+	@Override
+	public void bind(Component component)
+	{
+		super.bind(component);
+		this.onRangeChangeAjaxBehavior = this.newOnRangeChangeAjaxBehavior(this);
+		component.add(this.onRangeChangeAjaxBehavior);
+	}
+	// Events //
+	@Override
+	public void onConfigure(Component component)
+	{
+		this.setOption("onRangeChange", this.onRangeChangeAjaxBehavior.getCallbackFunction());
+		super.onConfigure(component);
+	}
+	@Override
+	public void onAjax(AjaxRequestTarget target, JQueryEvent event)
+	{
+		if (event instanceof DateChangeEvent)
+		{
+			DateChangeEvent ev = (DateChangeEvent) event;
+			this.listener.onValueChanged(target, new DateRange(ev.getStart(), ev.getEnd()));
+		}
+	}
+	// Factories //
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'onRangeChange' event
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnRangeChangeAjaxBehavior} by default
+	 */
+	private JQueryAjaxBehavior newOnRangeChangeAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnRangeChangeAjaxBehavior(source);
+	}
+	// Ajax classes //
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'onRangeChange' event
+	 */
+	protected static class OnRangeChangeAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnRangeChangeAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { // lf
+			CallbackParameter.context("dates"), // lf
+					CallbackParameter.context("el"), // lf
+					CallbackParameter.resolved("startTime", "dates[0].getTime()"), // lf
+					CallbackParameter.resolved("startOffset", "dates[0].getTimezoneOffset()"), // offset from UTC in minutes
+					CallbackParameter.resolved("endTime", "dates[1].getTime()"), // lf
+					CallbackParameter.resolved("endOffset", "dates[1].getTimezoneOffset()") // offset from UTC in minutes
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DateChangeEvent();
+		}
+	}
+	// Event objects //
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnRangeChangeAjaxBehavior} callback<br>
+	 * <br>
+	 * <b>Note</b>: The {@code start} and {@code end} dates will be translated to UTC.<br>
+	 * ie: if the behavior receives 10/10/2010 0:00:00 CET, it will be translated to 10/10/2010 0:00:00 UTC
+	 */
+	protected static class DateChangeEvent extends JQueryEvent
+	{
+		private final long start;
+		private final long end;
+		public DateChangeEvent()
+		{
+			long startTime = RequestCycleUtils.getQueryParameterValue("startTime").toLong();
+			int startOffset = RequestCycleUtils.getQueryParameterValue("startOffset").toInt(0) * 60 * 1000; // minutes to milliseconds
+			this.start = startTime - startOffset;
+			long endTime = RequestCycleUtils.getQueryParameterValue("endTime").toLong();
+			int endOffset = RequestCycleUtils.getQueryParameterValue("endOffset").toInt(0) * 60 * 1000; // minutes to milliseconds
+			this.end = endTime - endOffset;
+		}
+		/**
+		 * Gets the event's UTC start date
+		 * 
+		 * @return the start date
+		 */
+		public long getStart()
+		{
+			return this.start;
+		}
+		/**
+		 * Gets the event's UTC end date
+		 * 
+		 * @return the end date
+		 */
+		public long getEnd()
+		{
+			return this.end;
+		}
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins.wysiwyg;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.wysiwyg.settings.WysiwygLibrarySettings;
+/**
+ * Provides the Wysiwyg plugin behavior
+ *
+ * @author Sebastien Briquet - sebfz1
+ *
+ */
+public class WysiwygBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "wysiwyg";
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 */
+	public WysiwygBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param options the {@link Options}
+	 */
+	public WysiwygBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	/**
+	 * Initializes CSS & JavaScript resource references
+	 */
+	private void initReferences()
+	{
+		WysiwygLibrarySettings settings = WysiwygLibrarySettings.get();
+		// Bootstrap combined CSS
+		if (settings.getBootstrapCssReference() != null)
+		{
+			this.add(settings.getBootstrapCssReference());
+		}
+		// Editor CSS
+		if (settings.getEditorStyleSheetReference() != null)
+		{
+			this.add(settings.getEditorStyleSheetReference());
+		}
+		// Editor JS
+		if (settings.getEditorJavaScriptResourceReference() != null)
+		{
+			this.add(settings.getEditorJavaScriptResourceReference());
+		}
+		// Bootstrap Wysiwyg
+		if (settings.getBootstrapWysiwygJavaScriptReference() != null)
+		{
+			this.add(settings.getBootstrapWysiwygJavaScriptReference());
+		}
+		// Bootstrap
+		if (settings.getBootstrapDropDownJavaScriptReference() != null)
+		{
+			this.add(settings.getBootstrapDropDownJavaScriptReference());
+		}
+		// JQuery Hot Keys
+		if (settings.getJQueryHotKeysJavaScriptReference() != null)
+		{
+			this.add(settings.getJQueryHotKeysJavaScriptReference());
+		}
+		// Prettify
+		if (settings.getPrettifyJavaScriptReference() != null)
+		{
+			this.add(settings.getPrettifyJavaScriptReference());
+		}
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins.emoticons;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.ui.plugins.emoticons.settings.EmoticonsLibrarySettings;
+/**
+ * Provides the jQuery emoticons plugin behavior
+ *
+ * @author Sebastien Briquet - sebfz1
+ */
+public class EmoticonsBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "emoticonize";
+	/**
+	 * Constructor
+	 * @param selector the html selector (ie: "#myId")
+	 */
+	public EmoticonsBehavior(String selector)
+	{
+		this(selector, new Options());
+	}
+	/**
+	 * Constructor
+	 * @param selector the html selector (ie: "#myId")
+	 * @param options the {@link Options}
+	 */
+	public EmoticonsBehavior(String selector, Options options)
+	{
+		super(selector, METHOD, options);
+		this.initReferences();
+	}
+	/**
+	 * Initializes CSS & JavaScript resource references
+	 */
+	private void initReferences()
+	{
+		EmoticonsLibrarySettings settings = EmoticonsLibrarySettings.get();
+		// jquery.cssemoticons.css //
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		// jquery.cssemoticons.min.js //
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins;
+import org.apache.wicket.request.resource.CssResourceReference;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+public class SnippetBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	private final String language;
+	public SnippetBehavior(String selector, String language)
+	{
+		this(selector, language, new Options());
+	}
+	public SnippetBehavior(String selector, String language, Options options)
+	{
+		super(selector, "snippet", options);
+		this.language = language;
+		this.add(new JQueryPluginResourceReference(SnippetBehavior.class, "jquery.snippet.min.js"));
+		this.add(new CssResourceReference(SnippetBehavior.class, "jquery.snippet.min.css"));
+	}
+	@Override
+	protected String $()
+	{
+		return String.format("jQuery('%s').%s('%s', %s);", this.selector, this.method, this.language, this.options);
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui;
+import org.apache.wicket.Application;
+import org.apache.wicket.Component;
+import org.apache.wicket.core.request.handler.IPartialPageRequestHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.IJQueryWidget.JQueryWidget;
+import org.wicketstuff.jquery.core.utils.JQueryUtils;
+import org.wicketstuff.jquery.ui.JQueryDestroyListener.IDestroyable;
+import org.wicketstuff.jquery.ui.settings.JQueryUILibrarySettings;
+/**
+ * Provides the base class for every jQuery behavior.
+ *
+ * @author Sebastien Briquet - sebfz1
+ *
+ */
+public class JQueryUIBehavior extends JQueryBehavior implements IDestroyable
+{
+	private static final long serialVersionUID = 1L;
+	private static final Logger LOG = LoggerFactory.getLogger(JQueryUIBehavior.class);
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the kendo-ui method
+	 */
+	public JQueryUIBehavior(String selector, String method)
+	{
+		this(selector, method, new Options());
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param method the kendo-ui method
+	 * @param options the {@link Options}
+	 */
+	public JQueryUIBehavior(String selector, String method, Options options)
+	{
+		super(selector, method, options);
+		this.initReferences();
+	}
+	// Methods //
+	/**
+	 * Initializes CSS & JavaScript resource references
+	 */
+	private void initReferences()
+	{
+		JQueryUILibrarySettings settings = JQueryUILibrarySettings.get();
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+	}
+	/**
+	 * Gets the jQuery UI object
+	 *
+	 * @return the jQuery UI object (if exists, 'undefined' otherwise)
+	 */
+	public String widget()
+	{
+		return JQueryUIBehavior.widget(this.selector, this.method);
+	}
+	/**
+	 * Gets the jQuery UI object
+	 *
+	 * @param method the jQuery UI method
+	 * @return the jQuery UI object (if exists, 'undefined' otherwise)
+	 */
+	protected String widget(String method)
+	{
+		return JQueryUIBehavior.widget(this.selector, method);
+	}
+	/**
+	 * Gets the jQuery UI widget
+	 *
+	 * @param selector the widget selector
+	 * @param method the jQuery UI method
+	 * @return the jQuery object
+	 */
+	public static String widget(String selector, String method)
+	{
+		return String.format("jQuery('%s').%s('instance')", selector, method);
+	}
+	/**
+	 * Gets the jQuery UI widget
+	 *
+	 * @param component the {@link Component}
+	 * @param method the jQuery UI method
+	 * @return the jQuery object
+	 */
+	public static String widget(Component component, String method)
+	{
+		return JQueryUIBehavior.widget(JQueryWidget.getSelector(component), method);
+	}
+	
+	@Override
+	public void destroy(IPartialPageRequestHandler handler)
+	{
+		String statement = String.format("var $w = %s; if($w) { $w.destroy(); }", this.widget());
+		handler.prependJavaScript(JQueryUtils.trycatch(statement));
+		this.onDestroy(handler);
+	}
+	// Events //
+	@Override
+	public void onConfigure(Component component)
+	{
+		super.onConfigure(component);
+		if (!Application.get().getMarkupSettings().getStripWicketTags())
+		{
+			LOG.warn("Application > MarkupSettings > StripWicketTags: setting is currently set to false. It is highly recommended to set it to true to prevent widget misbehaviors.");
+		}
+	}
+	/**
+	 * Called when the widget is about to be destroyed
+	 * 
+	 * @param handler the {@link IPartialPageRequestHandler}
+	 * @see #destroy(IPartialPageRequestHandler)
+	 */
+	protected void onDestroy(IPartialPageRequestHandler handler)
+	{
+		// noop
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.plugins;
+import org.apache.wicket.resource.JQueryPluginResourceReference;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.Options;
+public class FontSizeBehavior extends JQueryBehavior
+{
+	private static final long serialVersionUID = 1L;
+	public FontSizeBehavior(String selector, Options options)
+	{
+		super(selector, "jfontsize", options);
+		this.add(new JQueryPluginResourceReference(FontSizeBehavior.class, "jquery.jfontsize-1.0.min.js"));
+	}
+}
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.wicketstuff.jquery.ui.calendar;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import org.apache.wicket.Component;
+import org.apache.wicket.ajax.AjaxRequestTarget;
+import org.apache.wicket.ajax.attributes.AjaxCallListener;
+import org.apache.wicket.ajax.attributes.AjaxRequestAttributes;
+import org.apache.wicket.ajax.attributes.CallbackParameter;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.lang.Args;
+import org.apache.wicket.util.string.Strings;
+import org.wicketstuff.jquery.core.JQueryBehavior;
+import org.wicketstuff.jquery.core.JQueryEvent;
+import org.wicketstuff.jquery.core.Options;
+import org.wicketstuff.jquery.core.ajax.IJQueryAjaxAware;
+import org.wicketstuff.jquery.core.ajax.JQueryAjaxBehavior;
+import org.wicketstuff.jquery.core.utils.RequestCycleUtils;
+import org.wicketstuff.jquery.ui.calendar.settings.CalendarLibrarySettings;
+/**
+ * Provides the jQuery fullCalendar behavior
+ *
+ * @author Sebastien Briquet - sebfz1
+ *
+ */
+public class CalendarBehavior extends JQueryBehavior implements IJQueryAjaxAware
+{
+	private static final long serialVersionUID = 1L;
+	public static final String METHOD = "fullCalendar";
+	/** event listener */
+	private final ICalendarListener listener;
+	/** date range-select behavior */
+	private JQueryAjaxBehavior onSelectAjaxBehavior = null;
+	/** day click */
+	private JQueryAjaxBehavior onDayClickAjaxBehavior;
+	/** event click */
+	private JQueryAjaxBehavior onEventClickAjaxBehavior;
+	/** event drop */
+	private JQueryAjaxBehavior onEventDropAjaxBehavior = null;
+	/** event resize */
+	private JQueryAjaxBehavior onEventResizeAjaxBehavior = null;
+	/** event-object drop */
+	private JQueryAjaxBehavior onObjectDropAjaxBehavior = null;
+	/** view render */
+	private JQueryAjaxBehavior onViewRenderAjaxBehavior = null;
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param listener the {@link ICalendarListener}
+	 */
+	public CalendarBehavior(final String selector, ICalendarListener listener)
+	{
+		this(selector, new Options(), listener);
+	}
+	/**
+	 * Constructor
+	 *
+	 * @param selector the html selector (ie: "#myId")
+	 * @param options the {@link Options}
+	 * @param listener the {@link ICalendarListener}
+	 */
+	public CalendarBehavior(final String selector, Options options, ICalendarListener listener)
+	{
+		super(selector, METHOD, options);
+		this.listener = Args.notNull(listener, "listener");
+		this.initReferences();
+	}
+	/**
+	 * Initializes CSS & JavaScript resource references
+	 */
+	private void initReferences()
+	{
+		CalendarLibrarySettings settings = CalendarLibrarySettings.get();
+		// fullcalendar.css //
+		if (settings.getStyleSheetReference() != null)
+		{
+			this.add(settings.getStyleSheetReference());
+		}
+		// fullcalendar.min.js //
+		if (settings.getJavaScriptReference() != null)
+		{
+			this.add(settings.getJavaScriptReference());
+		}
+		// gcal.js //
+		if (settings.getGCalJavaScriptReference() != null)
+		{
+			this.add(settings.getGCalJavaScriptReference());
+		}
+		// locale-all.js //
+		if (settings.getLocalesJavaScriptReference() != null)
+		{
+			this.add(settings.getLocalesJavaScriptReference());
+		}
+	}
+	// Methods //
+	@Override
+	public void bind(Component component)
+	{
+		super.bind(component);
+		if (this.listener.isSelectable())
+		{
+			this.onSelectAjaxBehavior = this.newOnSelectAjaxBehavior(this);
+			component.add(this.onSelectAjaxBehavior);
+		}
+		if (this.listener.isDayClickEnabled())
+		{
+			this.onDayClickAjaxBehavior = this.newOnDayClickAjaxBehavior(this);
+			component.add(this.onDayClickAjaxBehavior);
+		}
+		if (this.listener.isEventClickEnabled())
+		{
+			this.onEventClickAjaxBehavior = this.newOnEventClickAjaxBehavior(this);
+			component.add(this.onEventClickAjaxBehavior);
+		}
+		if (this.listener.isEventDropEnabled())
+		{
+			this.onEventDropAjaxBehavior = this.newOnEventDropAjaxBehavior(this, this.listener.getEventDropPrecondition());
+			component.add(this.onEventDropAjaxBehavior);
+		}
+		if (this.listener.isEventResizeEnabled())
+		{
+			this.onEventResizeAjaxBehavior = this.newOnEventResizeAjaxBehavior(this, this.listener.getEventResizePrecondition());
+			component.add(this.onEventResizeAjaxBehavior);
+		}
+		if (this.listener.isObjectDropEnabled())
+		{
+			this.onObjectDropAjaxBehavior = this.newOnObjectDropAjaxBehavior(this);
+			component.add(this.onObjectDropAjaxBehavior);
+		}
+		if (this.listener.isViewRenderEnabled())
+		{
+			this.onViewRenderAjaxBehavior = this.newOnViewRenderAjaxBehavior(this);
+			component.add(this.onViewRenderAjaxBehavior);
+		}
+	}
+	@Override
+	public void renderHead(Component component, IHeaderResponse response)
+	{
+		super.renderHead(component, response);
+		/* adds and configure the busy indicator */
+		StringBuilder builder = new StringBuilder();
+		builder.append("jQuery(\"<img id='calendar-indicator' src='").append(RequestCycleUtils.getAjaxIndicatorUrl()).append("' />\").appendTo('.fc-header-center');\n"); // allows only one calendar.
+		builder.append("jQuery(document).ajaxStart(function() { jQuery('#calendar-indicator').show(); });\n");
+		builder.append("jQuery(document).ajaxStop(function() { jQuery('#calendar-indicator').hide(); });\n");
+		this.renderOnDomReadyScript(builder.toString(), response);
+	}
+	// Properties //
+	/**
+	 * Indicates whether the Calendar will be editable
+	 *
+	 * @return by default, true if {@link ICalendarListener#isDayClickEnabled()} is true or {@link ICalendarListener#isEventClickEnabled()} is true
+	 */
+	protected boolean isEditable()
+	{
+		return (this.onDayClickAjaxBehavior != null) || (this.onEventClickAjaxBehavior != null);
+	}
+	// Events //
+	@Override
+	public void onConfigure(Component component)
+	{
+		this.setOption("editable", this.isEditable());
+		this.setOption("selectable", this.listener.isSelectable());
+		this.setOption("selectHelper", this.listener.isSelectable());
+		this.setOption("disableDragging", !this.listener.isEventDropEnabled());
+		this.setOption("disableResizing", !this.listener.isEventResizeEnabled());
+		this.setOption("droppable", this.listener.isObjectDropEnabled());
+		if (this.onSelectAjaxBehavior != null)
+		{
+			this.setOption("select", this.onSelectAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onDayClickAjaxBehavior != null)
+		{
+			this.setOption("dayClick", this.onDayClickAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventClickAjaxBehavior != null)
+		{
+			this.setOption("eventClick", this.onEventClickAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventDropAjaxBehavior != null)
+		{
+			this.setOption("eventDrop", this.onEventDropAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onEventResizeAjaxBehavior != null)
+		{
+			this.setOption("eventResize", this.onEventResizeAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onObjectDropAjaxBehavior != null)
+		{
+			this.setOption("drop", this.onObjectDropAjaxBehavior.getCallbackFunction());
+		}
+		if (this.onViewRenderAjaxBehavior != null)
+		{
+			this.setOption("viewRender", this.onViewRenderAjaxBehavior.getCallbackFunction());
+		}
+		super.onConfigure(component);
+	}
+	@Override
+	public void onAjax(AjaxRequestTarget target, JQueryEvent event)
+	{
+		if (event instanceof SelectEvent)
+		{
+			SelectEvent selectEvent = (SelectEvent) event;
+			this.listener.onSelect(target, selectEvent.getView(), selectEvent.getStart(), selectEvent.getEnd(), selectEvent.isAllDay());
+		}
+		else if (event instanceof DayClickEvent)
+		{
+			DayClickEvent dayClickEvent = (DayClickEvent) event;
+			this.listener.onDayClick(target, dayClickEvent.getView(), dayClickEvent.getDate(), dayClickEvent.isAllDay());
+		}
+		else if (event instanceof ClickEvent)
+		{
+			ClickEvent clickEvent = (ClickEvent) event;
+			this.listener.onEventClick(target, clickEvent.getView(), clickEvent.getEventId());
+		}
+		else if (event instanceof DropEvent)
+		{
+			DropEvent dropEvent = (DropEvent) event;
+			this.listener.onEventDrop(target, dropEvent.getEventId(), dropEvent.getDelta(), dropEvent.isAllDay());
+		}
+		else if (event instanceof ResizeEvent)
+		{
+			ResizeEvent resizeEvent = (ResizeEvent) event;
+			this.listener.onEventResize(target, resizeEvent.getEventId(), resizeEvent.getDelta());
+		}
+		else if (event instanceof ObjectDropEvent)
+		{
+			ObjectDropEvent dropEvent = (ObjectDropEvent) event;
+			this.listener.onObjectDrop(target, dropEvent.getTitle(), dropEvent.getDate(), dropEvent.isAllDay());
+		}
+		else if (event instanceof ViewRenderEvent)
+		{
+			ViewRenderEvent renderEvent = (ViewRenderEvent) event;
+			this.listener.onViewRender(target, renderEvent.getView(), renderEvent.getStart(), renderEvent.getEnd());
+		}
+	}
+	// Factories //
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'select' event, triggered when the user select a cell range
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnSelectAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnSelectAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnSelectAjaxBehavior(source);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'dayClick' event, triggered when the user clicks on a day cell
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnDayClickAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnDayClickAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnDayClickAjaxBehavior(source);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'eventClick' event, triggered when the user clicks on an event
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnEventClickAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnEventClickAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnEventClickAjaxBehavior(source);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'eventDrop' event, triggered when the user moves (drag &#38; drop) an event
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @param precondition the JavaScript precondition
+	 * @return a new {@code OnEventDropAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnEventDropAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+	{
+		return new OnEventDropAjaxBehavior(source, precondition);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'eventResize' event, triggered when the user resizes an event
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @param precondition the JavaScript precondition
+	 * @return a new {@code OnEventResizeAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnEventResizeAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+	{
+		return new OnEventResizeAjaxBehavior(source, precondition);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'drop' event, triggered when the user drops an event object
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnObjectDropAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnObjectDropAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnObjectDropAjaxBehavior(source);
+	}
+	/**
+	 * Gets a new {@link JQueryAjaxBehavior} that will be wired to the 'viewRender' event, triggered when the user changes the view, or when any of the date navigation methods are called.
+	 *
+	 * @param source the {@link IJQueryAjaxAware}
+	 * @return a new {@code OnViewRenderAjaxBehavior} by default
+	 */
+	protected JQueryAjaxBehavior newOnViewRenderAjaxBehavior(IJQueryAjaxAware source)
+	{
+		return new OnViewRenderAjaxBehavior(source);
+	}
+	// Ajax classes //
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'select' event
+	 */
+	protected static class OnSelectAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnSelectAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://fullcalendar.io/docs/selection/select_callback/
+			return new CallbackParameter[] { CallbackParameter.converted("startDate", "startDate.format()"), // retrieved
+					CallbackParameter.converted("endDate", "endDate.format()"), // retrieved
+					CallbackParameter.resolved("allDay", "!startDate.hasTime()"), // retrieved
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("view"), // lf
+					CallbackParameter.resolved("viewName", "view.name") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new SelectEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'dayClick' event
+	 */
+	protected static class OnDayClickAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnDayClickAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://fullcalendar.io/docs/mouse/dayClick/
+			return new CallbackParameter[] { CallbackParameter.converted("date", "date.format()"), // retrieved
+					CallbackParameter.resolved("allDay", "!date.hasTime()"), // retrieved
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("view"),// lf
+					CallbackParameter.resolved("viewName", "view.name") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DayClickEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'eventClick' event
+	 */
+	protected static class OnEventClickAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnEventClickAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://arshaw.com/fullcalendar/docs/mouse/eventClick/
+			return new CallbackParameter[] { CallbackParameter.context("event"), // lf
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("view"), // lf
+					CallbackParameter.resolved("eventId", "event.id"),// retrieved
+					CallbackParameter.resolved("viewName", "view.name") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ClickEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'eventDrop' event
+	 */
+	protected static class OnEventDropAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		private final CharSequence precondition;
+		public OnEventDropAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+		{
+			super(source);
+			this.precondition = precondition;
+		}
+		@Override
+		protected void updateAjaxAttributes(AjaxRequestAttributes attributes)
+		{
+			super.updateAjaxAttributes(attributes);
+			if (!Strings.isEmpty(this.precondition))
+			{
+				AjaxCallListener ajaxCallListener = new AjaxCallListener();
+				ajaxCallListener.onPrecondition(this.precondition);
+				attributes.getAjaxCallListeners().add(ajaxCallListener);
+			}
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://fullcalendar.io/docs/event_ui/eventDrop/
+			return new CallbackParameter[] { CallbackParameter.context("event"), // lf
+					CallbackParameter.context("delta"), // lf
+					CallbackParameter.resolved("millisDelta", "delta.asMilliseconds()"), // retrieved
+					CallbackParameter.resolved("allDay", "!event.start.hasTime()"), // retrieved
+					CallbackParameter.context("revertFunc"), // lf
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("ui"), // lf
+					CallbackParameter.context("view"), // lf
+					CallbackParameter.resolved("eventId", "event.id") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new DropEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'eventResize' event
+	 */
+	protected static class OnEventResizeAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		private final CharSequence precondition;
+		public OnEventResizeAjaxBehavior(IJQueryAjaxAware source, CharSequence precondition)
+		{
+			super(source);
+			this.precondition = precondition;
+		}
+		@Override
+		protected void updateAjaxAttributes(AjaxRequestAttributes attributes)
+		{
+			super.updateAjaxAttributes(attributes);
+			if (!Strings.isEmpty(this.precondition))
+			{
+				AjaxCallListener ajaxCallListener = new AjaxCallListener();
+				ajaxCallListener.onPrecondition(this.precondition);
+				attributes.getAjaxCallListeners().add(ajaxCallListener);
+			}
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			return new CallbackParameter[] { CallbackParameter.context("event"), // lf
+					CallbackParameter.context("delta"), // lf
+					CallbackParameter.context("revertFunc"), // lf
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("ui"), // lf
+					CallbackParameter.context("view"), // lf
+					CallbackParameter.resolved("millisDelta", "delta.asMilliseconds()"), // retrieved
+					CallbackParameter.resolved("allDay", "!event.start.hasTime()"), // retrieved
+					CallbackParameter.resolved("eventId", "event.id") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ResizeEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'drop' event
+	 */
+	protected static class OnObjectDropAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnObjectDropAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://fullcalendar.io/docs/dropping/drop/
+			return new CallbackParameter[] { CallbackParameter.converted("date", "date.format()"), // retrieved
+					CallbackParameter.resolved("allDay", "!date.hasTime()"), // retrieved
+					CallbackParameter.context("jsEvent"), // lf
+					CallbackParameter.context("ui"), // lf
+					CallbackParameter.resolved("title", "jQuery(this).data('title')") // retrieved
+			};
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ObjectDropEvent();
+		}
+	}
+	/**
+	 * Provides a {@link JQueryAjaxBehavior} that aims to be wired to the 'viewRender' event
+	 */
+	protected static class OnViewRenderAjaxBehavior extends JQueryAjaxBehavior
+	{
+		private static final long serialVersionUID = 1L;
+		public OnViewRenderAjaxBehavior(IJQueryAjaxAware source)
+		{
+			super(source);
+		}
+		@Override
+		protected CallbackParameter[] getCallbackParameters()
+		{
+			// http://arshaw.com/fullcalendar/docs/display/viewRender/
+			return new CallbackParameter[] { CallbackParameter.context("view"),// lf
+					CallbackParameter.context("element"), // lf
+					CallbackParameter.resolved("viewName", "view.name"), // retrieved
+					CallbackParameter.resolved("startDate", "view.start.format()"), // retrieved
+					CallbackParameter.resolved("endDate", "view.end.format()") }; // retrieved
+		}
+		@Override
+		protected JQueryEvent newEvent()
+		{
+			return new ViewRenderEvent();
+		}
+	}
+	// Event objects //
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnSelectAjaxBehavior} callback
+	 */
+	protected static class SelectEvent extends JQueryEvent
+	{
+		private final LocalDateTime start;
+		private final LocalDateTime end;
+		private final boolean isAllDay;
+		private final String viewName;
+		public SelectEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String start = RequestCycleUtils.getQueryParameterValue("startDate").toString();
+			this.start = this.isAllDay ? LocalDate.parse(start).atStartOfDay() : LocalDateTime.parse(start);
+			String end = RequestCycleUtils.getQueryParameterValue("endDate").toString();
+			this.end = this.isAllDay ? LocalDate.parse(end).atStartOfDay() : LocalDateTime.parse(end);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		/**
+		 * Gets the event start date
+		 *
+		 * @return the start date
+		 */
+		public LocalDateTime getStart()
+		{
+			return this.start;
+		}
+		/**
+		 * Gets the end date
+		 *
+		 * @return the end date
+		 */
+		public LocalDateTime getEnd()
+		{
+			return this.end;
+		}
+		/**
+		 * Indicates whether this event is an 'all-day' event
+		 *
+		 * @return true or false
+		 */
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+		/**
+		 * Gets the current {@link CalendarView}
+		 *
+		 * @return the view name
+		 */
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnDayClickAjaxBehavior} callback
+	 */
+	protected static class DayClickEvent extends JQueryEvent
+	{
+		private final LocalDateTime day;
+		private final boolean isAllDay;
+		private final String viewName;
+		/**
+		 * Constructor
+		 */
+		public DayClickEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String date = RequestCycleUtils.getQueryParameterValue("date").toString();
+			this.day = this.isAllDay ? LocalDate.parse(date).atStartOfDay() : LocalDateTime.parse(date);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		/**
+		 * Gets the event date
+		 *
+		 * @return the date
+		 */
+		public LocalDateTime getDate()
+		{
+			return this.day;
+		}
+		/**
+		 * Indicates whether this event is an 'all-day' event
+		 *
+		 * @return true or false
+		 */
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+		/**
+		 * Gets the current {@link CalendarView}
+		 *
+		 * @return the view name
+		 */
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnEventClickAjaxBehavior} callback
+	 */
+	protected static class ClickEvent extends JQueryEvent
+	{
+		private final String eventId;
+		private final String viewName;
+		/**
+		 * Constructor
+		 */
+		public ClickEvent()
+		{
+			this.eventId = RequestCycleUtils.getQueryParameterValue("eventId").toString();
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		/**
+		 * Gets the event's id
+		 *
+		 * @return the event's id
+		 */
+		public String getEventId()
+		{
+			return this.eventId;
+		}
+		/**
+		 * Gets the current {@link CalendarView}
+		 *
+		 * @return the view name
+		 */
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnViewRenderAjaxBehavior} callback
+	 */
+	protected static class ViewRenderEvent extends JQueryEvent
+	{
+		private final LocalDate start;
+		private final LocalDate end;
+		private final String viewName;
+		/**
+		 * Constructor
+		 */
+		public ViewRenderEvent()
+		{
+			String start = RequestCycleUtils.getQueryParameterValue("startDate").toString();
+			this.start = LocalDate.parse(start);
+			String end = RequestCycleUtils.getQueryParameterValue("endDate").toString();
+			this.end = LocalDate.parse(end);
+			this.viewName = RequestCycleUtils.getQueryParameterValue("viewName").toString();
+		}
+		/**
+		 * Gets the event start date
+		 *
+		 * @return the start date
+		 */
+		public LocalDate getStart()
+		{
+			return this.start;
+		}
+		/**
+		 * Gets the end date
+		 *
+		 * @return the end date
+		 */
+		public LocalDate getEnd()
+		{
+			return this.end;
+		}
+		/**
+		 * Gets the current {@link CalendarView}
+		 *
+		 * @return the view name
+		 */
+		public CalendarView getView()
+		{
+			return CalendarView.get(this.viewName);
+		}
+	}
+	/**
+	 * Provides a base class for {@link CalendarBehavior} event objects that contain a delta time
+	 */
+	protected abstract static class DeltaEvent extends JQueryEvent
+	{
+		private final String eventId;
+		private final long delta;
+		/**
+		 * Constructor
+		 */
+		public DeltaEvent()
+		{
+			this.eventId = RequestCycleUtils.getQueryParameterValue("eventId").toString();
+			this.delta = RequestCycleUtils.getQueryParameterValue("millisDelta").toLong();
+		}
+		/**
+		 * Gets the event's id
+		 *
+		 * @return the event's id
+		 */
+		public String getEventId()
+		{
+			return this.eventId;
+		}
+		/**
+		 * Gets the event's delta time in milliseconds
+		 *
+		 * @return the event's delta time
+		 */
+		public long getDelta()
+		{
+			return this.delta;
+		}
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnEventDropAjaxBehavior} callback
+	 */
+	protected static class DropEvent extends DeltaEvent
+	{
+		private final boolean isAllDay;
+		/**
+		 * Constructor
+		 */
+		public DropEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+		}
+		/**
+		 * Indicates whether this event is an 'all-day' event
+		 *
+		 * @return true or false
+		 */
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnEventResizeAjaxBehavior} callback
+	 */
+	protected static class ResizeEvent extends DeltaEvent
+	{
+	}
+	/**
+	 * Provides an event object that will be broadcasted by the {@link OnObjectDropAjaxBehavior} callback
+	 */
+	protected static class ObjectDropEvent extends JQueryEvent
+	{
+		private final LocalDateTime day;
+		private final String title;
+		private final boolean isAllDay;
+		/**
+		 * Constructor
+		 */
+		public ObjectDropEvent()
+		{
+			this.isAllDay = RequestCycleUtils.getQueryParameterValue("allDay").toBoolean();
+			String date = RequestCycleUtils.getQueryParameterValue("date").toString();
+			this.day = this.isAllDay ? LocalDate.parse(date).atStartOfDay() : LocalDateTime.parse(date);
+			this.title = RequestCycleUtils.getQueryParameterValue("title").toString();
+		}
+		/**
+		 * Gets the event date
+		 *
+		 * @return the date
+		 */
+		public LocalDateTime getDate()
+		{
+			return this.day;
+		}
+		/**
+		 * Gets the event title
+		 *
+		 * @return the title
+		 */
+		public String getTitle()
+		{
+			return this.title;
+		}
+		/**
+		 * Indicates whether this event is an 'all-day' event
+		 *
+		 * @return true or false
+		 */
+		public boolean isAllDay()
+		{
+			return this.isAllDay;
+		}
+	}
+}

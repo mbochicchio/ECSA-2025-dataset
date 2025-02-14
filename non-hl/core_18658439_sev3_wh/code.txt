@@ -1,0 +1,419 @@
+/*
+ * 
+ * ==============================================================================
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at
+ * 
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package org.wicketstuff.openlayers.api.layer;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.util.io.IClusterable;
+import org.wicketstuff.openlayers.js.JSUtils;
+/**
+ * @author mocleiri
+ * 
+ *         Maps the OpenLayers.Layer.WFS object.
+ * 
+ *         See http://dev.openlayers.org/docs/files/OpenLayers/Layer/WFS-js.html
+ * 
+ */
+public class WFS extends Layer implements IClusterable
+{
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = 7019052241702567568L;
+	private String url;
+	private Map<String, String> params;
+	private Map<String, String> options;
+	/**
+	 * name {String} url {String} params {Object} options {Object} Hashtable of extra options to tag
+	 * onto the layer
+	 */
+	public WFS(String name, String url, Map<String, String> params, Map<String, String> options)
+	{
+		super();
+		this.url = url;
+		this.params = params;
+		this.options = options;
+		setName(name);
+	}
+	/**
+	 * @return the url
+	 */
+	public String getUrl()
+	{
+		return url;
+	}
+	/**
+	 * @param url
+	 *            the url to set
+	 */
+	public void setUrl(String url)
+	{
+		this.url = url;
+	}
+	/**
+	 * @return the params
+	 */
+	public Map<String, String> getParams()
+	{
+		return params;
+	}
+	/**
+	 * @param params
+	 *            the params to set
+	 */
+	public void setParams(Map<String, String> params)
+	{
+		this.params = params;
+	}
+	/**
+	 * @return the options
+	 */
+	public Map<String, String> getOptions()
+	{
+		return options;
+	}
+	/**
+	 * @param options
+	 *            the options to set
+	 */
+	public void setOptions(Map<String, String> options)
+	{
+		this.options = options;
+	}
+	@Override
+	protected void bindHeaderContributors(IHeaderResponse response)
+	{
+		// mocleiri: implementation is intentionally empty
+	}
+	/*
+	 * (non-Javadoc)
+	 * 
+	 * @see org.wicketstuff.openlayers.api.layer.Layer#getJSconstructor()
+	 */
+	@Override
+	public String getJSconstructor()
+	{
+		// For example:
+		// layer = new OpenLayers.Layer.WFS( "Owl Survey",
+		// "http://www.bsc-eoc.org/cgi-bin/bsc_ows.asp?",
+		// {typename: "OWLS", maxfeatures: 10},
+		// { featureClass: OpenLayers.Feature.WFS});
+		String paramString = getJSOptionsMap(params);
+		String optionsString = getJSOptionsMap(options);
+		List<String> parameterList = new LinkedList<String>();
+		parameterList.add(JSUtils.getQuotedString(getName()));
+		parameterList.add(JSUtils.getQuotedString(getUrl()));
+		if (params.size() > 0)
+			parameterList.add(paramString);
+		if (options.size() > 0)
+			parameterList.add(optionsString);
+		return getJSconstructor("OpenLayers.Layer.WFS", parameterList);
+	}
+}
+package org.wicketstuff.openlayers.api.layer;
+import java.util.List;
+import java.util.Map;
+import org.apache.wicket.Component;
+import org.apache.wicket.behavior.Behavior;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.wicketstuff.openlayers.IOpenLayersMap;
+import org.wicketstuff.openlayers.js.Constructor;
+import org.wicketstuff.openlayers.js.ObjectLiteral;
+/**
+ *
+ * @author Nino Martinez Wael (nino.martinez@jayway.dk)
+ *
+ */
+public abstract class Layer
+{
+	private String name;
+	public String getName()
+	{
+		return name;
+	}
+	public void setName(String name)
+	{
+		this.name = name;
+	}
+	public String getId()
+	{
+		return String.valueOf(System.identityHashCode(this));
+	}
+	public final String getJSAddLayer(IOpenLayersMap map)
+	{
+		return "var layer" + getId() + " = " + getJSconstructor() + ";\n" +
+			map.getJSinvoke("addLayer(layer" + getId() + ", " + getId() + ")");
+	}
+	public final void bindHeaderContributors(Component c)
+	{
+		c.add(new Behavior()
+		{
+			private static final long serialVersionUID = 1L;
+			@Override
+			public void renderHead(Component c, IHeaderResponse response)
+			{
+				bindHeaderContributors(response);
+			}
+		});
+	}
+	protected abstract void bindHeaderContributors(IHeaderResponse response);
+	public abstract String getJSconstructor();
+	/**
+	 * A helper to build the { ... } options list from a map.
+	 *
+	 * @param options
+	 * @return
+	 */
+	protected String getJSOptionsMap(Map<String, String> options)
+	{
+		if (options == null || options.size() == 0) {
+			return null;
+		}
+		ObjectLiteral builder = new ObjectLiteral();
+		for (Map.Entry<String, String> entry : options.entrySet())
+		{
+			builder.set(entry.getKey(), entry.getValue());
+		}
+		return builder.toJS();
+	}
+	/**
+	 * A convience method for the common initialization case.
+	 *
+	 * @param javascriptTypeName
+	 * @param parameterList
+	 * @return the contextualized contstructor for the layer.
+	 */
+	protected String getJSconstructor(String javascriptTypeName, List<String> parameterList)
+	{
+		Constructor c = new Constructor(javascriptTypeName);
+		for (String parameter : parameterList)
+		{
+			c.add(parameter);
+		}
+		return c.toJS();
+	}
+}
+package org.wicketstuff.openlayers.api.layer;
+import java.io.Serializable;
+import java.util.Arrays;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.wicketstuff.openlayers.js.JSUtils;
+public class OSM extends Layer implements Serializable
+{
+	private static final long serialVersionUID = 1L;
+	public static enum OSMLayer
+	{
+		Mapnik, TilesAtHome, CycleMap
+	}
+	private OSMLayer layer;
+	public OSM(String name, OSMLayer layer)
+	{
+		setName(name);
+		this.layer = layer;
+	}
+	@Override
+	protected void bindHeaderContributors(IHeaderResponse response)
+	{
+		response.render(JavaScriptHeaderItem.forUrl("http://www.openstreetmap.org/openlayers/OpenStreetMap.js"));
+	}
+	@Override
+	public String getJSconstructor()
+	{
+		String quotedName = JSUtils.getQuotedString(getName());
+		switch (layer)
+		{
+			case Mapnik :
+				return getJSconstructor("OpenLayers.Layer.OSM.Mapnik", Arrays.asList(quotedName));
+			case TilesAtHome :
+				return getJSconstructor("OpenLayers.Layer.OSM.Osmarender",
+					Arrays.asList(quotedName));
+			case CycleMap :
+				return getJSconstructor("OpenLayers.Layer.OSM.CycleMap", Arrays.asList(quotedName));
+			default :
+				return getJSconstructor("OpenLayers.Layer.OSM.Mapnik", Arrays.asList(quotedName));
+		}
+	}
+}
+package org.wicketstuff.openlayers.api.layer;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.HashMap;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.apache.wicket.markup.head.JavaScriptHeaderItem;
+import org.wicketstuff.openlayers.js.JSUtils;
+public class GMap extends Layer implements Serializable
+{
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = 1L;
+	private String apiVersion;
+	private String apiKey;
+	private HashMap<String, String> options;
+	public GMap(String name, String apiKey, String apiVersion, HashMap<String, String> options)
+	{
+		super();
+		this.apiKey = apiKey;
+		this.apiVersion = apiVersion;
+		this.options = options;
+		setName(name);
+	}
+	@Override
+	protected void bindHeaderContributors(IHeaderResponse response)
+	{
+		response.render(JavaScriptHeaderItem.forUrl("http://maps.google.com/maps?file=api&amp;v=" +
+			apiVersion + "&amp;key=" + apiKey));
+	}
+	/*
+	 * 
+	 */
+	@Override
+	public String getJSconstructor()
+	{
+		String options = super.getJSOptionsMap(this.options);
+		return getJSconstructor("OpenLayers.Layer.Google",
+			Arrays.asList(JSUtils.getQuotedString(getName()), options));
+	}
+}
+/*
+ * 
+ * ==============================================================================
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at
+ * 
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package org.wicketstuff.openlayers.api.layer;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.HashMap;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.wicketstuff.openlayers.js.JSUtils;
+public class Vector extends Layer implements Serializable
+{
+	private static final long serialVersionUID = 1L;
+	private HashMap<String, String> options = new HashMap<String, String>();
+	public Vector(String name)
+	{
+		this(name, null);
+	}
+	public Vector(String name, HashMap<String, String> options)
+	{
+		super();
+		setName(name);
+		this.options = options;
+	}
+	@Override
+	protected void bindHeaderContributors(IHeaderResponse response)
+	{
+		// mocleiri: intentionally does nothing
+	}
+	@Override
+	public String getJSconstructor()
+	{
+		String options = super.getJSOptionsMap(this.options);
+		return super.getJSconstructor("OpenLayers.Layer.Vector",
+			Arrays.asList(JSUtils.getQuotedString(getName()), options));
+	}
+}
+package org.wicketstuff.openlayers.api.layer;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.HashMap;
+import org.apache.wicket.markup.head.IHeaderResponse;
+import org.wicketstuff.openlayers.js.JSUtils;
+/**
+ * 
+ * @author Nino Martinez Wael (nino.martinez@jayway.dk)
+ * 
+ */
+public class WMS extends Layer implements Serializable
+{
+	private static final long serialVersionUID = 1L;
+	private String url;
+	/**
+	 * can be any of : layers: 'topp:AL_03C5E', styles: '', height: '750', width: '800', srs:
+	 * 'EPSG:2400', format: 'image/png', tiled: 'true', tilesOrigin :
+	 * "1319519.4432429108,6224522.644438478"
+	 * 
+	 * 
+	 */
+	private HashMap<String, String> options = new HashMap<String, String>();
+	private final HashMap<String, String> extraOptions;
+	public String getUrl()
+	{
+		return url;
+	}
+	public void setUrl(String url)
+	{
+		this.url = url;
+	}
+	public WMS(String name, String url, HashMap<String, String> options)
+	{
+		this(name, url, options, null);
+	}
+	/**
+	 * 
+	 * @param name
+	 * @param url
+	 * @param options
+	 *            layer options
+	 * @param extraOptions
+	 *            things like baseLayer: need to be placed in extraOptions.
+	 */
+	public WMS(String name, String url, HashMap<String, String> options,
+		HashMap<String, String> extraOptions)
+	{
+		super();
+		this.extraOptions = extraOptions;
+		setName(name);
+		this.url = url;
+		this.options = options;
+	}
+	/*
+	 * name, url, options
+	 */
+	@Override
+	public String getJSconstructor()
+	{
+		String options = super.getJSOptionsMap(this.options);
+		String extraOptions = super.getJSOptionsMap(this.extraOptions);
+		if (extraOptions == null)
+			return getJSconstructor(
+				"OpenLayers.Layer.WMS",
+				Arrays.asList(new String[] { JSUtils.getQuotedString(getName()),
+						JSUtils.getQuotedString(getUrl()), options }));
+		else
+			return getJSconstructor(
+				"OpenLayers.Layer.WMS",
+				Arrays.asList(new String[] { JSUtils.getQuotedString(getName()),
+						JSUtils.getQuotedString(getUrl()), options, extraOptions }));
+	}
+	@Override
+	protected void bindHeaderContributors(IHeaderResponse response)
+	{
+		// mocleiri: implementation is intentionally empty.
+	}
+}
