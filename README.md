@@ -1,6 +1,6 @@
 # Thesis dataset
 
-This is the Hub-like dataset used for my bachelor thesis. Each Hub-like was given to Gemini Advanced in a separate and new chat and with these different prompts:
+This is the architectural smells dataset used for my bachelor thesis.
 
 ### How to read the dataset
 
